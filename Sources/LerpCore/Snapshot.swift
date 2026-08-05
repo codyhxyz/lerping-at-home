@@ -21,6 +21,7 @@ public enum LerpSnapshot {
                               renderer: LerpRenderer,
                               width: Int, height: Int,
                               time: Float, seed: Float,
+                              params: LerpParameterValues? = nil,
                               to url: URL) -> Result {
         let pipeline: MTLRenderPipelineState
         let data: LerpDataProvider?
@@ -42,6 +43,7 @@ public enum LerpSnapshot {
                 pipeline: pipeline,
                 uniforms: LerpUniforms(resolution: SIMD2<Float>(Float(width), Float(height)),
                                       time: time, seed: seed),
+                params: params ?? shader.defaultParameterValues(),
                 data: data) else {
             return Result(shader: shader.name, url: nil, error: "failed to create texture/command buffer", meanLuminance: 0)
         }

@@ -3,18 +3,31 @@
 // "Corners" shape from the paper.design default preset: grainy color bands
 // radiating from opposite corners over black. Texture randomizers replaced
 // with the procedural hash noise from the prelude.
+//
+// Parameters mirror the upstream <GrainGradient> props. Upstream's `shape`
+// enum is not ported — this file is always the "corners" shape. Upstream takes
+// a variable-length `colors` array (max 7); this port fixes four slots.
+//
+// lerp-param: color1    color     = (0.451, 0.000, 1.000) "Violet"
+// lerp-param: color2    color     = (0.922, 0.659, 1.000) "Pale orchid"
+// lerp-param: color3    color     = (0.000, 0.749, 1.000) "Sky cyan"
+// lerp-param: color4    color     = (0.165, 0.000, 1.000) "Deep ultramarine"
+// lerp-param: colorBack color     = (0.000, 0.000, 0.000) "Background"
+// lerp-param: softness  float 0 1 = 0.5  "Softness"
+// lerp-param: intensity float 0 1 = 0.5  "Intensity"
+// lerp-param: noise     float 0 1 = 0.25 "Noise"
+// lerp-param: speed     float 0 2 = 0.4  "Speed"
+//
+// Palettes from upstream's presets (their shapes are not ported, so only the
+// colour/softness/intensity/noise parts carry over).
+// lerp-preset: Wave    colorBack=#000a0f, color1=#c4730b, color2=#bdad5f, color3=#d8ccc7
+// lerp-preset: Wave    color4=#c4730b, softness=0.7, intensity=0.15, noise=0.5, speed=0.4
+// lerp-preset: Truchet colorBack=#0a0000, color1=#6f2200, color2=#eabb7c, color3=#39b523
+// lerp-preset: Truchet color4=#6f2200, softness=0, intensity=0.2, noise=1, speed=0.4
+// lerp-preset: Blob    colorBack=#0f0e18, color1=#3e6172, color2=#a49b74, color3=#568c50
+// lerp-preset: Blob    color4=#3e6172, softness=0, intensity=0.15, noise=0.5, speed=0.4
 
-constant int    GG_COLOR_COUNT = 4;
-constant float3 GG_COLORS[GG_COLOR_COUNT] = {
-    float3(0.451, 0.000, 1.000), // violet
-    float3(0.922, 0.659, 1.000), // pale orchid
-    float3(0.000, 0.749, 1.000), // sky cyan
-    float3(0.165, 0.000, 1.000), // deep ultramarine
-};
-constant float3 GG_COLOR_BACK = float3(0.0, 0.0, 0.0);
-constant float  GG_SOFTNESS  = 0.5;
-constant float  GG_INTENSITY = 0.5;
-constant float  GG_NOISE     = 0.25;
+constant int GG_COLOR_COUNT = 4;
 
 static float4 ggFbm(float2 n0, float2 n1, float2 n2, float2 n3) {
     float amplitude = 0.2;
@@ -38,8 +51,10 @@ static float4 ggFbm(float2 n0, float2 n1, float2 n2, float2 n3) {
 }
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+    float3 colors[GG_COLOR_COUNT] = { u.color1.rgb, u.color2.rgb, u.color3.rgb, u.color4.rgb };
+
     const float firstFrameOffset = 7.0;
-    float t = 0.1 * (0.4 * u.time + firstFrameOffset + 53.0 * u.seed);
+    float t = 0.1 * (u.speed * u.time + firstFrameOffset + 53.0 * u.seed);
 
     // ~= v_objectUV (fit: contain box on the short axis) of the original.
     float2 shapeUV = lerpUV(pos, u.resolution) * 0.5;
@@ -74,23 +89,23 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float rawNoise = 0.75 * baseNoise - fbmVals.w - fbmVals.z;
     float noise = clamp(rawNoise, 0.0, 1.0);
 
-    shape += GG_INTENSITY * 2.0 / colorsCount * (grainDist + 0.5);
-    shape += GG_NOISE * 10.0 / colorsCount * noise;
+    shape += u.intensity * 2.0 / colorsCount * (grainDist + 0.5);
+    shape += u.noise * 10.0 / colorsCount * noise;
 
     float aa = fwidth(shape);
 
     shape = clamp(shape - 0.5 / colorsCount, 0.0, 1.0);
-    float totalShape = smoothstep(0.0, GG_SOFTNESS + 2.0 * aa, clamp(shape * colorsCount, 0.0, 1.0));
+    float totalShape = smoothstep(0.0, u.softness + 2.0 * aa, clamp(shape * colorsCount, 0.0, 1.0));
     float mixer = shape * (colorsCount - 1.0);
 
-    float3 gradient = GG_COLORS[0];
+    float3 gradient = colors[0];
     for (int i = 1; i < GG_COLOR_COUNT; i++) {
         float localT = clamp(mixer - float(i - 1), 0.0, 1.0);
-        localT = smoothstep(0.5 - 0.5 * GG_SOFTNESS - aa, 0.5 + 0.5 * GG_SOFTNESS + aa, localT);
-        gradient = mix(gradient, GG_COLORS[i], localT);
+        localT = smoothstep(0.5 - 0.5 * u.softness - aa, 0.5 + 0.5 * u.softness + aa, localT);
+        gradient = mix(gradient, colors[i], localT);
     }
 
-    float3 color = gradient * totalShape + GG_COLOR_BACK * (1.0 - totalShape);
+    float3 color = gradient * totalShape + u.colorBack.rgb * (1.0 - totalShape);
 
     color = lerpDither(color, pos);
     return half4(half3(color), 1.0h);

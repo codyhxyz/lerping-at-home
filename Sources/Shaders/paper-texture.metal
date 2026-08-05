@@ -8,19 +8,35 @@
 // u_image layer is dropped (a screensaver has nothing to composite) and the
 // noise-texture randomizers become the prelude's hash21 / hash22.
 
-constant float3 PT_COLOR_FRONT = float3(0.694, 0.596, 0.455); // warm kraft
-constant float3 PT_COLOR_BACK  = float3(0.043, 0.031, 0.043); // umber shadow
-
-constant float PT_CONTRAST     = 0.60;
-constant float PT_ROUGHNESS    = 0.40;
-constant float PT_FIBER        = 0.28;
-constant float PT_FIBER_SIZE   = 0.65;
-constant float PT_CRUMPLES     = 0.60;
-constant float PT_CRUMPLE_SIZE = 0.55;
-constant float PT_FOLDS        = 0.70;
-constant int   PT_FOLD_COUNT   = 7;
-constant float PT_FADE         = 0.35;
-constant float PT_DROPS        = 0.30;
+// Parameters mirror the upstream <PaperTexture> props. Upstream's fixed
+// `seed` prop is replaced by this project's per-launch `u.seed`. `speed` is
+// this port's own addition — upstream renders one still frame, and this is the
+// rate the light and fold anchors drift at.
+//
+// lerp-param: colorFront   color        = (0.694, 0.596, 0.455) "Paper"
+// lerp-param: colorBack    color        = (0.043, 0.031, 0.043) "Shadow"
+// lerp-param: contrast     float 0 1    = 0.60 "Contrast"
+// lerp-param: roughness    float 0 1    = 0.40 "Roughness"
+// lerp-param: fiber        float 0 1    = 0.28 "Fiber"
+// lerp-param: fiberSize    float 0.01 1 = 0.65 "Fiber size"
+// lerp-param: crumples     float 0 1    = 0.60 "Crumples"
+// lerp-param: crumpleSize  float 0.01 1 = 0.55 "Crumple size"
+// lerp-param: folds        float 0 1    = 0.70 "Folds"
+// lerp-param: foldCount    int 1 15     = 7    "Fold count"
+// lerp-param: fade         float 0 1    = 0.35 "Fade"
+// lerp-param: drops        float 0 1    = 0.30 "Drops"
+// lerp-param: speed        float 0 1    = 0.10 "Drift speed"
+//
+// Upstream presets, restricted to the props this port implements.
+// lerp-preset: Cardboard colorFront=#c7b89e, colorBack=#999180, contrast=0.4
+// lerp-preset: Cardboard roughness=0, fiber=0.35, fiberSize=0.14, crumples=0.7
+// lerp-preset: Cardboard crumpleSize=0.1, folds=0, foldCount=1, fade=0, drops=0.1
+// lerp-preset: Abstract  colorFront=#00eeff, colorBack=#ff0a81, contrast=0.85
+// lerp-preset: Abstract  roughness=0, fiber=0.1, fiberSize=0.2, crumples=0.01
+// lerp-preset: Abstract  crumpleSize=0.3, folds=1, foldCount=3, fade=0, drops=0.2
+// lerp-preset: Details   colorFront=#ffffff, colorBack=#000000, contrast=0.01
+// lerp-preset: Details   roughness=1, fiber=0.27, fiberSize=0.22, crumples=1
+// lerp-preset: Details   crumpleSize=0.5, folds=1, foldCount=15, fade=0, drops=0.01
 
 // Upstream reads these out of a pre-baked noise texture; a per-cell hash is
 // the same thing without the sampler.
@@ -125,10 +141,10 @@ static float2 ptCrumplesShapePair(float2 uv, float2 d) {
 // as you approach it, which reads as a crease running through the sheet.
 // Upstream picks the anchors from a hashed seed; here they orbit slowly so
 // the creases migrate instead of sitting still.
-static float2 ptFolds(float2 uv, float t) {
+static float2 ptFolds(float2 uv, float t, int foldCount) {
     float3 pp = float3(0.0);
     float l = 9.0;
-    for (int i = 0; i < PT_FOLD_COUNT; i++) {
+    for (int i = 0; i < foldCount; i++) {
         float2 rnd = hash22(float2(float(i) * 3.7 + 1.0, float(i) * 1.9 + 5.0));
         float an = rnd.x * TWO_PI + 0.35 * t * (0.4 + 0.6 * rnd.y);
         float2 p = float2(cos(an), sin(an)) * (0.25 + 0.7 * rnd.y);
@@ -175,7 +191,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // 5 * (imageUV - .5) * aspect, i.e. 2.5 units on the short axis.
     float2 patternUV = 2.5 * lerpUV(pos, u.resolution);
 
-    float t = 0.10 * u.time + 30.0 * u.seed;
+    float t = u.speed * u.time + 30.0 * u.seed;
     float seed = 4.0 * u.seed + 0.03 * t;
 
     // Roughness lives in screen space so it behaves like film grain.
@@ -183,21 +199,21 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float roughness = ptRoughness(roughnessUv + float2(1.0, 0.0))
                     - ptRoughness(roughnessUv - float2(1.0, 0.0));
 
-    float2 crumplesUV = fract(patternUV * 0.02 / PT_CRUMPLE_SIZE - seed) * 32.0;
+    float2 crumplesUV = fract(patternUV * 0.02 / u.crumpleSize - seed) * 32.0;
     float2 crumplePair = ptCrumplesShapePair(crumplesUV, float2(0.05, 0.0));
-    float crumples = PT_CRUMPLES * (crumplePair.y - crumplePair.x);
+    float crumples = u.crumples * (crumplePair.y - crumplePair.x);
 
-    float2 fiberUV = 2.0 / PT_FIBER_SIZE * patternUV;
+    float2 fiberUV = 2.0 / u.fiberSize * patternUV;
     float fiber = ptFiberNoise(fiberUV);
-    fiber = 0.5 * PT_FIBER * (fiber - 1.0);
+    fiber = 0.5 * u.fiber * (fiber - 1.0);
 
     float2 foldsUV = rotate(patternUV * 0.12, 4.0 * u.seed);
-    float2 w = ptFolds(foldsUV, t);
-    float2 w2 = ptFolds(rotate(foldsUV + 0.007 * cos(seed), 0.01 * sin(seed)), t);
+    float2 w = ptFolds(foldsUV, t, u.foldCount);
+    float2 w2 = ptFolds(rotate(foldsUV + 0.007 * cos(seed), 0.01 * sin(seed)), t, u.foldCount);
 
-    float drops = PT_DROPS * ptDrops(patternUV * 2.0, seed);
+    float drops = u.drops * ptDrops(patternUV * 2.0, seed);
 
-    float fade = PT_FADE * ptFbm(0.17 * patternUV + 10.0 * u.seed);
+    float fade = u.fade * ptFbm(0.17 * patternUV + 10.0 * u.seed);
     fade = clamp(8.0 * fade * fade * fade, 0.0, 1.0);
 
     w = mix(w, float2(0.0), fade);
@@ -208,10 +224,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     roughness *= mix(1.0, 0.5, fade);
 
     float2 normal = float2(0.0);
-    normal += PT_FOLDS * min(5.0 * PT_CONTRAST, 1.0) * 4.0 * max(float2(0.0), w + w2);
+    normal += u.folds * min(5.0 * u.contrast, 1.0) * 4.0 * max(float2(0.0), w + w2);
     normal += crumples;
     normal += 3.0 * drops;
-    normal += PT_ROUGHNESS * 1.5 * roughness;
+    normal += u.roughness * 1.5 * roughness;
     normal += fiber;
 
     // Upstream's fixed vec3(1, 2, 1) light, put on a slow orbit so the relief
@@ -219,12 +235,12 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float la = 0.45 * t;
     float3 lightPos = float3(1.4 * cos(la), 1.6 + 0.9 * sin(la), 1.0);
 
-    float res = dot(normalize(float3(normal, 9.5 - 9.0 * pow(PT_CONTRAST, 0.1))),
+    float res = dot(normalize(float3(normal, 9.5 - 9.0 * pow(u.contrast, 0.1))),
                     normalize(lightPos));
 
-    float3 color = PT_COLOR_FRONT * res;
+    float3 color = u.colorFront.rgb * res;
     float opacity = res;
-    color += PT_COLOR_BACK * (1.0 - opacity);
+    color += u.colorBack.rgb * (1.0 - opacity);
     color -= 0.007 * drops;
     color = clamp(color, 0.0, 1.0);
 

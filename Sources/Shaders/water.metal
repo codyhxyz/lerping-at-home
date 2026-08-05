@@ -5,15 +5,27 @@
 // gradient that the caustics refract, and drops the image edge-frame logic
 // (edges baked to 1, i.e. distortion everywhere).
 
-constant float3 WT_DEEP      = float3(0.006, 0.030, 0.052); // abyss floor
-constant float3 WT_SHALLOW   = float3(0.024, 0.128, 0.158); // upper teal
-constant float3 WT_HIGHLIGHT = float3(0.620, 0.910, 1.000); // pale aqua
-
-constant float WT_HIGHLIGHTS    = 0.55; // preset 0.07, raised for the dark bg
-constant float WT_LAYERING      = 0.5;  // preset default
-constant float WT_WAVES         = 0.3;  // preset default
-constant float WT_CAUSTIC       = 0.5;  // background refraction strength
-constant float WT_PATTERN_SCALE = 5.0;  // matches preset size=1 at ~16:10
+// Parameters mirror the upstream <Water> props, except that upstream's single
+// `colorBack` becomes a two-stop depth gradient here (`colorBack` at the
+// bottom, `colorSurface` at the top) because there is no input image to tint.
+// Upstream's `edges` prop controls the image frame, which this port drops, so
+// it is not exposed. `size` is in this port's units.
+//
+// lerp-param: colorBack      color         = (0.006, 0.030, 0.052) "Abyss"
+// lerp-param: colorSurface   color         = (0.024, 0.128, 0.158) "Surface"
+// lerp-param: colorHighlight color         = (0.620, 0.910, 1.000) "Highlight"
+// lerp-param: size           float 0.25 25 = 5.0  "Size"
+// lerp-param: highlights     float 0 1     = 0.55 "Highlights"
+// lerp-param: layering       float 0 1     = 0.5  "Layering"
+// lerp-param: waves          float 0 1     = 0.3  "Waves"
+// lerp-param: caustic        float 0 1     = 0.5  "Caustic"
+// lerp-param: speed          float 0 3     = 0.22 "Speed"
+//
+// Upstream presets, size mapped into this port's units and speed scaled to
+// this port's ambience (upstream × 0.22).
+// lerp-preset: "Slow-mo"  highlights=0.4, layering=0, waves=0, caustic=0.2, size=3.5, speed=0.022
+// lerp-preset: Abstract   highlights=0, layering=0, waves=1, caustic=0.4, size=0.75, speed=0.22
+// lerp-preset: Streaming  highlights=0, layering=0, waves=0.5, caustic=0, size=2.5, speed=0.44
 
 static float wtCausticNoise(float2 uv, float t, float scale) {
     float2 n = float2(0.1);
@@ -33,35 +45,35 @@ static float wtCausticNoise(float2 uv, float t, float scale) {
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
     float2 screenUV = lerpScreenUV(pos, u.resolution); // 0..1, y down
-    float2 patternUV = lerpUV(pos, u.resolution) * WT_PATTERN_SCALE;
+    float2 patternUV = lerpUV(pos, u.resolution) * u.size;
 
-    float t = 0.22 * u.time + u.seed * 50.0;
+    float t = u.speed * u.time + u.seed * 50.0;
 
     float wavesNoise = snoise((0.3 + 0.1 * sin(t)) * 0.1 * patternUV + float2(0.0, 0.4 * t));
 
     float causticNoise = wtCausticNoise(
-        patternUV + WT_WAVES * float2(1.0, -1.0) * wavesNoise, 2.0 * t, 1.5);
-    causticNoise += WT_LAYERING * wtCausticNoise(
-        patternUV + 2.0 * WT_WAVES * float2(1.0, -1.0) * wavesNoise, 1.5 * t, 2.0);
+        patternUV + u.waves * float2(1.0, -1.0) * wavesNoise, 2.0 * t, 1.5);
+    causticNoise += u.layering * wtCausticNoise(
+        patternUV + 2.0 * u.waves * float2(1.0, -1.0) * wavesNoise, 1.5 * t, 2.0);
     causticNoise = causticNoise * causticNoise;
 
     // Refract the procedural background the way the original warps imageUV.
-    float wavesDistortion = 0.1 * WT_WAVES * wavesNoise;
+    float wavesDistortion = 0.1 * u.waves * wavesNoise;
     float2 bgUV = screenUV + float2(wavesDistortion, -wavesDistortion);
-    bgUV += WT_CAUSTIC * 0.02 * causticNoise;
+    bgUV += u.caustic * 0.02 * causticNoise;
 
     // Deep-water gradient: brighter toward the surface (top of screen),
     // with a slow broad swell to keep large areas from looking flat.
     float depth = smoothstep(0.0, 1.0, bgUV.y);
     float swell = 0.5 + 0.5 * snoise(bgUV * 1.4 + float2(0.05 * t, 0.02 * t));
-    float3 color = mix(WT_SHALLOW, WT_DEEP, depth);
+    float3 color = mix(u.colorSurface.rgb, u.colorBack.rgb, depth);
     color *= 0.85 + 0.3 * swell;
 
     // Caustic highlights.
     causticNoise = max(-0.2, causticNoise);
-    float highlight = 0.025 * WT_HIGHLIGHTS * causticNoise;
-    color = mix(color, WT_HIGHLIGHT, 0.05 * WT_HIGHLIGHTS * causticNoise);
-    color += WT_HIGHLIGHT * highlight * (0.5 + 0.5 * wavesNoise);
+    float highlight = 0.025 * u.highlights * causticNoise;
+    color = mix(color, u.colorHighlight.rgb, 0.05 * u.highlights * causticNoise);
+    color += u.colorHighlight.rgb * highlight * (0.5 + 0.5 * wavesNoise);
 
     color = clamp(color, 0.0, 1.0);
     color = lerpDither(color, pos);

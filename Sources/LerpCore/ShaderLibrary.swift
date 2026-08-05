@@ -7,8 +7,40 @@ public struct LerpShader: Sendable {
     public let isBuiltIn: Bool
     public let url: URL?
 
+    /// Tunable parameters the file declares with `// lerp-param:`, in
+    /// declaration order. Empty for a shader that declares none — which is
+    /// every shader that has not been given any, and which compiles and renders
+    /// through exactly the path it always did.
+    public let parameters: [LerpParam]
+    /// Named presets the file declares with `// lerp-preset:`.
+    public let presets: [LerpPreset]
+    /// Malformed parameter/preset declarations. `pipeline(for:)` refuses to
+    /// compile a shader that has any, so a typo surfaces as an error rather
+    /// than a silently-wrong render.
+    public let parameterErrors: [LerpParamError]
+
+    public init(name: String, source: String, isBuiltIn: Bool, url: URL?) {
+        self.name = name
+        self.source = source
+        self.isBuiltIn = isBuiltIn
+        self.url = url
+        let parsed = LerpParamParser.parse(source: source)
+        self.parameters = parsed.parameters
+        self.presets = parsed.presets
+        self.parameterErrors = parsed.errors
+    }
+
     public var displayName: String {
         name.split(separator: "-").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+    }
+
+    /// Fresh parameter values at the shader's declared defaults.
+    public func defaultParameterValues() -> LerpParameterValues {
+        LerpParameterValues(parameters)
+    }
+
+    public func preset(named name: String) -> LerpPreset? {
+        presets.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     /// Name of the `LerpDataProvider` this shader asks for, declared as a
@@ -142,11 +174,20 @@ public final class ShaderLibrary {
         let cacheKey = shader.name + "|" + String(shader.source.hashValue)
         if let cached = pipelineCache[cacheKey] { return cached }
 
+        if !shader.parameterErrors.isEmpty {
+            let message = "shader '\(shader.name)' has malformed parameter declarations:\n"
+                + shader.parameterErrors.map { "  \($0)" }.joined(separator: "\n")
+                + "\n  syntax: // lerp-param: NAME TYPE [MIN MAX] = DEFAULT \"Label\""
+            compileErrors[shader.name] = message
+            throw NSError(domain: "LerpingAtHome", code: 3, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+
         let options = MTLCompileOptions()
         if #available(macOS 15.0, *) {
             options.mathMode = .fast
         }
-        let prelude = LerpPrelude.source(extra: try dataProvider(for: shader)?.metalPrelude ?? "")
+        let prelude = LerpPrelude.source(parameters: shader.parameters,
+                                         extra: try dataProvider(for: shader)?.metalPrelude ?? "")
         let library: MTLLibrary
         do {
             library = try device.makeLibrary(source: prelude + shader.source, options: options)

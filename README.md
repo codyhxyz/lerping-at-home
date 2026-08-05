@@ -107,6 +107,45 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 - Worked example with comments: `Templates/plasma.metal`.
 - Porting reference: `PORTING.md`.
 
+### Shader parameters and presets
+
+Tunable values are declared in the `.metal` file itself, so a shader carries
+its parameters and presets wherever the file goes.
+
+```metal
+// lerp-param: distortion float 0 1 = 0.8 "Distortion"
+// lerp-param: octaves    int 1 8   = 4   "Octaves"
+// lerp-param: mirrored   bool      = false
+// lerp-param: colorBack  color     = #06111C "Background"
+//
+// lerp-preset: Lagoon     distortion=0.8, colorBack=#06111C
+// lerp-preset: "Deep Sea" distortion=0.2, octaves=6
+```
+
+- Syntax: `// lerp-param: NAME TYPE [MIN MAX] = DEFAULT ["Label"]`. Types are
+  `float`, `int`, `bool`, `color`; MIN/MAX are required for `float`/`int` only.
+  Colour defaults take `#RGB`, `#RRGGBB`, `#RRGGBBAA` or `(r, g, b[, a])`.
+- Declared parameters become extra fields on `LerpUniforms`, so the shader
+  reads them as `u.distortion`, `u.colorBack` — the `lerpMain` signature and
+  the buffer bindings are unchanged, and a shader with no parameters compiles
+  and renders exactly as before.
+- `// lerp-preset: NAME  key=value, …` names a set of overrides; quote names
+  with spaces, and repeat the name on later lines to split a long preset.
+- A malformed declaration is a compile error naming the line.
+- 28 of the 30 built-in shaders declare parameters mirroring the upstream
+  paper-design props, with defaults set to this project's current look and the
+  upstream looks available as presets.
+- Inspect and drive them from the CLI:
+
+```sh
+./build/LerpPreview --params swirl                                   # declarations + presets
+./build/LerpPreview --snapshot build/x --shader swirl --preset Candy
+./build/LerpPreview --snapshot build/x --shader swirl --param twist=0.6
+```
+
+- There is no settings UI for parameters yet; every host renders at the
+  declared defaults. Details and porting guidance: `PORTING.md`.
+
 ### Shaders with CPU-computed data
 
 - A shader that needs more than the 16-byte uniform block — a table, a segment
@@ -118,7 +157,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
   into the prelude ahead of `#line 1` so error line numbers still match the file.
 - A provider must *derive* its data from `(time, seed)` every frame, never
   accumulate across frames — a rendered frame is a pure function of
-  (shader, time, seed), which is what makes `--snapshot --time T` reproducible.
+  (shader, time, seed, parameters), which is what makes `--snapshot --time T`
+  reproducible.
 - Only `pipes` uses one. Every other shader keeps the plain
   `fragment half4 lerpMain(float4, constant LerpUniforms&)` signature.
 - Protocol and registry: `Sources/LerpCore/DataProvider.swift`. Worked example:
@@ -141,6 +181,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 Sources/LerpCore/     shared engine, no ScreenSaver dependency
   Prelude.swift        Metal prelude prepended to every shader at runtime
   ShaderLibrary.swift  shader discovery (bundle + custom dirs) + runtime compilation
+  ShaderParameters.swift  `// lerp-param:` / `// lerp-preset:` parsing, layout and packing
   DataProvider.swift   optional per-frame CPU→GPU data for shaders that need it
   PipesData.swift      data provider for pipes: deterministic lattice walk
   LerpRenderer.swift   stateless fullscreen-triangle pass encoder

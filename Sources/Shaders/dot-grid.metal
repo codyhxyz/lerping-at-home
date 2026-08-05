@@ -3,26 +3,36 @@
 // The original grid is static; this port scrolls it on a slow diagonal and
 // walks the per-cell size/opacity randomizers through time so the field
 // breathes. Circle shape, stroked, from the paper.design default.
-
-constant float3 DG_COLOR_BACK   = float3(0.016, 0.020, 0.043); // near-black navy
-constant float3 DG_COLOR_FILL   = float3(0.192, 0.310, 0.847); // cobalt
-constant float3 DG_COLOR_STROKE = float3(0.749, 0.847, 1.000); // pale ice
-
-constant float DG_DOT_SIZE      = 10.0; // pixels
-constant float DG_GAP_X         = 46.0; // pixels
-constant float DG_GAP_Y         = 46.0; // pixels
-constant float DG_STROKE_WIDTH  = 2.2;  // pixels
-constant float DG_SIZE_RANGE    = 0.75;
-constant float DG_OPACITY_RANGE = 0.70;
+//
+// Parameters mirror the upstream <DotGrid> props, in the same pixel units.
+// Upstream's `shape` enum is not ported — this file always draws circles.
+// `speed` is this port's own addition: upstream DotGrid does not animate.
+//
+// lerp-param: colorBack    color        = (0.016, 0.020, 0.043) "Background"
+// lerp-param: colorFill    color        = (0.192, 0.310, 0.847) "Fill"
+// lerp-param: colorStroke  color        = (0.749, 0.847, 1.000) "Stroke"
+// lerp-param: size         float 1 100  = 10.0 "Dot size (px)"
+// lerp-param: gapX         float 2 500  = 46.0 "Gap X (px)"
+// lerp-param: gapY         float 2 500  = 46.0 "Gap Y (px)"
+// lerp-param: strokeWidth  float 0 50   = 2.2  "Stroke width (px)"
+// lerp-param: sizeRange    float 0 1    = 0.75 "Size range"
+// lerp-param: opacityRange float 0 1    = 0.70 "Opacity range"
+// lerp-param: speed        float 0 2    = 0.5  "Speed"
+//
+// Upstream presets (the two whose shape is a circle).
+// lerp-preset: "Tree line" colorBack=#f4fce7, colorFill=#052e19, colorStroke=#000000
+// lerp-preset: "Tree line" size=8, gapX=20, gapY=90, strokeWidth=0, sizeRange=1, opacityRange=0.6
+// lerp-preset: Default     colorBack=#000000, colorFill=#ffffff, colorStroke=#ffaa00
+// lerp-preset: Default     size=2, gapX=32, gapY=32, strokeWidth=0, sizeRange=0, opacityRange=0
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
-    float t = 0.5 * u.time + 90.0 * u.seed;
+    float t = u.speed * u.time + 90.0 * u.seed;
 
     // Pattern space is plain pixels (the original's 100 * v_patternUV).
     float2 shapeUV = float2(pos.x, u.resolution.y - pos.y);
     shapeUV += float2(3.1 * t, 2.2 * t); // slow diagonal drift
 
-    float2 gap = float2(DG_GAP_X, DG_GAP_Y);
+    float2 gap = float2(u.gapX, u.gapY);
     float2 grid = fract(shapeUV / gap) + 1e-4;
     float2 gridIdx = floor(shapeUV / gap);
 
@@ -34,8 +44,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float2 center = float2(0.5) - 1e-3;
     float2 p = (grid - center) * gap;
 
-    float baseSize = DG_DOT_SIZE * (1.0 - sizeRandomizer * DG_SIZE_RANGE);
-    float strokeWidth = DG_STROKE_WIDTH * (1.0 - sizeRandomizer * DG_SIZE_RANGE);
+    float baseSize = u.size * (1.0 - sizeRandomizer * u.sizeRange);
+    float strokeWidth = u.strokeWidth * (1.0 - sizeRandomizer * u.sizeRange);
 
     float dist = length(p); // circle
 
@@ -44,13 +54,13 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float shapeInner = 1.0 - smoothstep(baseSize - edgeWidth, baseSize + edgeWidth, dist);
     float stroke = shapeOuter - shapeInner;
 
-    float dotOpacity = max(0.0, 1.0 - opacityRandomizer * DG_OPACITY_RANGE);
+    float dotOpacity = max(0.0, 1.0 - opacityRandomizer * u.opacityRange);
     stroke *= dotOpacity;
     shapeInner *= dotOpacity;
 
-    float3 color = stroke * DG_COLOR_STROKE
-                 + shapeInner * DG_COLOR_FILL
-                 + (1.0 - shapeInner - stroke) * DG_COLOR_BACK;
+    float3 color = stroke * u.colorStroke.rgb
+                 + shapeInner * u.colorFill.rgb
+                 + (1.0 - shapeInner - stroke) * u.colorBack.rgb;
 
     color = lerpDither(color, pos);
     return half4(half3(color), 1.0h);

@@ -49,6 +49,10 @@ public final class LerpMetalView: NSView {
     private let library: ShaderLibrary
     private var pipeline: MTLRenderPipelineState?
     private var dataProvider: LerpDataProvider?
+    /// Values for the current shader's `// lerp-param:` declarations. Reset to
+    /// the shader's declared defaults on every `setShader`, so with no host UI
+    /// driving it every shader renders exactly at its defaults.
+    public private(set) var parameterValues: LerpParameterValues?
     private var displayLink: CADisplayLink?
     private var shuffleOrder: [String] = []
     private var shuffleIndex = 0
@@ -207,12 +211,31 @@ public final class LerpMetalView: NSView {
         do {
             pipeline = try library.pipeline(for: shader)
             dataProvider = try library.dataProvider(for: shader)
+            parameterValues = shader.defaultParameterValues()
             currentShaderName = shader.name
             return true
         } catch {
             onCompileError?(shader.name, String(describing: error))
             return false
         }
+    }
+
+    /// Overrides one declared parameter of the current shader. No-op if the
+    /// shader does not declare it. Rendering picks the new value up on the next
+    /// frame; call `renderOnce()` to see it while paused.
+    @discardableResult
+    public func setParameter(_ name: String, _ value: LerpParamValue) -> Bool {
+        parameterValues?.set(name, value) ?? false
+    }
+
+    /// Switches the current shader to one of its declared `// lerp-preset:`
+    /// blocks. Parameters the preset does not mention return to their defaults.
+    @discardableResult
+    public func applyPreset(named name: String) -> Bool {
+        guard let shader = library.shader(named: currentShaderName),
+              let preset = shader.preset(named: name) else { return false }
+        parameterValues?.apply(preset)
+        return true
     }
 
     public func showNextShader(_ direction: Int = 1) {
@@ -317,7 +340,8 @@ public final class LerpMetalView: NSView {
                                          Float(metalLayer.drawableSize.height)),
                 time: Float(time),
                 seed: seed)
-            renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms, data: dataProvider)
+            renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms,
+                          params: parameterValues, data: dataProvider)
         }
     }
 }

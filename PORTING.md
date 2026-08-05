@@ -32,11 +32,92 @@ metaballs).
 | `mod(x, y)` | `glmod(x, y)` — NOT `fmod` (differs on negatives) |
 | `texture(u_noiseTexture, uv)` randomizers | procedural `hash21`/`valueNoise` from the prelude |
 | `gl_FragCoord` | `pos` |
-| uniform params (`u_color`, `u_scale`…) | bake as file-scope `constant` values with a tasteful palette |
+| uniform params (`u_color`, `u_scale`…) | declare them with `// lerp-param:` (below); bake the rest as file-scope `constant` values |
 | `fragColor = vec4(c, a)` | `return half4(half3(color), 1.0h)` (opaque; composite any alpha against a baked background color) |
 | top-level `const` arrays | `constant float4 NAME[N] = {...};` at file scope |
 
 Loops with `break` on a uniform count: use a fixed `constant int` count.
+
+Uniform params are the one row above worth ignoring: rather than baking every
+prop as a `constant`, declare the ones that genuinely change the look as
+**parameters** (below) and keep the rest baked.
+
+## Tunable parameters
+
+A shader declares its own parameters in comments, so the `.metal` file stays
+the single source of truth — a custom shader dropped into
+`~/Library/Application Support/Lerping/Shaders` carries its parameters with it,
+with no sidecar file to install.
+
+```metal
+// lerp-param: distortion float 0 1 = 0.8 "Distortion"
+// lerp-param: colorCount int 1 5   = 5   "Color count"
+// lerp-param: mirrored   bool      = false
+// lerp-param: colorBack  color     = #06111C "Background"
+// lerp-param: color1     color     = (0.043, 0.231, 0.290) "Deep teal"
+```
+
+Grammar, one declaration per comment line, anywhere in the file:
+
+```
+// lerp-param: NAME TYPE [MIN MAX] = DEFAULT ["Label"]
+```
+
+- **NAME** — a valid MSL identifier, unique in the file, and not `resolution`,
+  `time` or `seed`.
+- **TYPE** — `float`, `int`, `bool` or `color`.
+- **MIN MAX** — required for `float` and `int`, rejected for `bool` and
+  `color`. The default has to fall inside the range.
+- **DEFAULT** — a number; `true`/`false` for a bool; for a colour either
+  `#RGB` / `#RRGGBB` / `#RRGGBBAA` or `(r, g, b[, a])` with components 0…1.
+  Prefer the float form when you are turning an existing `constant float3` into
+  a parameter — it keeps the exact value instead of rounding through 8-bit hex.
+- **"Label"** — optional display name. Defaults to the humanised NAME.
+
+Anything malformed is a hard error naming the line, not a silent default.
+
+**Reading them.** Declared parameters are appended to `struct LerpUniforms` in
+the generated prelude, so you read them as `u.distortion`, `u.colorBack` and so
+on — **the `lerpMain` signature does not change**, and neither does the buffer
+binding (`LerpUniforms` is still fragment index 0, data providers still own 1
+and up). A `color` arrives as `float4` (use `.rgb`, and `.a` if you gave the
+colour a meaningful alpha); a `bool` arrives as an `int` that is 0 or 1. A
+shader that declares no parameters is compiled and bound exactly as before.
+
+File-scope `static` helpers can't see `u`, so either pass the value you need as
+an argument or take `constant LerpUniforms& u` as a parameter.
+
+**Presets** live in the same file, right under the declarations:
+
+```metal
+// lerp-preset: Lagoon      distortion=0.8, swirl=0.35, colorBack=#06111C
+// lerp-preset: "Deep Sea"  distortion=0.2, colorBack=(0.0, 0.01, 0.03)
+```
+
+Quote the name if it contains spaces. Repeating a name on later lines merges
+into one preset, which is how you keep long presets readable. A preset applies
+on top of the *defaults*, so anything it doesn't mention returns to its
+declared default. Setting a parameter the file doesn't declare is an error.
+
+**Rules of thumb when porting.** Use the upstream prop names and ranges
+verbatim. Set the default to whatever this port currently renders, so the
+existing look is preserved; put upstream's own defaults in a preset instead.
+Don't invent parameters upstream doesn't have — if the port adds one anyway
+(`speed` on a shader that is static upstream, say), say so in the file header.
+Don't mechanically expose every internal constant either; a value that stays
+baked is fine, it just must not be advertised as tunable.
+
+Inspect and drive them from the CLI:
+
+```sh
+./build/LerpPreview --params NAME                       # declarations + presets
+./build/LerpPreview --snapshot DIR --shader NAME --preset Lagoon
+./build/LerpPreview --snapshot DIR --shader NAME --param distortion=0.2 --param colorBack=#101820
+```
+
+Parameters are part of the purity contract: a frame stays a pure function of
+(shader, time, seed, parameters). Values are re-packed from scratch on every
+change and bound per frame; nothing accumulates.
 
 ## Shaders that need CPU-computed data
 
@@ -71,6 +152,9 @@ file. Read the provider's `metalPrelude` to see what it binds and where.
 A provider can bind textures as well as buffers — `HeatmapData` binds one at
 fragment texture 1 and supplies the `constexpr sampler` for it, so its shader
 takes `texture2d<float> processed [[texture(1)]]`.
+
+Providers and `// lerp-param:` compose: the parameters ride in the index-0
+`LerpUniforms` binding, so a shader can declare both.
 
 Writing one: conform to `LerpDataProvider` in `Sources/LerpCore/`, register it
 in `LerpDataProviders`, and give the shader a matching `// lerp-data:` line.

@@ -11,22 +11,34 @@ import Foundation
 ///                            constant LerpUniforms& u [[buffer(0)]])
 ///
 public enum LerpPrelude {
-    /// The prelude every shader gets, with no `#line` directive. Use `source`
-    /// (or `source(extra:)`) rather than this — they add the `#line 1` marker
-    /// that keeps Metal's diagnostics pointing at the shader file's own lines.
-    public static let helpers = """
+    private static let header = """
     #include <metal_stdlib>
     using namespace metal;
 
     #define PI     3.14159265358979323846
     #define TWO_PI 6.28318530718
+    """
 
-    struct LerpUniforms {
-        float2 resolution; // drawable size in pixels
-        float  time;       // seconds since the renderer started
-        float  seed;       // random per-launch seed in [0, 1)
-    };
+    /// `struct LerpUniforms` for a given parameter list. The first 16 bytes are
+    /// always the same three fields; a shader's `// lerp-param:` declarations
+    /// are appended as extra members, which is why reading a parameter needs no
+    /// change to the `lerpMain` signature. With no parameters this is
+    /// byte-for-byte the struct every shader has always been compiled against.
+    public static func uniformsStruct(parameters: [LerpParam] = []) -> String {
+        var text = """
+        struct LerpUniforms {
+            float2 resolution; // drawable size in pixels
+            float  time;       // seconds since the renderer started
+            float  seed;       // random per-launch seed in [0, 1)
+        """
+        if !parameters.isEmpty {
+            text += "\n    // --- declared by `// lerp-param:` in the shader file ---\n"
+            text += LerpParamLayout.mslFields(parameters)
+        }
+        return text + "\n};"
+    }
 
+    private static let functions = """
     // Fullscreen triangle — no vertex buffer needed.
     vertex float4 lerpVertex(uint vid [[vertex_id]]) {
         float2 p[3] = { float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0) };
@@ -116,14 +128,30 @@ public enum LerpPrelude {
     }
     """
 
+    /// The prelude every shader gets, with no `#line` directive. Use `source`
+    /// (or `source(parameters:extra:)`) rather than this — they add the
+    /// `#line 1` marker that keeps Metal's diagnostics pointing at the shader
+    /// file's own lines.
+    public static var helpers: String { helpers(parameters: []) }
+
+    public static func helpers(parameters: [LerpParam]) -> String {
+        header + "\n\n" + uniformsStruct(parameters: parameters) + "\n\n" + functions
+    }
+
     /// The standard prelude: helpers plus the `#line 1` marker.
-    public static var source: String { source(extra: "") }
+    public static var source: String { source(parameters: [], extra: "") }
 
     /// The prelude with a data provider's MSL declarations spliced in between
     /// the helpers and the `#line 1` marker, so shader line numbers still match
     /// the file no matter how much the provider declares.
-    public static func source(extra: String) -> String {
+    public static func source(extra: String) -> String { source(parameters: [], extra: extra) }
+
+    /// The prelude for one shader: its declared parameters folded into
+    /// `LerpUniforms`, then its data provider's declarations, then `#line 1`.
+    /// Both additions land *above* the marker, so a compile error still reports
+    /// the shader file's own line numbers however much is generated.
+    public static func source(parameters: [LerpParam], extra: String) -> String {
         let middle = extra.isEmpty ? "" : "\n" + extra + "\n"
-        return helpers + "\n" + middle + "\n#line 1\n"
+        return helpers(parameters: parameters) + "\n" + middle + "\n#line 1\n"
     }
 }
