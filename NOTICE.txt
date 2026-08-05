@@ -84,10 +84,6 @@ The MIDI mapping-preset model (per-device bindings, MIDI learn, named banks)
 follows the design of MIKMIDI (https://github.com/mixedinkey-opensource/MIKMIDI),
 Copyright Mixed In Key LLC, MIT-licensed. No MIKMIDI code is used.
 
-The screensaver's earlier exit-on-willstop workaround followed the approach
-documented by Aerial (https://github.com/JohnCoates/Aerial), MIT-licensed. No
-Aerial code is used, and that workaround has since been removed.
-
 
 LICENSE INTERACTION
 -------------------
