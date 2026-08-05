@@ -2,7 +2,7 @@
 
 - Screensaver for macOS that renders procedural shaders with Metal.
 - Shaders are single `.metal` files compiled at runtime via `MTLDevice.makeLibrary(source:)`.
-- 28 built-in shaders: aurora, color-panels, dithering, dot-grid, dot-orbit, fluted-glass, gem-smoke, god-rays, grain-gradient, halftone-cmyk, halftone-dots, liquid-metal, mesh-gradient, metaballs, neuro-noise, paper-texture, perlin-noise, pulsing-border, simplex-noise, smoke-ring, spiral, static-mesh-gradient, static-radial-gradient, swirl, voronoi, warp, water, waves.
+- 29 built-in shaders: aurora, color-panels, dithering, dot-grid, dot-orbit, fluted-glass, gem-smoke, god-rays, grain-gradient, halftone-cmyk, halftone-dots, liquid-metal, mesh-gradient, metaballs, neuro-noise, paper-texture, perlin-noise, pipes, pulsing-border, simplex-noise, smoke-ring, spiral, static-mesh-gradient, static-radial-gradient, swirl, voronoi, warp, water, waves.
 - Custom `.metal` files are supported without rebuilding the engine.
 - No Xcode project. Builds with `swiftc` through a Makefile.
 - No build-time Metal toolchain and no precompiled shader archive.
@@ -103,6 +103,23 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 - Worked example with comments: `Templates/plasma.metal`.
 - Porting reference: `PORTING.md`.
 
+### Shaders with CPU-computed data
+
+- A shader that needs more than the 16-byte uniform block — a table, a segment
+  list, an occupancy grid — declares a data provider with a comment on one of
+  its first lines: `// lerp-data: pipes`.
+- The provider computes that data on the CPU each frame and binds it at
+  fragment buffer index 1 and up; index 0 stays `LerpUniforms`.
+- It also supplies the MSL struct declarations the shader reads it with, spliced
+  into the prelude ahead of `#line 1` so error line numbers still match the file.
+- A provider must *derive* its data from `(time, seed)` every frame, never
+  accumulate across frames — a rendered frame is a pure function of
+  (shader, time, seed), which is what makes `--snapshot --time T` reproducible.
+- Only `pipes` uses one. Every other shader keeps the plain
+  `fragment half4 lerpMain(float4, constant LerpUniforms&)` signature.
+- Protocol and registry: `Sources/LerpCore/DataProvider.swift`. Worked example:
+  `Sources/LerpCore/PipesData.swift`. Details in `PORTING.md`.
+
 ### GLSL → Metal mapping
 
 | GLSL | Metal |
@@ -120,6 +137,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 Sources/LerpCore/     shared engine, no ScreenSaver dependency
   Prelude.swift        Metal prelude prepended to every shader at runtime
   ShaderLibrary.swift  shader discovery (bundle + custom dirs) + runtime compilation
+  DataProvider.swift   optional per-frame CPU→GPU data for shaders that need it
+  PipesData.swift      data provider for pipes: deterministic lattice walk
   LerpRenderer.swift   stateless fullscreen-triangle pass encoder
   LerpMetalView.swift  CAMetalLayer view: CADisplayLink, fps cap, occlusion pause
   Snapshot.swift       offscreen render to PNG

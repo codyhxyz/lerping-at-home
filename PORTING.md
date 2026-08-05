@@ -8,6 +8,10 @@ defining exactly:
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]])
 ```
 
+(A shader that needs CPU-computed data takes extra bindings on top of that —
+see "Shaders that need CPU-computed data" below. Everything else uses the
+signature above unchanged.)
+
 Every file gets `Sources/LerpCore/Prelude.swift`'s Metal prelude prepended
 before compilation. Read that file first — it defines `LerpUniforms`
 (`u.resolution` pixels, `u.time` seconds, `u.seed` random [0,1) per launch),
@@ -33,6 +37,52 @@ metaballs).
 | top-level `const` arrays | `constant float4 NAME[N] = {...};` at file scope |
 
 Loops with `break` on a uniform count: use a fixed `constant int` count.
+
+## Shaders that need CPU-computed data
+
+Almost nothing does. `LerpUniforms` plus procedural noise covers every shader
+in this repo except `pipes`, which needs a lattice walk that no fragment shader
+can produce on its own. For those cases a shader can opt into a
+**data provider**: a Swift object that computes something on the CPU each frame
+and binds it for the fragment function.
+
+Opt in with a comment on one of the file's first 40 lines:
+
+```metal
+// lerp-data: pipes
+```
+
+Then take extra bindings in `lerpMain`. Buffer index 0 stays `LerpUniforms`;
+providers own index 1 and up:
+
+```metal
+fragment half4 lerpMain(float4 pos [[position]],
+                        constant LerpUniforms& u [[buffer(0)]],
+                        constant LerpPipesFrame& F [[buffer(1)]],
+                        device const uint* nodes [[buffer(2)]])
+```
+
+The provider supplies its own MSL declarations (here `LerpPipesFrame`,
+`LerpPipesNode`, `lerpPipesDecode`), which the engine splices into the prelude
+just ahead of `#line 1` — so compile-error line numbers still point at your
+file. Read the provider's `metalPrelude` to see what it binds and where.
+
+Writing one: conform to `LerpDataProvider` in `Sources/LerpCore/`, register it
+in `LerpDataProviders`, and give the shader a matching `// lerp-data:` line.
+`PipesData.swift` is the worked example. Two rules:
+
+- **Derive, never accumulate.** `bind(to:uniforms:)` must compute this frame's
+  data from `uniforms` alone. A frame in this project is a pure function of
+  (shader, time, seed): `--snapshot --time 60` has to produce the same image
+  whether or not t = 0…59 were rendered first. That property is what the
+  snapshot suite, the playground's time scrubber and thumbnail generation all
+  rest on. Regenerating from scratch is cheap — `pipes` replays a ~1000-step
+  lattice walk every frame in about 70 µs.
+- **Do not write a buffer the GPU may still be reading.** Use `LerpBufferRing`,
+  which hands out one of three buffers in rotation.
+
+A shader with no `// lerp-data:` line gets no provider, is bound exactly as it
+always was, and needs no changes.
 
 ## House style
 

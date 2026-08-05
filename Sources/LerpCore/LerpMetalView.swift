@@ -45,6 +45,7 @@ public final class LerpMetalView: NSView {
     private let renderer: LerpRenderer
     private let library: ShaderLibrary
     private var pipeline: MTLRenderPipelineState?
+    private var dataProvider: LerpDataProvider?
     private var displayLink: CADisplayLink?
     private var shuffleOrder: [String] = []
     private var shuffleIndex = 0
@@ -195,6 +196,7 @@ public final class LerpMetalView: NSView {
     public func setShader(_ shader: LerpShader) -> Bool {
         do {
             pipeline = try library.pipeline(for: shader)
+            dataProvider = try library.dataProvider(for: shader)
             currentShaderName = shader.name
             return true
         } catch {
@@ -305,7 +307,7 @@ public final class LerpMetalView: NSView {
                                          Float(metalLayer.drawableSize.height)),
                 time: Float(time),
                 seed: seed)
-            renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms)
+            renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms, data: dataProvider)
         }
     }
 }

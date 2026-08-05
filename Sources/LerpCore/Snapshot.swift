@@ -23,8 +23,10 @@ public enum LerpSnapshot {
                               time: Float, seed: Float,
                               to url: URL) -> Result {
         let pipeline: MTLRenderPipelineState
+        let data: LerpDataProvider?
         do {
             pipeline = try library.pipeline(for: shader)
+            data = try library.dataProvider(for: shader)
         } catch {
             return Result(shader: shader.name, url: nil, error: String(describing: error), meanLuminance: 0)
         }
@@ -39,7 +41,8 @@ public enum LerpSnapshot {
                 target: texture,
                 pipeline: pipeline,
                 uniforms: LerpUniforms(resolution: SIMD2<Float>(Float(width), Float(height)),
-                                      time: time, seed: seed)) else {
+                                      time: time, seed: seed),
+                data: data) else {
             return Result(shader: shader.name, url: nil, error: "failed to create texture/command buffer", meanLuminance: 0)
         }
         commandBuffer.commit()

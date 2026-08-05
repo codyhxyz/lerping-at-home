@@ -29,10 +29,14 @@ public final class LerpRenderer {
         self.commandQueue = queue
     }
 
+    /// `data` is the optional `LerpDataProvider` the shader declared. It binds
+    /// fragment indices 1 and up; index 0 always stays `LerpUniforms`, so a
+    /// shader with no provider encodes exactly as before.
     @discardableResult
     public func encodePass(target: MTLTexture,
                            pipeline: MTLRenderPipelineState,
-                           uniforms: LerpUniforms) -> MTLCommandBuffer? {
+                           uniforms: LerpUniforms,
+                           data: LerpDataProvider? = nil) -> MTLCommandBuffer? {
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
@@ -44,6 +48,7 @@ public final class LerpRenderer {
         var u = uniforms
         encoder.setRenderPipelineState(pipeline)
         encoder.setFragmentBytes(&u, length: MemoryLayout<LerpUniforms>.stride, index: 0)
+        data?.bind(to: encoder, uniforms: uniforms)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
         return commandBuffer
@@ -51,10 +56,12 @@ public final class LerpRenderer {
 
     public func draw(drawable: CAMetalDrawable,
                      pipeline: MTLRenderPipelineState,
-                     uniforms: LerpUniforms) {
+                     uniforms: LerpUniforms,
+                     data: LerpDataProvider? = nil) {
         guard let commandBuffer = encodePass(target: drawable.texture,
                                              pipeline: pipeline,
-                                             uniforms: uniforms) else { return }
+                                             uniforms: uniforms,
+                                             data: data) else { return }
         commandBuffer.present(drawable)
         commandBuffer.commit()
     }
