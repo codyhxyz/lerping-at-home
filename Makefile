@@ -39,6 +39,42 @@ SELFTEST_BIN    := $(SELFTEST_APP)/Contents/MacOS/LerpPlaygroundSelfTest
 LS_SUPPORT      := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support
 LSREGISTER      := $(LS_SUPPORT)/lsregister
 
+# `make install-playground` — the copy Spotlight will actually offer.
+#
+# Spotlight indexes the bundle in build/ and types it correctly, and `open -a
+# LerpPlayground` finds it, but its Applications category only ever surfaces
+# /Applications, /System/Applications and ~/Applications. Typing "lerp" into
+# Spotlight therefore returned nothing. A symlink does not help — Spotlight
+# resolves it and indexes the app at its real path — so the bundle is copied.
+PLAYGROUND_INSTALL_DIR ?= $(HOME)/Applications
+INSTALLED_PLAYGROUND   := $(PLAYGROUND_INSTALL_DIR)/LerpPlayground.app
+# The checkout the installed copy edits, recorded in its Info.plist at install
+# time.
+#
+# Deliberately NOT $(CURDIR). In a git worktree that is the worktree — a
+# directory that exists for the length of one branch — so recording it installs
+# an app that breaks the moment the worktree is removed, which is precisely the
+# failure the recorded path exists to avoid. `--git-common-dir` belongs to the
+# *main* working tree whatever tree you are standing in, so its parent is the
+# checkout that outlives this one. Outside a git repo there is nothing to derive
+# and $(CURDIR) is the only answer left.
+#
+# Derived rather than refused-on-worktree because building on a branch and
+# installing for daily use is a reasonable thing to do, and the right target is
+# never ambiguous. Anything this gets wrong — a $GIT_DIR somewhere unusual, a
+# checkout that is not one — is caught before a single file is copied, by the
+# guard at the top of `install-playground`, which says so and stops rather than
+# baking a path that does not work.
+PLAYGROUND_GIT_DIR     := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+PLAYGROUND_REPO        ?= $(if $(PLAYGROUND_GIT_DIR),$(patsubst %/.git,%,$(PLAYGROUND_GIT_DIR)),$(CURDIR))
+# An identifier of its own, for the same reason the self-test bundle has one:
+# the single-instance check keys on it. Sharing the app's identifier would mean
+# `make playground` silently raising the installed copy — which edits whatever
+# checkout it was installed from, not the one you are standing in. Overridable
+# so a throwaway copy installed somewhere else cannot be confused with this one
+# either, by LaunchServices or by the running app.
+INSTALLED_PLAYGROUND_ID ?= com.hergenroeder.lerping.playground.installed
+
 # The playground's MIDI support, and the only third-party code in the project.
 # `Sources/MIDIDeps` is a SwiftPM shim around orchetect/swift-midi's I/O module
 # that emits a static archive plus a directory of .swiftmodule files, which is
@@ -56,7 +92,8 @@ MIDI_SRC   := $(MIDI_PKG)/Package.swift $(wildcard $(MIDI_PKG)/Sources/MIDIDeps/
 MIDI_FLAGS := -I $(MIDI_BIN)/Modules -L $(MIDI_BIN) -lMIDIDeps
 
 .PHONY: all preview playground playground-build playground-test saver snapshots \
-        test-load midi-deps install install-example clean
+        test-load midi-deps install install-example install-playground \
+        uninstall-playground clean
 
 all: saver preview
 
@@ -182,6 +219,56 @@ install: saver
 	@echo "  $(CUSTOM_DIR)"
 	@echo "then re-run 'make install' to bake them into the saver."
 
+# Puts the playground where Spotlight will offer it. A copy, not a symlink:
+# Spotlight resolves symlinks and indexes the app at its real path, so a link in
+# ~/Applications leaves `mdfind -onlyin ~/Applications` empty and the app just as
+# unfindable as before.
+#
+# The copy cannot walk up to a checkout the way the in-repo build does — nothing
+# above ~/Applications is one — so the checkout it was installed from goes into
+# its Info.plist, and `RepoLocation` reads that first. Re-run this target to
+# re-point it. If that folder ever goes missing the app says so by name and
+# offers a folder picker; it does not open onto an empty shader list.
+#
+# Info.plist is edited after the copy, so the signature has to be made again
+# afterwards, and LaunchServices told about the new identifier.
+install-playground: $(PLAYGROUND_BIN)
+	# Before anything is copied: the path about to be baked in has to be a
+	# checkout that will still be there tomorrow. Refusing here costs a line;
+	# getting it wrong installs an app that opens onto an error.
+	@test -d "$(PLAYGROUND_REPO)/Sources/Shaders" || { \
+		echo "install-playground: '$(PLAYGROUND_REPO)' is not a Lerping@Home checkout"; \
+		echo "  (no Sources/Shaders in it). That is the folder the installed copy"; \
+		echo "  would edit, so nothing was installed. Pass the right one:"; \
+		echo "    make install-playground PLAYGROUND_REPO=/path/to/lerping-at-home"; \
+		exit 1; }
+	mkdir -p "$(PLAYGROUND_INSTALL_DIR)"
+	rm -rf "$(INSTALLED_PLAYGROUND)"
+	cp -R $(PLAYGROUND_APP) "$(INSTALLED_PLAYGROUND)"
+	plutil -replace CFBundleIdentifier -string $(INSTALLED_PLAYGROUND_ID) \
+		"$(INSTALLED_PLAYGROUND)/Contents/Info.plist"
+	plutil -replace LerpRepoRoot -string "$(PLAYGROUND_REPO)" \
+		"$(INSTALLED_PLAYGROUND)/Contents/Info.plist"
+	codesign --force -s - "$(INSTALLED_PLAYGROUND)"
+	# Register it now rather than waiting for Spotlight to notice.
+	@$(LSREGISTER) -f "$(INSTALLED_PLAYGROUND)" 2>/dev/null || true
+	# Not "it launched" — that it found the shaders. Unpiped, so a copy that
+	# cannot see them fails the target instead of printing and carrying on.
+	@"$(INSTALLED_PLAYGROUND)/Contents/MacOS/LerpPlayground" --shaders
+	@echo ""
+	@echo "Installed to $(INSTALLED_PLAYGROUND)."
+	@echo "Spotlight it as 'LerpPlayground'. It edits $(PLAYGROUND_REPO)."
+	@echo "'make playground' still builds and opens the in-repo copy for development;"
+	@echo "the two have different bundle ids, so neither ever raises the other."
+	@echo "'make uninstall-playground' removes this copy. 'make clean' leaves it alone."
+
+# Separate from `clean` on purpose: the copy in ~/Applications is the user's, and
+# cleaning a build tree is not a reason to uninstall someone's app.
+uninstall-playground:
+	@$(LSREGISTER) -u "$(INSTALLED_PLAYGROUND)" 2>/dev/null || true
+	rm -rf "$(INSTALLED_PLAYGROUND)"
+	@echo "Removed $(INSTALLED_PLAYGROUND)."
+
 install-example:
 	mkdir -p "$(CUSTOM_DIR)"
 	cp Templates/plasma.metal "$(CUSTOM_DIR)/"
@@ -191,6 +278,8 @@ install-example:
 clean:
 	# Take the app bundles out of the LaunchServices database on the way, so a
 	# cleaned tree does not leave `open -a LerpPlayground` pointing at nothing.
+	# Only the ones in build/: the copy `install-playground` put in
+	# ~/Applications is the user's, and `uninstall-playground` is how it goes.
 	@$(LSREGISTER) -u $(PLAYGROUND_APP) 2>/dev/null || true
 	@$(LSREGISTER) -u $(SELFTEST_APP) 2>/dev/null || true
 	rm -rf $(BUILD) $(MIDI_PKG)/.build

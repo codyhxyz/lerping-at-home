@@ -1,10 +1,14 @@
 import AppKit
+import Metal
 
 /// LerpPlayground — live shader scratchpad for Lerping@Home.
 ///
 ///   make playground             build the .app and open it
 ///   make playground-test        build and run the scripted UI self-test
+///   make install-playground     copy it to ~/Applications, where Spotlight looks
 ///   open -a LerpPlayground      launch it, or raise the copy already running
+///   LerpPlayground --shaders    print which checkout this copy reads, and what
+///                               it found there
 ///
 /// Left pane edits a `.metal` file, right pane renders it through the exact
 /// same LerpCore path the screensaver uses. Edits recompile ~300 ms after you
@@ -17,18 +21,47 @@ import AppKit
 /// and preferences all key on it. Without one, every launch was another
 /// process with another window and no way to raise the one already open.
 ///
-/// The shader list still comes from the repo — `ShaderLocations` walks up from
-/// the executable, which reaches the repo root from inside the bundle too, so
-/// launching from Finder or the Dock works the same as from the shell.
+/// The shader list still comes from a checkout — the in-repo build walks up from
+/// its own executable to find the one it sits in, and the copy in ~/Applications
+/// reads the one `make install-playground` recorded in its Info.plist. See
+/// `RepoLocation`, which is also what puts a named error and a folder picker on
+/// screen when that checkout has moved.
 @main
 enum PlaygroundMain {
     static func main() {
         if CommandLine.arguments.contains("--selftest") {
             PlaygroundSelfTest.run()
+        } else if CommandLine.arguments.contains("--shaders") {
+            reportShaders()
         } else {
             handOffToRunningInstance()
             boot(PlaygroundAppDelegate())
         }
+    }
+
+    /// `--shaders`: which checkout this copy resolved, how, and what is in it.
+    ///
+    /// `make install-playground` runs it on the copy it just installed, because
+    /// "the app opened" is not the claim worth checking — "the app found the 30
+    /// shaders in your repo" is. It is also the first thing to run when an
+    /// installed copy comes up wrong, and it exits non-zero when it does.
+    private static func reportShaders() -> Never {
+        let outcome = RepoLocation.settled()
+        guard case let .found(shaders, _, origin) = outcome else {
+            let problem = RepoLocation.problem(outcome)!
+            FileHandle.standardError.write(Data("\(problem.title)\n\(problem.detail)\n".utf8))
+            exit(1)
+        }
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            FileHandle.standardError.write(Data("no Metal device\n".utf8))
+            exit(1)
+        }
+        let names = ShaderLibrary(device: device, extraSearchURLs: [shaders]).discover().map(\.name)
+        print("shaders: \(shaders.path)")
+        print("via:     \(origin.tag)")
+        print("count:   \(names.count)")
+        print(names.joined(separator: " "))
+        exit(names.isEmpty ? 1 : 0)
     }
 
     /// The app's name as the menu bar, the Dock and ⌘-Tab know it — from the
@@ -83,6 +116,12 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build()
+
+        // Before any window: a copy whose checkout has moved says so and offers
+        // the picker, rather than opening onto an empty shader list. Quitting is
+        // the user's other option, and it is a real one — there is nothing this
+        // app can do without a checkout.
+        guard ShaderFolderPrompt.settle() else { exit(0) }
 
         guard let controller = PlaygroundWindowController.make() else {
             let alert = NSAlert()

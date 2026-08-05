@@ -69,7 +69,7 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
             (2.0, editValid), (2.9, editApplied),
             (3.1, editBroken), (4.0, errorReported), (5.3, stillRenderingWhileBroken),
             (5.5, restore), (6.3, recovered),
-            (6.4, scaffold), (6.6, picksUpFilesOnDisk),
+            (6.4, scaffold), (6.6, picksUpFilesOnDisk), (6.7, repoLocationChecks),
             // Inspector, then MIDI, then the end of the run. Everything from
             // here chains off the step before it rather than off the clock:
             // these steps wait on a recompile debounce and on messages that
@@ -259,6 +259,115 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.removeItem(at: url)
         controller.pollDisk()
         check("deleted file leaves the picker", !controller.knownShaderNames.contains(stem))
+    }
+
+    // MARK: Which checkout this copy edits
+
+    /// `RepoLocation.resolve` decides where an installed copy reads shaders
+    /// from, and — more to the point — what it does when that answer has gone
+    /// stale. Driven here against real directories rather than mocks, including
+    /// the ones that must fail: an app in ~/Applications whose checkout moved has
+    /// to say so, and the check that it says so belongs in the suite rather than
+    /// in whoever remembers to move a folder by hand.
+    private func repoLocationChecks() {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lerp-repo-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        /// A believable checkout: `root/Sources/Shaders/x.metal`.
+        func checkout(_ name: String) -> URL {
+            let root = scratch.appendingPathComponent(name)
+            let shaders = root.appendingPathComponent("Sources/Shaders")
+            try? FileManager.default.createDirectory(at: shaders, withIntermediateDirectories: true)
+            try? "// \(name)".write(to: shaders.appendingPathComponent("x.metal"),
+                                    atomically: true, encoding: .utf8)
+            return root
+        }
+        let installed = checkout("installed"), picked = checkout("picked")
+        let gone = scratch.appendingPathComponent("gone")
+        let empty = scratch.appendingPathComponent("empty")
+        try? FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+
+        func resolve(env: String? = nil, record: String? = nil, choice: String? = nil,
+                     tree: URL? = nil) -> RepoLocation.Outcome {
+            RepoLocation.resolve(environment: env, installRecord: record,
+                                 userChoice: choice, buildTree: tree)
+        }
+        func found(_ outcome: RepoLocation.Outcome) -> (URL, RepoLocation.Origin)? {
+            if case let .found(shaders, _, origin) = outcome { return (shaders, origin) }
+            return nil
+        }
+        func missing(_ outcome: RepoLocation.Outcome) -> (URL, RepoLocation.Origin)? {
+            if case let .missing(recorded, origin) = outcome { return (recorded, origin) }
+            return nil
+        }
+
+        let shaders = installed.appendingPathComponent("Sources/Shaders")
+        check("a recorded checkout resolves to its Sources/Shaders",
+              found(resolve(record: installed.path))?.0.path == shaders.path,
+              found(resolve(record: installed.path))?.0.path ?? "not found")
+        check("pointing straight at a folder of .metal files works too",
+              found(resolve(record: shaders.path))?.0.path == shaders.path)
+        check("a folder that is neither is refused",
+              found(resolve(record: empty.path)) == nil)
+
+        // The install record outranks the user's pick on purpose: re-running
+        // `make install-playground` is how a copy gets re-pointed, and a folder
+        // picked months ago must not quietly win over it.
+        check("the install record beats a stale user choice",
+              found(resolve(record: installed.path, choice: picked.path))?.1 == .installRecord)
+        check("a checkout that moved falls back to the folder the user picked",
+              found(resolve(record: gone.path, choice: picked.path)).map {
+                  $0.0.path.hasPrefix(picked.path) && $0.1 == .userChoice } == true)
+
+        // The whole point. An installed copy has no build tree above it, so this
+        // is the state the user hits when they move their repo — and it must
+        // carry the path that is gone, because that is the one useful fact in it.
+        let stale = resolve(record: gone.path)
+        check("a checkout that moved, with nothing else to fall back on, is an error",
+              missing(stale)?.0.path == gone.path, missing(stale)?.1.rawValue ?? "not missing")
+        check("that error names the missing folder in the words the alert uses",
+              RepoLocation.problem(stale).map { $0.detail.contains(gone.path) } == true)
+        check("so does having been told nothing at all",
+              RepoLocation.problem(resolve()) != nil)
+
+        // A stale record must not quietly fall through to a build tree: that is
+        // found partly from the working directory, so it would mean an installed
+        // copy editing one checkout when launched from Spotlight and another
+        // when launched from a terminal.
+        check("a stale install record does not fall through to a build tree",
+              missing(resolve(record: gone.path,
+                              tree: picked.appendingPathComponent("Sources/Shaders")))?.1
+                  == .installRecord)
+        // The other way round, though: a copy sitting in a checkout with nothing
+        // recorded edits that checkout, even if it once had to be pointed
+        // somewhere by hand.
+        check("the build tree still outranks a folder picked back when there was none",
+              found(resolve(choice: picked.path, tree: shaders))?.1 == .buildTree)
+        check("and is used when the picked folder has gone too",
+              found(resolve(choice: gone.path, tree: shaders))?.1 == .buildTree)
+
+        // An explicit override is the whole answer, right or wrong: quietly
+        // falling back to the build tree would mean editing a checkout other
+        // than the one that was asked for.
+        check("LERP_REPO_ROOT outranks the build tree",
+              found(resolve(env: installed.path, tree: RepoLocation.searchURLs.first))?.1 == .environment)
+        check("a bad LERP_REPO_ROOT is an error, not a silent fallback",
+              missing(resolve(env: gone.path, tree: RepoLocation.searchURLs.first))?.1 == .environment)
+
+        // And this run itself. `make playground-test` runs out of build/ and so
+        // resolves by walking up; running the same executable out of an
+        // installed copy resolves the checkout its Info.plist records. Either
+        // way there is exactly one answer and it is really on disk, which is the
+        // claim — the detail says which way it got there.
+        let origin: String
+        if case let .found(_, _, found) = RepoLocation.settled() { origin = found.tag } else { origin = "nothing" }
+        check("this copy resolved exactly one shader folder, and it is on disk",
+              RepoLocation.searchURLs.count == 1
+                && RepoLocation.holdsShaders(RepoLocation.searchURLs[0]),
+              "\(origin) → \(RepoLocation.root?.path ?? "no checkout")")
+        check("every failure has something to say", [stale, resolve(), resolve(env: gone.path)]
+                .allSatisfy { RepoLocation.problem($0)?.title.isEmpty == false })
     }
 
     // MARK: Parameter inspector

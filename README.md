@@ -16,8 +16,11 @@
 ## Install
 
 ```sh
-make install     # builds and copies Lerping@Home.saver to ~/Library/Screen Savers
+make install               # builds and copies Lerping@Home.saver to ~/Library/Screen Savers
+make install-playground    # optional: copies LerpPlayground.app to ~/Applications
 ```
+
+### Screen saver
 
 - Select **Lerping@Home** in System Settings → Screen Saver.
 - First activation can show black briefly while Gatekeeper verifies the bundle.
@@ -32,6 +35,54 @@ make install     # builds and copies Lerping@Home.saver to ~/Library/Screen Save
   rotation automatically; checking nothing means all.
 - Options… has a **Set desktop picture to the last frame** checkbox, off by default.
   See "Desktop picture handoff" below.
+
+### Playground
+
+Optional, and only for the shader editor described under "Shader playground"
+below — the saver does not need it.
+
+- `make install-playground` copies `build/LerpPlayground.app` to
+  `~/Applications/LerpPlayground.app`, signs it again and registers it, so typing
+  "lerp" into Spotlight offers it. `/Applications`, `/System/Applications` and
+  `~/Applications` are the only places Spotlight's Applications category draws
+  from; the bundle in `build/` is indexed and `open -a` finds it, but Spotlight
+  will not offer it.
+- A copy, not a symlink. Spotlight resolves symlinks and indexes the app at its
+  real path, so a link in `~/Applications` leaves it exactly as unfindable.
+- The installed copy edits the checkout it was installed from, recorded as
+  `LerpRepoRoot` in its own `Info.plist` — it cannot walk up to one the way the
+  in-repo build does, because nothing above `~/Applications` is a checkout.
+  Re-run the target to re-point it.
+- That path is the **main working tree**, not `$PWD`: installing from a git
+  worktree records the checkout the worktree belongs to, because the worktree
+  itself is deleted when its branch is done and an app pointed at it would break
+  the moment it was. Override it, or install from outside a git repo, with:
+
+```sh
+make install-playground PLAYGROUND_REPO=/path/to/lerping-at-home
+```
+
+- Either way the target checks before it copies anything: a `PLAYGROUND_REPO`
+  with no `Sources/Shaders` in it stops the install and says so, rather than
+  baking in a path that does not work.
+
+- If that checkout later moves, the app says so at launch — by name, with the
+  path that is gone — and offers a folder picker. It never opens onto an empty
+  shader list. What you pick is remembered;
+  `defaults delete com.hergenroeder.lerping.playground.installed LerpRepoRoot`
+  forgets it, and `LERP_REPO_ROOT=/some/checkout` overrides it for one launch.
+- `LerpPlayground --shaders` prints which checkout a copy resolved, how it got
+  there, and what it found, and exits non-zero if it found nothing.
+  `make install-playground` runs it against the copy it just installed, so the
+  target fails if the install cannot see your shaders.
+- The installed copy has a bundle identifier of its own
+  (`com.hergenroeder.lerping.playground.installed`), so it and the in-repo build
+  are two apps and not two copies of one: `make playground` always opens the one
+  in `build/`, and neither ever raises the other. They look alike in ⌘-Tab, so
+  the installed copy's window title also names the checkout it is editing.
+- `make uninstall-playground` removes it. `make clean` deliberately does not —
+  the copy in `~/Applications` is yours, and cleaning a build tree is not a
+  reason to uninstall it.
 
 ## Live shader development
 
@@ -64,7 +115,9 @@ make playground
   thing: it hands off to the running instance and exits.
 - Closing the window quits — there is one window and it is the app.
 - Shaders still come from the repo the bundle sits in, so `open`'s working
-  directory does not matter.
+  directory does not matter. (`make install-playground` puts a copy in
+  `~/Applications` where Spotlight will offer it; that one is told which
+  checkout to edit, because it has none above it. See "Install" above.)
 - Split window: `.metal` source on the left, live render on the right.
 - Uses the same LerpCore compile path as the screensaver.
 - Editing recompiles 300 ms after the last keystroke and swaps the pipeline in place.
@@ -88,6 +141,8 @@ Keys:
 Other targets:
 
 - `make playground-build` — build only, to `build/LerpPlayground.app`. The app icon is rendered from the `mesh-gradient` shader by `build/LerpPreview`, the same way the saver's System Settings thumbnail is; nothing binary is checked in.
+- `make install-playground` / `make uninstall-playground` — the copy Spotlight will offer, in `~/Applications`. See "Install" above.
+- `build/LerpPlayground.app/Contents/MacOS/LerpPlayground --shaders` — print the checkout this copy reads, how it resolved it, and the shaders in it. Exits non-zero if there are none.
 - `make playground-test` — scripted UI test: drives the real window, asserts frames are drawing, edits the shader, breaks it, fixes it. Exits non-zero on any failed check.
   - It runs out of `build/LerpPlaygroundSelfTest.app`, a second bundle holding the same executable under an identifier of its own, so it can neither be mistaken for the app by the single-instance check nor activate it, and its preferences land in a domain of its own.
   - Nothing of it reaches your screen: no Dock tile, no menu bar, no stolen focus, and a window that is real and rendering but at zero opacity. Every exit — including the watchdog that fires if a step never hands on — closes the window, and `alarm(2)` backs that up if the process wedges entirely.

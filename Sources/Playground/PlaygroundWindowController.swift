@@ -94,7 +94,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Returns nil when there is no Metal device to render with.
     static func make(hidden: Bool = false) -> PlaygroundWindowController? {
         guard let view = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 760, height: 760),
-                                       extraSearchURLs: ShaderLocations.repoSearchURLs())
+                                       extraSearchURLs: RepoLocation.searchURLs)
         else { return nil }
         return PlaygroundWindowController(metalView: view, hidden: hidden)
     }
@@ -875,7 +875,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func rotationGallery() -> RotationWindowController {
         if let rotation { return rotation }
-        let made = RotationWindowController(searchURLs: ShaderLocations.repoSearchURLs(),
+        let made = RotationWindowController(searchURLs: RepoLocation.searchURLs,
                                             defaults: rotationDefaults, hidden: hidden)
         rotation = made
         return made
@@ -1032,11 +1032,23 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Chrome and polling
 
+    /// Which checkout this window is editing, in the title — but only for a copy
+    /// that had to be *told*, which is the installed one. The in-repo build finds
+    /// the checkout it is sitting in and there is only ever one answer, so its
+    /// title is exactly what it always was.
+    ///
+    /// This is how you tell two running copies apart: same name in ⌘-Tab, but the
+    /// one that says `· lerping-at-home` is the installed copy and is editing
+    /// that checkout's files.
+    private static let repoSuffix: String =
+        RepoLocation.isBuildTree ? "" : (RepoLocation.root.map { "  ·  \($0.lastPathComponent)" } ?? "")
+
     private func updateChrome() {
         let dirty = isDirty
         saveButton.isEnabled = dirty
         revertButton.isEnabled = dirty && current.url != nil
         window?.title = "Lerping@Home Playground — \(current.name)\(dirty ? " •" : "")"
+            + Self.repoSuffix
         window?.isDocumentEdited = dirty
     }
 

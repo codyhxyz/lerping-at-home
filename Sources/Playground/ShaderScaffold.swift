@@ -8,10 +8,11 @@ enum ShaderPaths {
     /// preview app and screensaver already scan.
     static var customDirectory: URL { ShaderLocations.customShaderDirectories()[0] }
 
-    /// Destination for newly scaffolded shaders: the repo when we are running
-    /// inside one, otherwise the drop folder.
+    /// Destination for newly scaffolded shaders: the checkout this copy resolved
+    /// — the one it walked up to, or the one recorded when it was installed —
+    /// otherwise the drop folder.
     static var newShaderDirectory: URL {
-        if let repo = ShaderLocations.repoShaderDirectory() { return repo }
+        if let repo = RepoLocation.searchURLs.first { return repo }
         try? FileManager.default.createDirectory(at: customDirectory, withIntermediateDirectories: true)
         return customDirectory
     }
