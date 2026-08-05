@@ -95,10 +95,23 @@ struct MIDIBinding: Codable, Hashable {
     /// The slice of the parameter's declared range the knob sweeps, normalised
     /// 0…1. Full travel by default.
     var range: ClosedRange<Float> = 0 ... 1
+    /// Which axis of a `color` parameter this CC drives. nil on every other
+    /// type, and nil in every mapping file written before colours were
+    /// bindable — `Optional` is what keeps those files decoding.
+    ///
+    /// This is the whole of the colour feature's model. One CC on `.hue` is the
+    /// simple case; three CCs on `.hue`, `.chroma` and `.lightness` of the same
+    /// `paramID` is the rich case; they run the identical code.
+    var component: ColorComponent?
 
     var shortLabel: String {
         "CC\(cc)" + (channel.map { " c\(Int($0) + 1)" } ?? "")
+            + (component.map { " " + $0.shortLabel } ?? "")
     }
+
+    /// True when the knob is scoped to less than the parameter's whole range,
+    /// which is the only time the editor's min/max fields are worth showing off.
+    var isScoped: Bool { range != 0 ... 1 }
 
     /// The same binding in another mode, or nil when the mode cannot apply —
     /// 14-bit needs a CC in 0…31 so CC + 32 is a legal LSB partner.
@@ -112,6 +125,21 @@ struct MIDIBinding: Codable, Hashable {
         }
         return copy
     }
+
+    /// Range with the two ends kept in order and inside 0…1, so a typo in the
+    /// editor cannot produce a `ClosedRange` that traps on construction.
+    func withRange(low: Float, high: Float) -> MIDIBinding {
+        var copy = self
+        let a = Swift.min(Swift.max(low, 0), 1), b = Swift.min(Swift.max(high, 0), 1)
+        copy.range = Swift.min(a, b) ... Swift.max(a, b)
+        return copy
+    }
+
+    func withComponent(_ component: ColorComponent) -> MIDIBinding {
+        var copy = self
+        copy.component = component
+        return copy
+    }
 }
 
 /// One switchable bank of mappings, normally one per controller.
@@ -122,20 +150,49 @@ struct MappingPreset: Codable {
     var deviceID: String
     var bindings: [MIDIBinding] = []
 
+    /// The binding a row shows in its title. For a colour with several axes
+    /// driven at once this is the first of them; `bindings(for:)` is the full
+    /// picture.
     func binding(for paramID: String) -> MIDIBinding? {
-        bindings.first { $0.paramID == paramID }
+        bindings(for: paramID).first
     }
 
-    /// Learn semantics: one parameter has at most one binding, and one CC drives
-    /// at most one parameter, so setting either identity displaces the other.
+    /// Every CC pointed at this parameter, in component order so a colour's
+    /// H/C/L/α always read the same way round.
+    func bindings(for paramID: String) -> [MIDIBinding] {
+        bindings.filter { $0.paramID == paramID }
+            .sorted { order($0.component) < order($1.component) }
+    }
+
+    func binding(for paramID: String, component: ColorComponent?) -> MIDIBinding? {
+        bindings.first { $0.paramID == paramID && $0.component == component }
+    }
+
+    private func order(_ component: ColorComponent?) -> Int {
+        component.flatMap { ColorComponent.allCases.firstIndex(of: $0) } ?? -1
+    }
+
+    /// Learn semantics: one *axis* of a parameter has at most one binding, and
+    /// one CC drives at most one axis, so setting either identity displaces the
+    /// other. Keying on the axis rather than on the parameter is the whole of
+    /// what lets three CCs share a colour — a scalar has exactly one axis (nil),
+    /// so it behaves exactly as it did.
     mutating func bind(_ binding: MIDIBinding) {
-        bindings.removeAll { $0.paramID == binding.paramID
-            || ($0.cc == binding.cc && $0.channel == binding.channel) }
+        bindings.removeAll {
+            ($0.paramID == binding.paramID && $0.component == binding.component)
+                || ($0.cc == binding.cc && $0.channel == binding.channel)
+        }
         bindings.append(binding)
     }
 
+    /// Drops every axis of a parameter — "Clear" on a colour row that has three
+    /// knobs on it means all three.
     mutating func unbind(_ paramID: String) {
         bindings.removeAll { $0.paramID == paramID }
+    }
+
+    mutating func unbind(_ paramID: String, component: ColorComponent?) {
+        bindings.removeAll { $0.paramID == paramID && $0.component == component }
     }
 }
 
@@ -215,6 +272,15 @@ final class MIDIRouter {
 
 /// Mapping presets live beside the custom shaders, one JSON file each, so they
 /// can be copied between machines the same way a shader can.
+///
+/// The file name is a slug of the bank name, and a slug is lossy: "My Bank",
+/// "my bank" and "my-bank!" all sanitise to `my-bank`, so naming a second bank
+/// any of those used to overwrite the first without a word. The fix is to stop
+/// treating the slug as the bank's identity. **The name inside the JSON is the
+/// identity**; the file name is only a hint, and a colliding one gets a numeric
+/// suffix. Nothing on disk needs moving for that, which is what makes it a
+/// migration with no data loss: an existing `my-bank.json` is still found, by
+/// what is written in it.
 enum MIDIMappingStore {
 
     static var directory: URL {
@@ -223,19 +289,45 @@ enum MIDIMappingStore {
             .appendingPathComponent("MIDI")
     }
 
-    static func fileURL(for name: String) -> URL {
-        directory.appendingPathComponent((ShaderScaffold.sanitize(name: name) ?? "mapping") + ".json")
-    }
-
-    static func load() -> [MappingPreset] {
+    private static func jsonURLs() -> [URL] {
         let urls = (try? FileManager.default.contentsOfDirectory(at: directory,
                                                                  includingPropertiesForKeys: nil)) ?? []
         return urls.filter { $0.pathExtension == "json" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .compactMap { url in
-                guard let data = try? Data(contentsOf: url) else { return nil }
-                return try? JSONDecoder().decode(MappingPreset.self, from: data)
-            }
+    }
+
+    private static func name(inFileAt url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return (try? JSONDecoder().decode(MappingPreset.self, from: data))?.name
+    }
+
+    /// The file this bank is already stored in, found by what it says its name
+    /// is rather than by recomputing a slug that may not be the one it got.
+    static func existingURL(for name: String) -> URL? {
+        jsonURLs().first { Self.name(inFileAt: $0) == name }
+    }
+
+    /// Where this bank should be written. Its current file if it has one, else
+    /// the slug — with `-2`, `-3`, … appended until the name lands on a file
+    /// that is either free or already this bank's.
+    static func fileURL(for name: String) -> URL {
+        if let existing = existingURL(for: name) { return existing }
+        let stem = ShaderScaffold.sanitize(name: name) ?? "mapping"
+        var candidate = stem
+        var suffix = 1
+        while true {
+            let url = directory.appendingPathComponent(candidate + ".json")
+            guard FileManager.default.fileExists(atPath: url.path) else { return url }
+            suffix += 1
+            candidate = "\(stem)-\(suffix)"
+        }
+    }
+
+    static func load() -> [MappingPreset] {
+        jsonURLs().compactMap { url in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? JSONDecoder().decode(MappingPreset.self, from: data)
+        }
     }
 
     static func save(_ preset: MappingPreset) throws {
@@ -246,6 +338,18 @@ enum MIDIMappingStore {
     }
 
     static func delete(_ name: String) {
-        try? FileManager.default.removeItem(at: fileURL(for: name))
+        guard let url = existingURL(for: name) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Whether a bank called this already exists, ignoring case — the check the
+    /// New/Rename prompts make before they let a name through. Two banks whose
+    /// names differ only in case would now survive on disk, but they would be
+    /// indistinguishable in the popup, so they are refused with a message
+    /// instead.
+    static func nameIsTaken(_ name: String, in presets: [MappingPreset], excluding: String? = nil) -> Bool {
+        presets.contains {
+            $0.name.compare(name, options: .caseInsensitive) == .orderedSame && $0.name != excluding
+        }
     }
 }
