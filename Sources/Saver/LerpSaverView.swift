@@ -29,14 +29,6 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
     private static let defaultsModule = "com.hergenroeder.lerping"
     static let log = Logger(subsystem: "com.hergenroeder.lerping", category: "saver")
 
-    /// Names the user wants in the shuffle rotation.
-    private static let enabledShadersKey = "enabledShaders"
-    /// Every shader that existed the last time the rotation was saved. Anything
-    /// discovered later counts as new and joins the rotation automatically.
-    private static let knownShadersKey = "knownShaders"
-    /// Opt-in: hand the last rendered frame off to the desktop picture.
-    static let wallpaperKey = "setWallpaperOnStop"
-
     private var metalView: LerpMetalView?
     private var effectiveIsPreview = false
     private var configPanel: NSPanel?
@@ -73,9 +65,30 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
     private var rotationNote: NSTextField?
     private var rotationButtons: [NSButton] = []
 
-    private static let freezeChoices: [(title: String, minutes: Double)] = [
+    /// A popup's menu, in menu order: the titles it shows and the value each one
+    /// stores. Titles, value → index and index → value all come out of the one
+    /// table, because spelling the same three-row menu out three times is how a
+    /// popup ends up one item off from what it saves.
+    private typealias Choices = [(title: String, value: Double)]
+
+    private static let freezeChoices: Choices = [        // minutes
         ("Never", 0), ("After 5 minutes", 5), ("After 15 minutes", 15), ("After 30 minutes", 30),
     ]
+    private static let renderScales: Choices = [         // fraction of native
+        ("100%", 1.0), ("75%", 0.75), ("50%", 0.5),
+    ]
+
+    /// Where `value` sits in the menu, or `fallback` for a value the menu does
+    /// not offer (only reachable by hand-editing the defaults).
+    private static func index(of value: Double, in choices: Choices, default fallback: Int) -> Int {
+        choices.firstIndex { $0.value == value } ?? fallback
+    }
+
+    /// The value a popup is sitting on, clamped to the menu.
+    private static func value(of popup: NSPopUpButton?, in choices: Choices, default fallback: Int) -> Double {
+        let index = popup?.indexOfSelectedItem ?? fallback
+        return choices[max(0, min(index, choices.count - 1))].value
+    }
 
     public override init?(frame: NSRect, isPreview: Bool) {
         super.init(frame: frame, isPreview: isPreview)
@@ -100,41 +113,8 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         metalView?.shaderLibrary.discover().map(\.name) ?? []
     }
 
-    /// The shuffle rotation implied by saved defaults, or nil for "every shader".
-    ///
-    /// - Nothing ever saved (including every install that predates this setting):
-    ///   nil, i.e. the full rotation. Never an empty one.
-    /// - Saved names that no longer exist are dropped.
-    /// - Shaders discovered since the last save default to enabled, so dropping a
-    ///   new .metal file into the bundle does not silently do nothing.
-    /// - An empty result is reported as nil (all shaders) rather than a black
-    ///   screen. The sheet also refuses to persist an empty set, so this only
-    ///   fires for hand-edited defaults or a rotation gone entirely stale.
-    static func enabledShaders(discovered: [String], defaults: UserDefaults?) -> Set<String>? {
-        guard let saved = defaults?.stringArray(forKey: enabledShadersKey) else { return nil }
-        let all = Set(discovered)
-        // No roster saved: take the saved list at face value, nothing is "new".
-        let known = Set(defaults?.stringArray(forKey: knownShadersKey) ?? discovered)
-        let enabled = all.intersection(saved).union(all.subtracting(known))
-        return enabled.isEmpty ? nil : enabled
-    }
-
     private func currentConfig() -> LerpMetalView.Config {
-        let defaults = Self.defaults()
-        let shader = defaults?.string(forKey: "shader")
-        let fps = (defaults?.object(forKey: "fps") as? Int) ?? 30
-        let renderScale = (defaults?.object(forKey: "renderScale") as? Double) ?? 1.0
-        let shuffleMinutes = (defaults?.object(forKey: "shuffleMinutes") as? Double) ?? 5
-        let freezeMinutes = (defaults?.object(forKey: "freezeAfterMinutes") as? Double) ?? 30
-        var config = LerpMetalView.Config(
-            shaderName: (shader == nil || shader == "Shuffle") ? nil : shader,
-            framesPerSecond: fps,
-            renderScale: renderScale,
-            shuffleInterval: shuffleMinutes * 60,
-            freezeAfter: freezeMinutes * 60)
-        config.enabledShaderNames = Self.enabledShaders(discovered: discoveredShaderNames(),
-                                                        defaults: defaults)
-        return config
+        Settings.load(from: Self.defaults(), discovered: discoveredShaderNames()).config
     }
 
     private func setUpMetalView() {
@@ -247,7 +227,7 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
     }
 
     private func capturedFrame() -> CapturedFrame? {
-        let enabled = Self.defaults()?.bool(forKey: Self.wallpaperKey) ?? false
+        let enabled = Self.defaults()?.bool(forKey: Settings.wallpaperKey) ?? false
         // legacyScreenSaver builds two view instances per host and only ever puts
         // one of them in a window. The windowless one has a shader and a clock but
         // has never drawn a pixel, so it must not publish anything.
@@ -387,22 +367,22 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
                             styleMask: [.titled], backing: .buffered, defer: true)
         panel.title = "Lerping@Home"
 
-        let defaults = Self.defaults()
         let shaderNames = discoveredShaderNames()
+        let settings = Settings.load(from: Self.defaults(), discovered: shaderNames)
 
         let shaderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        shaderPopup.addItem(withTitle: "Shuffle")
+        shaderPopup.addItem(withTitle: Settings.shuffleTitle)
         shaderPopup.addItems(withTitles: shaderNames)
-        let selected = defaults?.string(forKey: "shader") ?? "Shuffle"
-        shaderPopup.selectItem(withTitle: shaderNames.contains(selected) ? selected : "Shuffle")
+        shaderPopup.selectItem(withTitle: shaderNames.contains(settings.shader)
+                               ? settings.shader : Settings.shuffleTitle)
         shaderPopup.target = self
         shaderPopup.action = #selector(shaderModeChanged)
 
         // Rotation subset. Unset defaults mean "everything", so an upgrade (or a
         // fresh install) starts with every shader checked.
         rotationNames = shaderNames
-        rotationEnabled = Self.enabledShaders(discovered: shaderNames, defaults: defaults)
-            ?? Set(shaderNames)
+        rotationEnabled = Set(LerpMetalView.Config.rotation(of: settings.enabledShaders,
+                                                           from: shaderNames))
 
         let table = NSTableView()
         table.headerView = nil
@@ -449,24 +429,23 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
 
         let fpsPopup = NSPopUpButton(frame: .zero, pullsDown: false)
         fpsPopup.addItems(withTitles: ["24", "30", "60"])
-        fpsPopup.selectItem(withTitle: String((defaults?.object(forKey: "fps") as? Int) ?? 30))
+        fpsPopup.selectItem(withTitle: String(settings.fps))
 
         let scalePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        scalePopup.addItems(withTitles: ["100%", "75%", "50%"])
-        let scale = (defaults?.object(forKey: "renderScale") as? Double) ?? 1.0
-        scalePopup.selectItem(at: scale >= 0.99 ? 0 : (scale >= 0.74 ? 1 : 2))
+        scalePopup.addItems(withTitles: Self.renderScales.map(\.title))
+        scalePopup.selectItem(at: Self.index(of: settings.renderScale,
+                                             in: Self.renderScales, default: 0))
 
         let freezePopup = NSPopUpButton(frame: .zero, pullsDown: false)
         freezePopup.addItems(withTitles: Self.freezeChoices.map(\.title))
-        let freezeMinutes = (defaults?.object(forKey: "freezeAfterMinutes") as? Double) ?? 30
-        let freezeIndex = Self.freezeChoices.firstIndex { $0.minutes == freezeMinutes } ?? 3
-        freezePopup.selectItem(at: freezeIndex)
+        freezePopup.selectItem(at: Self.index(of: settings.freezeMinutes,
+                                              in: Self.freezeChoices, default: 3))
 
         // Off unless the user says otherwise: replacing someone's desktop picture
         // behind their back is not a reasonable default.
         let wallpaperCheck = NSButton(checkboxWithTitle: "Set desktop picture to the last frame",
                                       target: nil, action: nil)
-        wallpaperCheck.state = (defaults?.bool(forKey: Self.wallpaperKey) ?? false) ? .on : .off
+        wallpaperCheck.state = settings.setsWallpaper ? .on : .off
         wallpaperCheck.toolTip = "When the screensaver stops, render the frame it ended on and "
             + "make it the desktop picture, so the desktop, lock screen and login window all match."
 
@@ -595,28 +574,14 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
 
     @objc private func configureSheetOK() {
         if let defaults = Self.defaults() {
-            let shader = shaderPopup?.titleOfSelectedItem ?? "Shuffle"
-            defaults.set(shader, forKey: "shader")
-            if !rotationNames.isEmpty {
-                // Never persist an empty rotation: nothing checked means "all",
-                // which is what the sheet's note promises.
-                let enabled = rotationEnabled.isEmpty ? Set(rotationNames) : rotationEnabled
-                defaults.set(rotationNames.filter(enabled.contains), forKey: Self.enabledShadersKey)
-                defaults.set(rotationNames, forKey: Self.knownShadersKey)
-            }
-            defaults.set(Int(fpsPopup?.titleOfSelectedItem ?? "30") ?? 30, forKey: "fps")
-            let scale: Double
-            switch scalePopup?.indexOfSelectedItem ?? 0 {
-            case 1: scale = 0.75
-            case 2: scale = 0.5
-            default: scale = 1.0
-            }
-            defaults.set(scale, forKey: "renderScale")
-            let freezeIndex = freezePopup?.indexOfSelectedItem ?? 3
-            defaults.set(Self.freezeChoices[max(0, min(freezeIndex, Self.freezeChoices.count - 1))].minutes,
-                         forKey: "freezeAfterMinutes")
-            defaults.set(wallpaperCheckbox?.state == .on, forKey: Self.wallpaperKey)
-            defaults.synchronize()
+            var settings = Settings()
+            settings.shader = shaderPopup?.titleOfSelectedItem ?? Settings.shuffleTitle
+            settings.enabledShaders = rotationEnabled
+            settings.fps = Int(fpsPopup?.titleOfSelectedItem ?? "30") ?? 30
+            settings.renderScale = Self.value(of: scalePopup, in: Self.renderScales, default: 0)
+            settings.freezeMinutes = Self.value(of: freezePopup, in: Self.freezeChoices, default: 3)
+            settings.setsWallpaper = wallpaperCheckbox?.state == .on
+            settings.save(to: defaults, rotation: rotationNames)
         }
         metalView?.config = currentConfig()
         endConfigureSheet()
@@ -639,5 +604,105 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         rotationNote = nil
         rotationButtons = []
         wallpaperCheckbox = nil
+    }
+}
+
+/// Everything the saver persists: the key strings, the defaults, and the round
+/// trip through `ScreenSaverDefaults`, in one place.
+///
+/// These keys used to be read once in `currentConfig()`, read a second time
+/// with the same literals to populate the Options sheet, and written back from
+/// a third set in `configureSheetOK` — three places for a renamed key to turn
+/// into a setting that silently stops applying.
+private struct Settings {
+
+    /// The `shader` value — and the Options popup's first item — that means
+    /// "shuffle the rotation" rather than pinning one shader.
+    static let shuffleTitle = "Shuffle"
+
+    private static let shaderKey = "shader"
+    private static let fpsKey = "fps"
+    private static let renderScaleKey = "renderScale"
+    private static let shuffleMinutesKey = "shuffleMinutes"
+    private static let freezeMinutesKey = "freezeAfterMinutes"
+    /// Names the user wants in the shuffle rotation.
+    private static let enabledShadersKey = "enabledShaders"
+    /// Every shader that existed the last time the rotation was saved. Anything
+    /// discovered later counts as new and joins the rotation automatically.
+    private static let knownShadersKey = "knownShaders"
+    /// Opt-in: hand the last rendered frame off to the desktop picture.
+    static let wallpaperKey = "setWallpaperOnStop"
+
+    /// `shuffleTitle`, or the name of the single pinned shader.
+    var shader = shuffleTitle
+    var fps = 30
+    var renderScale = 1.0
+    /// No UI offers this one; it is read but never written back.
+    var shuffleMinutes = 5.0
+    var freezeMinutes = 30.0
+    var setsWallpaper = false
+    /// The shuffle rotation — see `LerpMetalView.Config.rotation(of:from:)` for
+    /// what nil and empty both mean.
+    var enabledShaders: Set<String>?
+
+    static func load(from defaults: UserDefaults?, discovered: [String]) -> Settings {
+        var settings = Settings()
+        guard let defaults else { return settings }
+        settings.shader = defaults.string(forKey: shaderKey) ?? settings.shader
+        settings.fps = (defaults.object(forKey: fpsKey) as? Int) ?? settings.fps
+        settings.renderScale = (defaults.object(forKey: renderScaleKey) as? Double) ?? settings.renderScale
+        settings.shuffleMinutes = (defaults.object(forKey: shuffleMinutesKey) as? Double) ?? settings.shuffleMinutes
+        settings.freezeMinutes = (defaults.object(forKey: freezeMinutesKey) as? Double) ?? settings.freezeMinutes
+        settings.setsWallpaper = defaults.bool(forKey: wallpaperKey)
+        settings.enabledShaders = savedRotation(discovered: discovered, defaults: defaults)
+        return settings
+    }
+
+    /// Writes back everything the Options sheet controls. `rotation` is the full
+    /// shader list the sheet offered, in display order; an empty one leaves the
+    /// saved rotation alone, so a host that discovered nothing cannot wipe it.
+    func save(to defaults: UserDefaults, rotation: [String]) {
+        defaults.set(shader, forKey: Self.shaderKey)
+        if !rotation.isEmpty {
+            defaults.set(LerpMetalView.Config.rotation(of: enabledShaders, from: rotation),
+                         forKey: Self.enabledShadersKey)
+            defaults.set(rotation, forKey: Self.knownShadersKey)
+        }
+        defaults.set(fps, forKey: Self.fpsKey)
+        defaults.set(renderScale, forKey: Self.renderScaleKey)
+        defaults.set(freezeMinutes, forKey: Self.freezeMinutesKey)
+        defaults.set(setsWallpaper, forKey: Self.wallpaperKey)
+        defaults.synchronize()
+    }
+
+    /// What these settings ask the view to render.
+    var config: LerpMetalView.Config {
+        var config = LerpMetalView.Config(
+            shaderName: shader == Self.shuffleTitle ? nil : shader,
+            framesPerSecond: fps,
+            renderScale: renderScale,
+            shuffleInterval: shuffleMinutes * 60,
+            freezeAfter: freezeMinutes * 60)
+        config.enabledShaderNames = enabledShaders
+        return config
+    }
+
+    /// The shuffle rotation implied by saved defaults, or nil for "every shader".
+    ///
+    /// - Nothing ever saved (including every install that predates this setting):
+    ///   nil, i.e. the full rotation. Never an empty one.
+    /// - Saved names that no longer exist are dropped.
+    /// - Shaders discovered since the last save default to enabled, so dropping a
+    ///   new .metal file into the bundle does not silently do nothing.
+    /// - An empty result is reported as nil (all shaders) rather than a black
+    ///   screen. The sheet also refuses to persist an empty set, so this only
+    ///   fires for hand-edited defaults or a rotation gone entirely stale.
+    private static func savedRotation(discovered: [String], defaults: UserDefaults?) -> Set<String>? {
+        guard let saved = defaults?.stringArray(forKey: enabledShadersKey) else { return nil }
+        let all = Set(discovered)
+        // No roster saved: take the saved list at face value, nothing is "new".
+        let known = Set(defaults?.stringArray(forKey: knownShadersKey) ?? discovered)
+        let enabled = all.intersection(saved).union(all.subtracting(known))
+        return enabled.isEmpty ? nil : enabled
     }
 }

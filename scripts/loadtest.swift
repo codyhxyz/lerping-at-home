@@ -3,28 +3,31 @@
 import AppKit
 import ScreenSaver
 
+/// Reports a failed check and stops. Diagnostics go to stderr, like
+/// `PreviewMain.fail`; the `OK:` progress lines stay on stdout.
+func fail(_ message: String) -> Never {
+    FileHandle.standardError.write(Data(("FAIL: " + message + "\n").utf8))
+    exit(1)
+}
+
 let arguments = CommandLine.arguments
 guard arguments.count > 1 else {
     print("usage: loadtest <path to Lerping@Home.saver>")
     exit(2)
 }
 guard let bundle = Bundle(path: arguments[1]) else {
-    print("FAIL: no bundle at \(arguments[1])")
-    exit(1)
+    fail("no bundle at \(arguments[1])")
 }
 do {
     try bundle.loadAndReturnError()
 } catch {
-    print("FAIL: bundle load error: \(error)")
-    exit(1)
+    fail("bundle load error: \(error)")
 }
 guard let principal = bundle.principalClass as? ScreenSaverView.Type else {
-    print("FAIL: principal class is \(String(describing: bundle.principalClass)), not a ScreenSaverView")
-    exit(1)
+    fail("principal class is \(String(describing: bundle.principalClass)), not a ScreenSaverView")
 }
 guard let view = principal.init(frame: NSRect(x: 0, y: 0, width: 400, height: 250), isPreview: true) else {
-    print("FAIL: could not instantiate \(principal)")
-    exit(1)
+    fail("could not instantiate \(principal)")
 }
 print("OK: loaded \(principal), instantiated \(type(of: view)), hasConfigureSheet=\(view.hasConfigureSheet)")
 
@@ -32,8 +35,7 @@ print("OK: loaded \(principal), instantiated \(type(of: view)), hasConfigureShee
 // the shader rotation checklist is populated and scrollable.
 _ = NSApplication.shared
 guard let panel = view.configureSheet, let content = panel.contentView else {
-    print("FAIL: configureSheet returned no window")
-    exit(1)
+    fail("configureSheet returned no window")
 }
 content.layoutSubtreeIfNeeded()
 func firstSubview<T: NSView>(_ root: NSView, _ type: T.Type) -> T? {
@@ -43,19 +45,16 @@ func firstSubview<T: NSView>(_ root: NSView, _ type: T.Type) -> T? {
 }
 guard let table = firstSubview(content, NSTableView.self),
       let scroll = firstSubview(content, NSScrollView.self) else {
-    print("FAIL: configure sheet has no shader rotation list")
-    exit(1)
+    fail("configure sheet has no shader rotation list")
 }
 let checkboxes = (0..<table.numberOfRows).compactMap {
     table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? NSButton
 }
 guard table.numberOfRows > 0, checkboxes.count == table.numberOfRows else {
-    print("FAIL: rotation list has \(table.numberOfRows) rows, \(checkboxes.count) checkboxes")
-    exit(1)
+    fail("rotation list has \(table.numberOfRows) rows, \(checkboxes.count) checkboxes")
 }
 guard table.frame.height > scroll.contentView.bounds.height else {
-    print("FAIL: rotation list does not scroll (\(table.frame.height) <= \(scroll.contentView.bounds.height))")
-    exit(1)
+    fail("rotation list does not scroll (\(table.frame.height) <= \(scroll.contentView.bounds.height))")
 }
 print("OK: configure sheet \(Int(content.frame.width))x\(Int(content.frame.height)), "
       + "\(checkboxes.count) shader checkboxes, "
@@ -68,12 +67,10 @@ let wallpaperBox = allSubviews(content).compactMap { $0 as? NSButton }.first {
     $0.title.lowercased().contains("desktop picture")
 }
 guard let wallpaperBox else {
-    print("FAIL: configure sheet has no desktop-picture checkbox")
-    exit(1)
+    fail("configure sheet has no desktop-picture checkbox")
 }
 guard wallpaperBox.state == .off else {
-    print("FAIL: desktop-picture checkbox defaults to on; it must be opt-in")
-    exit(1)
+    fail("desktop-picture checkbox defaults to on; it must be opt-in")
 }
 print("OK: desktop-picture handoff checkbox present and off by default")
 exit(0)

@@ -10,8 +10,8 @@ public final class LerpMetalView: NSView {
     public struct Config {
         /// Shader name to render, or nil for shuffle mode.
         public var shaderName: String?
-        /// Names eligible for shuffle; nil (the default) means every discovered
-        /// shader. An empty or entirely stale set falls back to every shader.
+        /// Names eligible for shuffle. See `Config.rotation(of:from:)` for what
+        /// nil, empty and stale sets all mean.
         public var enabledShaderNames: Set<String>?
         public var framesPerSecond: Int
         /// 1.0 = native. 0.5 renders quarter the pixels and upscales — usually
@@ -32,6 +32,17 @@ public final class LerpMetalView: NSView {
             self.renderScale = renderScale
             self.shuffleInterval = shuffleInterval
             self.freezeAfter = freezeAfter
+        }
+
+        /// Which of `available` a set of enabled names actually selects.
+        ///
+        /// The one statement of the policy: nil, empty, and entirely-stale sets
+        /// all mean *every* shader. An empty rotation is a black screensaver,
+        /// and no setting should be able to produce one — the saver's Options
+        /// sheet says so out loud, and this is what makes that true.
+        public static func rotation(of enabled: Set<String>?, from available: [String]) -> [String] {
+            let picked = available.filter { enabled?.contains($0) ?? true }
+            return picked.isEmpty ? available : picked
         }
     }
 
@@ -55,7 +66,6 @@ public final class LerpMetalView: NSView {
     public private(set) var parameterValues: LerpParameterValues?
     private var displayLink: CADisplayLink?
     private var shuffleOrder: [String] = []
-    private var shuffleIndex = 0
     private var lastShuffleSwitch: CFTimeInterval = 0
 
     /// Per-launch random seed handed to shaders as `u.seed`. Settable so a host
@@ -71,6 +81,15 @@ public final class LerpMetalView: NSView {
     public private(set) var measuredFPS: Double = 0
     private var frameCount = 0
     private var fpsWindowStart: CFTimeInterval = 0
+
+    /// True between `start()` and `stop()`. Hosts with a pause button read this
+    /// instead of keeping their own flag beside it, which is how the two drift.
+    public var isRunning: Bool { running }
+
+    /// The frame-rate readout a host puts in its titlebar or status bar.
+    public var statusText: String {
+        running ? String(format: "%.0f fps", measuredFPS) : "paused"
+    }
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
 
@@ -120,12 +139,23 @@ public final class LerpMetalView: NSView {
 
     // MARK: - Lifecycle
 
+    /// Banks the time run since the clock last resumed, so `time` stops
+    /// advancing. Paired with `resumeClock()`; between them the shader clock
+    /// holds still, which is what makes a pause invisible in the animation.
+    private func pauseClock() {
+        elapsed += CACurrentMediaTime() - resumeStamp
+    }
+
+    private func resumeClock() {
+        resumeStamp = CACurrentMediaTime()
+    }
+
     public func start() {
         guard !running else { return }
         running = true
         frozen = false
         freezeBaseline = elapsed
-        resumeStamp = CACurrentMediaTime()
+        resumeClock()
         fpsWindowStart = resumeStamp
 
         if pipeline == nil {
@@ -138,7 +168,7 @@ public final class LerpMetalView: NSView {
     public func stop() {
         guard running else { return }
         running = false
-        elapsed += CACurrentMediaTime() - resumeStamp
+        pauseClock()
         tearDownDisplayLink()
     }
 
@@ -177,33 +207,52 @@ public final class LerpMetalView: NSView {
     private func selectInitialShader() {
         let available = library.discover()
         guard !available.isEmpty else { return }
-        if let name = config.shaderName, let shader = available.first(where: { $0.name == name }) {
+        if let name = config.shaderName, let shader = available.named(name) {
             setShader(shader)
         } else {
-            let enabled = available.filter { config.enabledShaderNames?.contains($0.name) ?? true }
-            shuffleOrder = (enabled.isEmpty ? available : enabled).map(\.name).shuffled()
-            shuffleIndex = 0
+            let names = available.map(\.name)
+            shuffleOrder = Config.rotation(of: config.enabledShaderNames, from: names).shuffled()
             lastShuffleSwitch = CACurrentMediaTime()
-            advanceShuffle(to: 0)
+            advanceShuffle(by: 0)
             if pipeline == nil, shuffleOrder.count < available.count {
                 // Every enabled shader failed to compile: widen to all of them
                 // rather than presenting nothing.
-                shuffleOrder = available.map(\.name).shuffled()
-                advanceShuffle(to: 0)
+                shuffleOrder = names.shuffled()
+                advanceShuffle(by: 0)
             }
         }
     }
 
-    private func advanceShuffle(to index: Int) {
-        guard !shuffleOrder.isEmpty else { return }
-        // Try each shader in order until one compiles.
-        for offset in 0..<shuffleOrder.count {
-            let name = shuffleOrder[(index + offset) % shuffleOrder.count]
-            if let shader = library.shader(named: name), setShader(shader) {
-                shuffleIndex = (index + offset) % shuffleOrder.count
-                return
-            }
+    /// Steps the shuffle rotation. `by: 0` loads the rotation's first entry.
+    private func advanceShuffle(by offset: Int) {
+        loadShader(after: currentShaderName, offset: offset, in: shuffleOrder)
+    }
+
+    /// Loads the first shader that compiles, starting `offset` places from
+    /// `current` and then continuing in the same direction, wrapping once
+    /// through `order` (the discovery order when nil). Returns false only when
+    /// nothing at all could be loaded.
+    ///
+    /// Skipping over a shader that will not compile is the whole point: a failed
+    /// `setShader` leaves the previous pipeline bound and `currentShaderName`
+    /// unchanged, so stopping at the first failure both shows the wrong shader
+    /// and sticks there — the next step would set out from the same place and
+    /// retry the same broken file.
+    @discardableResult
+    private func loadShader(after current: String, offset: Int, in order: [String]? = nil) -> Bool {
+        let available = library.discover()
+        let names = order ?? available.map(\.name)
+        guard !names.isEmpty else { return false }
+        let step = offset < 0 ? -1 : 1
+        var anchor = current
+        for attempt in 0..<names.count {
+            guard let candidate = ShaderLibrary.name(in: names, after: anchor,
+                                                     offset: attempt == 0 ? offset : step)
+            else { return false }
+            anchor = candidate
+            if let shader = available.named(candidate), setShader(shader) { return true }
         }
+        return false
     }
 
     @discardableResult
@@ -238,15 +287,10 @@ public final class LerpMetalView: NSView {
         return true
     }
 
+    /// Steps to the next (or, for a negative `direction`, previous) discovered
+    /// shader, skipping any that fail to compile.
     public func showNextShader(_ direction: Int = 1) {
-        let available = library.discover()
-        guard !available.isEmpty else { return }
-        let names = available.map(\.name)
-        let current = names.firstIndex(of: currentShaderName) ?? 0
-        let next = (current + direction + names.count) % names.count
-        if let shader = available.first(where: { $0.name == names[next] }) {
-            setShader(shader)
-        }
+        loadShader(after: currentShaderName, offset: direction)
     }
 
     // MARK: - Display link
@@ -280,14 +324,17 @@ public final class LerpMetalView: NSView {
         }
     }
 
+    /// Occlusion pauses the clock and the display link but deliberately leaves
+    /// `running` set: the view is still animating as far as its host is
+    /// concerned, it just has nothing to draw to.
     @objc private func occlusionChanged(_ note: Notification) {
         guard running else { return }
         let visible = window?.occlusionState.contains(.visible) ?? false
         if visible {
-            resumeStamp = CACurrentMediaTime()
+            resumeClock()
             installDisplayLink()
         } else {
-            elapsed += CACurrentMediaTime() - resumeStamp
+            pauseClock()
             tearDownDisplayLink()   // hard 0 fps while covered
         }
     }
@@ -318,7 +365,7 @@ public final class LerpMetalView: NSView {
         if config.shaderName == nil, shuffleOrder.count > 1,
            now - lastShuffleSwitch > config.shuffleInterval {
             lastShuffleSwitch = now
-            advanceShuffle(to: shuffleIndex + 1)
+            advanceShuffle(by: 1)
         }
 
         frameCount += 1

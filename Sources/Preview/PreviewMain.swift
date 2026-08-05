@@ -18,9 +18,7 @@ enum PreviewMain {
         let args = CommandLine.arguments
         // Search the repo's shader folder when running from a build tree, so
         // the preview works without installing anything.
-        let repoShaders = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("Sources/Shaders")
-        let extraSearch = FileManager.default.fileExists(atPath: repoShaders.path) ? [repoShaders] : []
+        let extraSearch = ShaderLocations.repoSearchURLs()
 
         if args.contains("--list") {
             guard let renderer = LerpRenderer() else { fail("no Metal device") }
@@ -183,7 +181,6 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var metalView: LerpMetalView?
     private var titleTimer: Timer?
-    private var paused = false
     private let extraSearch: [URL]
 
     init(extraSearch: [URL]) {
@@ -220,8 +217,7 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
 
         titleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self, let view = self.metalView else { return }
-            let state = self.paused ? "paused" : String(format: "%.0f fps", view.measuredFPS)
-            self.window?.title = "Lerping@Home Preview — \(view.currentShaderName) (\(state))"
+            self.window?.title = "Lerping@Home Preview — \(view.currentShaderName) (\(view.statusText))"
         }
 
         NSApp.activate(ignoringOtherApps: true)
@@ -236,8 +232,7 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
         }
         switch event.charactersIgnoringModifiers {
         case " ":
-            paused ? view.start() : view.stop()
-            paused.toggle()
+            view.isRunning ? view.stop() : view.start()
             return true
         case "r":
             // Rediscover + recompile current shader (picks up file edits).

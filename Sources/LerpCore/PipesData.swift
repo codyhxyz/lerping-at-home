@@ -80,10 +80,26 @@ public final class PipesData: LerpDataProvider {
     }
 
     // MARK: - Bit layout
+    //
+    // Named here and decoded by `lerpPipesDecode` in `metalSource` below; the
+    // two sides must agree, and the doc comment at the top of the file is the
+    // spec they both implement.
 
+    private static let colorShift: UInt32 = 6
     private static let occupiedBit: UInt32 = 1 << 10
+    private static let partialDirShift: UInt32 = 11
     private static let partialBit: UInt32 = 1 << 14
     private static let inwardBit: UInt32 = 1 << 15
+    private static let partialLenShift: UInt32 = 16
+
+    /// A freshly-occupied node in `color`, with no connections yet.
+    @inline(__always) private static func nodeRecord(color: UInt32) -> UInt32 {
+        occupiedBit | (color << colorShift)
+    }
+
+    /// splitmix64's increment, the 64-bit golden-ratio constant. It also stirs
+    /// the raw seed bits before they reach the RNG — same constant, same job.
+    private static let goldenGamma: UInt64 = 0x9E37_79B9_7F4A_7C15
 
     private static let delta: [(Int, Int, Int)] = [
         (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1),
@@ -154,7 +170,7 @@ public final class PipesData: LerpDataProvider {
             : max(0, 1 - (local - wipeStart) / PipesData.fadeSeconds)
 
         // Distinct integer stream per (seed, cycle).
-        let seedBits = UInt64(uniforms.seed.bitPattern) &* 0x9E37_79B9_7F4A_7C15
+        let seedBits = UInt64(uniforms.seed.bitPattern) &* PipesData.goldenGamma
         let rngSeed = seedBits ^ (UInt64(bitPattern: Int64(cycleIndex)) &* 0xD1B5_4A32_D192_ED03)
 
         build(fullSteps: fullSteps, frac: frac, rngSeed: rngSeed)
@@ -177,7 +193,7 @@ public final class PipesData: LerpDataProvider {
     private struct RNG {
         var state: UInt64
         mutating func next() -> UInt64 {
-            state = state &+ 0x9E37_79B9_7F4A_7C15
+            state = state &+ PipesData.goldenGamma
             var z = state
             z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
             z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
@@ -196,9 +212,13 @@ public final class PipesData: LerpDataProvider {
         (z * dim.y + y) * dim.x + x
     }
 
-    @inline(__always) private func free(_ x: Int, _ y: Int, _ z: Int) -> Bool {
+    /// Whether a lattice coordinate is inside the volume at all.
+    @inline(__always) private func inside(_ x: Int, _ y: Int, _ z: Int) -> Bool {
         x >= 0 && y >= 0 && z >= 0 && x < dim.x && y < dim.y && z < dim.z
-            && nodes[index(x, y, z)] & PipesData.occupiedBit == 0
+    }
+
+    @inline(__always) private func free(_ x: Int, _ y: Int, _ z: Int) -> Bool {
+        inside(x, y, z) && nodes[index(x, y, z)] & PipesData.occupiedBit == 0
     }
 
     /// Picks the next lattice direction for a pipe, or nil if it is boxed in.
@@ -237,7 +257,7 @@ public final class PipesData: LerpDataProvider {
             let pipe = Pipe(x: x, y: y, z: z, dir: rng.below(6), color: color)
             // Start facing somewhere it can actually go.
             if chooseDirection(pipe, &rng) == nil { continue }
-            nodes[index(x, y, z)] = PipesData.occupiedBit | (pipe.color << 6)
+            nodes[index(x, y, z)] = PipesData.nodeRecord(color: pipe.color)
             return pipe
         }
         return nil
@@ -277,7 +297,7 @@ public final class PipesData: LerpDataProvider {
                 pipe.x += dx; pipe.y += dy; pipe.z += dz
                 pipe.dir = dir
                 nodes[index(pipe.x, pipe.y, pipe.z)] =
-                    PipesData.occupiedBit | (pipe.color << 6) | UInt32(1 << (dir ^ 1))
+                    PipesData.nodeRecord(color: pipe.color) | UInt32(1 << (dir ^ 1))
                 pipes[i] = pipe
             }
         }
@@ -295,21 +315,22 @@ public final class PipesData: LerpDataProvider {
     /// node's geometry still fits inside its own cell.
     private func writePartial(pipe: Pipe, dir: Int, frac: Float) {
         let quantise: (Float) -> UInt32 = { len in
-            UInt32(max(0, min(65535, (len / 0.5) * 65535)).rounded()) << 16
+            UInt32(max(0, min(65535, (len / 0.5) * 65535)).rounded()) << PipesData.partialLenShift
         }
         if frac <= 0.5 {
             // Stub grows outward from the head node's centre.
             nodes[index(pipe.x, pipe.y, pipe.z)] |=
-                UInt32(dir << 11) | PipesData.partialBit | quantise(frac)
+                UInt32(dir) << PipesData.partialDirShift | PipesData.partialBit | quantise(frac)
         } else {
             // Head node's stub is complete; the remainder pokes back from the
             // next node's face toward its centre.
             nodes[index(pipe.x, pipe.y, pipe.z)] |= UInt32(1 << dir)
             let (dx, dy, dz) = PipesData.delta[dir]
             let nx = pipe.x + dx, ny = pipe.y + dy, nz = pipe.z + dz
-            guard nx >= 0, ny >= 0, nz >= 0, nx < dim.x, ny < dim.y, nz < dim.z else { return }
-            nodes[index(nx, ny, nz)] = PipesData.occupiedBit | (pipe.color << 6)
-                | UInt32((dir ^ 1) << 11) | PipesData.partialBit | PipesData.inwardBit
+            guard inside(nx, ny, nz) else { return }
+            nodes[index(nx, ny, nz)] = PipesData.nodeRecord(color: pipe.color)
+                | UInt32(dir ^ 1) << PipesData.partialDirShift
+                | PipesData.partialBit | PipesData.inwardBit
                 | quantise(frac - 0.5)
         }
     }
@@ -344,6 +365,8 @@ public final class PipesData: LerpDataProvider {
         float partialLen;  // 0…0.5, in lattice units
     };
 
+    // The inverse of the node-record writes in PipesData.swift; the shifts and
+    // masks below must match the constants under its "Bit layout" heading.
     static inline LerpPipesNode lerpPipesDecode(uint rec) {
         LerpPipesNode n;
         n.mask       = rec & 63u;

@@ -79,6 +79,38 @@ public enum ShaderLocations {
         var seen = Set<String>()
         return dirs.filter { seen.insert($0.path).inserted }
     }
+
+    /// The repo's `Sources/Shaders` directory, when a development host is running
+    /// out of a build tree — nil for an installed screensaver, which reads its
+    /// shaders from the bundle instead.
+    ///
+    /// The working directory comes first, because that is how `make preview` and
+    /// `make playground` run us. Failing that we walk up from the executable, so
+    /// `build/LerpPreview` still finds the repo when it is launched from Finder
+    /// or from any other directory.
+    public static func repoShaderDirectory() -> URL? {
+        var roots = [URL(fileURLWithPath: FileManager.default.currentDirectoryPath)]
+        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        for _ in 0..<6 {
+            dir.deleteLastPathComponent()
+            roots.append(dir)
+        }
+        return roots.map { $0.appendingPathComponent("Sources/Shaders") }
+            .first { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }?
+            .standardizedFileURL
+    }
+
+    /// `repoShaderDirectory()` shaped for `ShaderLibrary(extraSearchURLs:)`.
+    public static func repoSearchURLs() -> [URL] {
+        repoShaderDirectory().map { [$0] } ?? []
+    }
+}
+
+public extension Collection where Element == LerpShader {
+    /// The shader with this name, if this list has one.
+    func named(_ name: String) -> LerpShader? {
+        first { $0.name == name }
+    }
 }
 
 /// Discovers shader files and compiles them into render pipelines at runtime.
@@ -98,15 +130,14 @@ public final class ShaderLibrary {
     }
 
     /// Built-in shaders ship as .metal source files in the host bundle's Resources/Shaders.
+    /// `Bundle(for:)` is the .saver bundle when this code is linked into it;
+    /// `Bundle.main` covers the plain executables, where the two differ.
     private func builtInDirectory() -> URL? {
-        let bundle = Bundle(for: ShaderLibrary.self)
-        if let url = bundle.resourceURL?.appendingPathComponent("Shaders"),
-           FileManager.default.fileExists(atPath: url.path) {
-            return url
-        }
-        if let url = Bundle.main.resourceURL?.appendingPathComponent("Shaders"),
-           FileManager.default.fileExists(atPath: url.path) {
-            return url
+        for bundle in [Bundle(for: ShaderLibrary.self), Bundle.main] {
+            if let url = bundle.resourceURL?.appendingPathComponent("Shaders"),
+               FileManager.default.fileExists(atPath: url.path) {
+                return url
+            }
         }
         return nil
     }
@@ -117,32 +148,57 @@ public final class ShaderLibrary {
             .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
     }
 
+    /// Every directory scanned, in *ascending* priority: a file found later
+    /// replaces one of the same name found earlier.
+    private func searchDirectories() -> [(url: URL, isBuiltIn: Bool)] {
+        var dirs: [(url: URL, isBuiltIn: Bool)] = []
+        // Lowest: the copy that ships inside the host bundle.
+        if let builtIn = builtInDirectory() { dirs.append((builtIn, true)) }
+        // Above it: a dev host pointing at a source tree. Reversed, so the
+        // caller's first entry is the one that wins.
+        dirs += extraSearchURLs.reversed().map { (url: $0, isBuiltIn: true) }
+        // Highest: the user's drop folder, so a custom file shadows a built-in.
+        dirs += ShaderLocations.customShaderDirectories().map { (url: $0, isBuiltIn: false) }
+        return dirs
+    }
+
     /// All available shaders. Custom shaders with the same file stem override built-ins.
     public func discover() -> [LerpShader] {
         var byName: [String: LerpShader] = [:]
-
-        var builtInDirs = extraSearchURLs
-        if let builtIn = builtInDirectory() { builtInDirs.append(builtIn) }
-        for dir in builtInDirs {
-            for url in metalFiles(in: dir) {
-                let name = url.deletingPathExtension().lastPathComponent
-                guard byName[name] == nil,
-                      let source = try? String(contentsOf: url, encoding: .utf8) else { continue }
-                byName[name] = LerpShader(name: name, source: source, isBuiltIn: true, url: url)
-            }
-        }
-        for dir in ShaderLocations.customShaderDirectories() {
+        for (dir, isBuiltIn) in searchDirectories() {
             for url in metalFiles(in: dir) {
                 let name = url.deletingPathExtension().lastPathComponent
                 guard let source = try? String(contentsOf: url, encoding: .utf8) else { continue }
-                byName[name] = LerpShader(name: name, source: source, isBuiltIn: false, url: url)
+                byName[name] = LerpShader(name: name, source: source, isBuiltIn: isBuiltIn, url: url)
             }
         }
         return byName.values.sorted { $0.name < $1.name }
     }
 
     public func shader(named name: String) -> LerpShader? {
-        discover().first { $0.name == name }
+        discover().named(name)
+    }
+
+    /// The name `offset` places from `current` in `names`, wrapping at both ends;
+    /// nil for an empty list. A `current` the list does not contain counts as
+    /// position 0, so stepping forward from nothing lands on the first name.
+    ///
+    /// This is the only place shader cycling wraps around. The ←/→ keys, the
+    /// shuffle rotation and the playground's next/previous all used to spell the
+    /// same `(i + d + n) % n` out for themselves.
+    public static func name(in names: [String], after current: String, offset: Int) -> String? {
+        guard !names.isEmpty else { return nil }
+        let index = names.firstIndex(of: current) ?? 0
+        return names[(((index + offset) % names.count) + names.count) % names.count]
+    }
+
+    /// Records `message` as this shader's compile error and throws it. Every
+    /// refusal in here goes through this, so `compileErrors` cannot disagree
+    /// with what the caller was handed.
+    private func fail(_ shader: LerpShader, _ code: Int, _ message: String) throws -> Never {
+        compileErrors[shader.name] = message
+        throw NSError(domain: "LerpingAtHome", code: code,
+                      userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     /// Drops every cached pipeline. Hosts that recompile the same shader name
@@ -160,9 +216,7 @@ public final class ShaderLibrary {
         guard let name = shader.dataProviderName else { return nil }
         if let cached = dataProviders[name] { return cached }
         guard let provider = LerpDataProviders.make(named: name, device: device) else {
-            let message = "shader '\(shader.name)' declares `// lerp-data: \(name)` but no such data provider is registered (known: \(LerpDataProviders.registeredNames.joined(separator: ", ")))"
-            compileErrors[shader.name] = message
-            throw NSError(domain: "LerpingAtHome", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            try fail(shader, 2, "shader '\(shader.name)' declares `// lerp-data: \(name)` but no such data provider is registered (known: \(LerpDataProviders.registeredNames.joined(separator: ", ")))")
         }
         dataProviders[name] = provider
         return provider
@@ -175,11 +229,9 @@ public final class ShaderLibrary {
         if let cached = pipelineCache[cacheKey] { return cached }
 
         if !shader.parameterErrors.isEmpty {
-            let message = "shader '\(shader.name)' has malformed parameter declarations:\n"
+            try fail(shader, 3, "shader '\(shader.name)' has malformed parameter declarations:\n"
                 + shader.parameterErrors.map { "  \($0)" }.joined(separator: "\n")
-                + "\n  syntax: // lerp-param: NAME TYPE [MIN MAX] = DEFAULT \"Label\""
-            compileErrors[shader.name] = message
-            throw NSError(domain: "LerpingAtHome", code: 3, userInfo: [NSLocalizedDescriptionKey: message])
+                + "\n  syntax: // lerp-param: NAME TYPE [MIN MAX] = DEFAULT \"Label\"")
         }
 
         let options = MTLCompileOptions()
@@ -197,9 +249,7 @@ public final class ShaderLibrary {
         }
         guard let vertexFn = library.makeFunction(name: "lerpVertex"),
               let fragmentFn = library.makeFunction(name: "lerpMain") else {
-            let message = "shader '\(shader.name)' must define `fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]])`"
-            compileErrors[shader.name] = message
-            throw NSError(domain: "LerpingAtHome", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+            try fail(shader, 1, "shader '\(shader.name)' must define `fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]])`")
         }
 
         let descriptor = MTLRenderPipelineDescriptor()
