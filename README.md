@@ -2,7 +2,7 @@
 
 - Screensaver for macOS that renders procedural shaders with Metal.
 - Shaders are single `.metal` files compiled at runtime via `MTLDevice.makeLibrary(source:)`.
-- 16 built-in shaders: aurora, color-panels, dot-orbit, gem-smoke, god-rays, grain-gradient, liquid-metal, mesh-gradient, metaballs, neuro-noise, smoke-ring, spiral, swirl, voronoi, warp, water.
+- 28 built-in shaders: aurora, color-panels, dithering, dot-grid, dot-orbit, fluted-glass, gem-smoke, god-rays, grain-gradient, halftone-cmyk, halftone-dots, liquid-metal, mesh-gradient, metaballs, neuro-noise, paper-texture, perlin-noise, pulsing-border, simplex-noise, smoke-ring, spiral, static-mesh-gradient, static-radial-gradient, swirl, voronoi, warp, water, waves.
 - Custom `.metal` files are supported without rebuilding the engine.
 - No Xcode project. Builds with `swiftc` through a Makefile.
 - No build-time Metal toolchain and no precompiled shader archive.
