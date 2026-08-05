@@ -673,9 +673,79 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         colorProjectionUnits()
         bindingPersistenceUnits()
         mappingBankUnits()
+        transportChecks()
         renderColorSweep()
         captureUI()
         finish()
+    }
+
+    // MARK: The time scrubber
+
+    /// The scrubber spans a window of the timeline rather than a fixed [0,180],
+    /// because these shaders never repeat and so have no end to scale to. The
+    /// regression this protects is the one that made it worth rebuilding: past
+    /// the window's edge the thumb used to pin and the readout used to lie.
+    private func transportChecks() {
+        let controller = self.controller!
+        let span = controller.windowSpan
+        check("the scrubber spans a window, not the whole timeline", span > 0 && span <= 1800,
+              "\(span) s")
+
+        // The view's clock is live wall time, so it moves between the seek and
+        // the read. A quarter of a second is far tighter than the failure being
+        // guarded against, which parks the thumb 220 s from the truth.
+        func at(_ seconds: Double, _ reading: Double) -> Bool { abs(reading - seconds) < 0.25 }
+
+        controller.seek(to: 12)
+        check("the window contains the clock near the start",
+              controller.windowStart == 0
+                  && controller.scrubberBounds == 0 ... span
+                  && at(12, controller.scrubberPosition),
+              "\(controller.scrubberBounds) thumb \(controller.scrubberPosition)")
+
+        // Far past the old hard-coded maximum: the case that was broken.
+        controller.seek(to: 400)
+        check("the window advances when the clock passes its edge",
+              controller.windowStart == (400 / span).rounded(.down) * span
+                  && controller.scrubberBounds.lowerBound <= 400
+                  && controller.scrubberBounds.upperBound >= 400,
+              "window \(controller.scrubberBounds)")
+        check("the thumb tracks true time past the window edge",
+              at(400, controller.scrubberPosition), "\(controller.scrubberPosition)")
+        check("the readout shows absolute time, not the window's edge",
+              at(400, PlaygroundWindowController.seconds(fromClock: controller.clockText) ?? -1),
+              controller.clockText)
+
+        // …and much further out, where the old slider had nothing left to say.
+        controller.seek(to: 9000)
+        check("an hour and a half in, the readout is still true",
+              at(9000, PlaygroundWindowController.seconds(fromClock: controller.clockText) ?? -1)
+                  && at(9000, controller.scrubberPosition),
+              "\(controller.clockText) / thumb \(controller.scrubberPosition)")
+        check("drag precision does not decay with elapsed time",
+              controller.scrubberBounds.upperBound - controller.scrubberBounds.lowerBound == span,
+              "still \(span) s across the scrubber at t=9000")
+
+        // Navigating back to an early moment after running long.
+        controller.seek(to: 12)
+        check("you can go back and inspect an early moment",
+              controller.windowStart == 0 && at(12, controller.scrubberPosition),
+              "\(controller.scrubberBounds) thumb \(controller.scrubberPosition)")
+
+        check("typed times parse in every form a person writes them",
+              PlaygroundWindowController.seconds(fromClock: "90") == 90
+                  && PlaygroundWindowController.seconds(fromClock: "90.5") == 90.5
+                  && PlaygroundWindowController.seconds(fromClock: "1:30") == 90
+                  && PlaygroundWindowController.seconds(fromClock: "1:30.5") == 90.5
+                  && PlaygroundWindowController.seconds(fromClock: "nope") == nil)
+        check("the clock formats past an hour without wrapping",
+              PlaygroundWindowController.clock(9000) == "150:00"
+                  && PlaygroundWindowController.clock(12.5, decimals: 1) == "0:12.5",
+              PlaygroundWindowController.clock(9000))
+
+        controller.seek(to: 0)
+        check("the window never runs off the front of the timeline",
+              controller.windowStart == 0, "\(controller.windowStart)")
     }
 
     /// The two things every MIDI integration gets wrong, checked as pure logic
