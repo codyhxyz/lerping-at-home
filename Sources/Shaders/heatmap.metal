@@ -14,27 +14,54 @@
 // the thing they existed for: the image-box fit/scale/rotation (the processed
 // texture is generated at the drawable's aspect, so image UV *is* screen UV)
 // and with it the soft image frame (`getImgFrame`, baked to 1).
+//
+// Parameters mirror the upstream <Heatmap> props. Upstream takes a
+// variable-length `colors` array (max 10); this port fixes seven tunable slots
+// and keeps upstream's `u_colorsCount` as `colorCount`, because the ramp's
+// length is what makes it a two-stop sepia rather than a seven-stop thermal
+// scale. Three groups of upstream props are deliberately *not* exposed:
+//
+//   - `image`, and with it the sizing props (`fit`, `scale`, `rotation`,
+//     `offsetX/Y`, `worldWidth/Height`). There is no input picture to place, so
+//     there is no image box to fit — the substituted silhouette is generated at
+//     the drawable's own aspect and sampled 1:1.
+//   - Everything inside the pre-pass: the blur radii, the contour radius, the
+//     pass counts, the size of the silhouette and which Lissajous figure it is.
+//     Upstream exposes no props for any of these (they are constants inside
+//     `toProcessedHeatmap`), and each one would cost a ~35 ms CPU rebuild of the
+//     memoized texture on every change. They stay in HeatmapData.swift.
+//   - The `shadowShape` circle table, which upstream hard-codes too.
+//
+// lerp-param: color1     color       = (0.0667, 0.1255, 0.4157) "Deep navy"
+// lerp-param: color2     color       = (0.1216, 0.2314, 0.6353) "Indigo"
+// lerp-param: color3     color       = (0.1843, 0.3882, 0.9059) "Cobalt"
+// lerp-param: color4     color       = (0.4196, 0.8431, 1.0000) "Pale cyan"
+// lerp-param: color5     color       = (1.0000, 0.9020, 0.4745) "Straw"
+// lerp-param: color6     color       = (1.0000, 0.6000, 0.1176) "Amber"
+// lerp-param: color7     color       = (1.0000, 0.2980, 0.0000) "Hot orange"
+// lerp-param: colorBack  color       = (0.0, 0.0, 0.0) "Background"
+// lerp-param: colorCount int 1 7     = 7    "Color count"
+// lerp-param: contour    float 0 1   = 0.5  "Contour"
+// lerp-param: innerGlow  float 0 1   = 0.5  "Inner glow"
+// lerp-param: outerGlow  float 0 1   = 0.5  "Outer glow"
+// lerp-param: noise      float 0 1   = 0.12 "Noise"
+// lerp-param: angle      float 0 360 = 0    "Heatwave angle"
+// lerp-param: speed      float 0 1   = 0.07 "Speed"
+//
+// Upstream ships exactly two presets; both are here, with speed scaled to this
+// port's units (upstream × 0.1 — upstream's shader hard-codes `t = .1 * u_time`
+// and multiplies the clock by its own `speed` prop on top).
+// lerp-preset: Default color1=#11206a, color2=#1f3ba2, color3=#2f63e7, color4=#6bd7ff
+// lerp-preset: Default color5=#ffe679, color6=#ff991e, color7=#ff4c00, colorBack=#000000
+// lerp-preset: Default colorCount=7, contour=0.5, innerGlow=0.5, outerGlow=0.5
+// lerp-preset: Default noise=0, angle=0, speed=0.1
+// lerp-preset: Sepia   color1=#997f45, color2=#ffffff, colorBack=#000000, colorCount=2
+// lerp-preset: Sepia   contour=0.5, innerGlow=0.5, outerGlow=0.5
+// lerp-preset: Sepia   noise=0.75, angle=0, speed=0.05
 
-// Preset "Default", except for the grain, which upstream leaves at 0.
-constant float HM_CONTOUR    = 0.5;
-constant float HM_NOISE      = 0.12;
-constant float HM_INNER_GLOW = 0.5;
-constant float HM_OUTER_GLOW = 0.5;
-constant float HM_ANGLE      = 0.0;   // heatwave direction, degrees
-constant float HM_SPEED      = 0.07;  // upstream 0.1, slowed to house pace
-
-// The default preset's thermal ramp, cool to hot.
-constant int HM_COLOR_COUNT = 7;
-constant float3 HM_COLORS[7] = {
-    float3(0.0667, 0.1255, 0.4157), // #11206a deep navy
-    float3(0.1216, 0.2314, 0.6353), // #1f3ba2
-    float3(0.1843, 0.3882, 0.9059), // #2f63e7
-    float3(0.4196, 0.8431, 1.0000), // #6bd7ff pale cyan
-    float3(1.0000, 0.9020, 0.4745), // #ffe679
-    float3(1.0000, 0.6000, 0.1176), // #ff991e
-    float3(1.0000, 0.2980, 0.0000), // #ff4c00 hot orange
-};
-constant float3 HM_COLOR_BACK = float3(0.0);
+// Tunable ramp slots. Upstream's cap is 10; seven is what the default thermal
+// scale needs and keeps the uniform block small.
+constant int HM_MAX_COLORS = 7;
 
 // ---------------------------------------------------------------------------
 // Upstream's `sst`/`lst` helpers. `sst` is spelled out rather than calling
@@ -171,7 +198,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     float4 img = processed.sample(lerpHeatmapSampler, imgUV);
 
     // Three copies of the same wave, a third of a cycle apart.
-    float t = HM_SPEED * u.time - 0.3 + u.seed;
+    float t = u.speed * u.time - 0.3 + u.seed;
     float tCopy  = t + 1.0 / 3.0;
     float tCopy2 = t + 2.0 / 3.0;
     t      = glmod(t,      1.0);
@@ -181,8 +208,8 @@ fragment half4 lerpMain(float4 pos [[position]],
     // Aspect-corrected so the waves are not stretched on a wide drawable. y
     // stays 0..1 either way, which upstream's shape math assumes.
     float2 animationUV = float2((screenUV.x - 0.5) * aspect, screenUV.y - 0.5);
-    float angle = -HM_ANGLE * PI / 180.0;
-    float cosA = cos(angle), sinA = sin(angle);
+    float waveAngle = -u.angle * PI / 180.0;
+    float cosA = cos(waveAngle), sinA = sin(waveAngle);
     animationUV = float2(animationUV.x * cosA - animationUV.y * sinA,
                          animationUV.x * sinA + animationUV.y * cosA) + 0.5;
 
@@ -202,8 +229,8 @@ fragment half4 lerpMain(float4 pos [[position]],
     inner = mix(inner, 0.0, shadowCopy);
     inner = mix(inner, 0.0, shadowCopy2);
 
-    inner *= mix(0.0, 2.0, HM_INNER_GLOW);
-    inner += (HM_CONTOUR * 2.0) * contour;
+    inner *= mix(0.0, 2.0, u.innerGlow);
+    inner += (u.contour * 2.0) * contour;
     inner = min(1.0, inner);
     inner *= (1.0 - shape);
 
@@ -215,28 +242,51 @@ fragment half4 lerpMain(float4 pos [[position]],
         float animatedMask = hmSst(0.3, 0.65, y) * (1.0 - hmSst(0.65, 1.0, y));
         animatedMask = 0.5 + animatedMask;
         outer *= animatedMask;
-        outer *= mix(0.0, 5.0, pow(HM_OUTER_GLOW, 2.0));
+        outer *= mix(0.0, 5.0, pow(u.outerGlow, 2.0));
     }
 
     inner = pow(inner, 1.2);
     float heat = clamp(inner + outer, 0.0, 1.0);
 
     float2 grainUV = screenUV + u.seed;
-    heat += (0.005 + 0.35 * HM_NOISE) *
+    heat += (0.005 + 0.35 * u.noise) *
             (fract(sin(dot(grainUV, float2(12.9898, 78.233))) * 43758.5453123) - 0.5);
 
-    // Walk the ramp. The first step doubles as the overall coverage, so the
-    // graphic fades into the background instead of ending on a hard edge.
-    float mixer = heat * float(HM_COLOR_COUNT);
-    float3 gradient = HM_COLORS[0];
+    // Walk the ramp, cool to hot. The first step doubles as the overall
+    // coverage, so the graphic fades into the background instead of ending on a
+    // hard edge. Each stop is premultiplied by its own alpha before compositing,
+    // as upstream does, so a translucent stop thins the ramp toward the
+    // background instead of darkening it.
+    //
+    // Upstream drops out of the loop with `if (i > int(u_colorsCount)) break;`.
+    // Here the unused stops are given a mix weight of zero instead, which is the
+    // same result — `mix(g, c, 0)` is exactly `g` — but keeps the trip count
+    // fixed at seven so the loop still unrolls. That matters: with the early
+    // exit the compiler emits a real loop, which perturbs how it schedules the
+    // `fract(sin(...))` film grain two lines below, and that hash is chaotic
+    // enough that a 1-ulp change in its argument lands on a different value.
+    // Same picture statistically, but ~30% of pixels move by 1-6/255 for no
+    // reason at all; with the fixed trip count the render at the defaults is
+    // bit-identical to the pre-parameter one.
+    float4 colors[HM_MAX_COLORS] = { u.color1, u.color2, u.color3, u.color4,
+                                     u.color5, u.color6, u.color7 };
+    int colorCount = clamp(u.colorCount, 1, HM_MAX_COLORS);
+
+    float mixer = heat * float(colorCount);
+    float4 gradient = colors[0];
+    gradient.rgb *= gradient.a;
     float outerShape = 0.0;
-    for (int i = 1; i <= HM_COLOR_COUNT; ++i) {
+    for (int i = 1; i <= HM_MAX_COLORS; ++i) {
         float m = clamp(mixer - float(i - 1), 0.0, 1.0);
+        if (i > colorCount) m = 0.0;
         if (i == 1) outerShape = m;
-        gradient = mix(gradient, HM_COLORS[i - 1], m);
+        float4 c = colors[i - 1];
+        c.rgb *= c.a;
+        gradient = mix(gradient, c, m);
     }
 
-    float3 color = gradient * outerShape + HM_COLOR_BACK * (1.0 - outerShape);
+    float opacity = gradient.a * outerShape;
+    float3 color = gradient.rgb * outerShape + u.colorBack.rgb * u.colorBack.a * (1.0 - opacity);
     color += 0.02 * (fract(sin(dot(grainUV + 1.0, float2(12.9898, 78.233))) * 43758.5453123) - 0.5);
 
     color = clamp(color, 0.0, 1.0);
