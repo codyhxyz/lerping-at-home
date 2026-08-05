@@ -1,0 +1,24 @@
+{
+  "originHash" : "47dd47535a810e4a790049c3aea36cb598d7b0cf2095b366f68a2c6129613907",
+  "pins" : [
+    {
+      "identity" : "swift-midi-core",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/orchetect/swift-midi-core",
+      "state" : {
+        "revision" : "8ca67a4aa5dc59169b4f0abb654d4ac8340a94bf",
+        "version" : "1.0.2"
+      }
+    },
+    {
+      "identity" : "swift-midi-io",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/orchetect/swift-midi-io",
+      "state" : {
+        "revision" : "54ac94028e3825bd8e622d373b0698d196927212",
+        "version" : "1.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}

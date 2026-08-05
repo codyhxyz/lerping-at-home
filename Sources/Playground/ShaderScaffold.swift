@@ -4,22 +4,6 @@ import Foundation
 
 enum ShaderPaths {
 
-    /// The repo's `Sources/Shaders` directory, if we can find it. Tries the
-    /// working directory first (that's how `make playground` runs us), then
-    /// walks up from the executable so the binary also works when launched from
-    /// Finder or a different cwd.
-    static var repoShaders: URL? {
-        var roots = [URL(fileURLWithPath: FileManager.default.currentDirectoryPath)]
-        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        for _ in 0..<6 {
-            dir.deleteLastPathComponent()
-            roots.append(dir)
-        }
-        return roots.map { $0.appendingPathComponent("Sources/Shaders") }
-            .first { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }?
-            .standardizedFileURL
-    }
-
     /// `~/Library/Application Support/Lerping/Shaders` — the drop folder the
     /// preview app and screensaver already scan.
     static var customDirectory: URL { ShaderLocations.customShaderDirectories()[0] }
@@ -27,7 +11,7 @@ enum ShaderPaths {
     /// Destination for newly scaffolded shaders: the repo when we are running
     /// inside one, otherwise the drop folder.
     static var newShaderDirectory: URL {
-        if let repo = repoShaders { return repo }
+        if let repo = ShaderLocations.repoShaderDirectory() { return repo }
         try? FileManager.default.createDirectory(at: customDirectory, withIntermediateDirectories: true)
         return customDirectory
     }
