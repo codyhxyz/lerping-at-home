@@ -94,9 +94,7 @@ make install-playground PLAYGROUND_REPO=/path/to/lerping-at-home
   are two apps and not two copies of one: `make playground` always opens the one
   in `build/`, and neither ever raises the other. They look alike in ⌘-Tab, so
   the installed copy's window title also names the checkout it is editing.
-- `make uninstall-playground` removes it. `make clean` deliberately does not —
-  the copy in `~/Applications` is yours, and cleaning a build tree is not a
-  reason to uninstall it.
+- `make uninstall-playground` removes it. `make clean` does not.
 
 ## Live shader development
 
@@ -127,7 +125,7 @@ make playground
   while it is already open raises the window you have instead of starting a
   second copy. Launching the executable inside the bundle by hand does the same
   thing: it hands off to the running instance and exits.
-- Closing the window quits — there is one window and it is the app.
+- Closing the window quits the app.
 - Shaders still come from the repo the bundle sits in, so `open`'s working
   directory does not matter. (`make install-playground` puts a copy in
   `~/Applications` where Spotlight will offer it; that one is told which
@@ -141,7 +139,7 @@ make playground
 - The picker lists `Sources/Shaders/` plus the custom shader directory, and refreshes when files change on disk.
 - An externally modified open file reloads if there are no unsaved edits.
 - Time scrubber, render scale (100/75/50/25%), and fps readout map onto `LerpUniforms` and `LerpMetalView.Config`.
-- Editor is a plain `NSTextView` with soft tabs, auto-indent, undo, and find. No syntax highlighting or gutter — the shader next to it is the thing worth looking at.
+- Editor is a plain `NSTextView` with soft tabs, auto-indent, undo, and find. No syntax highlighting and no line-number gutter.
 
 Keys:
 
@@ -291,7 +289,7 @@ scripts/             loadtest.swift, sandboxprobe.swift + its plist/entitlements
 sources: the screensaver's Options… sheet and the playground's rotation window.
 What stays in `Sources/Playground/` is the part that is the playground's alone —
 `RotationWindow.swift`, the window, and `RotationStore.swift`, which writes the
-screensaver's ByHost domain the moment you click. `RotationStore` is deliberately
+screensaver's ByHost domain the moment you click. `RotationStore` is
 *not* hoisted: it needs `-framework ScreenSaver`, and neither the preview app nor
 the snapshot renderer should have to link a framework they never use.
 
@@ -309,12 +307,12 @@ the snapshot renderer should have to link a framework they never use.
 ## legacyScreenSaver behavior handled in `Sources/Saver/`
 
 - The system does not destroy saver instances, and never reports occlusion for a host parked at the desktop-wallpaper layer (`CGWindowLevel -2147483625`, full-screen bounds, `onscreen=false`). Neither of `LerpMetalView`'s own stop paths is reachable there, so such a host renders forever behind the desktop. Measured on macOS 27: **5.5% CPU sustained** (`ps -o time=` delta of 1.65 s over a 30 s window) with the screensaver not running.
-- `stopAnimation` *is* called on macOS 27, ~400 ms after `didstop` — contrary to the older Sonoma-era note this file used to carry. It is still not something to rely on: it arrives after the notifications have already stopped rendering, and it never arrives for a host that is not currently displaying the saver. Both `startAnimation` and `stopAnimation` stay wired up, but neither is the primary signal.
+- `stopAnimation` *is* called on macOS 27, ~400 ms after `didstop` — contrary to the older Sonoma-era note this file used to carry. It arrives after the notifications have already stopped rendering, and it never arrives for a host that is not currently displaying the saver. Both `startAnimation` and `stopAnimation` stay wired up, but neither is the primary signal.
 - The real saver therefore renders **only** between the distributed `com.apple.screensaver` start and stop notifications, and at no other time. `startAnimation` does not start rendering; a host that never receives a start notification never draws a frame. Same measurement after the change: **0.00 s over 30 s**.
 - The host process is never terminated. `exit(0)` on `willstop` raced the lock-screen UI, which is why the lock screen was blank, animated, or static at random. A retained window with its backing store intact costs nothing and makes the lock screen deterministic — it shows the frame the saver stopped on.
 - Consequence: after `willstop` the lock screen shows a **frozen** last frame, not animation. `willstop` is the system saying the session is over.
 - `com.apple.screensaver.willstart` is not posted on macOS 27; `didstart` is. Both are observed, and `didstop` is observed as a backstop for `willstop`.
-- legacyScreenSaver constructs **two** `LerpSaverView` instances per host, and the second one is built ~165 ms *after* `didstart` has already been delivered. "A session is running" is therefore process-wide state, not per-instance: an instance that missed the notification starts from its own `startAnimation`. Observed, not defensive — without it the second instance stays dark for the whole session.
+- legacyScreenSaver constructs **two** `LerpSaverView` instances per host, and the second one is built ~165 ms *after* `didstart` has already been delivered. "A session is running" is therefore process-wide state, not per-instance: an instance that missed the notification starts from its own `startAnimation`. Without it the second instance stays dark for the whole session.
 - Only one of those two instances is ever put in a window. Anything with a side effect (the wallpaper handoff) is gated on `window != nil`.
 - The System Settings preview instance keeps the classic `startAnimation`/`stopAnimation` contract and ignores the distributed notifications, so a real screensaver cycle cannot freeze the thumbnail.
 - `isPreview` is unreliable on macOS Tahoe, so a small frame size is also treated as preview.
@@ -347,7 +345,7 @@ and loading the real `.saver` into it. Measured on macOS 27, Apple M5:
 | reopen it | 90 ms, entirely from memory |
 
 So the sandbox can render, but it cannot cache anywhere the rest of the machine
-can see — which is why the stills are baked into the bundle by `make saver`
+can see — the stills are baked into the bundle by `make saver`
 rather than shared with the playground's `~/Library/Caches` copy, and why
 whatever the bundle is missing is cached in the container instead. The read-only
 exception for `/` is also why a custom shader in
@@ -357,7 +355,7 @@ even before `make install` bakes it into the bundle.
 ## Desktop picture handoff
 
 - **Off by default.** Enable with **Set desktop picture to the last frame** in Options….
-  Silently replacing someone's wallpaper is not a reasonable default.
+  Off by default.
 - On `com.apple.screensaver.willstop` the saver reads the exact `shaderName`, `time` and
   `seed` the view is on, re-renders that frame offscreen at each display's native pixel
   size via `LerpSnapshot`, writes it to a new PNG, and calls `NSWorkspace.setDesktopImageURL`
@@ -401,8 +399,17 @@ even before `make install` bakes it into the bundle.
 
 ## License
 
-- GPL-3.0-or-later. See `LICENSE`.
-- Copyleft: derivative works and redistributed modified versions must also be released under GPL-3.0.
-- Shaders ported from [Paper Shaders](https://github.com/paper-design/shaders), and the prelude helpers derived from it, are Apache-2.0 upstream. See `NOTICE.txt`.
-- Apache-2.0 is one-way compatible with GPL-3.0, so the combined work is conveyed under GPL-3.0. Apache-2.0 is not compatible with GPL-2.0.
+- AGPL-3.0-or-later. See `LICENSE`.
+- Copyleft: derivative works and redistributed modified versions must also be released under AGPL-3.0.
+- AGPL-3.0 adds section 13 to GPL-3.0: users interacting with a modified version over a network must be offered its source. This program does no network interaction, so section 13 is inert here.
+- Apache-2.0 is one-way compatible with the GPL-3.0 family, so the combined work is conveyed under AGPL-3.0. Apache-2.0 is not compatible with GPL-2.0.
 - `Sources/Shaders/aurora.metal` is original work, additionally offered under MIT in its file header.
+
+## Sources
+
+- [paper-design/shaders](https://github.com/paper-design/shaders) — Apache-2.0. 28 of the 31 shaders are ports of it; the prelude's hashes, value noise, simplex noise and banding fix derive from it. Per-shader attribution in `NOTICE.txt`.
+- Neuro Noise — original GLSL algorithm by [@zozuar](https://github.com/zozuar), via Paper Shaders.
+- Microsoft 3D Pipes (`sspipes`, Copyright (c) 1994-1995 Microsoft Corporation) — `Sources/Shaders/pipes.metal` is an original raymarched SDF sharing no code with it, and reuses its published numeric constants. See `NOTICE.txt`.
+- The OpenGL "teapot" material table (emerald, jade, pearl, ruby, turquoise, brass, bronze, copper, gold, silver, plastics, rubbers) — long-published values used by `pipes`.
+- [orchetect/swift-midi](https://github.com/orchetect/swift-midi) — MIT. MIDI I/O for the playground, linked statically via `Sources/MIDIDeps`. Formerly named MIDIKit.
+- The exit-on-`willstop` approach for `legacyScreenSaver` follows [Aerial](https://github.com/JohnCoates/Aerial)'s documented workaround; this project no longer uses it (see "legacyScreenSaver behaviour").

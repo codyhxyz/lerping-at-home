@@ -2,13 +2,13 @@ Lerping@Home
 Copyright (c) 2026 Cody Hergenroeder
 
 This program is free software: you can redistribute it and/or modify it
-under the terms of the GNU General Public License as published by the Free
-Software Foundation, either version 3 of the License, or (at your option)
-any later version. See LICENSE for the full text.
+under the terms of the GNU Affero General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your
+option) any later version. See LICENSE for the full text.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
 more details.
 
 
@@ -74,16 +74,31 @@ and reference material. Facts and measurements are not themselves
 copyrightable, but note the provenance if you redistribute.
 
 
+The playground links orchetect/swift-midi (https://github.com/orchetect/swift-midi),
+Copyright Steffan Andrews, licensed under the MIT License. It is fetched and
+linked statically by Sources/MIDIDeps and is not vendored into this tree. The
+screensaver, preview and snapshot targets do not link it. The library was
+formerly named MIDIKit.
+
+The MIDI mapping-preset model (per-device bindings, MIDI learn, named banks)
+follows the design of MIKMIDI (https://github.com/mixedinkey-opensource/MIKMIDI),
+Copyright Mixed In Key LLC, MIT-licensed. No MIKMIDI code is used.
+
+The screensaver's earlier exit-on-willstop workaround followed the approach
+documented by Aerial (https://github.com/JohnCoates/Aerial), MIT-licensed. No
+Aerial code is used, and that workaround has since been removed.
+
+
 LICENSE INTERACTION
 -------------------
 
 Apache-2.0 is one-way compatible with GPL-3.0: Apache-2.0 material may be
-incorporated into a GPL-3.0 work, and the combined work is conveyed under
-GPL-3.0. (Apache-2.0 is NOT compatible with GPL-2.0, which is why this
+incorporated into a GPL-3.0-family work, and the combined work is conveyed
+under AGPL-3.0. (Apache-2.0 is NOT compatible with GPL-2.0, which is why this
 project uses version 3.)
 
 The Apache-2.0 portions listed above remain available under Apache-2.0 from
 their upstream source. Their copyright and license notices are retained here
 and in the per-file headers of the ported shaders, as Apache-2.0 section 4
-requires. Relicensing the combined work under GPL-3.0 does not remove those
+requires. Relicensing the combined work under AGPL-3.0 does not remove those
 obligations and does not relicense the upstream project.
