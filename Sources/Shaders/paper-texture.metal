@@ -1,0 +1,233 @@
+// Paper Texture — ported from paper-design/shaders (Apache-2.0)
+// https://github.com/paper-design/shaders
+// A sheet of paper built entirely out of noise: cell-based crumples, curly
+// fibre noise, screen-space roughness, sparse speckle drops and a set of
+// folds, all summed into a normal and lit by a single directional light.
+// Upstream renders one still frame; this port orbits the light and walks the
+// fold anchors around so the relief keeps catching the light. The optional
+// u_image layer is dropped (a screensaver has nothing to composite) and the
+// noise-texture randomizers become the prelude's hash21 / hash22.
+
+constant float3 PT_COLOR_FRONT = float3(0.694, 0.596, 0.455); // warm kraft
+constant float3 PT_COLOR_BACK  = float3(0.043, 0.031, 0.043); // umber shadow
+
+constant float PT_CONTRAST     = 0.60;
+constant float PT_ROUGHNESS    = 0.40;
+constant float PT_FIBER        = 0.28;
+constant float PT_FIBER_SIZE   = 0.65;
+constant float PT_CRUMPLES     = 0.60;
+constant float PT_CRUMPLE_SIZE = 0.55;
+constant float PT_FOLDS        = 0.70;
+constant int   PT_FOLD_COUNT   = 7;
+constant float PT_FADE         = 0.35;
+constant float PT_DROPS        = 0.30;
+
+// Upstream reads these out of a pre-baked noise texture; a per-cell hash is
+// the same thing without the sampler.
+static float  ptCellRand1(float2 p) { return hash21(floor(p)); }
+static float2 ptCellRand2(float2 p) { return hash22(floor(p)); }
+
+// Screen-space paper roughness: 3 octaves of cell noise plus a directional
+// ridge term, so the grain has a faint machine direction like real stock.
+static float ptRoughness(float2 p) {
+    p *= 0.1;
+    float o = 0.0;
+    for (int i = 0; i < 3; i++) {
+        float4 w = float4(floor(p), ceil(p));
+        float2 f = fract(p);
+        o += mix(mix(ptCellRand1(w.xy), ptCellRand1(w.xw), f.y),
+                 mix(ptCellRand1(w.zy), ptCellRand1(w.zw), f.y), f.x);
+        o += 0.2 / exp(2.0 * abs(sin(0.2 * p.x + 0.5 * p.y)));
+        p *= 2.1;
+    }
+    return o / 3.0;
+}
+
+// Curly fibre noise: the gradient magnitude of a rotated fBm, which draws
+// hair-like filaments instead of blobs.
+static float ptFiberRand(float2 p) { return hash21(floor(p) + 37.7); }
+
+static float ptFiberValueNoise(float2 st) {
+    float2 i = floor(st);
+    float2 f = fract(st);
+    float a = ptFiberRand(i);
+    float b = ptFiberRand(i + float2(1.0, 0.0));
+    float c = ptFiberRand(i + float2(0.0, 1.0));
+    float d = ptFiberRand(i + float2(1.0, 1.0));
+    float2 uu = f * f * (3.0 - 2.0 * f);
+    return mix(mix(a, b, uu.x), mix(c, d, uu.x), uu.y);
+}
+
+static float ptFiberFbm(float2 n) {
+    float total = 0.0, amplitude = 1.0;
+    for (int i = 0; i < 3; i++) {
+        n = rotate(n, 0.7);
+        total += ptFiberValueNoise(n) * amplitude;
+        n *= 2.0;
+        amplitude *= 0.6;
+    }
+    return total;
+}
+
+static float ptFiberNoise(float2 uv) {
+    const float eps = 0.001;
+    float n0 = ptFiberFbm(uv);
+    float nx = ptFiberFbm(uv + float2(eps, 0.0));
+    float ny = ptFiberFbm(uv + float2(0.0, eps));
+    return length(float2(nx - n0, ny - n0)) / eps;
+}
+
+// Cell-based crumple pattern: jittered points weighted by a separable
+// smoothstep falloff, tiled every 8 cells like upstream.
+// Both call sites use a compile-time exponent (16 and 2), and pow() is by
+// far the most expensive op in this shader, so square them out by hand.
+static float ptPow16(float x) { float a = x * x; a *= a; a *= a; return a * a; }
+
+// Evaluated at `t` and `t + d` in a single sweep of the 3x3 neighbourhood.
+// The offset is a tiny finite difference used to turn the field into a
+// normal, so both points share a neighbourhood and the per-cell hash and
+// sine get paid once rather than twice — this loop is ~40% of the shader.
+static float2 ptCrumpledPair(float2 t, float2 d, bool sharp) {
+    float2 p = floor(t);
+    float2 wsum = float2(0.0);
+    float2 cl = float2(0.0);
+    for (int y = -1; y < 2; y++) {
+        for (int x = -1; x < 2; x++) {
+            float2 q = float2(float(x), float(y)) + p;
+            float2 q2 = q - floor(q / 8.0) * 8.0;
+            float2 c = q + ptCellRand2(q2);
+            float amp = 0.5 + 0.5 * sin((q2.x + q2.y * 5.0) * 8.0);
+
+            float2 r0 = c - t;
+            float2 r1 = r0 - d;
+            float sx0 = smoothstep(0.0, 1.0, 1.0 - abs(r0.x));
+            float sy0 = smoothstep(0.0, 1.0, 1.0 - abs(r0.y));
+            float sx1 = smoothstep(0.0, 1.0, 1.0 - abs(r1.x));
+            float sy1 = smoothstep(0.0, 1.0, 1.0 - abs(r1.y));
+            float2 w = sharp
+                ? float2(ptPow16(sx0) * ptPow16(sy0), ptPow16(sx1) * ptPow16(sy1))
+                : float2(sx0 * sx0 * sy0 * sy0, sx1 * sx1 * sy1 * sy1);
+
+            cl += amp * w;
+            wsum += w;
+        }
+    }
+    return sqrt(cl / max(wsum, 1e-20)) * 2.0;
+}
+
+// float2(shape(uv), shape(uv + d)).
+static float2 ptCrumplesShapePair(float2 uv, float2 d) {
+    return ptCrumpledPair(uv * 0.25, d * 0.25, true)
+         * ptCrumpledPair(uv * 0.5,  d * 0.5,  false);
+}
+
+// Nearest-anchor field: the direction to the closest fold anchor, faded out
+// as you approach it, which reads as a crease running through the sheet.
+// Upstream picks the anchors from a hashed seed; here they orbit slowly so
+// the creases migrate instead of sitting still.
+static float2 ptFolds(float2 uv, float t) {
+    float3 pp = float3(0.0);
+    float l = 9.0;
+    for (int i = 0; i < PT_FOLD_COUNT; i++) {
+        float2 rnd = hash22(float2(float(i) * 3.7 + 1.0, float(i) * 1.9 + 5.0));
+        float an = rnd.x * TWO_PI + 0.35 * t * (0.4 + 0.6 * rnd.y);
+        float2 p = float2(cos(an), sin(an)) * (0.25 + 0.7 * rnd.y);
+        float dist = distance(uv, p);
+        l = min(l, dist);
+        if (l == dist) {
+            pp.xy = uv - p;
+            pp.z = dist;
+        }
+    }
+    return mix(pp.xy, float2(0.0), sqrt(sqrt(pp.z)));
+}
+
+// Sparse speckles — the multiplicative distance accumulator is upstream's,
+// and is what keeps them rare.
+static float ptDrops(float2 uv, float seed) {
+    float2 iUV = floor(uv);
+    float2 fUV = fract(uv);
+    float minDist = 1.0;
+    for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+            float2 neighbor = float2(float(i), float(j));
+            float2 offset = ptCellRand2(iUV + neighbor);
+            offset = 0.5 + 0.5 * sin(10.0 * seed + TWO_PI * offset);
+            float2 q = neighbor + offset - fUV;
+            float dist = length(q);
+            minDist = min(minDist, minDist * dist);
+        }
+    }
+    return 1.0 - smoothstep(0.05, 0.09, sqrt(minDist));
+}
+
+static float ptFbm(float2 n) {
+    float total = 0.0, amplitude = 0.4;
+    for (int i = 0; i < 3; i++) {
+        total += valueNoise(n) * amplitude;
+        n *= 1.99;
+        amplitude *= 0.65;
+    }
+    return total;
+}
+
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+    // 5 * (imageUV - .5) * aspect, i.e. 2.5 units on the short axis.
+    float2 patternUV = 2.5 * lerpUV(pos, u.resolution);
+
+    float t = 0.10 * u.time + 30.0 * u.seed;
+    float seed = 4.0 * u.seed + 0.03 * t;
+
+    // Roughness lives in screen space so it behaves like film grain.
+    float2 roughnessUv = 1.5 * (float2(pos.x, u.resolution.y - pos.y) - 0.5 * u.resolution);
+    float roughness = ptRoughness(roughnessUv + float2(1.0, 0.0))
+                    - ptRoughness(roughnessUv - float2(1.0, 0.0));
+
+    float2 crumplesUV = fract(patternUV * 0.02 / PT_CRUMPLE_SIZE - seed) * 32.0;
+    float2 crumplePair = ptCrumplesShapePair(crumplesUV, float2(0.05, 0.0));
+    float crumples = PT_CRUMPLES * (crumplePair.y - crumplePair.x);
+
+    float2 fiberUV = 2.0 / PT_FIBER_SIZE * patternUV;
+    float fiber = ptFiberNoise(fiberUV);
+    fiber = 0.5 * PT_FIBER * (fiber - 1.0);
+
+    float2 foldsUV = rotate(patternUV * 0.12, 4.0 * u.seed);
+    float2 w = ptFolds(foldsUV, t);
+    float2 w2 = ptFolds(rotate(foldsUV + 0.007 * cos(seed), 0.01 * sin(seed)), t);
+
+    float drops = PT_DROPS * ptDrops(patternUV * 2.0, seed);
+
+    float fade = PT_FADE * ptFbm(0.17 * patternUV + 10.0 * u.seed);
+    fade = clamp(8.0 * fade * fade * fade, 0.0, 1.0);
+
+    w = mix(w, float2(0.0), fade);
+    w2 = mix(w2, float2(0.0), fade);
+    crumples = mix(crumples, 0.0, fade);
+    drops = mix(drops, 0.0, fade);
+    fiber *= mix(1.0, 0.5, fade);
+    roughness *= mix(1.0, 0.5, fade);
+
+    float2 normal = float2(0.0);
+    normal += PT_FOLDS * min(5.0 * PT_CONTRAST, 1.0) * 4.0 * max(float2(0.0), w + w2);
+    normal += crumples;
+    normal += 3.0 * drops;
+    normal += PT_ROUGHNESS * 1.5 * roughness;
+    normal += fiber;
+
+    // Upstream's fixed vec3(1, 2, 1) light, put on a slow orbit so the relief
+    // keeps changing which way it catches the light.
+    float la = 0.45 * t;
+    float3 lightPos = float3(1.4 * cos(la), 1.6 + 0.9 * sin(la), 1.0);
+
+    float res = dot(normalize(float3(normal, 9.5 - 9.0 * pow(PT_CONTRAST, 0.1))),
+                    normalize(lightPos));
+
+    float3 color = PT_COLOR_FRONT * res;
+    float opacity = res;
+    color += PT_COLOR_BACK * (1.0 - opacity);
+    color -= 0.007 * drops;
+    color = clamp(color, 0.0, 1.0);
+
+    color = lerpDither(color, pos);
+    return half4(half3(color), 1.0h);
+}
