@@ -122,5 +122,8 @@ scripts/             loadtest.swift
 
 ## License
 
-- Original code: MIT. See `LICENSE`.
-- Shaders ported from [Paper Shaders](https://github.com/paper-design/shaders) and the prelude helpers derived from it: Apache 2.0. See `NOTICE.txt`.
+- GPL-3.0-or-later. See `LICENSE`.
+- Copyleft: derivative works and redistributed modified versions must also be released under GPL-3.0.
+- Shaders ported from [Paper Shaders](https://github.com/paper-design/shaders), and the prelude helpers derived from it, are Apache-2.0 upstream. See `NOTICE.txt`.
+- Apache-2.0 is one-way compatible with GPL-3.0, so the combined work is conveyed under GPL-3.0. Apache-2.0 is not compatible with GPL-2.0.
+- `Sources/Shaders/aurora.metal` is original work, additionally offered under MIT in its file header.

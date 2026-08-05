@@ -1,6 +1,20 @@
 Lerping@Home
 Copyright (c) 2026 Cody Hergenroeder
 
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version. See LICENSE for the full text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+more details.
+
+
+THIRD-PARTY ATTRIBUTION
+-----------------------
+
 This project includes shaders ported from Paper Shaders
 (https://github.com/paper-design/shaders), Copyright Paper Design,
 licensed under the Apache License, Version 2.0
@@ -13,3 +27,20 @@ Liquid Metal, Gem Smoke. Shared helpers in the shader prelude
 (hashes, value noise, simplex noise, banding fix) are also derived from
 Paper Shaders. The ports translate the original GLSL to Metal Shading
 Language and replace texture-based randomizers with procedural hashes.
+
+Aurora (Sources/Shaders/aurora.metal) is original work, not a port.
+
+
+LICENSE INTERACTION
+-------------------
+
+Apache-2.0 is one-way compatible with GPL-3.0: Apache-2.0 material may be
+incorporated into a GPL-3.0 work, and the combined work is conveyed under
+GPL-3.0. (Apache-2.0 is NOT compatible with GPL-2.0, which is why this
+project uses version 3.)
+
+The Apache-2.0 portions listed above remain available under Apache-2.0 from
+their upstream source. Their copyright and license notices are retained here
+and in the per-file headers of the ported shaders, as Apache-2.0 section 4
+requires. Relicensing the combined work under GPL-3.0 does not remove those
+obligations and does not relicense the upstream project.
