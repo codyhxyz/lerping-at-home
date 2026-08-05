@@ -20,14 +20,14 @@ This project includes shaders ported from Paper Shaders
 licensed under the Apache License, Version 2.0
 (http://www.apache.org/licenses/LICENSE-2.0).
 
-Ported shaders (Sources/Shaders/), 27 of the 29 shipped:
+Ported shaders (Sources/Shaders/), 28 of the 30 shipped:
 
   Color Panels, Dithering, Dot Grid, Dot Orbit, Fluted Glass,
   Gem Smoke, God Rays, Grain Gradient, Halftone CMYK, Halftone Dots,
-  Liquid Metal, Mesh Gradient, Metaballs, Neuro Noise (original
-  algorithm by @zozuar), Paper Texture, Perlin Noise, Pulsing Border,
-  Simplex Noise, Smoke Ring, Spiral, Static Mesh Gradient,
-  Static Radial Gradient, Swirl, Voronoi, Warp, Water, Waves.
+  Heatmap, Liquid Metal, Mesh Gradient, Metaballs, Neuro Noise
+  (original algorithm by @zozuar), Paper Texture, Perlin Noise,
+  Pulsing Border, Simplex Noise, Smoke Ring, Spiral, Static Mesh
+  Gradient, Static Radial Gradient, Swirl, Voronoi, Warp, Water, Waves.
 
 Shared helpers in the shader prelude (hashes, value noise, simplex noise,
 banding fix) are also derived from Paper Shaders.
@@ -37,8 +37,24 @@ texture-based randomizers with procedural hashes.
 
 Several upstream shaders operate on a supplied image (u_image). Those ports
 substitute a procedural source for the sampler, keeping the upstream
-algorithm: Water, Fluted Glass, Halftone Dots, Halftone CMYK. Each affected
-file documents its substitution in a header comment.
+algorithm: Water, Fluted Glass, Halftone Dots, Halftone CMYK, Heatmap. Each
+affected file documents its substitution in a header comment.
+
+Heatmap additionally ports upstream's CPU pre-pass. Upstream does not hand
+that shader a raw picture: `toProcessedHeatmap` box-blurs the source
+silhouette at three radii and packs them into one RGB image first.
+Sources/LerpCore/HeatmapData.swift is a translation of that routine — the
+same integral-image box blur, the same multi-pass counts, the same radii as
+fractions of the shape box, the same channel packing — run over a
+procedurally drawn silhouette instead of a supplied file.
+
+One upstream shader is deliberately not ported: Image Dithering. It shares
+its pixel grid, its Bayer matrices and its threshold verbatim with upstream's
+generative Dithering, which is already ported here; what it adds beyond that
+is a multi-step luminance quantisation and an original-colours mode, some six
+lines. Everything else that would make it look like a separate shader would
+have to be an invented source image, so it belongs as parameters on Dithering
+rather than as a shader of its own.
 
 Aurora (Sources/Shaders/aurora.metal) is original work, not a port.
 

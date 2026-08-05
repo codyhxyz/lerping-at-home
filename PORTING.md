@@ -41,10 +41,11 @@ Loops with `break` on a uniform count: use a fixed `constant int` count.
 ## Shaders that need CPU-computed data
 
 Almost nothing does. `LerpUniforms` plus procedural noise covers every shader
-in this repo except `pipes`, which needs a lattice walk that no fragment shader
-can produce on its own. For those cases a shader can opt into a
-**data provider**: a Swift object that computes something on the CPU each frame
-and binds it for the fragment function.
+in this repo except two: `pipes`, which needs a lattice walk that no fragment
+shader can produce on its own, and `heatmap`, which needs large-radius blurs
+that an integral image computes in O(1) per pixel and a fragment shader cannot.
+For those cases a shader can opt into a **data provider**: a Swift object that
+computes something on the CPU each frame and binds it for the fragment function.
 
 Opt in with a comment on one of the file's first 40 lines:
 
@@ -67,6 +68,10 @@ The provider supplies its own MSL declarations (here `LerpPipesFrame`,
 just ahead of `#line 1` — so compile-error line numbers still point at your
 file. Read the provider's `metalPrelude` to see what it binds and where.
 
+A provider can bind textures as well as buffers — `HeatmapData` binds one at
+fragment texture 1 and supplies the `constexpr sampler` for it, so its shader
+takes `texture2d<float> processed [[texture(1)]]`.
+
 Writing one: conform to `LerpDataProvider` in `Sources/LerpCore/`, register it
 in `LerpDataProviders`, and give the shader a matching `// lerp-data:` line.
 `PipesData.swift` is the worked example. Two rules:
@@ -77,7 +82,10 @@ in `LerpDataProviders`, and give the shader a matching `// lerp-data:` line.
   whether or not t = 0…59 were rendered first. That property is what the
   snapshot suite, the playground's time scrubber and thumbnail generation all
   rest on. Regenerating from scratch is cheap — `pipes` replays a ~1000-step
-  lattice walk every frame in about 70 µs.
+  lattice walk every frame in about 70 µs. Caching is only allowed when the
+  cache key *is* the whole input: `heatmap`'s pre-pass reads (seed, drawable
+  size) and never the clock, so it is built once per distinct key and rebuilding
+  it every frame would produce identical bytes.
 - **Do not write a buffer the GPU may still be reading.** Use `LerpBufferRing`,
   which hands out one of three buffers in rotation.
 
