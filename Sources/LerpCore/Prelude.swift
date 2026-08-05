@@ -11,7 +11,10 @@ import Foundation
 ///                            constant LerpUniforms& u [[buffer(0)]])
 ///
 public enum LerpPrelude {
-    public static let source = """
+    /// The prelude every shader gets, with no `#line` directive. Use `source`
+    /// (or `source(extra:)`) rather than this — they add the `#line 1` marker
+    /// that keeps Metal's diagnostics pointing at the shader file's own lines.
+    public static let helpers = """
     #include <metal_stdlib>
     using namespace metal;
 
@@ -111,8 +114,16 @@ public enum LerpPrelude {
         return color + 1.0 / 256.0 *
             (fract(sin(dot(0.014 * pos.xy, float2(12.9898, 78.233))) * 43758.5453123) - 0.5);
     }
-
-    #line 1
-
     """
+
+    /// The standard prelude: helpers plus the `#line 1` marker.
+    public static var source: String { source(extra: "") }
+
+    /// The prelude with a data provider's MSL declarations spliced in between
+    /// the helpers and the `#line 1` marker, so shader line numbers still match
+    /// the file no matter how much the provider declares.
+    public static func source(extra: String) -> String {
+        let middle = extra.isEmpty ? "" : "\n" + extra + "\n"
+        return helpers + "\n" + middle + "\n#line 1\n"
+    }
 }

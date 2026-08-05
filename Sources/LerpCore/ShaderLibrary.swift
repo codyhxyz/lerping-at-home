@@ -10,6 +10,25 @@ public struct LerpShader: Sendable {
     public var displayName: String {
         name.split(separator: "-").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
     }
+
+    /// Name of the `LerpDataProvider` this shader asks for, declared as a
+    /// comment among its first lines:
+    ///
+    ///     // lerp-data: pipes
+    ///
+    /// nil for every shader that does not need CPU-side data, which is the
+    /// default and the path all the built-in shaders take.
+    public var dataProviderName: String? {
+        for raw in source.split(separator: "\n", omittingEmptySubsequences: false).prefix(40) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("//") else { continue }
+            let body = line.dropFirst(2).trimmingCharacters(in: .whitespaces)
+            guard body.lowercased().hasPrefix("lerp-data:") else { continue }
+            let value = body.dropFirst("lerp-data:".count).trimmingCharacters(in: .whitespaces)
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
 }
 
 public enum ShaderLocations {
@@ -36,6 +55,7 @@ public enum ShaderLocations {
 public final class ShaderLibrary {
     public let device: MTLDevice
     private var pipelineCache: [String: MTLRenderPipelineState] = [:]
+    private var dataProviders: [String: LerpDataProvider] = [:]
     private let extraSearchURLs: [URL]
 
     public private(set) var compileErrors: [String: String] = [:]
@@ -100,6 +120,22 @@ public final class ShaderLibrary {
         pipelineCache.removeAll()
     }
 
+    /// The `LerpDataProvider` a shader asked for, or nil if it asked for none.
+    /// Instances are cached per name so the per-frame scratch buffers a provider
+    /// owns are allocated once. Throws if the shader named a provider that is
+    /// not registered.
+    public func dataProvider(for shader: LerpShader) throws -> LerpDataProvider? {
+        guard let name = shader.dataProviderName else { return nil }
+        if let cached = dataProviders[name] { return cached }
+        guard let provider = LerpDataProviders.make(named: name, device: device) else {
+            let message = "shader '\(shader.name)' declares `// lerp-data: \(name)` but no such data provider is registered (known: \(LerpDataProviders.registeredNames.joined(separator: ", ")))"
+            compileErrors[shader.name] = message
+            throw NSError(domain: "LerpingAtHome", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        dataProviders[name] = provider
+        return provider
+    }
+
     /// Compiles (or returns a cached) pipeline for a shader. Throws with the
     /// Metal compiler's diagnostics on failure.
     public func pipeline(for shader: LerpShader) throws -> MTLRenderPipelineState {
@@ -110,9 +146,10 @@ public final class ShaderLibrary {
         if #available(macOS 15.0, *) {
             options.mathMode = .fast
         }
+        let prelude = LerpPrelude.source(extra: try dataProvider(for: shader)?.metalPrelude ?? "")
         let library: MTLLibrary
         do {
-            library = try device.makeLibrary(source: LerpPrelude.source + shader.source, options: options)
+            library = try device.makeLibrary(source: prelude + shader.source, options: options)
         } catch {
             compileErrors[shader.name] = String(describing: error)
             throw error

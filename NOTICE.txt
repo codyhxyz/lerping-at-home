@@ -20,7 +20,7 @@ This project includes shaders ported from Paper Shaders
 licensed under the Apache License, Version 2.0
 (http://www.apache.org/licenses/LICENSE-2.0).
 
-Ported shaders (Sources/Shaders/), 27 of the 28 shipped:
+Ported shaders (Sources/Shaders/), 27 of the 29 shipped:
 
   Color Panels, Dithering, Dot Grid, Dot Orbit, Fluted Glass,
   Gem Smoke, God Rays, Grain Gradient, Halftone CMYK, Halftone Dots,
@@ -41,6 +41,21 @@ algorithm: Water, Fluted Glass, Halftone Dots, Halftone CMYK. Each affected
 file documents its substitution in a header comment.
 
 Aurora (Sources/Shaders/aurora.metal) is original work, not a port.
+
+Pipes (Sources/Shaders/pipes.metal, Sources/LerpCore/PipesData.swift) is
+original work: a raymarched signed-distance-field rendering, sharing no code
+with anything it references. It is an homage to Microsoft's 3D Pipes
+screensaver (sspipes, Copyright (c) 1994-1995 Microsoft Corporation), and to
+match that program's look it reuses published numeric constants from it:
+lattice spacing 7 with pipe radius 1, ball joints of sqrt(2) x radius, a 90
+degree field of view at a viewing distance of 75, a scene yaw step of
+9.73156 degrees per reset, and its light position (90, 90, 150, 0) with
+global ambient 1.0. The sixteen pipe materials are the OpenGL "teapot"
+material table (emerald, jade, pearl, ruby, turquoise, brass, bronze,
+copper, gold, silver, and assorted plastics and rubbers), a set of ambient,
+diffuse, specular and shininess values long published in OpenGL sample code
+and reference material. Facts and measurements are not themselves
+copyrightable, but note the provenance if you redistribute.
 
 
 LICENSE INTERACTION
