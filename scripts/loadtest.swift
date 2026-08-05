@@ -60,4 +60,20 @@ guard table.frame.height > scroll.contentView.bounds.height else {
 print("OK: configure sheet \(Int(content.frame.width))x\(Int(content.frame.height)), "
       + "\(checkboxes.count) shader checkboxes, "
       + "\(table.rows(in: scroll.contentView.documentVisibleRect).length) visible, scrolls")
+
+// The wallpaper handoff overwrites the user's desktop picture, so it has to be
+// opt-in: the sheet must offer it and it must start off.
+func allSubviews(_ root: NSView) -> [NSView] { root.subviews.flatMap { [$0] + allSubviews($0) } }
+let wallpaperBox = allSubviews(content).compactMap { $0 as? NSButton }.first {
+    $0.title.lowercased().contains("desktop picture")
+}
+guard let wallpaperBox else {
+    print("FAIL: configure sheet has no desktop-picture checkbox")
+    exit(1)
+}
+guard wallpaperBox.state == .off else {
+    print("FAIL: desktop-picture checkbox defaults to on; it must be opt-in")
+    exit(1)
+}
+print("OK: desktop-picture handoff checkbox present and off by default")
 exit(0)

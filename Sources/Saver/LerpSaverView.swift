@@ -1,28 +1,41 @@
 import AppKit
+import OSLog
 import ScreenSaver
 
 /// Thin ScreenSaverView shim around LerpMetalView, with the known
 /// legacyScreenSaver workarounds baked in:
 ///
-/// - Since Sonoma the system never calls `stopAnimation` and never destroys
-///   instances; we listen for the distributed `com.apple.screensaver.willstop`
-///   notification and terminate the host process ourselves (the Aerial
-///   workaround), but only when we're the real fullscreen saver, never the
-///   System Settings preview.
+/// - The system never destroys instances, and `NSWindow.didChangeOcclusionState`
+///   never fires for a host parked at the desktop-wallpaper layer — so neither of
+///   the view's own "stop burning power" paths is reachable there, and such a
+///   host renders full-screen behind the desktop forever (measured: 5.5% CPU).
+///   The real saver therefore renders only between the distributed
+///   `com.apple.screensaver` start and stop notifications and at no other time.
+///   We never terminate the host: a retained window with an intact backing store
+///   costs nothing (measured: 0.00 s over 30 s) and keeps the lock screen
+///   deterministic — it shows the frame we stopped on instead of racing an
+///   `exit(0)` against the lock UI.
+/// - `startAnimation`/`stopAnimation` are still wired up but are not the primary
+///   signal. `stopAnimation` does fire on macOS 27, ~400 ms after `didstop`.
 /// - `isPreview` is unreliable on recent macOS, so a small frame also counts
-///   as preview.
+///   as preview. Preview instances keep the classic startAnimation/stopAnimation
+///   contract and ignore the distributed notifications entirely, so a real
+///   screensaver cycle cannot freeze the System Settings thumbnail.
 /// - We ignore `animateOneFrame` entirely; LerpMetalView drives its own
 ///   CADisplayLink with a capped frame rate.
 @objc(LerpSaverView)
 public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTableViewDelegate {
 
     private static let defaultsModule = "com.hergenroeder.lerping"
+    static let log = Logger(subsystem: "com.hergenroeder.lerping", category: "saver")
 
     /// Names the user wants in the shuffle rotation.
     private static let enabledShadersKey = "enabledShaders"
     /// Every shader that existed the last time the rotation was saved. Anything
     /// discovered later counts as new and joins the rotation automatically.
     private static let knownShadersKey = "knownShaders"
+    /// Opt-in: hand the last rendered frame off to the desktop picture.
+    static let wallpaperKey = "setWallpaperOnStop"
 
     private var metalView: LerpMetalView?
     private var effectiveIsPreview = false
@@ -31,6 +44,26 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
     private var fpsPopup: NSPopUpButton?
     private var scalePopup: NSPopUpButton?
     private var freezePopup: NSPopUpButton?
+    private var wallpaperCheckbox: NSButton?
+
+    /// True between a screensaver start notification and the matching stop.
+    ///
+    /// Process-wide, not per-instance, on purpose: legacyScreenSaver builds a
+    /// second `LerpSaverView` 130-165 ms *after* `didstart` lands (observed twice
+    /// on macOS 27), so a per-instance flag would leave that one dark for the
+    /// whole session if it is the one the host actually displays. A session is a
+    /// fact about the host, not about any one view.
+    private static var sessionActive = false
+    /// Instances that have started rendering for the current session, so the
+    /// second start is a no-op instead of a double display link.
+    private var rendering = false
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    private let instanceID = LerpSaverView.nextInstanceID()
+    private static var instanceCounter = 0
+    private static func nextInstanceID() -> Int {
+        instanceCounter += 1
+        return instanceCounter
+    }
 
     // Rotation list state, live only while the configure sheet is open.
     private var rotationNames: [String] = []
@@ -49,10 +82,15 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         effectiveIsPreview = isPreview || frame.width < 600
         wantsLayer = true
         setUpMetalView()
-        observeWillStop()
+        observeScreenSaverLifecycle()
+        Self.log.info("init frame=\(Int(frame.width))x\(Int(frame.height)) isPreview=\(isPreview) effectiveIsPreview=\(self.effectiveIsPreview)")
     }
 
     required init?(coder: NSCoder) { nil }
+
+    deinit {
+        lifecycleObservers.forEach(DistributedNotificationCenter.default().removeObserver)
+    }
 
     private static func defaults() -> ScreenSaverDefaults? {
         ScreenSaverDefaults(forModuleWithName: defaultsModule)
@@ -108,37 +146,236 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         addSubview(view)
     }
 
-    private func observeWillStop() {
-        DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("com.apple.screensaver.willstop"),
-            object: nil, queue: .main) { [weak self] _ in
+    // MARK: - Session lifecycle
+
+    /// Distributed notifications posted by the screensaver engine. Verified on
+    /// macOS 27: didstart → screenIsLocked → willstop → didstop → screenIsUnlocked.
+    /// `didstop` is observed purely as a backstop in case `willstop` is missed;
+    /// whichever lands first wins and the other is a no-op.
+    private func observeScreenSaverLifecycle() {
+        // The System Settings thumbnail lives in its own host and is driven by
+        // startAnimation/stopAnimation. It must not react to the real saver's
+        // session, or opening System Settings during a screensaver cycle would
+        // leave the thumbnail frozen forever.
+        guard !effectiveIsPreview else { return }
+        let center = DistributedNotificationCenter.default()
+        func observe(_ name: String, _ handler: @escaping (LerpSaverView, String) -> Void) {
+            let token = center.addObserver(forName: Notification.Name(name),
+                                           object: nil, queue: .main) { [weak self] _ in
                 guard let self else { return }
-                self.metalView?.stop()
-                if !self.effectiveIsPreview {
-                    // legacyScreenSaver never tears us down (rdar since Sonoma);
-                    // exiting is the only reliable way to release the GPU.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        exit(0)
-                    }
-                }
+                Self.log.info("notification \(name, privacy: .public)")
+                handler(self, name)
             }
+            lifecycleObservers.append(token)
+        }
+        observe("com.apple.screensaver.willstart") { view, reason in view.beginSession(reason) }
+        observe("com.apple.screensaver.didstart") { view, reason in view.beginSession(reason) }
+        observe("com.apple.screensaver.willstop") { view, reason in view.endSession(reason) }
+        observe("com.apple.screensaver.didstop") { view, reason in view.endSession(reason) }
+    }
+
+    private func beginSession(_ reason: String) {
+        Self.sessionActive = true
+        startRendering(reason)
+    }
+
+    private func startRendering(_ reason: String) {
+        guard !rendering else { return }
+        rendering = true
+        Self.log.info("[\(self.instanceID)] start rendering (\(reason, privacy: .public))")
+        metalView?.config = currentConfig()
+        metalView?.start()
+    }
+
+    /// Stops rendering. The window, its layer and the last presented drawable
+    /// all stay alive, so whatever is on screen (lock screen, desktop) keeps
+    /// showing the frame we ended on instead of black.
+    private func endSession(_ reason: String) {
+        Self.sessionActive = false
+        guard rendering else { return }
+        rendering = false
+        // Read the exact frame the view is on *before* stopping it.
+        let frame = capturedFrame()
+        metalView?.stop()
+        Self.log.info("[\(self.instanceID)] session end (\(reason, privacy: .public)) — display link torn down, window retained")
+        if let frame { publishWallpaper(frame) }
     }
 
     // MARK: - ScreenSaverView
 
     public override func startAnimation() {
         super.startAnimation()
-        metalView?.config = currentConfig()
-        metalView?.start()
+        Self.log.info("[\(self.instanceID)] startAnimation preview=\(self.effectiveIsPreview) sessionActive=\(Self.sessionActive) window=\(self.window != nil) level=\(self.window?.level.rawValue ?? 0) size=\(Int(self.bounds.width))x\(Int(self.bounds.height))")
+        // The System Settings thumbnail is driven entirely by this call.
+        if effectiveIsPreview {
+            startRendering("startAnimation/preview")
+            return
+        }
+        // Real saver: rendering is gated on the screensaver notifications, not on
+        // this call. legacyScreenSaver also calls startAnimation on hosts that are
+        // never visible (the desktop-wallpaper layer), and those hosts never get a
+        // stop of any kind — that was the ~5% CPU / ~50% GPU burn. The one
+        // exception is an instance built after `didstart` already landed: the
+        // session is genuinely running, so it may draw.
+        if Self.sessionActive { startRendering("startAnimation/in-session") }
     }
 
     public override func stopAnimation() {
         super.stopAnimation()
-        metalView?.stop()
+        Self.log.info("[\(self.instanceID)] stopAnimation preview=\(self.effectiveIsPreview)")
+        if effectiveIsPreview {
+            rendering = false
+            metalView?.stop()
+        } else {
+            // Kept wired up for the macOS versions that do honour it; on 14+ the
+            // notification path is what actually fires.
+            endSession("stopAnimation")
+        }
     }
 
     public override func animateOneFrame() {
         // Rendering is driven by LerpMetalView's display link.
+    }
+
+    // MARK: - Wallpaper handoff
+
+    /// The exact state a wallpaper still has to reproduce.
+    private struct CapturedFrame {
+        let shaderName: String
+        let time: Float
+        let seed: Float
+    }
+
+    private func capturedFrame() -> CapturedFrame? {
+        let enabled = Self.defaults()?.bool(forKey: Self.wallpaperKey) ?? false
+        // legacyScreenSaver builds two view instances per host and only ever puts
+        // one of them in a window. The windowless one has a shader and a clock but
+        // has never drawn a pixel, so it must not publish anything.
+        guard enabled, window != nil, let view = metalView, !view.currentShaderName.isEmpty else {
+            Self.log.info("[\(self.instanceID)] wallpaper skipped: enabled=\(enabled) window=\(self.window != nil) shader='\(self.metalView?.currentShaderName ?? "", privacy: .public)'")
+            return nil
+        }
+        return CapturedFrame(shaderName: view.currentShaderName,
+                             time: Float(view.time),
+                             seed: view.seed)
+    }
+
+    /// Directory for generated stills.
+    ///
+    /// `NSHomeDirectory()` first, because inside legacyScreenSaver that is the
+    /// sandbox container and the container is the only place the saver can write:
+    /// the real `~/Library/Application Support/Lerping/` is denied outright
+    /// ("You don't have permission to save the file"), same as the custom shader
+    /// directory. Verified on macOS 27 that `NSWorkspace.setDesktopImageURL`
+    /// accepts a container URL and that `wallpaperexportd` mirrors it out to
+    /// `/var/db/Wallpapers/<uuid>/Wallpaper.png` for the login window.
+    ///
+    /// The real home is kept as a second candidate so an unsandboxed host of this
+    /// code lands somewhere sensible.
+    static func wallpaperDirectoryCandidates() -> [URL] {
+        let suffix = "Library/Application Support/Lerping/wallpaper"
+        var dirs = [URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(suffix)]
+        if let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir {
+            dirs.append(URL(fileURLWithPath: String(cString: home)).appendingPathComponent(suffix))
+        }
+        var seen = Set<String>()
+        return dirs.filter { seen.insert($0.path).inserted }
+    }
+
+    /// First candidate we can actually create and write into. Returns nil (and
+    /// logs) when the sandbox denies every one of them.
+    static func writableWallpaperDirectory() -> URL? {
+        let manager = FileManager.default
+        for dir in wallpaperDirectoryCandidates() {
+            do {
+                try manager.createDirectory(at: dir, withIntermediateDirectories: true)
+                let probe = dir.appendingPathComponent(".writable")
+                try Data().write(to: probe)
+                try? manager.removeItem(at: probe)
+                return dir
+            } catch {
+                log.error("wallpaper dir unusable \(dir.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        return nil
+    }
+
+    /// Renders the frame the saver ended on at each screen's native resolution,
+    /// writes it to a brand-new file (rewriting the same URL does not refresh the
+    /// desktop picture) and hands it to NSWorkspace.
+    private func publishWallpaper(_ frame: CapturedFrame) {
+        // NSScreen is main-thread state; snapshot what we need here.
+        let targets: [(screen: NSScreen, pixels: CGSize)] = NSScreen.screens.map { screen in
+            let scale = screen.backingScaleFactor
+            return (screen, CGSize(width: max(1, screen.frame.width * scale),
+                                   height: max(1, screen.frame.height * scale)))
+        }
+        guard !targets.isEmpty, let directory = Self.writableWallpaperDirectory() else { return }
+        let shaderName = frame.shaderName, time = frame.time, seed = frame.seed
+        let stamp = UUID().uuidString.prefix(8)
+
+        DispatchQueue.global(qos: .utility).async {
+            // A private renderer/library: the view's own are main-thread state.
+            guard let renderer = LerpRenderer() else {
+                Self.log.error("wallpaper: no Metal device")
+                return
+            }
+            let library = ShaderLibrary(device: renderer.device)
+            guard let shader = library.shader(named: shaderName) else {
+                Self.log.error("wallpaper: shader \(shaderName, privacy: .public) not found")
+                return
+            }
+
+            var written: [(NSScreen, URL)] = []
+            for (index, target) in targets.enumerated() {
+                let url = directory.appendingPathComponent("\(shaderName)-\(stamp)-\(index).png")
+                let result = LerpSnapshot.render(shader: shader, library: library, renderer: renderer,
+                                                 width: Int(target.pixels.width),
+                                                 height: Int(target.pixels.height),
+                                                 time: time, seed: seed, to: url)
+                if let error = result.error {
+                    Self.log.error("wallpaper: render failed: \(error, privacy: .public)")
+                } else {
+                    Self.log.info("wallpaper: wrote \(url.path, privacy: .public) \(Int(target.pixels.width))x\(Int(target.pixels.height)) luma=\(result.meanLuminance)")
+                    written.append((target.screen, url))
+                }
+            }
+            guard !written.isEmpty else { return }
+
+            DispatchQueue.main.async {
+                var applied: Set<String> = []
+                for (screen, url) in written {
+                    do {
+                        try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: [:])
+                        applied.insert(url.lastPathComponent)
+                        Self.log.info("wallpaper: set on \(screen.localizedName, privacy: .public)")
+                    } catch {
+                        Self.log.error("wallpaper: setDesktopImageURL failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+                guard !applied.isEmpty else { return }
+                Self.pruneWallpapers(in: directory, keeping: applied)
+            }
+        }
+    }
+
+    /// Bounds the directory. Every frame needs a brand-new filename (rewriting a
+    /// URL does not refresh the desktop picture), so old ones have to go.
+    ///
+    /// Age-based rather than "delete everything I did not just write": with more
+    /// than one display macOS can run more than one saver host, and a strict
+    /// keep-set would let one host delete the still another host had just handed
+    /// to the wallpaper agent.
+    static func pruneWallpapers(in directory: URL, keeping: Set<String>, olderThan age: TimeInterval = 120) {
+        let manager = FileManager.default
+        let contents = (try? manager.contentsOfDirectory(at: directory,
+                                                         includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let cutoff = Date().addingTimeInterval(-age)
+        for url in contents where url.pathExtension.lowercased() == "png" && !keeping.contains(url.lastPathComponent) {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            guard let modified, modified < cutoff else { continue }
+            try? manager.removeItem(at: url)
+        }
     }
 
     // MARK: - Configure sheet
@@ -225,6 +462,14 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         let freezeIndex = Self.freezeChoices.firstIndex { $0.minutes == freezeMinutes } ?? 3
         freezePopup.selectItem(at: freezeIndex)
 
+        // Off unless the user says otherwise: replacing someone's desktop picture
+        // behind their back is not a reasonable default.
+        let wallpaperCheck = NSButton(checkboxWithTitle: "Set desktop picture to the last frame",
+                                      target: nil, action: nil)
+        wallpaperCheck.state = (defaults?.bool(forKey: Self.wallpaperKey) ?? false) ? .on : .off
+        wallpaperCheck.toolTip = "When the screensaver stops, render the frame it ended on and "
+            + "make it the desktop picture, so the desktop, lock screen and login window all match."
+
         func label(_ text: String) -> NSTextField {
             let field = NSTextField(labelWithString: text)
             field.alignment = .right
@@ -242,6 +487,7 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
             [label("Frame rate:"), fpsPopup],
             [label("Render scale:"), scalePopup],
             [label("Still image:"), freezePopup],
+            [label("On stop:"), wallpaperCheck],
         ])
         grid.column(at: 0).width = 100
         grid.rowAlignment = .firstBaseline
@@ -275,6 +521,7 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         self.fpsPopup = fpsPopup
         self.scalePopup = scalePopup
         self.freezePopup = freezePopup
+        self.wallpaperCheckbox = wallpaperCheck
         updateRotationControls()
         // Grow the sheet to whatever the rotation list needs.
         let fitting = content.fittingSize
@@ -368,6 +615,7 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
             let freezeIndex = freezePopup?.indexOfSelectedItem ?? 3
             defaults.set(Self.freezeChoices[max(0, min(freezeIndex, Self.freezeChoices.count - 1))].minutes,
                          forKey: "freezeAfterMinutes")
+            defaults.set(wallpaperCheckbox?.state == .on, forKey: Self.wallpaperKey)
             defaults.synchronize()
         }
         metalView?.config = currentConfig()
@@ -390,5 +638,6 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         rotationLabel = nil
         rotationNote = nil
         rotationButtons = []
+        wallpaperCheckbox = nil
     }
 }

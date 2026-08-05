@@ -24,6 +24,8 @@ make install     # builds and copies Lerping@Home.saver to ~/Library/Screen Save
 - Shader, frame rate, and render scale are set behind the saver's Options… button.
 - Options… also has an **In rotation** checklist: pick which shaders Shuffle draws
   from. New shaders join the rotation automatically; checking nothing means all.
+- Options… has a **Set desktop picture to the last frame** checkbox, off by default.
+  See "Desktop picture handoff" below.
 
 ## Live shader development
 
@@ -136,7 +138,9 @@ scripts/             loadtest.swift
 ## Runtime behavior
 
 - Frame rate is capped at 30 fps by default via `CADisplayLink.preferredFrameRateRange`.
-- Frame rate drops to 0 fps when the window is occluded.
+- Frame rate drops to 0 fps when the window is occluded — but only where AppKit actually
+  reports occlusion. It does not for a `legacyScreenSaver` host at the desktop-wallpaper
+  layer, which is why the saver gates on the screensaver notifications instead.
 - Low Power Mode caps the frame rate at 20 fps.
 - Internal render scale is selectable at 100%, 75%, or 50%; the compositor upscales.
 - The animation clock is frozen while paused, so time does not jump on resume.
@@ -144,13 +148,65 @@ scripts/             loadtest.swift
 
 ## legacyScreenSaver behavior handled in `Sources/Saver/`
 
-- The system does not call `stopAnimation` and does not destroy saver instances. The saver observes the distributed `com.apple.screensaver.willstop` notification and exits the host process itself. This path runs only for the real saver, never the System Settings preview.
+- The system does not destroy saver instances, and never reports occlusion for a host parked at the desktop-wallpaper layer (`CGWindowLevel -2147483625`, full-screen bounds, `onscreen=false`). Neither of `LerpMetalView`'s own stop paths is reachable there, so such a host renders forever behind the desktop. Measured on macOS 27: **5.5% CPU sustained** (`ps -o time=` delta of 1.65 s over a 30 s window) with the screensaver not running.
+- `stopAnimation` *is* called on macOS 27, ~400 ms after `didstop` — contrary to the older Sonoma-era note this file used to carry. It is still not something to rely on: it arrives after the notifications have already stopped rendering, and it never arrives for a host that is not currently displaying the saver. Both `startAnimation` and `stopAnimation` stay wired up, but neither is the primary signal.
+- The real saver therefore renders **only** between the distributed `com.apple.screensaver` start and stop notifications, and at no other time. `startAnimation` does not start rendering; a host that never receives a start notification never draws a frame. Same measurement after the change: **0.00 s over 30 s**.
+- The host process is never terminated. `exit(0)` on `willstop` raced the lock-screen UI, which is why the lock screen was blank, animated, or static at random. A retained window with its backing store intact costs nothing and makes the lock screen deterministic — it shows the frame the saver stopped on.
+- Consequence: after `willstop` the lock screen shows a **frozen** last frame, not animation. `willstop` is the system saying the session is over.
+- `com.apple.screensaver.willstart` is not posted on macOS 27; `didstart` is. Both are observed, and `didstop` is observed as a backstop for `willstop`.
+- legacyScreenSaver constructs **two** `LerpSaverView` instances per host, and the second one is built ~165 ms *after* `didstart` has already been delivered. "A session is running" is therefore process-wide state, not per-instance: an instance that missed the notification starts from its own `startAnimation`. Observed, not defensive — without it the second instance stays dark for the whole session.
+- Only one of those two instances is ever put in a window. Anything with a side effect (the wallpaper handoff) is gated on `window != nil`.
+- The System Settings preview instance keeps the classic `startAnimation`/`stopAnimation` contract and ignores the distributed notifications, so a real screensaver cycle cannot freeze the thumbnail.
 - `isPreview` is unreliable on macOS Tahoe, so a small frame size is also treated as preview.
 - `animateOneFrame` is not used; the view drives its own display link.
+- Lifecycle is logged to `com.hergenroeder.lerping` at `info` level; nothing about this path is debuggable without it:
+
+```sh
+log show --last 5m --info --style compact --predicate 'subsystem == "com.hergenroeder.lerping"'
+```
+
+## Desktop picture handoff
+
+- **Off by default.** Enable with **Set desktop picture to the last frame** in Options….
+  Silently replacing someone's wallpaper is not a reasonable default.
+- On `com.apple.screensaver.willstop` the saver reads the exact `shaderName`, `time` and
+  `seed` the view is on, re-renders that frame offscreen at each display's native pixel
+  size via `LerpSnapshot`, writes it to a new PNG, and calls `NSWorkspace.setDesktopImageURL`
+  for each `NSScreen`.
+- Effect: the desktop, the locked session, and the pre-login login window all show the frame
+  the screensaver ended on. macOS propagates it — `wallpaperexportd` mirrors the desktop
+  picture to `/var/db/Wallpapers/<uuid>/Wallpaper.png` and to the Preboot volume, which is
+  what the pre-login window reads. Verified end to end on macOS 27.
+- The export is downscaled to logical points (a 3024x1964 render comes back out as 1512x982),
+  so rendering at native panel resolution is already more than enough.
+- **Where the file goes:** `legacyScreenSaver` is sandboxed and writing to the real
+  `~/Library/Application Support/Lerping/wallpaper/` is denied outright, exactly like the
+  custom shader directory. The stills land in the sandbox container instead:
+
+```
+~/Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/
+  Library/Application Support/Lerping/wallpaper/<shader>-<id>-<screen>.png
+```
+
+  `setDesktopImageURL` accepts that URL and `wallpaperexportd` mirrors it — verified. The
+  consequence is that the desktop picture points into a sandbox container: if the container
+  is ever reset, the wallpaper breaks until the next screensaver cycle.
+- Every frame is written to a **new** filename. Rewriting the same URL does not refresh the
+  desktop picture.
+- `~/Library/Application Support/com.apple.wallpaper/Store/Index.plist` is never edited
+  directly. `WallpaperAgent` holds an in-memory copy and flushes it back over any edit, and
+  it lags the API call by seconds, so it is not a way to confirm anything either.
+- Generated PNGs older than two minutes are deleted after each successful handoff. Age-based
+  rather than "delete everything I did not just write", because with more than one display
+  macOS can run more than one saver host and a strict keep-set lets one host delete a still
+  another host just handed to the wallpaper agent.
+- Multi-display: each `NSScreen` gets its own render at its own aspect ratio. The Preboot
+  export is per **user** — one file — so the login window only ever shows the primary
+  display's frame. That is a macOS limitation, not something this code can fix.
 
 ## Wallpaper mode
 
-- Not implemented.
+- Not implemented; the handoff above is a still image, not a live animated desktop.
 - `LerpMetalView` has no ScreenSaver dependency and can be hosted elsewhere.
 - Path: a menu-bar app placing one `LerpMetalView` per `NSScreen` in a borderless window at `kCGDesktopWindowLevel`, with `ignoresMouseEvents`, `.canJoinAllSpaces`, `.stationary`, and occlusion pausing.
 
