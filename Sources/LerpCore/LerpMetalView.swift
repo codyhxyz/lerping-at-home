@@ -10,6 +10,9 @@ public final class LerpMetalView: NSView {
     public struct Config {
         /// Shader name to render, or nil for shuffle mode.
         public var shaderName: String?
+        /// Names eligible for shuffle; nil (the default) means every discovered
+        /// shader. An empty or entirely stale set falls back to every shader.
+        public var enabledShaderNames: Set<String>?
         public var framesPerSecond: Int
         /// 1.0 = native. 0.5 renders quarter the pixels and upscales — usually
         /// indistinguishable for noise-type shaders, ~4x cheaper.
@@ -172,10 +175,17 @@ public final class LerpMetalView: NSView {
         if let name = config.shaderName, let shader = available.first(where: { $0.name == name }) {
             setShader(shader)
         } else {
-            shuffleOrder = available.map(\.name).shuffled()
+            let enabled = available.filter { config.enabledShaderNames?.contains($0.name) ?? true }
+            shuffleOrder = (enabled.isEmpty ? available : enabled).map(\.name).shuffled()
             shuffleIndex = 0
             lastShuffleSwitch = CACurrentMediaTime()
             advanceShuffle(to: 0)
+            if pipeline == nil, shuffleOrder.count < available.count {
+                // Every enabled shader failed to compile: widen to all of them
+                // rather than presenting nothing.
+                shuffleOrder = available.map(\.name).shuffled()
+                advanceShuffle(to: 0)
+            }
         }
     }
 

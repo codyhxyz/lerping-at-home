@@ -22,6 +22,8 @@ make install     # builds and copies Lerping@Home.saver to ~/Library/Screen Save
 - Select **Lerping@Home** in System Settings → Screen Saver.
 - First activation can show black briefly while Gatekeeper verifies the bundle.
 - Shader, frame rate, and render scale are set behind the saver's Options… button.
+- Options… also has an **In rotation** checklist: pick which shaders Shuffle draws
+  from. New shaders join the rotation automatically; checking nothing means all.
 
 ## Live shader development
 
