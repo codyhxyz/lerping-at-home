@@ -111,6 +111,10 @@ enum MainMenu {
             item("Previous Shader", Selector(("previousShader:")), "[", [.command, .shift]),
             .separator(),
             item("Jump to First Error", Selector(("jumpToFirstError")), "e"),
+            .separator(),
+            item("Show / Hide Inspector", #selector(PlaygroundWindowController.toggleInspector(_:)), "i"),
+            item("Next MIDI Mapping", #selector(PlaygroundWindowController.nextMapping(_:)), "m",
+                 [.command, .option]),
         ]))
 
         main.addItem(submenu("Window", [

@@ -2,3 +2,6 @@ build/
 .DS_Store
 .claude/
 out/
+# SwiftPM's checkout and build tree for the playground's MIDI shim.
+# Sources/MIDIDeps/Package.resolved is committed; this is not.
+.build/

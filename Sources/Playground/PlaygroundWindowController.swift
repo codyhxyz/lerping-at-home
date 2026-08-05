@@ -28,6 +28,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private var current = LerpShader(name: "", source: "", isBuiltIn: false, url: nil)
     var currentName: String { current.name }
     private var isDirty: Bool { editor.text != current.source }
+    /// The shader as it was at the last successful compile — i.e. what is on the
+    /// GPU, and therefore what the inspector is showing controls for.
+    private(set) var compiled: LerpShader?
 
     private let split = NSSplitViewController()
     private let shaderPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -41,7 +44,30 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private let scalePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private let fpsLabel = NSTextField(labelWithString: "— fps")
 
-    private var isPaused = false
+    let inspector = ParameterPanel(frame: NSRect(x: 0, y: 0, width: 320, height: 700))
+    let midiPanel = MIDIPanel(frame: .zero)
+    private var inspectorItem: NSSplitViewItem!
+
+    /// Parameter values the user has moved away from the declared defaults.
+    /// Held here rather than only in the view because every recompile calls
+    /// `setShader`, which resets the view's copy — without this, typing one
+    /// character in the editor would snap every slider back.
+    private(set) var parameterState: [String: LerpParamValue] = [:]
+    /// What the inspector currently has controls for.
+    private var shownParameters: [LerpParam] = []
+    private var shownShaderName: String?
+
+    let midi = MIDIController()
+    private let router = MIDIRouter()
+    private(set) var mappings: [MappingPreset] = []
+    private(set) var activeMapping: MappingPreset?
+    /// The whole of MIDI learn: when this is set, the next inbound CC binds
+    /// itself to that parameter instead of being routed.
+    var learnTarget: String?
+
+    /// The view owns the play/pause state; keeping a copy here is how the two
+    /// drift apart.
+    private var isPaused: Bool { !metalView.isRunning }
     private var lastScrub: CFTimeInterval = 0
     private var lastCompiledSource: String?
     private var firstErrorLine: Int?
@@ -49,14 +75,16 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private var timers: [Timer] = []
 
     private static let windowAutosave = "LerpPlaygroundWindow"
-    private static let splitAutosave = "LerpPlaygroundSplit"
+    /// Bumped when the inspector added a third pane: an autosaved two-subview
+    /// layout cannot describe the new one.
+    private static let splitAutosave = "LerpPlaygroundSplit3"
 
     // MARK: - Init
 
     /// Returns nil when there is no Metal device to render with.
     static func make() -> PlaygroundWindowController? {
         guard let view = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 760, height: 760),
-                                       extraSearchURLs: ShaderPaths.repoShaders.map { [$0] } ?? [])
+                                       extraSearchURLs: ShaderLocations.repoSearchURLs())
         else { return nil }
         return PlaygroundWindowController(metalView: view)
     }
@@ -71,6 +99,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
 
         buildUI()
+        startMIDI()
         let shaders = refreshList(metalView.shaderLibrary.discover())
         if let first = shaders.first {
             open(first)
@@ -101,13 +130,19 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         split.splitView.dividerStyle = .thin
         split.splitView.autosaveName = Self.splitAutosave
 
-        for (view, minimum) in [(editorPane(), 380.0), (renderPane(), 300.0)] {
+        for (view, minimum) in [(editorPane(), 340.0), (renderPane(), 280.0), (inspectorPane(), 296.0)] {
             let controller = NSViewController()
             controller.view = view
             let item = NSSplitViewItem(viewController: controller)
             item.minimumThickness = minimum
             split.addSplitViewItem(item)
         }
+        // The inspector keeps its width when the window resizes, and folds away
+        // entirely for anyone who only wants the editor and the render.
+        inspectorItem = split.splitViewItems[2]
+        inspectorItem.canCollapse = true
+        inspectorItem.maximumThickness = 460
+        inspectorItem.holdingPriority = .init(260)
         window?.contentViewController = split
     }
 
@@ -116,12 +151,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         shaderPopUp.action = #selector(shaderPopUpChanged)
         shaderPopUp.controlSize = .small
         shaderPopUp.font = .systemFont(ofSize: 11)
-        shaderPopUp.widthAnchor.constraint(greaterThanOrEqualToConstant: 170).isActive = true
+        shaderPopUp.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
 
-        let newButton = NSButton()
-        configure(newButton, title: "New…", action: #selector(newShader))
-        configure(saveButton, title: "Save", action: #selector(saveShader))
-        configure(revertButton, title: "Revert", action: #selector(revertShader))
+        let newButton = Chrome.button("New…", target: self, action: #selector(newShader))
+        Chrome.configure(saveButton, title: "Save", target: self, action: #selector(saveShader))
+        Chrome.configure(revertButton, title: "Revert", target: self, action: #selector(revertShader))
 
         status.isBordered = false
         status.target = self
@@ -147,24 +181,23 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         editor.onEdit = { [weak self] in self?.scheduleCompile() }
         editor.setContentHuggingPriority(.init(1), for: .vertical)
 
-        return pane([bar([shaderPopUp, newButton, saveButton, revertButton, flexible()]),
-                     editor,
-                     bar([status, flexible()], height: 22),
-                     consoleScroll])
+        return Chrome.pane([Chrome.bar([shaderPopUp, newButton, saveButton, revertButton, Chrome.flexible()]),
+                            editor,
+                            Chrome.bar([status, Chrome.flexible()], height: 22),
+                            consoleScroll])
     }
 
     private func renderPane() -> NSView {
-        configure(playButton, title: "Pause", action: #selector(togglePlayPause))
+        Chrome.configure(playButton, title: "Pause", target: self, action: #selector(togglePlayPause))
         playButton.widthAnchor.constraint(equalToConstant: 62).isActive = true
 
-        let seedButton = NSButton()
-        configure(seedButton, title: "Re-roll seed", action: #selector(rerollSeed))
+        let seedButton = Chrome.button("Seed", target: self, action: #selector(rerollSeed))
 
         timeSlider.maxValue = 180
         timeSlider.controlSize = .small
         timeSlider.target = self
         timeSlider.action = #selector(timeSliderChanged)
-        timeSlider.widthAnchor.constraint(equalToConstant: 170).isActive = true
+        timeSlider.widthAnchor.constraint(equalToConstant: 130).isActive = true
 
         scalePopUp.controlSize = .small
         scalePopUp.font = .systemFont(ofSize: 11)
@@ -187,50 +220,21 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
         metalView.setContentHuggingPriority(.init(1), for: .vertical)
 
-        return pane([bar([playButton, timeSlider, timeLabel, seedButton, scalePopUp,
-                          flexible(), fpsLabel]),
-                     metalView])
+        return Chrome.pane([Chrome.bar([playButton, timeSlider, timeLabel, seedButton, scalePopUp,
+                                        Chrome.flexible(), fpsLabel]),
+                            metalView])
     }
 
-    private func configure(_ button: NSButton, title: String, action: Selector) {
-        button.title = title
-        button.bezelStyle = .rounded
-        button.controlSize = .small
-        button.font = .systemFont(ofSize: 11)
-        button.target = self
-        button.action = action
-        button.setContentHuggingPriority(.required, for: .horizontal)
-    }
-
-    /// A control strip. One `flexible()` in `controls` decides where the slack
-    /// goes — without one the stack's horizontal placement is ambiguous.
-    private func bar(_ controls: [NSView], height: CGFloat = 38) -> NSView {
-        let stack = NSStackView(views: controls)
-        stack.distribution = .fill
-        stack.spacing = 7
-        stack.alignment = .centerY
-        stack.edgeInsets = NSEdgeInsets(top: 0, left: 9, bottom: 0, right: 9)
-        stack.wantsLayer = true
-        stack.layer?.backgroundColor = EditorTheme.chrome.cgColor
-        stack.heightAnchor.constraint(equalToConstant: height).isActive = true
-        return stack
-    }
-
-    private func flexible() -> NSView {
-        let view = NSView()
-        view.setContentHuggingPriority(.init(1), for: .horizontal)
-        view.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        return view
-    }
-
-    private func pane(_ views: [NSView]) -> NSView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .vertical
-        stack.alignment = .width      // every row spans the pane
-        stack.spacing = 0
-        stack.wantsLayer = true
-        stack.layer?.backgroundColor = EditorTheme.background.cgColor
-        return stack
+    /// Parameter controls above, MIDI strip below. Both are driven entirely by
+    /// callbacks, so neither knows about the metal view or the shader library.
+    private func inspectorPane() -> NSView {
+        inspector.onChange = { [weak self] name, value in self?.setParameter(name, value) }
+        inspector.onPreset = { [weak self] name in self?.applyPreset(name) }
+        inspector.onMIDICommand = { [weak self] name, command in self?.midiCommand(name, command) }
+        midiPanel.onAction = { [weak self] action in self?.mappingCommand(action) }
+        inspector.setContentHuggingPriority(.init(1), for: .vertical)
+        midiPanel.heightAnchor.constraint(equalToConstant: 82).isActive = true
+        return Chrome.pane([inspector, midiPanel])
     }
 
     // MARK: - Shader list
@@ -256,11 +260,19 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     private func open(_ shader: LerpShader) {
         current = shader
+        parameterState.removeAll()      // a new shader starts at its own defaults
         select(shader.name)
         editor.setText(shader.source)
         metalView.config.shaderName = shader.name
         compileNow(force: true)
         updateChrome()
+    }
+
+    /// Opens a shader by name, discarding nothing — the caller is responsible
+    /// for the unsaved-changes prompt. Used by the menu-free paths (`--selftest`).
+    func openShader(named name: String) {
+        guard let shader = metalView.shaderLibrary.shader(named: name) else { return }
+        open(shader)
     }
 
     @objc private func shaderPopUpChanged() {
@@ -304,6 +316,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             // leaves the view's existing pipeline untouched.
             _ = try library.pipeline(for: draft)
             metalView.setShader(draft)         // cache hit, cannot fail
+            compiled = draft
+            syncParameters(draft)
             let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
             compileState = .ok(milliseconds: ms)
             firstErrorLine = nil
@@ -339,9 +353,239 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                          .font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: .medium)])
     }
 
+    // MARK: - Parameters
+
+    /// Brings the inspector and the live values in step with what just compiled.
+    /// `setShader` has already reset the view to the shader's declared defaults,
+    /// so anything the user moved is pushed back in here.
+    private func syncParameters(_ shader: LerpShader) {
+        if shader.name != shownShaderName || shader.parameters != shownParameters {
+            shownShaderName = shader.name
+            shownParameters = shader.parameters
+            let declared = Set(shader.parameters.map(\.name))
+            parameterState = parameterState.filter { declared.contains($0.key) }
+            inspector.rebuild(shader: shader)
+            inspector.showsMIDIControls = midi.isAvailable
+            refreshBindingLabels()
+        }
+        for (name, value) in parameterState { metalView.setParameter(name, value) }
+        inspector.show(values: metalView.parameterValues)
+    }
+
+    /// The one place a parameter changes, whatever moved it — mouse, typed
+    /// number, preset or knob.
+    func setParameter(_ name: String, _ value: LerpParamValue) {
+        parameterState[name] = value
+        metalView.setParameter(name, value)
+        if isPaused { metalView.renderOnce() }
+    }
+
+    /// nil applies the shader's declared defaults.
+    func applyPreset(_ name: String?) {
+        guard let name else {
+            for param in shownParameters { metalView.setParameter(param.name, param.defaultValue) }
+            adoptViewValues()
+            return
+        }
+        // `LerpMetalView.applyPreset` reads the shader off disk, which is only
+        // the same thing as the editor buffer while there are no unsaved edits.
+        // While editing, apply the preset the buffer itself declares.
+        if !isDirty, metalView.applyPreset(named: name) {
+            adoptViewValues()
+        } else if let preset = compiled?.preset(named: name) {
+            for param in shownParameters { metalView.setParameter(param.name, param.defaultValue) }
+            for (key, value) in preset.values { metalView.setParameter(key, value) }
+            adoptViewValues()
+        }
+    }
+
+    /// Takes whatever the view now holds as the user's chosen state.
+    private func adoptViewValues() {
+        parameterState = metalView.parameterValues?.values ?? [:]
+        inspector.show(values: metalView.parameterValues)
+        if isPaused { metalView.renderOnce() }
+    }
+
+    // MARK: - MIDI
+
+    private func startMIDI() {
+        midi.onSourcesChanged = { [weak self] in self?.midiSourcesChanged() }
+        midi.onMessage = { [weak self] message in self?.receive(message) }
+        midi.start()
+        mappings = MIDIMappingStore.load()
+        activeMapping = mappings.first
+        router.load(activeMapping?.bindings ?? [])
+        inspector.showsMIDIControls = midi.isAvailable
+        midiSourcesChanged()
+    }
+
+    /// A device appeared or went away. Auto-select the bank that was made for
+    /// it, which is the whole point of storing the device ID in the preset.
+    private func midiSourcesChanged() {
+        if let match = mappings.first(where: { preset in
+            !preset.deviceID.isEmpty && midi.sources.contains { $0.id == preset.deviceID }
+        }), match.name != activeMapping?.name {
+            select(mapping: match.name)
+        }
+        refreshMappingList()
+    }
+
+    private func refreshMappingList() {
+        midiPanel.showDevices(midi.summary)
+        midiPanel.showMappings(mappings.map(\.name), selected: activeMapping?.name,
+                               enabled: midi.isAvailable)
+        guard midi.isAvailable else {
+            midiPanel.showStatus(midi.unavailableReason ?? "", tint: EditorTheme.error)
+            return
+        }
+        let count = activeMapping?.bindings.count ?? 0
+        midiPanel.showStatus(activeMapping == nil
+            ? "No mapping yet — use a parameter's Learn…"
+            : "\(count) binding\(count == 1 ? "" : "s")")
+    }
+
+    /// Adds an empty mapping bank and makes it live.
+    func createMapping(named name: String, deviceID: String) {
+        commit(MappingPreset(name: name, deviceID: deviceID))
+    }
+
+    private func select(mapping name: String) {
+        guard let preset = mappings.first(where: { $0.name == name }) else { return }
+        activeMapping = preset
+        router.load(preset.bindings)     // switching banks is exactly this
+        refreshMappingList()
+        refreshBindingLabels()
+    }
+
+    private func refreshBindingLabels() {
+        for param in shownParameters {
+            inspector.setBinding(activeMapping?.binding(for: param.name), for: param.name)
+        }
+    }
+
+    /// Saves `preset`, makes it live and redraws everything that shows it.
+    private func commit(_ preset: MappingPreset) {
+        if let index = mappings.firstIndex(where: { $0.name == preset.name }) {
+            mappings[index] = preset
+        } else {
+            mappings.append(preset)
+        }
+        activeMapping = preset
+        router.load(preset.bindings)
+        do {
+            try MIDIMappingStore.save(preset)
+        } catch {
+            midiPanel.showStatus("Could not save mapping: \(error.localizedDescription)",
+                                 tint: EditorTheme.error)
+        }
+        refreshMappingList()
+        refreshBindingLabels()
+    }
+
+    func receive(_ message: MIDIController.Message) {
+        if let target = learnTarget {
+            learnTarget = nil
+            var preset = activeMapping
+                ?? MappingPreset(name: message.sourceName.isEmpty ? "Default" : message.sourceName,
+                                 deviceID: message.sourceID)
+            // Omni by default: most controllers sit on a channel the user has
+            // never chosen, and a binding that only works on one is a trap.
+            preset.bind(MIDIBinding(paramID: target, channel: nil, cc: message.cc))
+            commit(preset)
+            midiPanel.showStatus("Learned CC\(message.cc) → \(target)", tint: EditorTheme.text)
+            return
+        }
+        guard let routed = router.route(channel: message.channel, cc: message.cc, value: message.value),
+              let param = shownParameters.first(where: { $0.name == routed.binding.paramID }),
+              let value = resolve(routed.update, for: param, binding: routed.binding) else { return }
+        setParameter(param.name, value)
+        inspector.show(values: metalView.parameterValues)
+        midiPanel.showStatus("\(routed.binding.shortLabel) → \(param.name) = \(value.literal)")
+    }
+
+    /// Turns "the knob did this" into a value for this particular parameter.
+    private func resolve(_ update: MIDIRouter.Update, for param: LerpParam,
+                         binding: MIDIBinding) -> LerpParamValue? {
+        guard param.type != .color else { return nil }   // a colour needs three CCs
+        let current = (parameterState[param.name] ?? param.defaultValue).scalarValue ?? 0
+        let span = param.max - param.min
+        let low = param.min + Double(binding.range.lowerBound) * span
+        let high = param.min + Double(binding.range.upperBound) * span
+        switch update {
+        case .absolute(let position):
+            return param.clamp(.scalar(low + position * (high - low)))
+        case .delta(let ticks):
+            // One tick is one step for an int, and 1/128 of the travel for a
+            // float — the resolution an absolute knob would have given.
+            let step = param.type == .float ? (high - low) / 128 : 1
+            return param.clamp(.scalar(current + Double(ticks) * step))
+        case .toggle:
+            return param.clamp(.scalar(current > (low + high) / 2 ? low : high))
+        }
+    }
+
+    private func midiCommand(_ name: String, _ command: ParameterPanel.MIDICommand) {
+        switch command {
+        case .learn:
+            // Arming the same row twice disarms it, so a Learn started by
+            // accident does not sit there waiting to eat the next knob.
+            learnTarget = learnTarget == name ? nil : name
+            midiPanel.showStatus(learnTarget == nil ? "Learn cancelled" : "Learning \(name) — move a knob",
+                                 tint: EditorTheme.text)
+        case .clear:
+            guard var preset = activeMapping else { return }
+            preset.unbind(name)
+            commit(preset)
+        case .mode(let mode):
+            guard var preset = activeMapping, let binding = preset.binding(for: name) else { return }
+            guard let updated = binding.withMode(mode) else {
+                midiPanel.showStatus("14-bit needs CC 0–31, not \(binding.shortLabel)",
+                                     tint: EditorTheme.error)
+                return
+            }
+            preset.bind(updated)
+            commit(preset)
+        }
+    }
+
+    private func mappingCommand(_ action: MIDIPanel.Action) {
+        switch action {
+        case .select(let name):
+            select(mapping: name)
+        case .new:
+            guard let name = prompt("New mapping", "Name this bank of MIDI mappings.",
+                                    midi.sources.first?.name ?? "Mapping") else { return }
+            createMapping(named: name, deviceID: midi.sources.first?.id ?? "")
+        case .rename:
+            guard var preset = activeMapping,
+                  let name = prompt("Rename mapping", "Mapping files are named after the mapping.",
+                                    preset.name), name != preset.name else { return }
+            MIDIMappingStore.delete(preset.name)
+            mappings.removeAll { $0.name == preset.name }
+            preset.name = name
+            commit(preset)
+        case .delete:
+            guard let preset = activeMapping else { return }
+            MIDIMappingStore.delete(preset.name)
+            mappings.removeAll { $0.name == preset.name }
+            activeMapping = mappings.first
+            router.load(activeMapping?.bindings ?? [])
+            refreshMappingList()
+            refreshBindingLabels()
+        }
+    }
+
     // MARK: - Actions
 
     @objc func recompile(_ sender: Any?) { compileNow(force: true) }
+
+    @objc func toggleInspector(_ sender: Any?) {
+        inspectorItem.animator().isCollapsed.toggle()
+    }
+
+    @objc func nextMapping(_ sender: Any?) {
+        if midiPanel.cycleMapping() == nil { NSSound.beep() }
+    }
 
     @objc func jumpToFirstError() {
         if let line = firstErrorLine { editor.scrollToLine(line) }
@@ -372,19 +616,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     @objc func newShader(_ sender: Any?) {
         guard confirmDiscardIfDirty() else { return }
         let directory = ShaderPaths.newShaderDirectory
-
-        let alert = NSAlert()
-        alert.messageText = "New shader"
-        alert.informativeText = "The file name becomes the shader name.\nSaving to \(directory.path)"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        field.placeholderString = "aurora-veil"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        guard let stem = ShaderScaffold.sanitize(name: field.stringValue) else {
+        guard let typed = prompt("New shader",
+                                 "The file name becomes the shader name.\nSaving to \(directory.path)",
+                                 "", placeholder: "aurora-veil") else { return }
+        guard let stem = ShaderScaffold.sanitize(name: typed) else {
             presentError("Invalid name", "Use letters, numbers and dashes, e.g. aurora-veil.")
             return
         }
@@ -409,20 +644,24 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     @objc func nextShader(_ sender: Any?) { step(1) }
     @objc func previousShader(_ sender: Any?) { step(-1) }
 
+    /// Deliberately not `metalView.showNextShader` — that only swaps the
+    /// pipeline, and the playground additionally has to prompt about unsaved
+    /// edits and load the new file's source into the editor. It shares the
+    /// wrap-around, which is the part that was worth having once.
     private func step(_ direction: Int) {
-        guard !knownShaderNames.isEmpty, confirmDiscardIfDirty() else { return }
-        let index = knownShaderNames.firstIndex(of: current.name) ?? 0
-        let next = (index + direction + knownShaderNames.count) % knownShaderNames.count
-        if let shader = metalView.shaderLibrary.shader(named: knownShaderNames[next]) { open(shader) }
+        guard confirmDiscardIfDirty(),
+              let next = ShaderLibrary.name(in: knownShaderNames, after: current.name,
+                                            offset: direction),
+              let shader = metalView.shaderLibrary.shader(named: next) else { return }
+        open(shader)
     }
 
     @objc func togglePlayPause(_ sender: Any?) {
-        isPaused.toggle()
         if isPaused {
+            metalView.start()
+        } else {
             metalView.stop()
             metalView.renderOnce()
-        } else {
-            metalView.start()
         }
         playButton.title = isPaused ? "Play" : "Pause"
     }
@@ -467,7 +706,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                 timeSlider.doubleValue = min(metalView.time, timeSlider.maxValue)
             }
             timeLabel.stringValue = String(format: "t %.1fs", metalView.time)
-            fpsLabel.stringValue = isPaused ? "paused" : String(format: "%.0f fps", metalView.measuredFPS)
+            fpsLabel.stringValue = metalView.statusText
         })
 
         // Pick up shaders added or edited outside the app (another editor, or
@@ -507,6 +746,24 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// One-field modal prompt. Returns nil on cancel or an empty answer.
+    private func prompt(_ title: String, _ detail: String, _ value: String,
+                        placeholder: String = "") -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = value
+        field.placeholderString = placeholder
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let answer = field.stringValue.trimmingCharacters(in: .whitespaces)
+        return answer.isEmpty ? nil : answer
+    }
+
     private func presentError(_ message: String, _ detail: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -523,13 +780,14 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
         metalView.start()
         window?.makeFirstResponder(editor.textView)
-        // Default to a 50/50 split, but never fight a divider the user has
+        // Editor / render / inspector, but never fight a divider the user has
         // already dragged (NSSplitView autosaves that).
         guard UserDefaults.standard
             .object(forKey: "NSSplitView Subview Frames " + Self.splitAutosave) == nil else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let width = window?.contentView?.bounds.width else { return }
-            split.splitView.setPosition(width * 0.5, ofDividerAt: 0)
+            split.splitView.setPosition(width * 0.40, ofDividerAt: 0)
+            split.splitView.setPosition(width - 330, ofDividerAt: 1)
         }
     }
 }
