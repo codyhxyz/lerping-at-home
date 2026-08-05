@@ -15,14 +15,29 @@ constant float3 HD_SOURCE_COLORS[HD_SOURCE_COUNT] = {
     float3(0.988, 0.643, 0.216), // amber
     float3(0.522, 0.271, 0.898), // violet
 };
-constant float3 HD_COLOR_BACK = float3(0.016, 0.018, 0.035); // near-black
-
-constant float HD_SIZE         = 0.76; // -> ~30 cells on the short axis
-constant float HD_RADIUS       = 1.00;
-constant float HD_CONTRAST     = 0.95;
-constant float HD_GRAIN_MIXER  = 0.22;
-constant float HD_GRAIN_OVERLAY = 0.30;
-constant float HD_GRAIN_SIZE   = 0.55;
+// Parameters mirror the upstream <HalftoneDots> props. Upstream's `type` and
+// `grid` enums, and its `inverted` / `originalColors` toggles, are not ported:
+// this file is always classic dots on a square grid with original colours on.
+// `colorFront` is not exposed for the same reason — original-colour ink takes
+// its colour from the source, not from a single front colour. `speed` is this
+// port's own addition, driving the procedural field that replaces the image.
+//
+// lerp-param: colorBack    color        = (0.016, 0.018, 0.035) "Background"
+// lerp-param: size         float 0.01 1 = 0.76 "Size"
+// lerp-param: radius       float 0 2    = 1.00 "Radius"
+// lerp-param: contrast     float 0.01 1 = 0.95 "Contrast"
+// lerp-param: grainMixer   float 0 1    = 0.22 "Grain mixer"
+// lerp-param: grainOverlay float 0 1    = 0.30 "Grain overlay"
+// lerp-param: grainSize    float 0 1    = 0.55 "Grain size"
+// lerp-param: speed        float 0 2    = 0.30 "Source speed"
+//
+// Upstream presets, restricted to the props this port implements.
+// lerp-preset: "LED screen" colorBack=#000000, size=0.5, radius=1.5, contrast=0.3
+// lerp-preset: "LED screen" grainMixer=0, grainOverlay=0, grainSize=0.5
+// lerp-preset: Mosaic     colorBack=#000000, size=0.6, radius=2, contrast=0.01
+// lerp-preset: Mosaic     grainMixer=0, grainOverlay=0, grainSize=0.5
+// lerp-preset: "Round and square" colorBack=#141414, size=0.8, radius=1, contrast=1
+// lerp-preset: "Round and square" grainMixer=0.05, grainOverlay=0.3, grainSize=0.5
 
 // Stand-in for u_image: a handful of coloured spots drifting on their own
 // orbits, blended by inverse distance. Smooth enough that the dot radii
@@ -69,20 +84,20 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float aspect = u.resolution.x / max(u.resolution.y, 1.0);
     float2 imageUV = float2(pos.x, u.resolution.y - pos.y) / u.resolution;
 
-    float t = 0.30 * u.time + 55.0 * u.seed;
+    float t = u.speed * u.time + 55.0 * u.seed;
 
     // "classic" runs at half the cell count and supersamples 2x2, which is
     // what interleaves the sublattices back to full density.
     const float stepMultiplier = 2.0;
     const float stepSize = 1.0 / stepMultiplier;
-    float cellsPerSide = mix(300.0, 7.0, pow(HD_SIZE, 0.7)) / stepMultiplier;
+    float cellsPerSide = mix(300.0, 7.0, pow(u.size, 0.7)) / stepMultiplier;
     float2 pad = (1.0 / cellsPerSide) * float2(1.0 / aspect, 1.0);
 
     float2 uv = (imageUV - 0.5) / pad;
 
     // u_originalColors = true: softer contrast, fatter base radius.
-    float contrast = mix(0.1, 4.0, pow(HD_CONTRAST, 2.0));
-    float baseRadius = 2.0 * pow(0.5 * HD_RADIUS, 0.3);
+    float contrast = mix(0.1, 4.0, pow(u.contrast, 2.0));
+    float baseRadius = 2.0 * pow(0.5 * u.radius, 0.3);
 
     float totalShape = 0.0;
     float3 totalColor = float3(0.0);
@@ -110,14 +125,14 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     totalColor /= max(totalShape, 1e-4);
     float finalShape = min(1.0, totalShape);
 
-    float2 grainUV = (imageUV - 0.5) * mix(2000.0, 200.0, HD_GRAIN_SIZE)
+    float2 grainUV = (imageUV - 0.5) * mix(2000.0, 200.0, u.grainSize)
                      * float2(1.0, 1.0 / aspect) + 0.5;
     float grain = valueNoise(grainUV);
-    grain = smoothstep(0.55, 0.7 + 0.2 * HD_GRAIN_MIXER, grain) * HD_GRAIN_MIXER;
+    grain = smoothstep(0.55, 0.7 + 0.2 * u.grainMixer, grain) * u.grainMixer;
     finalShape = mix(finalShape, 0.0, grain);
 
     // Ink is premultiplied by the dot coverage; the background fills the rest.
-    float3 color = totalColor * finalShape + HD_COLOR_BACK * (1.0 - finalShape);
+    float3 color = totalColor * finalShape + u.colorBack.rgb * (1.0 - finalShape);
 
     float grainOverlay = valueNoise(rotate(grainUV, 1.0) + 3.0);
     grainOverlay = mix(grainOverlay, valueNoise(rotate(grainUV, 2.0) - 1.0), 0.5);
@@ -125,7 +140,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     float grainOverlayV = grainOverlay * 2.0 - 1.0;
     float3 grainOverlayColor = float3(step(0.0, grainOverlayV));
-    float grainOverlayStrength = pow(HD_GRAIN_OVERLAY * abs(grainOverlayV), 0.8);
+    float grainOverlayStrength = pow(u.grainOverlay * abs(grainOverlayV), 0.8);
     color = mix(color, grainOverlayColor, 0.35 * grainOverlayStrength);
 
     color = clamp(color, 0.0, 1.0);

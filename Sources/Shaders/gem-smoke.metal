@@ -4,29 +4,48 @@
 // shape; this port uses the shader's built-in procedural "diamond" shape
 // mode instead. Palette is a dark ice variant of the demo's Fire preset.
 
-constant int    GS_COLOR_COUNT = 3;
-constant float4 GS_COLORS[GS_COLOR_COUNT] = {
-    float4(0.290, 0.180, 0.760, 1.0), // deep violet (outer smoke)
-    float4(0.220, 0.620, 1.000, 1.0), // azure
-    float4(0.910, 0.965, 1.000, 1.0), // ice white core
-};
-constant float4 GS_COLOR_BACK  = float4(0.010, 0.012, 0.024, 1.0); // near-black navy
-constant float4 GS_COLOR_INNER = float4(0.030, 0.036, 0.062, 1.0); // gem body, slightly lifted
+// Parameters mirror the upstream <GemSmoke> props. Upstream's `shape` enum is
+// not ported — this file is always the "diamond" shape. Upstream takes a
+// variable-length `colors` array (max 6); this port fixes three tunable slots.
+//
+// lerp-param: color1          color        = (0.290, 0.180, 0.760, 1.0) "Outer smoke"
+// lerp-param: color2          color        = (0.220, 0.620, 1.000, 1.0) "Azure"
+// lerp-param: color3          color        = (0.910, 0.965, 1.000, 1.0) "Ice white core"
+// lerp-param: colorBack       color        = (0.010, 0.012, 0.024, 1.0) "Background"
+// lerp-param: colorInner      color        = (0.030, 0.036, 0.062, 1.0) "Gem body"
+// lerp-param: scale           float 0.1 4  = 0.6  "Scale"
+// lerp-param: innerDistortion float 0 1    = 0.8  "Inner distortion"
+// lerp-param: outerDistortion float 0 1    = 0.6  "Outer distortion"
+// lerp-param: outerGlow       float 0 1    = 0.75 "Outer glow"
+// lerp-param: innerGlow       float 0 1    = 1.0  "Inner glow"
+// lerp-param: offset          float -1 1   = 0.0  "Offset"
+// lerp-param: angle           float 0 360  = 0.0  "Angle"
+// lerp-param: size            float 0.1 1  = 0.8  "Size"
+// lerp-param: speed           float 0 4    = 0.4  "Speed"
+//
+// Upstream presets, speed scaled to this port's ambience (upstream × 0.4).
+// lerp-preset: Fire        colorBack=#000000, colorInner=#000000, color1=#fe5b16
+// lerp-preset: Fire        color2=#f7ff61, color3=#ffffff, outerGlow=1, innerGlow=0.65
+// lerp-preset: Fire        innerDistortion=0.6, outerDistortion=0.8, offset=0, angle=0
+// lerp-preset: Fire        size=0.8, speed=0.4, scale=0.6
+// lerp-preset: Fluorescent colorBack=#000000, colorInner=#000000, color1=#2fb64c
+// lerp-preset: Fluorescent color2=#cdff61, color3=#ffffff, outerGlow=0, innerGlow=1
+// lerp-preset: Fluorescent innerDistortion=1, outerDistortion=0.8, offset=0, angle=0
+// lerp-preset: Fluorescent size=0.8, speed=0.4, scale=0.6
+// lerp-preset: Infrared    colorBack=#cd28dc, colorInner=#00000000, color1=#ff9900
+// lerp-preset: Infrared    color2=#fff67a, color3=#0077ff, outerGlow=1, innerGlow=1
+// lerp-preset: Infrared    innerDistortion=1, outerDistortion=1, offset=0.2, angle=0
+// lerp-preset: Infrared    size=1, speed=0.2, scale=0.6
 
-constant float GS_SCALE            = 0.6;
-constant float GS_INNER_DISTORTION = 0.8;
-constant float GS_OUTER_DISTORTION = 0.6;
-constant float GS_OUTER_GLOW       = 0.75;
-constant float GS_INNER_GLOW       = 1.0;
-constant float GS_OFFSET           = 0.0;
-constant float GS_ANGLE            = 0.0;
-constant float GS_SIZE             = 0.8;
+constant int GS_COLOR_COUNT = 3;
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
-    float time = 0.4 * u.time + u.seed * 80.0;
+    float4 colors[GS_COLOR_COUNT] = { u.color1, u.color2, u.color3 };
+
+    float time = u.speed * u.time + u.seed * 80.0;
 
     // v_objectUV equivalent: centered, [-0.5, 0.5] short axis, zoomed by scale
-    float2 objUV = lerpUV(pos, u.resolution) * (0.5 / GS_SCALE);
+    float2 objUV = lerpUV(pos, u.resolution) * (0.5 / u.scale);
 
     float roundness = 0.0;
     float imgAlpha = 0.0;
@@ -54,22 +73,22 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     // Smoke UV setup
     float2 smokeUV = objUV;
-    smokeUV = rotate(smokeUV, GS_ANGLE * PI / 180.0);
-    smokeUV *= mix(4.0, 1.0, GS_SIZE);
+    smokeUV = rotate(smokeUV, u.angle * PI / 180.0);
+    smokeUV *= mix(4.0, 1.0, u.size);
 
     // Two swirl paths: inner (shape-masked) and outer (free)
     float2 innerUV = smokeUV;
     float2 outerUV = smokeUV;
 
-    innerUV.y += GS_INNER_DISTORTION * (1.0 - smoothstep(0.0, 1.0, length(0.4 * innerUV)));
-    innerUV.y -= 0.4 * GS_INNER_DISTORTION;
-    innerUV.y += 0.7 * GS_OFFSET * roundness;
+    innerUV.y += u.innerDistortion * (1.0 - smoothstep(0.0, 1.0, length(0.4 * innerUV)));
+    innerUV.y -= 0.4 * u.innerDistortion;
+    innerUV.y += 0.7 * u.offset * roundness;
 
-    outerUV.y += GS_OUTER_DISTORTION * (1.0 - smoothstep(0.0, 1.0, length(0.4 * outerUV)));
-    outerUV.y -= 0.4 * GS_OUTER_DISTORTION;
+    outerUV.y += u.outerDistortion * (1.0 - smoothstep(0.0, 1.0, length(0.4 * outerUV)));
+    outerUV.y -= 0.4 * u.outerDistortion;
 
-    float innerSwirl = GS_INNER_DISTORTION * roundness;
-    float outerSwirl = GS_OUTER_DISTORTION;
+    float innerSwirl = u.innerDistortion * roundness;
+    float outerSwirl = u.outerDistortion;
 
     for (int i = 1; i < 5; i++) {
         float fi = float(i);
@@ -92,15 +111,15 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float outerShape = exp(-1.5 * dot(outerUV, outerUV));
 
     // Visibility masks
-    float outerMask = pow(GS_OUTER_GLOW, 2.0) * (1.0 - imgAlpha);
-    float innerMask = (0.01 + 0.99 * GS_INNER_GLOW) * imgAlpha;
+    float outerMask = pow(u.outerGlow, 2.0) * (1.0 - imgAlpha);
+    float innerMask = (0.01 + 0.99 * u.innerGlow) * imgAlpha;
 
     innerShape *= innerMask;
     outerShape *= outerMask;
 
     // Color gradient
     float mixer = (innerShape + outerShape) * float(GS_COLOR_COUNT);
-    float4 gradient = GS_COLORS[0];
+    float4 gradient = colors[0];
     gradient.rgb *= gradient.a;
 
     float smokeMask = 0.0;
@@ -108,7 +127,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         float m = smoothstep(0.0, 1.0, clamp(mixer - float(i - 1), 0.0, 1.0));
         if (i == 1) smokeMask = m;
 
-        float4 c = GS_COLORS[i - 1];
+        float4 c = colors[i - 1];
         c.rgb *= c.a;
         gradient = mix(gradient, c, m);
     }
@@ -117,12 +136,12 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 color = gradient.rgb * smokeMask;
     float opacity = gradient.a * smokeMask;
 
-    float innerOpacity = GS_COLOR_INNER.a * imgAlpha;
-    float3 innerColor = GS_COLOR_INNER.rgb * innerOpacity;
+    float innerOpacity = u.colorInner.a * imgAlpha;
+    float3 innerColor = u.colorInner.rgb * innerOpacity;
     color += innerColor * (1.0 - opacity);
     opacity += innerOpacity * (1.0 - opacity);
 
-    float3 backColor = GS_COLOR_BACK.rgb * GS_COLOR_BACK.a;
+    float3 backColor = u.colorBack.rgb * u.colorBack.a;
     color += backColor * (1.0 - opacity);
 
     color = lerpDither(color, pos);

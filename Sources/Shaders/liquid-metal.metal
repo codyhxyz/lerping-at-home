@@ -4,20 +4,35 @@
 // uses the shader's built-in procedural "metaballs" shape mode instead, so a
 // liquid chrome blob drifts on a dark background.
 
-constant float3 LM_BACKGROUND = float3(0.016, 0.018, 0.024); // near-black blue
-constant float4 LM_TINT = float4(0.55, 0.62, 0.70, 0.7);     // steel-blue color burn
-
-constant float LM_SCALE      = 0.9;
-constant float LM_REPETITION = 3.0;
-constant float LM_SOFTNESS   = 0.5;
-constant float LM_SHIFT_RED  = 0.3;
-constant float LM_SHIFT_BLUE = 0.3;
-constant float LM_DISTORTION = 0.15;
-constant float LM_CONTOUR    = 0.5;
-constant float LM_ANGLE      = 70.0;
+// Parameters mirror the upstream <LiquidMetal> props. Upstream's `shape` enum
+// is not ported — this file is always the "metaballs" shape. `colorTint`'s
+// alpha is the colour-burn strength, as upstream.
+//
+// lerp-param: colorBack  color        = (0.016, 0.018, 0.024) "Background"
+// lerp-param: colorTint  color        = (0.55, 0.62, 0.70, 0.7) "Tint"
+// lerp-param: scale      float 0.2 4  = 0.9  "Scale"
+// lerp-param: repetition float 1 10   = 3.0  "Repetition"
+// lerp-param: softness   float 0 1    = 0.5  "Softness"
+// lerp-param: shiftRed   float -1 1   = 0.3  "Shift red"
+// lerp-param: shiftBlue  float -1 1   = 0.3  "Shift blue"
+// lerp-param: distortion float 0 1    = 0.15 "Distortion"
+// lerp-param: contour    float 0 1    = 0.5  "Contour"
+// lerp-param: angle      float 0 360  = 70.0 "Angle"
+// lerp-param: speed      float 0 4    = 0.5  "Speed"
+//
+// Upstream presets, speed scaled to this port's ambience (upstream × 0.5).
+// lerp-preset: Noir    colorBack=#000000, colorTint=#606060b3, scale=0.9, softness=0.45
+// lerp-preset: Noir    repetition=1.5, shiftRed=0, shiftBlue=0, distortion=0, contour=0
+// lerp-preset: Noir    angle=90, speed=0.5
+// lerp-preset: Backdrop colorBack=#aaaaac, colorTint=#ffffffb3, scale=1.5, softness=0.05
+// lerp-preset: Backdrop repetition=1.5, shiftRed=0.3, shiftBlue=0.3, distortion=0.1
+// lerp-preset: Backdrop contour=0.4, angle=90, speed=0.5
+// lerp-preset: Stripes colorBack=#000000, colorTint=#2c5d72b3, scale=0.9, softness=0.8
+// lerp-preset: Stripes repetition=6, shiftRed=1, shiftBlue=-1, distortion=0.4
+// lerp-preset: Stripes contour=0.4, angle=0, speed=0.5
 
 static float lmColorChanges(float c1, float c2, float stripe_p, float3 w,
-                            float blur, float bump, float tint) {
+                            float blur, float bump, float tint, float tintAlpha) {
     float ch = mix(c2, c1, smoothstep(0.0, 2.0 * blur, stripe_p));
 
     float border = w.x;
@@ -38,24 +53,24 @@ static float lmColorChanges(float c1, float c2, float stripe_p, float3 w,
     ch = mix(ch, gradient, smoothstep(border, border + 0.5 * blur, stripe_p));
 
     // Tint applied with color-burn blending
-    ch = mix(ch, 1.0 - min(1.0, (1.0 - ch) / max(tint, 0.0001)), LM_TINT.a);
+    ch = mix(ch, 1.0 - min(1.0, (1.0 - ch) / max(tint, 0.0001)), tintAlpha);
     return ch;
 }
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
     // original: t = .3 * (u_time + 2.8); slowed + seeded for screensaver use
-    float t = 0.3 * (0.5 * u.time + u.seed * 120.0 + 2.8);
+    float t = 0.3 * (u.speed * u.time + u.seed * 120.0 + 2.8);
 
     // v_objectUV equivalent -> 0..1 uv with y down (CSS-like)
-    float2 objUV = lerpUV(pos, u.resolution) * (0.5 / LM_SCALE);
+    float2 objUV = lerpUV(pos, u.resolution) * (0.5 / u.scale);
     float2 uv = objUV + 0.5;
     uv.y = 1.0 - uv.y;
 
-    float cycleWidth = LM_REPETITION;
+    float cycleWidth = u.repetition;
     float edge = 0.0;
 
     float2 rotatedUV = uv - float2(0.5);
-    float rotAngle = (-LM_ANGLE + 70.0) * PI / 180.0;
+    float rotAngle = (-u.angle + 70.0) * PI / 180.0;
     float cosA = cos(rotAngle);
     float sinA = sin(rotAngle);
     rotatedUV = float2(rotatedUV.x * cosA - rotatedUV.y * sinA,
@@ -80,7 +95,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         edge = pow(edge, 4.0);
     }
 
-    edge = mix(smoothstep(0.9 - 2.0 * fwidth(edge), 0.9, edge), edge, smoothstep(0.0, 0.4, LM_CONTOUR));
+    edge = mix(smoothstep(0.9 - 2.0 * fwidth(edge), 0.9, edge), edge, smoothstep(0.0, 0.4, u.contour));
 
     float opacity = 1.0 - smoothstep(0.9 - 2.0 * fwidth(edge), 0.9, edge);
     edge = 1.8 * pow(edge, 1.5); // metaballs shape
@@ -110,14 +125,14 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     float noise = snoise(uv - t);
 
-    edge += (1.0 - edge) * LM_DISTORTION * noise;
+    edge += (1.0 - edge) * u.distortion * noise;
 
     direction += diagBLtoTR;
     float contour = 0.0;
     direction -= 2.0 * noise * diagBLtoTR * (smoothstep(0.0, 1.0, edge) * (1.0 - smoothstep(0.0, 1.0, edge)));
-    direction *= mix(1.0, 1.0 - edge, smoothstep(0.5, 1.0, LM_CONTOUR));
-    direction -= 1.7 * edge * smoothstep(0.5, 1.0, LM_CONTOUR);
-    direction += 0.2 * pow(LM_CONTOUR, 4.0) * (1.0 - smoothstep(0.0, 1.0, edge));
+    direction *= mix(1.0, 1.0 - edge, smoothstep(0.5, 1.0, u.contour));
+    direction -= 1.7 * edge * smoothstep(0.5, 1.0, u.contour);
+    direction += 0.2 * pow(u.contour, 4.0) * (1.0 - smoothstep(0.0, 1.0, edge));
 
     bump *= clamp(pow(max(uv.y, 0.0), 0.1), 0.3, 1.0);
     direction *= (0.1 + (1.1 - edge) * bump);
@@ -142,24 +157,24 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
                     * (smoothstep(0.4, 0.6, bump) * (1.0 - smoothstep(0.4, 0.8, bump)));
     dispersionBlue -= 0.2 * edge;
 
-    dispersionRed *= (LM_SHIFT_RED / 20.0);
-    dispersionBlue *= (LM_SHIFT_BLUE / 20.0);
+    dispersionRed *= (u.shiftRed / 20.0);
+    dispersionBlue *= (u.shiftBlue / 20.0);
 
-    float blur = LM_SOFTNESS / 15.0 + 0.3 * contour;
+    float blur = u.softness / 15.0 + 0.3 * contour;
 
     float3 w = float3(thin_strip_1_width, thin_strip_2_width, wide_strip_ratio);
     w.y -= 0.02 * smoothstep(0.0, 1.0, edge + bump);
     float stripe_r = fract(direction + dispersionRed);
-    float r = lmColorChanges(color1.r, color2.r, stripe_r, w, blur + fwidth(stripe_r), bump, LM_TINT.r);
+    float r = lmColorChanges(color1.r, color2.r, stripe_r, w, blur + fwidth(stripe_r), bump, u.colorTint.r, u.colorTint.a);
     float stripe_g = fract(direction);
-    float g = lmColorChanges(color1.g, color2.g, stripe_g, w, blur + fwidth(stripe_g), bump, LM_TINT.g);
+    float g = lmColorChanges(color1.g, color2.g, stripe_g, w, blur + fwidth(stripe_g), bump, u.colorTint.g, u.colorTint.a);
     float stripe_b = fract(direction - dispersionBlue);
-    float b = lmColorChanges(color1.b, color2.b, stripe_b, w, blur + fwidth(stripe_b), bump, LM_TINT.b);
+    float b = lmColorChanges(color1.b, color2.b, stripe_b, w, blur + fwidth(stripe_b), bump, u.colorTint.b, u.colorTint.a);
 
     float3 color = float3(r, g, b);
     color *= opacity;
 
-    color = color + LM_BACKGROUND * (1.0 - opacity);
+    color = color + u.colorBack.rgb * (1.0 - opacity);
 
     color = lerpDither(color, pos);
     return half4(half3(color), 1.0h);

@@ -15,21 +15,35 @@ constant float3 FG_BACK_COLORS[FG_BACK_COUNT] = {
     float3(0.976, 0.784, 0.463), // warm gold
 };
 
-constant float3 FG_COLOR_BACK      = float3(0.016, 0.020, 0.039);
-constant float3 FG_COLOR_SHADOW    = float3(0.012, 0.024, 0.055);
-constant float3 FG_COLOR_HIGHLIGHT = float3(0.925, 0.965, 1.000);
-constant float  FG_HIGHLIGHT_ALPHA = 0.45;
-constant float  FG_SHADOW_ALPHA    = 0.60;
-
-constant float FG_SIZE          = 0.86; // -> ~32 ribs across
-constant float FG_ANGLE         = 0.0;  // degrees
-constant float FG_SHADOWS       = 0.70;
-constant float FG_HIGHLIGHTS    = 0.55;
-constant float FG_DISTORTION    = 0.55;
-constant float FG_SHIFT         = 0.20;
-constant float FG_STRETCH       = 0.35;
-constant float FG_GRAIN_MIXER   = 0.20;
-constant float FG_GRAIN_OVERLAY = 0.22;
+// Parameters mirror the upstream <FlutedGlass> props. Upstream's `shape` and
+// `distortionShape` enums are not ported — this file is always "lines" ribs
+// with the "prism" flute. `blur`, `edges` and the four margins are not ported
+// either. The shadow and highlight alphas come from upstream's 8-digit hex
+// colours. `speed` is this port's own addition: upstream FlutedGlass is
+// static, and here it drives the procedural backdrop that replaces the image.
+//
+// (Upstream's `colorBack` is not exposed: the procedural backdrop is opaque
+// and covers it everywhere, so it would be a knob that does nothing.)
+// lerp-param: colorShadow    color       = (0.012, 0.024, 0.055, 0.60) "Shadow"
+// lerp-param: colorHighlight color       = (0.925, 0.965, 1.000, 0.45) "Highlight"
+// lerp-param: size           float 0.01 1 = 0.86 "Size"
+// lerp-param: angle          float 0 180 = 0.0  "Angle"
+// lerp-param: shadows        float 0 1   = 0.70 "Shadows"
+// lerp-param: highlights     float 0 1   = 0.55 "Highlights"
+// lerp-param: distortion     float 0 1   = 0.55 "Distortion"
+// lerp-param: shift          float -1 1  = 0.20 "Shift"
+// lerp-param: stretch        float 0 1   = 0.35 "Stretch"
+// lerp-param: grainMixer     float 0 1   = 0.20 "Grain mixer"
+// lerp-param: grainOverlay   float 0 1   = 0.22 "Grain overlay"
+// lerp-param: speed          float 0 2   = 0.35 "Backdrop speed"
+//
+// Upstream presets, restricted to the props this port implements.
+// lerp-preset: Waves  size=0.9, angle=0, shadows=0, highlights=0, distortion=0.5
+// lerp-preset: Waves  shift=0, stretch=1, grainMixer=0, grainOverlay=0.05
+// lerp-preset: Folds  size=0.4, angle=0, shadows=0.4, highlights=0, distortion=0.75
+// lerp-preset: Folds  shift=0, stretch=0, grainMixer=0, grainOverlay=0
+// lerp-preset: Abstract size=0.7, angle=30, shadows=0, highlights=0, distortion=1
+// lerp-preset: Abstract shift=0, stretch=1, grainMixer=0.1, grainOverlay=0.1
 
 static float2 fgRotateAspect(float2 p, float a, float aspect) {
     p.x *= aspect;
@@ -67,10 +81,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float aspect = u.resolution.x / max(u.resolution.y, 1.0);
     float2 imageUV = float2(pos.x, u.resolution.y - pos.y) / u.resolution;
 
-    float t = 0.35 * u.time + 70.0 * u.seed;
+    float t = u.speed * u.time + 70.0 * u.seed;
 
-    float patternRotation = -FG_ANGLE * PI / 180.0;
-    float patternSize = mix(200.0, 5.0, FG_SIZE);
+    float patternRotation = -u.angle * PI / 180.0;
+    float patternSize = mix(200.0, 5.0, u.size);
 
     float2 uv = (imageUV - 0.5) * patternSize;
     uv = fgRotateAspect(uv, patternRotation, aspect);
@@ -86,24 +100,24 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float highlightsWidth = 2.0 * max(0.001, fwidth(uvToFract.x));
     float highlights = smoothstep(0.0, highlightsWidth, xNonSmooth)
                      * smoothstep(1.0, 1.0 - highlightsWidth, xNonSmooth);
-    highlights = clamp((1.0 - highlights) * FG_HIGHLIGHTS, 0.0, 1.0);
+    highlights = clamp((1.0 - highlights) * u.highlights, 0.0, 1.0);
 
     float shadows = pow(x, 1.3);
 
     float aa = max(max(fwidth(xNonSmooth), fwidth(uv.x)), 0.0001);
 
     // u_distortionShape = 1: the classic convex flute.
-    float distortion = -pow(1.5 * x, 3.0) + (0.5 - FG_SHIFT);
-    aa = max(0.2, aa) + mix(0.2, 0.0, FG_SIZE);
+    float distortion = -pow(1.5 * x, 3.0) + (0.5 - u.shift);
+    aa = max(0.2, aa) + mix(0.2, 0.0, u.size);
     float fadeX = smoothstep(0.0, aa, xNonSmooth) * smoothstep(1.0, 1.0 - aa, xNonSmooth);
     distortion = mix(0.5, distortion, fadeX);
 
     float2 grainUV = (imageUV - 0.5) * 0.8 * u.resolution + 0.5;
-    float grain = smoothstep(0.4, 0.7, valueNoise(grainUV)) * FG_GRAIN_MIXER;
+    float grain = smoothstep(0.4, 0.7, valueNoise(grainUV)) * u.grainMixer;
     distortion = mix(distortion, 0.0, grain);
 
-    shadows = clamp(min(shadows, 1.0) * pow(FG_SHADOWS, 2.0), 0.0, 1.0);
-    distortion *= 3.0 * FG_DISTORTION;
+    shadows = clamp(min(shadows, 1.0) * pow(u.shadows, 2.0), 0.0, 1.0);
+    distortion *= 3.0 * u.distortion;
 
     fractOrigUV.x += distortion;
     floorOrigUV = fgRotateAspect(floorOrigUV, -patternRotation, aspect);
@@ -113,16 +127,16 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     float stretch = 1.0 - smoothstep(0.0, 0.5, xNonSmooth) * smoothstep(1.0, 0.5, xNonSmooth);
     stretch = pow(stretch, 2.0);
-    sampleUV.y = mix(sampleUV.y, 0.5, FG_STRETCH * stretch);
+    sampleUV.y = mix(sampleUV.y, 0.5, u.stretch * stretch);
 
     float3 image = fgBackdrop(sampleUV, t);
 
-    float3 color = FG_COLOR_HIGHLIGHT * FG_HIGHLIGHT_ALPHA * highlights;
-    float opacity = FG_HIGHLIGHT_ALPHA * highlights;
+    float3 color = u.colorHighlight.rgb * u.colorHighlight.a * highlights;
+    float opacity = u.colorHighlight.a * highlights;
 
-    shadows = mix(shadows * FG_SHADOW_ALPHA, 0.0, highlights);
-    color = mix(color, FG_COLOR_SHADOW * FG_SHADOW_ALPHA, 0.5 * shadows);
-    color += 0.5 * pow(shadows, 0.5) * FG_COLOR_SHADOW;
+    shadows = mix(shadows * u.colorShadow.a, 0.0, highlights);
+    color = mix(color, u.colorShadow.rgb * u.colorShadow.a, 0.5 * shadows);
+    color += 0.5 * pow(shadows, 0.5) * u.colorShadow.rgb;
     opacity = clamp(opacity + shadows, 0.0, 1.0);
     color = clamp(color, 0.0, 1.0);
 
@@ -135,7 +149,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     float grainOverlayV = grainOverlay * 2.0 - 1.0;
     float3 grainOverlayColor = float3(step(0.0, grainOverlayV));
-    float grainOverlayStrength = pow(FG_GRAIN_OVERLAY * abs(grainOverlayV), 0.8);
+    float grainOverlayStrength = pow(u.grainOverlay * abs(grainOverlayV), 0.8);
     color = mix(color, grainOverlayColor, 0.35 * grainOverlayStrength);
 
     color = lerpDither(color, pos);
