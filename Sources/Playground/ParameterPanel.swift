@@ -13,13 +13,18 @@ final class ParameterPanel: NSView {
     var onChange: ((String, LerpParamValue) -> Void)?
     /// A preset was picked. nil is the "Defaults" entry.
     var onPreset: ((String?) -> Void)?
-    /// A row's MIDI menu was used. Only sent for scalar parameters.
-    var onMIDICommand: ((String, MIDICommand) -> Void)?
+    /// A row's MIDI menu was used. The component is nil for everything that is
+    /// not a colour, and names the axis for the ones that are.
+    var onMIDICommand: ((String, ColorComponent?, MIDICommand) -> Void)?
 
     enum MIDICommand {
         case learn
         case clear
+        /// Every axis of a colour at once, from the row's top-level menu.
+        case clearAll
         case mode(MIDIBindingMode)
+        /// Open the min/max editor for this binding.
+        case range
     }
 
     private(set) var parameters: [LerpParam] = []
@@ -40,13 +45,16 @@ final class ParameterPanel: NSView {
         override var isFlipped: Bool { true }
     }
 
-    /// Label, control, optional numeric echo, optional MIDI menu.
+    /// Label, control, optional numeric echo, MIDI menu, and what that menu is
+    /// currently describing — a scalar has at most one binding, a colour up to
+    /// one per OKLCH axis.
     private final class Row {
         let param: LerpParam
         let control: NSControl
         let field: NSTextField?
         let midi: NSPopUpButton?
         let view: NSView
+        var bindings: [MIDIBinding] = []
         init(param: LerpParam, control: NSControl, field: NSTextField?,
              midi: NSPopUpButton?, view: NSView) {
             self.param = param; self.control = control; self.field = field
@@ -177,27 +185,26 @@ final class ParameterPanel: NSView {
         control.identifier = NSUserInterfaceItemIdentifier(param.name)
         field?.identifier = control.identifier
 
-        // Colours would need three or four CCs to drive; only scalars are
-        // MIDI-bindable, so they are the only rows that get the menu.
-        var midi: NSPopUpButton?
-        if param.type != .color {
-            let menu = NSPopUpButton(frame: .zero, pullsDown: true)
-            menu.controlSize = .small
-            menu.font = .systemFont(ofSize: 10)
-            menu.identifier = control.identifier
-            menu.widthAnchor.constraint(equalToConstant: 68).isActive = true
-            midi = menu
-            setBinding(nil, for: param.name, button: menu)
-        }
+        // Every row gets the same menu now, colours included — a colour's axes
+        // are a submenu inside it rather than a different kind of control.
+        let midi = NSPopUpButton(frame: .zero, pullsDown: true)
+        midi.controlSize = .small
+        midi.font = .systemFont(ofSize: 10)
+        midi.identifier = control.identifier
+        midi.widthAnchor.constraint(equalToConstant: 68).isActive = true
 
-        let views: [NSView] = [name, control, field, midi, midi == nil ? Chrome.flexible() : nil]
+        let views: [NSView] = [name, control, field,
+                               param.type == .color ? Chrome.flexible() : nil, midi]
             .compactMap { $0 }
         let stack = NSStackView(views: views)
         stack.spacing = 6
         stack.alignment = .centerY
         stack.distribution = .fill
         control.setContentHuggingPriority(.init(1), for: .horizontal)
-        return Row(param: param, control: control, field: field, midi: midi, view: stack)
+        let row = Row(param: param, control: control, field: field, midi: midi, view: stack)
+        rows[param.name] = row          // `setBinding` looks the row up to read its colour
+        setBinding([], for: param.name)
+        return row
     }
 
     private func refreshMIDIVisibility() {
@@ -232,43 +239,135 @@ final class ParameterPanel: NSView {
         param.type == .int ? String(Int(value.rounded())) : String(format: "%.3g", value)
     }
 
-    /// Shows what a parameter is currently bound to. nil clears it back to "—".
-    func setBinding(_ binding: MIDIBinding?, for name: String) {
-        guard let button = rows[name]?.midi else { return }
-        setBinding(binding, for: name, button: button)
+    /// Shows what a parameter is currently bound to. An empty list clears the
+    /// title back to "—".
+    ///
+    /// A scalar has at most one binding and gets the menu it always had. A
+    /// colour can have up to four — one per OKLCH axis — and gets the *same*
+    /// menu once per axis, hung off a submenu. There is no second menu builder:
+    /// `axisItems` is what makes both.
+    func setBinding(_ bindings: [MIDIBinding], for name: String) {
+        guard let row = rows[name], let button = row.midi else { return }
+        row.bindings = bindings
+        let menu = button.menu ?? NSMenu()
+        menu.delegate = self
+        // Looked up in `menuNeedsUpdate` so the near-grey note is recomputed
+        // from the colour that is on screen when the menu opens, not from
+        // whatever it was when the row was last rebuilt. A popup's menu never
+        // shows its own title, so this is free.
+        menu.title = name
+        populate(menu, row: row)
+        if button.menu !== menu { button.menu = menu }
+        button.toolTip = bindings.isEmpty
+            ? "Not mapped to MIDI"
+            : bindings.map { "\($0.shortLabel) → \(name)\($0.component.map { c in " \(c.label)" } ?? "")" }
+                .joined(separator: "\n")
     }
 
-    private func setBinding(_ binding: MIDIBinding?, for name: String, button: NSPopUpButton) {
-        let menu = NSMenu()
+    private func populate(_ menu: NSMenu, row: Row) {
+        let name = row.param.name, bindings = row.bindings
+        menu.removeAllItems()
         // Without this AppKit enables anything whose target answers the action,
         // which would offer Clear and the modes on an unbound parameter.
         menu.autoenablesItems = false
         // A pull-down shows its first item as its title.
-        menu.addItem(withTitle: binding?.shortLabel ?? "—", action: nil, keyEquivalent: "")
-        add(to: menu, "Learn…", name, .learn)
-        add(to: menu, "Clear", name, .clear).isEnabled = binding != nil
-        menu.addItem(.separator())
-        for mode in MIDIBindingMode.choices {
-            let item = add(to: menu, mode.label, name, .mode(mode))
-            item.isEnabled = binding != nil
-            item.state = binding?.mode.matchesChoice(mode) == true ? .on : .off
+        menu.addItem(withTitle: title(for: bindings), action: nil, keyEquivalent: "")
+
+        guard row.param.type == .color else {
+            for entry in axisItems(name, nil, bindings.first) { menu.addItem(entry) }
+            return
         }
-        button.menu = menu
-        button.toolTip = binding.map { "\($0.shortLabel) → \(name)" } ?? "Not mapped to MIDI"
+        let color = currentColor(of: row)
+        for component in ColorComponent.allCases {
+            let binding = bindings.first { $0.component == component }
+            let entry = NSMenuItem(title: axisTitle(component, binding, color: color),
+                                   action: nil, keyEquivalent: "")
+            entry.state = binding != nil ? .on : .off
+            let submenu = NSMenu()
+            submenu.autoenablesItems = false
+            for sub in axisItems(name, component, binding) { submenu.addItem(sub) }
+            entry.submenu = submenu
+            menu.addItem(entry)
+        }
+        menu.addItem(.separator())
+        let clearAll = item("Clear All", name, nil, .clearAll)
+        clearAll.isEnabled = !bindings.isEmpty
+        menu.addItem(clearAll)
     }
 
-    @discardableResult
-    private func add(to menu: NSMenu, _ title: String, _ name: String, _ command: MIDICommand) -> NSMenuItem {
+    /// The pull-down's own title. One binding shows its CC; several show how
+    /// many, because three CCs do not fit in the control and the tooltip has
+    /// the detail.
+    private func title(for bindings: [MIDIBinding]) -> String {
+        switch bindings.count {
+        case 0: "—"
+        case 1: bindings[0].shortLabel
+        default: "\(bindings.count) CCs"
+        }
+    }
+
+    /// The body of the menu for one axis — identical for a scalar (whose only
+    /// axis is nil) and for each of a colour's four.
+    private func axisItems(_ name: String, _ component: ColorComponent?,
+                           _ binding: MIDIBinding?) -> [NSMenuItem] {
+        var items = [item("Learn…", name, component, .learn),
+                     item("Clear", name, component, .clear)]
+        items[1].isEnabled = binding != nil
+        items.append(.separator())
+        for mode in MIDIBindingMode.choices {
+            let entry = item(mode.label, name, component, .mode(mode))
+            entry.isEnabled = binding != nil
+            entry.state = binding?.mode.matchesChoice(mode) == true ? .on : .off
+            items.append(entry)
+        }
+        items.append(.separator())
+        // Task-2 range scoping lives here rather than in a pair of always-
+        // visible fields: it is a thing you set once per binding, and the title
+        // reports the current scope so nothing has to be opened to read it.
+        let scope = item(rangeTitle(binding), name, component, .range)
+        scope.isEnabled = binding != nil
+        items.append(scope)
+        return items
+    }
+
+    private func rangeTitle(_ binding: MIDIBinding?) -> String {
+        guard let binding, binding.isScoped else { return "Range…" }
+        return String(format: "Range… (%.2f–%.2f)", binding.range.lowerBound, binding.range.upperBound)
+    }
+
+    /// "Hue — CC21", or "Hue (near-grey — lifts chroma)" when the colour has no
+    /// hue worth turning. The parenthetical is the disclosure that stops the
+    /// chroma floor being something the app does behind the user's back.
+    private func axisTitle(_ component: ColorComponent, _ binding: MIDIBinding?,
+                           color: SIMD4<Float>) -> String {
+        var title = component.label
+        if component == .hue, ColorProjection.isNearGrey(color) {
+            title += " — near-grey, lifts chroma"
+        }
+        return title + (binding.map { " · \($0.shortLabel)" } ?? "")
+    }
+
+    private func currentColor(of row: Row) -> SIMD4<Float> {
+        guard let color = (row.control as? NSColorWell)?.color.usingColorSpace(.sRGB) else {
+            return row.param.defaultValue.colorValue ?? SIMD4<Float>(0, 0, 0, 1)
+        }
+        return SIMD4<Float>(Float(color.redComponent), Float(color.greenComponent),
+                            Float(color.blueComponent), Float(color.alphaComponent))
+    }
+
+    private func item(_ title: String, _ name: String, _ component: ColorComponent?,
+                      _ command: MIDICommand) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: #selector(midiCommand), keyEquivalent: "")
         item.target = self
-        item.representedObject = MIDICommandBox(name: name, command: command)
-        menu.addItem(item)
+        item.representedObject = MIDICommandBox(name: name, component: component, command: command)
         return item
     }
 
     private final class MIDICommandBox {
-        let name: String, command: MIDICommand
-        init(name: String, command: MIDICommand) { self.name = name; self.command = command }
+        let name: String, component: ColorComponent?, command: MIDICommand
+        init(name: String, component: ColorComponent?, command: MIDICommand) {
+            self.name = name; self.component = component; self.command = command
+        }
     }
 
     // MARK: - Values out
@@ -311,7 +410,7 @@ final class ParameterPanel: NSView {
 
     @objc private func midiCommand(_ sender: NSMenuItem) {
         guard let box = sender.representedObject as? MIDICommandBox else { return }
-        onMIDICommand?(box.name, box.command)
+        onMIDICommand?(box.name, box.component, box.command)
     }
 
     // MARK: - Test hooks
@@ -333,5 +432,37 @@ final class ParameterPanel: NSView {
     func choosePreset(_ title: String) {
         presetPopUp.selectItem(withTitle: title)
         presetChanged()
+    }
+
+    /// Titles of the axis submenu for a colour row, so `--selftest` can assert
+    /// the component sub-choice is offered and says what it is doing.
+    func midiMenuTitles(named name: String, component: ColorComponent? = nil) -> [String] {
+        guard let row = rows[name], let menu = row.midi?.menu else { return [] }
+        guard let component else { return menu.items.map(\.title) }
+        return menu.items.first { $0.title.hasPrefix(component.label) }?
+            .submenu?.items.map(\.title) ?? []
+    }
+
+    /// Fires the menu item AppKit would have fired, so the test drives the same
+    /// path a click does.
+    func chooseMIDIMenuItem(named name: String, component: ColorComponent?, title: String) -> Bool {
+        guard let row = rows[name], let menu = row.midi?.menu else { return false }
+        let container = component.flatMap { c in
+            menu.items.first { $0.title.hasPrefix(c.label) }?.submenu
+        } ?? menu
+        guard let item = container.items.first(where: { $0.title == title }), item.isEnabled,
+              let action = item.action else { return false }
+        _ = perform(action, with: item)
+        return true
+    }
+}
+
+/// The near-grey note on a colour's Hue axis has to describe the colour that is
+/// on screen *now*, and a menu is the one piece of UI that can be rebuilt at the
+/// moment it is looked at.
+extension ParameterPanel: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard let row = rows[menu.title] else { return }
+        populate(menu, row: row)
     }
 }

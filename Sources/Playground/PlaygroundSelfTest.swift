@@ -232,12 +232,19 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
     /// names it expects.
     private var subject: LerpShader!
     private var scalarParam: LerpParam!
+    private var colorParam: LerpParam!
 
     /// Opening a shader compiles synchronously, and so does moving a control,
     /// so these run back to back. Only the edit at the end has to wait.
     private func inspectorChecks() {
         let shaders = controller.metalView.shaderLibrary.discover()
+        // A colour parameter as well as a scalar one, so the colour bindings
+        // below have something real to drive.
         guard let shader = shaders.first(where: { shader in
+            shader.parameters.contains { $0.type == .float }
+                && shader.parameters.contains { $0.type == .color }
+                && !shader.presets.isEmpty
+        }) ?? shaders.first(where: { shader in
             shader.parameters.contains { $0.type == .float } && !shader.presets.isEmpty
         }) else {
             check("a shader with parameters and presets exists", false)
@@ -245,6 +252,10 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         }
         subject = shader
         scalarParam = shader.parameters.first { $0.type == .float && $0.min < $0.max }
+        // The most chromatic colour the shader declares: the one a hue knob has
+        // the most to say about, and the one worth rendering to look at.
+        colorParam = shader.parameters.filter { $0.type == .color }
+            .max { a, b in chroma(of: a) < chroma(of: b) }
         controller.openShader(named: shader.name)
 
         panelMatchesDeclarations()
@@ -461,7 +472,7 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
               controller.midi.sources.contains { $0.id == senderID }, controller.midi.summary)
         // A bank of our own, so learn never writes into one the user made.
         controller.createMapping(named: Self.testMapping, deviceID: senderID)
-        controller.learnTarget = boundParam.name
+        controller.learnTarget = (boundParam.name, nil)
         send(cc: 21, 0)     // the next CC captures its own identity
         wait(until: { [self] in controller.activeMapping?.binding(for: boundParam.name) != nil },
              timeout: 5, then: midiRouted)
@@ -494,12 +505,175 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         wait(until: { false }, timeout: 0.4, then: { [self] in
             check("an unmapped CC changed nothing",
                   controller.metalView.parameterValues?[boundParam.name]?.scalarValue == boundParam.max)
-            endMIDI()
+            colorLearn()
         })
+    }
+
+    // MARK: Colour over MIDI
+
+    /// A colour bound to one CC, learned through the row's own menu and driven
+    /// through Core MIDI — the case that did not exist before, end to end.
+    private var colorBefore = SIMD4<Float>()
+
+    private func colorLearn() {
+        guard let param = colorParam else {
+            print("skip  colour bindings  — the subject shader declares no colour")
+            return endMIDI()
+        }
+        colorBefore = liveColor(param.name)
+        // Through the panel's own callback, i.e. the path a click on the Hue
+        // submenu's "Learn…" takes.
+        controller.midiCommand(param.name, .hue, .learn)
+        send(cc: 22, 0)
+        wait(until: { [self] in
+            controller.activeMapping?.binding(for: param.name, component: .hue) != nil
+        }, timeout: 5, then: colorLearned)
+    }
+
+    private func colorLearned() {
+        guard let param = colorParam else { return endMIDI() }
+        let binding = controller.activeMapping?.binding(for: param.name, component: .hue)
+        check("learn on a colour's Hue axis captured the CC",
+              binding?.cc == 22 && binding?.component == .hue,
+              binding?.shortLabel ?? "nothing bound")
+        check("the colour row's title names the axis it drives",
+              controller.inspector.bindingLabel(named: param.name) == "CC22 H",
+              controller.inspector.bindingLabel(named: param.name) ?? "nil")
+        check("a colour row offers all four OKLCH axes",
+              ColorComponent.allCases.allSatisfy { component in
+                  controller.inspector.midiMenuTitles(named: param.name)
+                      .contains { $0.hasPrefix(component.label) }
+              },
+              controller.inspector.midiMenuTitles(named: param.name).joined(separator: " / "))
+        check("each axis carries the same menu a scalar row has",
+              ["Learn…", "Clear", "Toggle"].allSatisfy(
+                  controller.inspector.midiMenuTitles(named: param.name, component: .hue).contains))
+        check("the learned colour binding is on disk", MIDIMappingStore.load().contains {
+            $0.name == Self.testMapping
+                && $0.binding(for: param.name, component: .hue)?.cc == 22
+        })
+        // Full scale is half a turn from the base hue, which is the furthest
+        // the knob goes and so the largest visible change.
+        send(cc: 22, 127)
+        wait(until: { [self] in liveColor(param.name) != colorBefore }, timeout: 5, then: colorApplied)
+    }
+
+    private func colorApplied() {
+        guard let param = colorParam else { return endMIDI() }
+        let now = liveColor(param.name)
+        check("a CC moved the live colour", now != colorBefore,
+              "\(describe(colorBefore)) → \(describe(now))")
+        check("the knob only moved hue — lightness held", holdsLightness(colorBefore, now),
+              String(format: "L %.4f → %.4f", lightness(colorBefore), lightness(now)))
+        check("the colour the knob produced is inside sRGB", inGamut(now), describe(now))
+        check("the colour well followed the knob",
+              (controller.inspector.control(named: param.name) as? NSColorWell) != nil
+                  && liveColor(param.name) == now)
+
+        // Second CC, second axis, same parameter: the composition case.
+        controller.midiCommand(param.name, .lightness, .learn)
+        send(cc: 23, 0)
+        wait(until: { [self] in
+            controller.activeMapping?.binding(for: param.name, component: .lightness) != nil
+        }, timeout: 5, then: colorSecondAxis)
+    }
+
+    private var hueBeforeSecondAxis = 0.0
+
+    private func colorSecondAxis() {
+        guard let param = colorParam else { return endMIDI() }
+        let bindings = controller.activeMapping?.bindings(for: param.name) ?? []
+        check("two CCs can drive two axes of one colour", bindings.count == 2,
+              bindings.map(\.shortLabel).joined(separator: " + "))
+        check("the row's title says how many knobs are on it",
+              controller.inspector.bindingLabel(named: param.name) == "2 CCs",
+              controller.inspector.bindingLabel(named: param.name) ?? "nil")
+        hueBeforeSecondAxis = Oklch.lch(fromSRGB: rgb(liveColor(param.name))).h
+        send(cc: 23, 100)
+        wait(until: { [self] in lightness(liveColor(param.name)) > 0.7 }, timeout: 5,
+             then: colorComposed)
+    }
+
+    private func colorComposed() {
+        guard let param = colorParam else { return endMIDI() }
+        let now = liveColor(param.name)
+        let hue = Oklch.lch(fromSRGB: rgb(now)).h
+        check("the lightness knob moved lightness", lightness(now) > 0.7,
+              String(format: "L %.3f", lightness(now)))
+        // The point of a component selector: two knobs on one colour do not
+        // fight. Moving L must not drag H with it.
+        check("moving one axis left the other where it was",
+              abs(hue - hueBeforeSecondAxis) < 1.0,
+              String(format: "H %.1f° → %.1f°", hueBeforeSecondAxis, hue))
+        check("the composed colour is still inside sRGB", inGamut(now), describe(now))
+        colorMenu(param)
+        endMIDI()
+    }
+
+    /// The menu itself, driven by firing the items AppKit would fire. Nothing
+    /// here reaches past the UI: if an item is disabled or unwired, these fail.
+    private func colorMenu(_ param: LerpParam) {
+        // Task 2's editor is a menu item rather than two more fields per row,
+        // so the scope has to be legible from the item's title.
+        var preset = controller.activeMapping!
+        preset.bind(preset.binding(for: param.name, component: .hue)!.withRange(low: 0.25, high: 0.75))
+        controller.applyMapping(preset)
+        check("the range editor reports its scope in the menu",
+              controller.inspector.midiMenuTitles(named: param.name, component: .hue)
+                  .contains("Range… (0.25–0.75)"),
+              controller.inspector.midiMenuTitles(named: param.name, component: .hue)
+                  .last ?? "no items")
+
+        check("Clear on one axis leaves the other bound",
+              controller.inspector.chooseMIDIMenuItem(named: param.name, component: .hue,
+                                                      title: "Clear")
+                  && controller.activeMapping?.binding(for: param.name, component: .hue) == nil
+                  && controller.activeMapping?.binding(for: param.name, component: .lightness) != nil,
+              (controller.activeMapping?.bindings(for: param.name) ?? [])
+                  .map(\.shortLabel).joined(separator: " + "))
+        check("Clear All takes every axis at once",
+              controller.inspector.chooseMIDIMenuItem(named: param.name, component: nil,
+                                                      title: "Clear All")
+                  && controller.activeMapping?.bindings(for: param.name).isEmpty == true)
+    }
+
+    // MARK: Colour helpers
+
+    private func liveColor(_ name: String) -> SIMD4<Float> {
+        controller.metalView.parameterValues?[name]?.colorValue ?? SIMD4<Float>()
+    }
+
+    private func chroma(of param: LerpParam) -> Double {
+        param.defaultValue.colorValue.map { Oklch.lch(fromSRGB: rgb($0)).c } ?? 0
+    }
+
+    private func rgb(_ c: SIMD4<Float>) -> SIMD3<Double> {
+        SIMD3(Double(c.x), Double(c.y), Double(c.z))
+    }
+
+    private func lightness(_ c: SIMD4<Float>) -> Double { Oklch.lch(fromSRGB: rgb(c)).l }
+
+    /// The composition guarantee: a hue knob leaves perceptual lightness alone.
+    /// The tolerance is 8-bit quantisation, not slack — the colour makes a round
+    /// trip through `SIMD4<Float>` and the shader's uniform block.
+    private func holdsLightness(_ a: SIMD4<Float>, _ b: SIMD4<Float>) -> Bool {
+        abs(lightness(a) - lightness(b)) < 0.005
+    }
+
+    private func inGamut(_ c: SIMD4<Float>) -> Bool {
+        c.min() >= 0 && c.max() <= 1
+    }
+
+    private func describe(_ c: SIMD4<Float>) -> String {
+        String(format: "(%.3f, %.3f, %.3f, %.3f)", c.x, c.y, c.z, c.w)
     }
 
     private func endMIDI() {
         routerUnits()
+        colorProjectionUnits()
+        bindingPersistenceUnits()
+        mappingBankUnits()
+        renderColorSweep()
         captureUI()
         finish()
     }
@@ -545,6 +719,294 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
     private func position(_ result: (binding: MIDIBinding, update: MIDIRouter.Update)?) -> Double? {
         if case .absolute(let value)? = result?.update { return value }
         return nil
+    }
+
+    // MARK: The colour projection, measured
+
+    /// Every `color` default every installed shader declares. The claims below
+    /// are about *this repo's palettes*, not about a colour someone picked to
+    /// make the assertion pass.
+    private func allShaderColors() -> [(String, SIMD4<Float>)] {
+        controller.metalView.shaderLibrary.discover().flatMap { shader in
+            shader.parameters.filter { $0.type == .color }.compactMap { param in
+                param.defaultValue.colorValue.map { ("\(shader.name).\(param.name)", $0) }
+            }
+        }
+    }
+
+    /// The claim most likely to be wrong, checked numerically: a CC swept 0→127
+    /// on `.hue` produces 128 colours that are all inside sRGB, all at the base
+    /// colour's lightness, and spaced roughly evenly in perception.
+    private func colorProjectionUnits() {
+        let colors = allShaderColors()
+        check("shaders declare colours to test the projection against", colors.count > 20,
+              "\(colors.count) colour parameters")
+        guard !colors.isEmpty else { return }
+
+        var outOfGamut: [String] = []
+        var lightnessDrift = 0.0, worstDriftName = ""
+        var centreError = 0.0, worstCentreName = ""
+        var liftedError = 0.0, worstLiftedName = ""
+        var stepRatios: [Double] = []
+        var deadKnobs: [String] = []
+
+        for (name, base) in colors {
+            let l0 = Oklch.lch(fromSRGB: rgb(base)).l
+            var sweep: [SIMD4<Float>] = []
+            for value in 0 ... 127 {
+                let color = ColorProjection.apply(.hue, position: Double(value) / 127,
+                                                  to: base, base: base)
+                sweep.append(color)
+                // Tolerance exactly 0: `maxChroma` returns a chroma it verified,
+                // so "nearly in gamut" is not a thing that should happen here.
+                if !Oklch.isInGamut(rgb(color), tolerance: 0) {
+                    outOfGamut.append("\(name)@\(value) \(describe(color))")
+                }
+                let drift = abs(Oklch.lch(fromSRGB: rgb(color)).l - l0)
+                if drift > lightnessDrift { lightnessDrift = drift; worstDriftName = name }
+            }
+            // Knob centre is the palette exactly as the author wrote it —
+            // except on the near-greys, where the chroma floor deliberately
+            // lifts it. Those are counted apart so the cost of the floor is a
+            // number in the output rather than slack in a tolerance.
+            let centre = ColorProjection.apply(.hue, position: 0.5, to: base, base: base)
+            let error = Double((0..<3).map { abs(centre[$0] - base[$0]) }.max() ?? 0)
+            if ColorProjection.isNearGrey(base) {
+                if error > liftedError { liftedError = error; worstLiftedName = name }
+            } else if error > centreError {
+                centreError = error; worstCentreName = name
+            }
+
+            var steps: [Double] = []
+            for i in 1 ..< sweep.count {
+                let a = Oklch.lab(fromSRGB: rgb(sweep[i - 1])), b = Oklch.lab(fromSRGB: rgb(sweep[i]))
+                let d = a - b
+                steps.append((d.x * d.x + d.y * d.y + d.z * d.z).squareRoot())
+            }
+            if let hi = steps.max(), let lo = steps.min(), lo > 1e-9 { stepRatios.append(hi / lo) }
+            // The near-grey rule: a knob is never allowed to sit there doing
+            // nothing. Even pure black has to move, or Learn has to have sent
+            // the user to a different axis.
+            let spread = spanOfSweep(sweep)
+            if spread < 0.004 && ColorProjection.defaultComponent(for: base) == .hue {
+                deadKnobs.append(String(format: "%@ (spread %.5f)", name, spread))
+            }
+        }
+
+        check("a 0→127 hue sweep is inside sRGB at every position, for every shader colour",
+              outOfGamut.isEmpty,
+              outOfGamut.isEmpty ? "\(colors.count) colours × 128 positions"
+                                 : outOfGamut.prefix(3).joined(separator: ", "))
+        check("a hue knob holds the colour's lightness", lightnessDrift < 1e-6,
+              String(format: "worst drift %.2e on %@", lightnessDrift, worstDriftName))
+        check("knob centre reproduces the shader author's colour exactly", centreError < 1e-6,
+              String(format: "worst %.2e on %@ (%d colours)", centreError, worstCentreName,
+                     colors.filter { !ColorProjection.isNearGrey($0.1) }.count))
+        // The whole price of not letting a knob do nothing, in one number.
+        check("the near-grey chroma floor costs almost nothing at centre", liftedError < 0.012,
+              String(format: "worst %.4f on %@ (%d near-grey colours)", liftedError, worstLiftedName,
+                     colors.filter { ColorProjection.isNearGrey($0.1) }.count))
+
+        let sorted = stepRatios.sorted()
+        let median = sorted[sorted.count / 2]
+        check("perceptual step size is roughly even across the sweep", median < 3,
+              String(format: "median max/min %.2f, p90 %.2f, worst %.2f",
+                     median, sorted[Int(Double(sorted.count - 1) * 0.9)], sorted.last ?? 0))
+        check("no hue knob is silently dead", deadKnobs.isEmpty,
+              deadKnobs.isEmpty ? "chroma floor \(ColorProjection.hueChromaFloor) lifts the near-greys"
+                                : deadKnobs.joined(separator: ", "))
+
+        // The three colours a floor cannot rescue — pure black and pure white,
+        // where the gamut at that lightness is a single point — have to be
+        // sent to an axis that does have range.
+        let degenerate = colors.filter { Oklch.safeChroma(lightness: Oklch.lch(fromSRGB: rgb($0.1)).l) <= 1e-6 }
+        check("colours with no chroma available default to the lightness axis",
+              degenerate.allSatisfy { ColorProjection.defaultComponent(for: $0.1) == .lightness },
+              "\(degenerate.count) such colours: \(degenerate.map(\.0).joined(separator: ", "))")
+
+        // The other three axes, on one colour, so the switch has no dead arm.
+        let sample = colors.first { !ColorProjection.isNearGrey($0.1) }?.1 ?? SIMD4<Float>(0.4, 0.2, 0.7, 1)
+        let dark = ColorProjection.apply(.lightness, position: 0.15, to: sample, base: sample)
+        let light = ColorProjection.apply(.lightness, position: 0.85, to: sample, base: sample)
+        check("the lightness axis spans dark to light",
+              lightness(dark) < 0.2 && lightness(light) > 0.8
+                  && Oklch.isInGamut(rgb(dark), tolerance: 0) && Oklch.isInGamut(rgb(light), tolerance: 0),
+              String(format: "L %.3f → %.3f", lightness(dark), lightness(light)))
+        let grey = ColorProjection.apply(.chroma, position: 0, to: sample, base: sample)
+        let vivid = ColorProjection.apply(.chroma, position: 1, to: sample, base: sample)
+        check("the chroma axis spans grey to the most saturated colour in gamut",
+              Oklch.lch(fromSRGB: rgb(grey)).c < 1e-3
+                  && Oklch.lch(fromSRGB: rgb(vivid)).c > Oklch.lch(fromSRGB: rgb(sample)).c
+                  && Oklch.isInGamut(rgb(vivid), tolerance: 0),
+              String(format: "C %.4f → %.4f", Oklch.lch(fromSRGB: rgb(grey)).c,
+                     Oklch.lch(fromSRGB: rgb(vivid)).c))
+        check("the alpha axis writes alpha and nothing else",
+              ColorProjection.apply(.alpha, position: 0.25, to: sample, base: sample).w == 0.25
+                  && abs(ColorProjection.apply(.alpha, position: 0.25, to: sample, base: sample).x
+                         - sample.x) < 0.004)
+
+        // Absolute knobs must be idempotent: the same CC twice is the same
+        // colour, not a colour that has drifted twice as far.
+        let once = ColorProjection.apply(.hue, position: 0.8, to: sample, base: sample)
+        let twice = ColorProjection.apply(.hue, position: 0.8, to: once, base: sample)
+        check("an absolute hue knob does not compound its own output",
+              (0..<4).allSatisfy { abs(once[$0] - twice[$0]) < 0.004 },
+              "\(describe(once)) vs \(describe(twice))")
+
+        // And the inverse the relative encoders need has to agree with it.
+        check("position(of:) inverts apply(_:position:)",
+              abs(ColorProjection.position(of: .hue, in: once, base: sample) - 0.8) < 0.01,
+              String(format: "%.4f", ColorProjection.position(of: .hue, in: once, base: sample)))
+    }
+
+    /// Largest gap between any two colours of a sweep, in Oklab.
+    private func spanOfSweep(_ sweep: [SIMD4<Float>]) -> Double {
+        let labs = sweep.map { Oklch.lab(fromSRGB: rgb($0)) }
+        var widest = 0.0
+        for a in labs {
+            let d = a - labs[0]
+            widest = max(widest, (d.x * d.x + d.y * d.y + d.z * d.z).squareRoot())
+        }
+        return widest
+    }
+
+    // MARK: Persistence
+
+    /// Mapping files written before colours were bindable have to keep loading,
+    /// and the new field has to survive the trip.
+    private func bindingPersistenceUnits() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let decoder = JSONDecoder()
+
+        let colored = MIDIBinding(paramID: "colorBack", channel: 3, cc: 22,
+                                  mode: .relative(.binaryOffset), range: 0.25 ... 0.75,
+                                  component: .chroma)
+        guard let data = try? encoder.encode(colored),
+              let back = try? decoder.decode(MIDIBinding.self, from: data) else {
+            return check("a colour binding round-trips through JSON", false, "encode failed")
+        }
+        check("a colour binding round-trips through JSON", back == colored,
+              String(data: data, encoding: .utf8) ?? "")
+
+        // A binding with no component encodes with no `component` key at all,
+        // which is *exactly* the bytes an older build wrote. Proving that is
+        // proving the old format still loads.
+        let scalar = MIDIBinding(paramID: "swirl", channel: nil, cc: 7)
+        let scalarJSON = (try? encoder.encode(scalar)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        check("a scalar binding writes no colour field", !scalarJSON.contains("component"), scalarJSON)
+
+        let legacy = Data(scalarJSON.utf8)
+        let decoded = try? decoder.decode(MIDIBinding.self, from: legacy)
+        check("old-format JSON with no component still decodes",
+              decoded?.component == nil && decoded?.cc == 7 && decoded?.range == 0 ... 1,
+              scalarJSON)
+
+        // …and through the store, as a whole bank file on disk.
+        let name = "zz-selftest-legacy"
+        let legacyPreset = """
+        {"bindings":[{"cc":9,"mode":{"abs7":{}},"paramID":"swirl","range":[0,1]}],\
+        "deviceID":"","name":"\(name)"}
+        """
+        let url = MIDIMappingStore.directory.appendingPathComponent("zz-selftest-legacy.json")
+        try? FileManager.default.createDirectory(at: MIDIMappingStore.directory,
+                                                 withIntermediateDirectories: true)
+        try? Data(legacyPreset.utf8).write(to: url)
+        let loaded = MIDIMappingStore.load().first { $0.name == name }
+        check("a mapping file written by the old build still loads",
+              loaded?.binding(for: "swirl")?.cc == 9 && loaded?.binding(for: "swirl")?.component == nil,
+              loaded.map { "\($0.bindings.count) bindings" } ?? "not loaded")
+        MIDIMappingStore.delete(name)
+
+        // Range scoping is modelled, persisted and honoured; this is the
+        // honouring, which the new min/max editor is the front end for.
+        let router = MIDIRouter()
+        router.load([MIDIBinding(paramID: "p", channel: nil, cc: 11, range: 0.25 ... 0.75)])
+        let scoped = controller.scopedValue(cc: 11, value: 127, on: router)
+        let scopedLow = controller.scopedValue(cc: 11, value: 0, on: router)
+        check("a scoped binding sweeps only its slice of the range",
+              abs((scoped ?? -1) - 0.75) < 1e-6 && abs((scopedLow ?? -1) - 0.25) < 1e-6,
+              "\(scopedLow ?? -1) … \(scoped ?? -1)")
+        check("min and max survive a round trip out of the editor",
+              MIDIBinding(paramID: "p", channel: nil, cc: 1).withRange(low: 0.9, high: 0.1).range
+                  == 0.1 ... 0.9,
+              "reversed input is put back in order rather than trapping")
+    }
+
+    // MARK: Mapping banks
+
+    /// Two banks whose names slug to the same file name used to silently
+    /// clobber each other. Both have to survive.
+    private func mappingBankUnits() {
+        let first = "ZZ Selftest Bank", second = "zz selftest bank"
+        check("both names really do slug to one file name",
+              ShaderScaffold.sanitize(name: first) == ShaderScaffold.sanitize(name: second),
+              ShaderScaffold.sanitize(name: first) ?? "nil")
+
+        var a = MappingPreset(name: first, deviceID: "")
+        a.bind(MIDIBinding(paramID: "alpha", channel: nil, cc: 1))
+        var b = MappingPreset(name: second, deviceID: "")
+        b.bind(MIDIBinding(paramID: "beta", channel: nil, cc: 2))
+        try? MIDIMappingStore.save(a)
+        try? MIDIMappingStore.save(b)
+
+        let loaded = MIDIMappingStore.load()
+        check("two banks that slug alike both survive being saved",
+              loaded.contains { $0.name == first && $0.binding(for: "alpha")?.cc == 1 }
+                  && loaded.contains { $0.name == second && $0.binding(for: "beta")?.cc == 2 },
+              loaded.map(\.name).joined(separator: " / "))
+        check("they landed in two different files",
+              MIDIMappingStore.existingURL(for: first) != MIDIMappingStore.existingURL(for: second),
+              [first, second].compactMap { MIDIMappingStore.existingURL(for: $0)?.lastPathComponent }
+                  .joined(separator: " / "))
+
+        // Saving again must reuse each bank's own file rather than making a
+        // third one — the disambiguation is sticky, not a counter that climbs.
+        let before = MIDIMappingStore.existingURL(for: second)
+        try? MIDIMappingStore.save(b)
+        check("re-saving a disambiguated bank keeps its file",
+              MIDIMappingStore.existingURL(for: second) == before,
+              MIDIMappingStore.existingURL(for: second)?.lastPathComponent ?? "gone")
+
+        check("deleting one leaves the other alone", {
+            MIDIMappingStore.delete(first)
+            let rest = MIDIMappingStore.load()
+            return !rest.contains { $0.name == first } && rest.contains { $0.name == second }
+        }())
+        check("the UI refuses a name that differs only in case",
+              MIDIMappingStore.nameIsTaken("ZZ SELFTEST BANK", in: MIDIMappingStore.load()))
+        MIDIMappingStore.delete(second)
+    }
+
+    // MARK: Look at it
+
+    /// Renders the subject shader with its colour parameter driven to several
+    /// knob positions, so the claim "the composition does not break" can be
+    /// checked by looking rather than only by arithmetic.
+    private func renderColorSweep() {
+        guard let param = colorParam, let subject,
+              let base = param.defaultValue.colorValue else { return }
+        let library = controller.metalView.shaderLibrary
+        guard let renderer = LerpRenderer(device: library.device) else { return }
+        let directory = URL(fileURLWithPath: "build/color-sweep")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        var rendered = 0
+        for value in stride(from: 0, through: 127, by: 127 / 5) {
+            let color = ColorProjection.apply(.hue, position: Double(value) / 127,
+                                              to: base, base: base)
+            var values = LerpParameterValues(subject.parameters)
+            values.set(param.name, .color(color))
+            let url = directory.appendingPathComponent(
+                String(format: "%@-%@-cc%03d.png", subject.name, param.name, value))
+            let result = LerpSnapshot.render(shader: subject, library: library, renderer: renderer,
+                                             width: 480, height: 300, time: 6, seed: 0.5,
+                                             params: values, to: url)
+            if result.error == nil { rendered += 1 }
+        }
+        check("rendered a hue sweep of \(subject.name).\(param.name) to look at", rendered == 6,
+              "\(rendered)/6 in \(directory.path)")
+        print("     wrote \(directory.path)/")
     }
 
     /// Draws the window's AppKit hierarchy into a PNG so the inspector's layout

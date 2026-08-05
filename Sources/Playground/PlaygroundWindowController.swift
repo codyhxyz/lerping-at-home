@@ -1,5 +1,6 @@
 import AppKit
 import Metal
+import MIDIDeps
 import QuartzCore
 
 /// The playground window: `.metal` source on the left, a live `LerpMetalView`
@@ -62,8 +63,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private(set) var mappings: [MappingPreset] = []
     private(set) var activeMapping: MappingPreset?
     /// The whole of MIDI learn: when this is set, the next inbound CC binds
-    /// itself to that parameter instead of being routed.
-    var learnTarget: String?
+    /// itself to that parameter instead of being routed. The component is the
+    /// axis to bind on a colour, and nil on everything else.
+    var learnTarget: (param: String, component: ColorComponent?)?
 
     /// The view owns the play/pause state; keeping a copy here is how the two
     /// drift apart.
@@ -230,7 +232,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func inspectorPane() -> NSView {
         inspector.onChange = { [weak self] name, value in self?.setParameter(name, value) }
         inspector.onPreset = { [weak self] name in self?.applyPreset(name) }
-        inspector.onMIDICommand = { [weak self] name, command in self?.midiCommand(name, command) }
+        inspector.onMIDICommand = { [weak self] name, component, command in
+            self?.midiCommand(name, component, command)
+        }
         midiPanel.onAction = { [weak self] action in self?.mappingCommand(action) }
         inspector.setContentHuggingPriority(.init(1), for: .vertical)
         midiPanel.heightAnchor.constraint(equalToConstant: 82).isActive = true
@@ -449,6 +453,17 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         commit(MappingPreset(name: name, deviceID: deviceID))
     }
 
+    /// Bank names have to stay tellable apart in the popup, so "My Bank" and
+    /// "my bank" are refused rather than allowed to exist side by side looking
+    /// like a duplicate. (Banks copied in by hand can still collide on the
+    /// *file* name; `MIDIMappingStore` disambiguates that end.)
+    private func claimBankName(_ name: String, excluding: String? = nil) -> Bool {
+        guard MIDIMappingStore.nameIsTaken(name, in: mappings, excluding: excluding) else { return true }
+        presentError("A mapping called “\(name)” already exists",
+                     "Mapping names have to differ by more than capitalisation. Pick another.")
+        return false
+    }
+
     private func select(mapping name: String) {
         guard let preset = mappings.first(where: { $0.name == name }) else { return }
         activeMapping = preset
@@ -459,9 +474,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshBindingLabels() {
         for param in shownParameters {
-            inspector.setBinding(activeMapping?.binding(for: param.name), for: param.name)
+            inspector.setBinding(activeMapping?.bindings(for: param.name) ?? [], for: param.name)
         }
     }
+
+    /// Test hook: the same "save it and make it live" path the menus take.
+    func applyMapping(_ preset: MappingPreset) { commit(preset) }
 
     /// Saves `preset`, makes it live and redraws everything that shows it.
     private func commit(_ preset: MappingPreset) {
@@ -490,9 +508,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                  deviceID: message.sourceID)
             // Omni by default: most controllers sit on a channel the user has
             // never chosen, and a binding that only works on one is a trap.
-            preset.bind(MIDIBinding(paramID: target, channel: nil, cc: message.cc))
+            preset.bind(MIDIBinding(paramID: target.param, channel: nil, cc: message.cc,
+                                    component: learnComponent(target)))
             commit(preset)
-            midiPanel.showStatus("Learned CC\(message.cc) → \(target)", tint: EditorTheme.text)
+            midiPanel.showStatus("Learned CC\(message.cc) → \(target.param)"
+                                    + (learnComponent(target).map { " \($0.label)" } ?? ""),
+                                 tint: EditorTheme.text)
             return
         }
         guard let routed = router.route(channel: message.channel, cc: message.cc, value: message.value),
@@ -503,41 +524,87 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         midiPanel.showStatus("\(routed.binding.shortLabel) → \(param.name) = \(value.literal)")
     }
 
+    /// The axis a Learn binds. The menu says which one when the user picked it
+    /// from a colour's submenu; when it did not — a scalar, or a colour learned
+    /// from somewhere that has no opinion — the colour's own content decides,
+    /// so a near-black background gets the axis that has range on it.
+    private func learnComponent(_ target: (param: String, component: ColorComponent?)) -> ColorComponent? {
+        if let component = target.component { return component }
+        guard let param = shownParameters.first(where: { $0.name == target.param }),
+              param.type == .color else { return nil }
+        return ColorProjection.defaultComponent(for: currentColor(of: param))
+    }
+
+    private func currentColor(of param: LerpParam) -> SIMD4<Float> {
+        (parameterState[param.name] ?? param.defaultValue).colorValue
+            ?? param.defaultValue.colorValue ?? SIMD4<Float>(0, 0, 0, 1)
+    }
+
     /// Turns "the knob did this" into a value for this particular parameter.
+    ///
+    /// Colours and scalars take the same three shapes of update and the same
+    /// range scoping; all that differs is what a "position" means once it has
+    /// been mapped into the binding's slice of the travel.
     private func resolve(_ update: MIDIRouter.Update, for param: LerpParam,
                          binding: MIDIBinding) -> LerpParamValue? {
-        guard param.type != .color else { return nil }   // a colour needs three CCs
+        let low = Double(binding.range.lowerBound), high = Double(binding.range.upperBound)
+        guard param.type != .color else {
+            let component = binding.component ?? .hue
+            let base = param.defaultValue.colorValue ?? SIMD4<Float>(0, 0, 0, 1)
+            let current = currentColor(of: param)
+            let position: Double
+            switch update {
+            case .absolute(let p):
+                position = low + p * (high - low)
+            case .delta(let ticks):
+                let here = ColorProjection.position(of: component, in: current, base: base)
+                position = min(max(here + Double(ticks) * (high - low) / 128, low), high)
+            case .toggle:
+                let here = ColorProjection.position(of: component, in: current, base: base)
+                position = here > (low + high) / 2 ? low : high
+            }
+            return param.clamp(.color(ColorProjection.apply(component, position: position,
+                                                            to: current, base: base)))
+        }
         let current = (parameterState[param.name] ?? param.defaultValue).scalarValue ?? 0
         let span = param.max - param.min
-        let low = param.min + Double(binding.range.lowerBound) * span
-        let high = param.min + Double(binding.range.upperBound) * span
+        let scaledLow = param.min + low * span, scaledHigh = param.min + high * span
         switch update {
         case .absolute(let position):
-            return param.clamp(.scalar(low + position * (high - low)))
+            return param.clamp(.scalar(scaledLow + position * (scaledHigh - scaledLow)))
         case .delta(let ticks):
             // One tick is one step for an int, and 1/128 of the travel for a
             // float — the resolution an absolute knob would have given.
-            let step = param.type == .float ? (high - low) / 128 : 1
+            let step = param.type == .float ? (scaledHigh - scaledLow) / 128 : 1
             return param.clamp(.scalar(current + Double(ticks) * step))
         case .toggle:
-            return param.clamp(.scalar(current > (low + high) / 2 ? low : high))
+            return param.clamp(.scalar(current > (scaledLow + scaledHigh) / 2 ? scaledLow : scaledHigh))
         }
     }
 
-    private func midiCommand(_ name: String, _ command: ParameterPanel.MIDICommand) {
+    func midiCommand(_ name: String, _ component: ColorComponent?,
+                     _ command: ParameterPanel.MIDICommand) {
         switch command {
         case .learn:
-            // Arming the same row twice disarms it, so a Learn started by
+            // Arming the same axis twice disarms it, so a Learn started by
             // accident does not sit there waiting to eat the next knob.
-            learnTarget = learnTarget == name ? nil : name
-            midiPanel.showStatus(learnTarget == nil ? "Learn cancelled" : "Learning \(name) — move a knob",
+            let armed = learnTarget?.param == name && learnTarget?.component == component
+            learnTarget = armed ? nil : (name, component)
+            midiPanel.showStatus(learnTarget == nil
+                ? "Learn cancelled"
+                : "Learning \(name)\(component.map { " \($0.label)" } ?? "") — move a knob",
                                  tint: EditorTheme.text)
         case .clear:
+            guard var preset = activeMapping else { return }
+            preset.unbind(name, component: component)
+            commit(preset)
+        case .clearAll:
             guard var preset = activeMapping else { return }
             preset.unbind(name)
             commit(preset)
         case .mode(let mode):
-            guard var preset = activeMapping, let binding = preset.binding(for: name) else { return }
+            guard var preset = activeMapping,
+                  let binding = preset.binding(for: name, component: component) else { return }
             guard let updated = binding.withMode(mode) else {
                 midiPanel.showStatus("14-bit needs CC 0–31, not \(binding.shortLabel)",
                                      tint: EditorTheme.error)
@@ -545,7 +612,57 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             }
             preset.bind(updated)
             commit(preset)
+        case .range:
+            guard var preset = activeMapping,
+                  let binding = preset.binding(for: name, component: component),
+                  let scoped = promptForRange(binding) else { return }
+            preset.bind(scoped)
+            commit(preset)
+            midiPanel.showStatus(String(format: "%@ → %@ over %.2f–%.2f", binding.shortLabel, name,
+                                        scoped.range.lowerBound, scoped.range.upperBound))
         }
+    }
+
+    /// Two fields behind a menu item, rather than two more controls on every
+    /// row. Scoping a knob is something you do once per binding and then read
+    /// off the menu item's own title, so it does not earn permanent space.
+    private func promptForRange(_ binding: MIDIBinding) -> MIDIBinding? {
+        let alert = NSAlert()
+        alert.messageText = "Knob range for \(binding.shortLabel)"
+        alert.informativeText = "The slice of \(binding.paramID)'s range this knob sweeps, "
+            + "as fractions of full travel. 0 and 1 is the whole of it."
+        let low = NSTextField(frame: NSRect(x: 0, y: 0, width: 70, height: 22))
+        let high = NSTextField(frame: NSRect(x: 0, y: 0, width: 70, height: 22))
+        low.stringValue = String(format: "%g", binding.range.lowerBound)
+        high.stringValue = String(format: "%g", binding.range.upperBound)
+        let row = NSStackView(views: [Chrome.label("Min", size: 11), low,
+                                      Chrome.label("Max", size: 11), high])
+        row.spacing = 6
+        row.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        alert.accessoryView = row
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Full Travel")
+        alert.window.initialFirstResponder = low
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return binding.withRange(low: Float(low.stringValue) ?? binding.range.lowerBound,
+                                     high: Float(high.stringValue) ?? binding.range.upperBound)
+        case .alertThirdButtonReturn:
+            return binding.withRange(low: 0, high: 1)
+        default:
+            return nil
+        }
+    }
+
+    /// Test hook: what a CC does to a plain 0…1 float through `router`, so the
+    /// range scoping the new min/max editor writes can be asserted against the
+    /// real `resolve`, not a copy of it.
+    func scopedValue(cc: UInt7, value: UInt8, on router: MIDIRouter) -> Double? {
+        guard let routed = router.route(channel: 0, cc: cc, value: value) else { return nil }
+        let param = LerpParam(name: routed.binding.paramID, type: .float, min: 0, max: 1,
+                              defaultValue: .scalar(0), label: routed.binding.paramID)
+        return resolve(routed.update, for: param, binding: routed.binding)?.scalarValue
     }
 
     private func mappingCommand(_ action: MIDIPanel.Action) {
@@ -554,12 +671,14 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             select(mapping: name)
         case .new:
             guard let name = prompt("New mapping", "Name this bank of MIDI mappings.",
-                                    midi.sources.first?.name ?? "Mapping") else { return }
+                                    midi.sources.first?.name ?? "Mapping"),
+                  claimBankName(name) else { return }
             createMapping(named: name, deviceID: midi.sources.first?.id ?? "")
         case .rename:
             guard var preset = activeMapping,
                   let name = prompt("Rename mapping", "Mapping files are named after the mapping.",
-                                    preset.name), name != preset.name else { return }
+                                    preset.name), name != preset.name,
+                  claimBankName(name, excluding: preset.name) else { return }
             MIDIMappingStore.delete(preset.name)
             mappings.removeAll { $0.name == preset.name }
             preset.name = name
