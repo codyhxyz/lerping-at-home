@@ -37,6 +37,7 @@ public enum LerpDataProviders {
     public typealias Factory = (MTLDevice) -> LerpDataProvider
 
     nonisolated(unsafe) private static var factories: [String: Factory] = [
+        "heatmap": { HeatmapData(device: $0) },
         "pipes": { PipesData(device: $0) },
     ]
     private static let lock = NSLock()
