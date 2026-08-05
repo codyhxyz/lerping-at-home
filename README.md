@@ -38,6 +38,37 @@ make preview && ./build/LerpPreview
   - Flags: `--size WxH`, `--time T`, `--seed S`, `--shader name`.
   - Exits non-zero on compile errors; used as the test suite.
 
+## Shader playground
+
+```sh
+make playground
+```
+
+- Split window: `.metal` source on the left, live render on the right.
+- Uses the same LerpCore compile path as the screensaver.
+- Editing recompiles 300 ms after the last keystroke and swaps the pipeline in place.
+- On a compile error the last successful pipeline keeps rendering; the view does not blank and the process does not exit.
+- Compile errors are listed in a console below the editor as `line:column`, and marked in the gutter.
+- Metal's reported line numbers match the shader file, because the prelude ends with `#line 1`.
+- The picker lists `Sources/Shaders/` plus the custom shader directory, and refreshes when files change on disk.
+- An externally modified open file reloads if there are no unsaved edits.
+- Time scrubber, render scale (100/75/50/25%), and fps readout map onto `LerpUniforms` and `LerpMetalView.Config`.
+- Editor has a line-number gutter, MSL syntax highlighting, soft tabs, and auto-indent.
+
+Keys:
+
+- `⌘N` — scaffold a new starter shader into `Sources/Shaders/`.
+- `⌘S` — write the buffer back to the `.metal` file.
+- `⌘R` — recompile.
+- `⌘\` — play/pause.
+- `⇧⌘R` — re-roll seed.
+- `⇧⌘[` / `⇧⌘]` — previous/next shader.
+
+Other targets:
+
+- `make playground-build` — build only, to `build/LerpPlayground`.
+- `make playground-test` — scripted UI test: opens the real window, asserts frames are drawing, edits the shader, breaks it, fixes it. Exits non-zero on any failed check.
+
 ## Custom shaders
 
 - Custom shader directory: `~/Library/Application Support/Lerping/Shaders/`.
@@ -95,6 +126,7 @@ Sources/LerpCore/     shared engine, no ScreenSaver dependency
 Sources/Shaders/     built-in shaders, shipped as bundle Resources
 Sources/Saver/       ScreenSaverView shim + Info.plist
 Sources/Preview/     LerpPreview dev app / snapshot CLI
+Sources/Playground/  LerpPlayground editor + live render, hot reload
 Templates/           example shader
 scripts/             loadtest.swift
 ```

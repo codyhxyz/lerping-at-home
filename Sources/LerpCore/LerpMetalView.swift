@@ -50,7 +50,9 @@ public final class LerpMetalView: NSView {
     private var shuffleIndex = 0
     private var lastShuffleSwitch: CFTimeInterval = 0
 
-    private let seed = Float.random(in: 0..<1)
+    /// Per-launch random seed handed to shaders as `u.seed`. Settable so a host
+    /// (the playground) can re-roll it; the screensaver never touches it.
+    public var seed = Float.random(in: 0..<1)
     private var elapsed: CFTimeInterval = 0
     private var resumeStamp: CFTimeInterval = 0
     private var running = false
@@ -89,6 +91,24 @@ public final class LerpMetalView: NSView {
     }
 
     public var shaderLibrary: ShaderLibrary { library }
+
+    /// The shader clock in seconds (`u.time`). Assigning scrubs the animation;
+    /// the clock continues from the new value. Combine with `renderOnce()` to
+    /// scrub while paused.
+    public var time: CFTimeInterval {
+        get { running ? elapsed + (CACurrentMediaTime() - resumeStamp) : elapsed }
+        set {
+            elapsed = newValue
+            resumeStamp = CACurrentMediaTime()
+            freezeBaseline = newValue
+        }
+    }
+
+    /// Draws exactly one frame right now, even when stopped/paused. Used by the
+    /// playground so a scrub or a recompile is visible without resuming.
+    public func renderOnce() {
+        drawFrame(at: time)
+    }
 
     // MARK: - Lifecycle
 
@@ -249,7 +269,7 @@ public final class LerpMetalView: NSView {
     }
 
     @objc private func tick(_ link: CADisplayLink) {
-        guard running, let pipeline else { return }
+        guard running, pipeline != nil else { return }
         let now = CACurrentMediaTime()
         let time = elapsed + (now - resumeStamp)
 
@@ -273,6 +293,11 @@ public final class LerpMetalView: NSView {
             fpsWindowStart = now
         }
 
+        drawFrame(at: time)
+    }
+
+    private func drawFrame(at time: CFTimeInterval) {
+        guard let pipeline else { return }
         autoreleasepool {
             guard let drawable = metalLayer.nextDrawable() else { return }
             let uniforms = LerpUniforms(

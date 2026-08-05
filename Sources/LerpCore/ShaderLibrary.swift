@@ -93,6 +93,13 @@ public final class ShaderLibrary {
         discover().first { $0.name == name }
     }
 
+    /// Drops every cached pipeline. Hosts that recompile the same shader name
+    /// over and over (the playground's hot reload keys the cache on the edited
+    /// source, so every keystroke would add an entry) call this to bound memory.
+    public func clearPipelineCache() {
+        pipelineCache.removeAll()
+    }
+
     /// Compiles (or returns a cached) pipeline for a shader. Throws with the
     /// Metal compiler's diagnostics on failure.
     public func pipeline(for shader: LerpShader) throws -> MTLRenderPipelineState {
