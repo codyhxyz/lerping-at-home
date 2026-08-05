@@ -86,22 +86,29 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Init
 
+    /// True for the `--selftest` window: a real, laid-out, rendering window
+    /// that is not on the user's screen, not in their way and not in their
+    /// saved layout. See `hide()`.
+    private let hidden: Bool
+
     /// Returns nil when there is no Metal device to render with.
-    static func make() -> PlaygroundWindowController? {
+    static func make(hidden: Bool = false) -> PlaygroundWindowController? {
         guard let view = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 760, height: 760),
                                        extraSearchURLs: ShaderLocations.repoSearchURLs())
         else { return nil }
-        return PlaygroundWindowController(metalView: view)
+        return PlaygroundWindowController(metalView: view, hidden: hidden)
     }
 
-    private init(metalView view: LerpMetalView) {
+    private init(metalView view: LerpMetalView, hidden: Bool) {
         metalView = view
+        self.hidden = hidden
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1500, height: 900),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.minSize = NSSize(width: 900, height: 500)
         super.init(window: window)
         window.delegate = self
+        if hidden { hide(window) }
 
         buildUI()
         startMIDI()
@@ -121,7 +128,22 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         window.setContentSize(NSSize(width: min(1500, visible.width - 40),
                                      height: min(920, visible.height - 40)))
         window.center()
-        window.setFrameAutosaveName(Self.windowAutosave)
+        if !hidden { window.setFrameAutosaveName(Self.windowAutosave) }
+    }
+
+    /// Takes the window off the user's screen without taking it off *a* screen.
+    ///
+    /// Moving it beyond the displays would be simpler, but AppKit stops the
+    /// display link on a window that is on no screen — measured: zero frames —
+    /// and "the live view is drawing frames" is one of the checks this window
+    /// exists to make. So it stays where it is, fully composited and really
+    /// rendering, at zero opacity: invisible, click-through, out of ⌘-Tab and
+    /// Mission Control, and out of the Window menu.
+    private func hide(_ window: NSWindow) {
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+        window.isExcludedFromWindowsMenu = true
+        window.collectionBehavior = [.stationary, .ignoresCycle, .fullScreenNone]
     }
 
     required init?(coder: NSCoder) { nil }
@@ -133,7 +155,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func buildUI() {
         split.splitView.isVertical = true
         split.splitView.dividerStyle = .thin
-        split.splitView.autosaveName = Self.splitAutosave
+        // The self-test gets the built-in layout every time rather than one it
+        // saved on a previous run, so what it lays out is what it asserts on.
+        split.splitView.autosaveName = hidden ? nil : Self.splitAutosave
 
         for (view, minimum) in [(editorPane(), 340.0), (renderPane(), 280.0), (inspectorPane(), 296.0)] {
             let controller = NSViewController()
@@ -1047,6 +1071,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) { pollDisk() }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool { confirmDiscardIfDirty() }
+
+    /// Brings the running playground back to the front — what a second launch
+    /// does instead of opening a second window, and what a Dock click does.
+    func raise() {
+        window?.deminiaturize(nil)
+        window?.makeKeyAndOrderFront(nil)
+    }
 
     func showAndStart() {
         window?.makeKeyAndOrderFront(nil)

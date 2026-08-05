@@ -54,6 +54,17 @@ make preview && ./build/LerpPreview
 make playground
 ```
 
+- Builds `build/LerpPlayground.app` and opens it. It is a real app bundle
+  (`com.hergenroeder.lerping.playground`), not a bare executable, so it has a
+  Dock tile, a ⌘-Tab entry and an app menu, and `open -a LerpPlayground` finds
+  it from anywhere once it has been built.
+- **One instance.** Running `make playground` (or `open -a`, or the Dock icon)
+  while it is already open raises the window you have instead of starting a
+  second copy. Launching the executable inside the bundle by hand does the same
+  thing: it hands off to the running instance and exits.
+- Closing the window quits — there is one window and it is the app.
+- Shaders still come from the repo the bundle sits in, so `open`'s working
+  directory does not matter.
 - Split window: `.metal` source on the left, live render on the right.
 - Uses the same LerpCore compile path as the screensaver.
 - Editing recompiles 300 ms after the last keystroke and swaps the pipeline in place.
@@ -76,8 +87,10 @@ Keys:
 
 Other targets:
 
-- `make playground-build` — build only, to `build/LerpPlayground`.
-- `make playground-test` — scripted UI test: opens the real window, asserts frames are drawing, edits the shader, breaks it, fixes it. Exits non-zero on any failed check.
+- `make playground-build` — build only, to `build/LerpPlayground.app`. The app icon is rendered from the `mesh-gradient` shader by `build/LerpPreview`, the same way the saver's System Settings thumbnail is; nothing binary is checked in.
+- `make playground-test` — scripted UI test: drives the real window, asserts frames are drawing, edits the shader, breaks it, fixes it. Exits non-zero on any failed check.
+  - It runs out of `build/LerpPlaygroundSelfTest.app`, a second bundle holding the same executable under an identifier of its own, so it can neither be mistaken for the app by the single-instance check nor activate it, and its preferences land in a domain of its own.
+  - Nothing of it reaches your screen: no Dock tile, no menu bar, no stolen focus, and a window that is real and rendering but at zero opacity. Every exit — including the watchdog that fires if a step never hands on — closes the window, and `alarm(2)` backs that up if the process wedges entirely.
 
 ## Custom shaders
 
@@ -197,6 +210,8 @@ Sources/Shaders/     built-in shaders, shipped as bundle Resources
 Sources/Saver/       ScreenSaverView shim + Info.plist
 Sources/Preview/     LerpPreview dev app / snapshot CLI
 Sources/Playground/  LerpPlayground editor + live render, hot reload
+  Info.plist           the .app's identity: bundle id, name, icon
+  SelfTest-Info.plist  the same executable under its own id, for --selftest
 Templates/           example shader
 scripts/             loadtest.swift
 ```

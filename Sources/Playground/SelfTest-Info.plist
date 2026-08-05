@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>LerpPlaygroundSelfTest</string>
+	<!-- A bundle identifier of its own is what keeps `make playground-test` out
+	     of the user's way: the single-instance check keys on this, so the test
+	     can neither be mistaken for the real app nor activate it, and its
+	     preferences (window frames, split positions) land in a domain of their
+	     own instead of rearranging the app the user actually uses. -->
+	<key>CFBundleIdentifier</key>
+	<string>com.hergenroeder.lerping.playground.selftest</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>LerpPlaygroundSelfTest</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<!-- No Dock tile, no menu bar, no ⌘-Tab entry. `--selftest` also sets
+	     `.accessory` in code, which is what actually takes effect when the
+	     executable is run directly rather than through LaunchServices. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>

@@ -14,11 +14,27 @@ import MIDIDeps
 /// to the shader file's own line numbers, the last-good pipeline surviving a
 /// broken edit, the inspector being built from the declarations rather than any
 /// table of names, and parameter values surviving a recompile.
+///
+/// None of that is allowed to cost the user a window. `make playground-test`
+/// runs out of `LerpPlaygroundSelfTest.app`, which has a bundle identifier of
+/// its own — so the single-instance check can never confuse it with the real
+/// app, and it never activates one — as an `.accessory` (no Dock tile, no menu
+/// bar, no ⌘-Tab) whose window is real and rendering but at zero opacity. See
+/// `PlaygroundWindowController.hide`.
 enum PlaygroundSelfTest {
+
+    /// How long the whole script gets. The scripted part takes ~15 s; the rest
+    /// is slack for a slow MIDI round trip on a busy machine.
+    static let budget: TimeInterval = 90
 
     static func run() -> Never {
         setbuf(stdout, nil)   // unbuffered, so a hang still shows how far we got
-        PlaygroundMain.boot(SelfTestDelegate())
+        // Last resort, in the kernel rather than in this process's run loop: a
+        // test run must never leave a process behind, not even if the main
+        // thread is wedged behind a modal or a Core MIDI call that never
+        // returns, in which case none of the Swift below ever runs again.
+        alarm(UInt32(budget) + 30)
+        PlaygroundMain.boot(SelfTestDelegate(), policy: .accessory)
     }
 }
 
@@ -29,14 +45,16 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
     private var originalSource = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let controller = PlaygroundWindowController.make() else {
+        guard let controller = PlaygroundWindowController.make(hidden: true) else {
             print("FAIL  no Metal device")
             exit(1)
         }
         self.controller = controller
         controller.showAndStart()
-        NSApp.activate(ignoringOtherApps: true)
+        // Deliberately no `NSApp.activate`: the window is invisible, so taking
+        // the foreground for it would be taking it from the user for nothing.
         originalSource = controller.editor.text
+        armWatchdog()
 
         // Timings are wall-clock on purpose — the point is to observe the real
         // 0.3 s edit debounce and the real display link, not to mock them.
@@ -54,6 +72,19 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         ]
         for (delay, step) in script {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: step)
+        }
+    }
+
+    /// The script is a chain of callbacks, and several of its steps bail out
+    /// early when the machine has nothing to test them with (no Core MIDI, no
+    /// colour parameter). Any one of those that forgets to hand on would leave
+    /// the run sitting there holding a window open, so the run has an end
+    /// whether or not the script reaches it.
+    private func armWatchdog() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + PlaygroundSelfTest.budget) { [self] in
+            check("the run finished inside its \(Int(PlaygroundSelfTest.budget)) s budget", false,
+                  "stalled after \(checks) checks")
+            finish()
         }
     }
 
@@ -674,9 +705,37 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         bindingPersistenceUnits()
         mappingBankUnits()
         transportChecks()
+        appCitizenshipChecks()
         renderColorSweep()
         captureUI()
         finish()
+    }
+
+    // MARK: Being an app
+
+    /// The menu bar is built in code rather than loaded from a nib, so nothing
+    /// but this notices when a standard item loses its selector or its key. It
+    /// is also the only place the bundle's name reaches the user directly.
+    private func appCitizenshipChecks() {
+        guard let appMenu = MainMenu.build().items.first?.submenu else {
+            return check("there is an application menu", false)
+        }
+        func item(_ action: Selector) -> NSMenuItem? { appMenu.items.first { $0.action == action } }
+
+        check("the application menu is named after the bundle",
+              appMenu.title == PlaygroundMain.name
+                  && PlaygroundMain.name == Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String,
+              appMenu.title)
+        check("it has the standard About item",
+              item(#selector(NSApplication.orderFrontStandardAboutPanel(_:)))?.title
+                  == "About \(PlaygroundMain.name)")
+        let quit = item(#selector(NSApplication.terminate(_:)))
+        check("⌘Q quits", quit?.keyEquivalent == "q" && quit?.keyEquivalentModifierMask == .command,
+              quit?.title ?? "no Quit item")
+        // One window is the whole app, so there is no state in which it is
+        // running with nothing on screen for a later launch to be confused by.
+        check("closing the window quits",
+              PlaygroundAppDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApp))
     }
 
     // MARK: The time scrubber
@@ -1093,10 +1152,15 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         print("     wrote \(url.path)")
     }
 
+    /// The only way out. Reached on success, on a failed check, and from the
+    /// watchdog — and it takes the window down before it goes, so a run that
+    /// ends badly leaves no more behind than one that ends well.
     private func finish() {
         MIDIMappingStore.delete(Self.testMapping)
         try? FileManager.default.removeItem(at: ShaderPaths.customDirectory
             .appendingPathComponent(Self.parameterlessShader + ".metal"))
+        sender = nil                      // takes the virtual MIDI source with it
+        controller?.window?.orderOut(nil)
         print("\n\(checks - failures)/\(checks) checks passed")
         exit(failures == 0 ? 0 : 1)
     }
