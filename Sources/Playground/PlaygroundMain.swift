@@ -108,6 +108,13 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         return true
     }
+
+    /// The rotation gallery has a window of its own, so when *it* is key the
+    /// editor's window controller is not in the responder chain and the menu
+    /// item would grey out. NSApp asks its delegate last; this is that.
+    @objc func showRotationGallery(_ sender: Any?) {
+        controller?.showRotationGallery(sender)
+    }
 }
 
 // MARK: - Menu
@@ -167,6 +174,9 @@ enum MainMenu {
             item("Show / Hide Inspector", #selector(PlaygroundWindowController.toggleInspector(_:)), "i"),
             item("Next MIDI Mapping", #selector(PlaygroundWindowController.nextMapping(_:)), "m",
                  [.command, .option]),
+            .separator(),
+            item("Screensaver Rotation…", #selector(PlaygroundWindowController.showRotationGallery(_:)),
+                 "r", [.command, .option]),
         ]))
 
         main.addItem(submenu("Window", [

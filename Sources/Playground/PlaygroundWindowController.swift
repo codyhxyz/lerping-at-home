@@ -185,6 +185,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         let newButton = Chrome.button("New…", target: self, action: #selector(newShader))
         Chrome.configure(saveButton, title: "Save", target: self, action: #selector(saveShader))
         Chrome.configure(revertButton, title: "Revert", target: self, action: #selector(revertShader))
+        let rotationButton = Chrome.button("Rotation…", target: self,
+                                           action: #selector(showRotationGallery))
+        rotationButton.toolTip = "Pick which looks the screensaver shuffles through, by picture"
 
         status.isBordered = false
         status.target = self
@@ -210,7 +213,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         editor.onEdit = { [weak self] in self?.scheduleCompile() }
         editor.setContentHuggingPriority(.init(1), for: .vertical)
 
-        return Chrome.pane([Chrome.bar([shaderPopUp, newButton, saveButton, revertButton, Chrome.flexible()]),
+        return Chrome.pane([Chrome.bar([shaderPopUp, newButton, saveButton, revertButton,
+                                        Chrome.flexible(), rotationButton]),
                             editor,
                             Chrome.bar([status, Chrome.flexible()], height: 22),
                             consoleScroll])
@@ -853,6 +857,43 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    // MARK: - Screensaver rotation
+
+    /// The gallery window, once it has been asked for. Built lazily: it renders
+    /// 114 stills, and an app that never opens it should never pay for them.
+    private(set) var rotation: RotationWindowController?
+
+    /// Where the gallery writes. The real app writes the screensaver's own
+    /// ByHost domain, which is the entire point of the feature; `--selftest`
+    /// swaps in a scratch domain so a test run cannot touch the user's
+    /// screensaver settings by accident.
+    var rotationDefaults: UserDefaults? = RotationStore.saverDefaults()
+
+    /// The gallery window, built on first use. Deliberately does *not* load —
+    /// the caller decides when the stills start arriving, so a test can arrange
+    /// a cold cache and hook `onLoaded` before anything is in flight.
+    @discardableResult
+    func rotationGallery() -> RotationWindowController {
+        if let rotation { return rotation }
+        let made = RotationWindowController(searchURLs: ShaderLocations.repoSearchURLs(),
+                                            defaults: rotationDefaults, hidden: hidden)
+        rotation = made
+        return made
+    }
+
+    @objc func showRotationGallery(_ sender: Any?) {
+        let gallery = rotationGallery()
+        gallery.load(shaders: metalView.shaderLibrary.discover())
+        gallery.show()
+    }
+
+    /// A shader was saved, or changed on disk. The gallery keys its stills on
+    /// each shader's source, so handing it the fresh list is all it takes for
+    /// the edited shader's tiles — and only those — to be drawn again.
+    private func refreshRotation(_ shaders: [LerpShader]) {
+        rotation?.load(shaders: shaders)
+    }
+
     // MARK: - Actions
 
     @objc func recompile(_ sender: Any?) { compileNow(force: true) }
@@ -878,6 +919,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             current = LerpShader(name: current.name, source: editor.text, isBuiltIn: false, url: url)
             updateChrome()
             compileNow(force: true)
+            refreshRotation(metalView.shaderLibrary.discover())
         } catch {
             presentError("Could not save \(url.lastPathComponent)", error.localizedDescription)
         }
@@ -1015,6 +1057,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     func pollDisk() {
         let shaders = metalView.shaderLibrary.discover()
         if shaders.map(\.name) != knownShaderNames { refreshList(shaders) }
+        // The gallery keys its stills on each shader's source text, so this is
+        // what makes an edit — here or in another editor — redraw exactly the
+        // tiles that changed and none of the others.
+        refreshRotation(shaders)
         // Reload the open file when it changed underneath us, but never clobber
         // unsaved edits.
         guard let fresh = shaders.first(where: { $0.name == current.name }),

@@ -1,5 +1,6 @@
 import AppKit
 import MIDIDeps
+import ScreenSaver
 
 /// `LerpPlayground --selftest` — drives the real window through the loop the
 /// app exists for: load a shader, watch it render, edit it, break it, fix it,
@@ -54,6 +55,11 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         // Deliberately no `NSApp.activate`: the window is invisible, so taking
         // the foreground for it would be taking it from the user for nothing.
         originalSource = controller.editor.text
+        // The rotation checks drive the gallery against the user's real
+        // screensaver settings, because that is the claim being tested. Taken
+        // before anything can touch them, and put back by `finish()` — which
+        // every path out of the run, including the watchdog, goes through.
+        savedRotation = RotationStore.backup(RotationStore.saverDefaults())
         armWatchdog()
 
         // Timings are wall-clock on purpose — the point is to observe the real
@@ -708,7 +714,385 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         appCitizenshipChecks()
         renderColorSweep()
         captureUI()
+        rotationUnits()
+        rotationGalleryChecks()      // async; chains on to finish()
+    }
+
+    // MARK: The screensaver rotation
+
+    /// A scratch preferences domain for the pure policy checks, so they can
+    /// describe defaults that no user has (a rotation gone entirely stale, a
+    /// pre-preset `enabledShaders` list) without inventing them in the user's.
+    private static let scratchSuite = "zz-selftest-rotation"
+    private var scratch: UserDefaults!
+
+    /// The user's real screensaver rotation as it stood when the run started.
+    /// Taken in `applicationDidFinishLaunching` and put back in `finish()`, so
+    /// even the watchdog path restores it.
+    private var savedRotation: [String: [String]?] = [:]
+
+    private func rotationEntriesNow() -> [LerpRotationEntry] {
+        controller.metalView.shaderLibrary.discover().rotationEntries()
+    }
+
+    /// The load/save policy, against defaults dictionaries this test writes by
+    /// hand. Every one of these is an invariant the saver already keeps and the
+    /// playground must not break — an empty rotation is a black screensaver.
+    private func rotationUnits() {
+        UserDefaults().removePersistentDomain(forName: Self.scratchSuite)
+        scratch = UserDefaults(suiteName: Self.scratchSuite)
+        let all = rotationEntriesNow()
+        check("the rotation is (shader, preset) pairs, not just shaders",
+              all.count > controller.metalView.shaderLibrary.discover().count,
+              "\(all.count) looks across \(controller.metalView.shaderLibrary.discover().count) shaders")
+        guard all.count > 4, let scratch else { return }
+
+        check("nothing saved means every look",
+              RotationStore.load(discovered: all, from: scratch) == nil
+                  && RotationStore.rotation(discovered: all, from: scratch).count == all.count)
+
+        // A real subset survives the round trip untouched.
+        let subset = Set(all.prefix(3))
+        RotationStore.save(subset, entries: all, to: scratch)
+        check("a saved subset comes back exactly",
+              RotationStore.load(discovered: all, from: scratch) == subset,
+              (RotationStore.load(discovered: all, from: scratch) ?? []).map(\.key).sorted().joined(separator: " "))
+        check("it is written under the keys the saver reads",
+              scratch.stringArray(forKey: "enabledEntries")?.count == 3
+                  && scratch.stringArray(forKey: "knownEntries")?.count == all.count
+                  && scratch.stringArray(forKey: "enabledShaders") != nil
+                  && scratch.stringArray(forKey: "knownShaders") != nil,
+              RotationStore.allKeys.joined(separator: ", "))
+
+        // A look discovered since the last save joins on its own, so a new
+        // .metal file — or a new preset on one that was already there — is not
+        // silently left out.
+        let older = Array(all.dropLast(2))
+        RotationStore.save(Set(older.prefix(3)), entries: older, to: scratch)
+        let afterDiscovery = RotationStore.load(discovered: all, from: scratch) ?? []
+        check("looks discovered since the last save join automatically",
+              all.suffix(2).allSatisfy(afterDiscovery.contains) && afterDiscovery.count == 5,
+              "\(afterDiscovery.count) enabled")
+
+        // Nothing saved that still exists: all of them, never none. The roster
+        // has to name today's looks too, or they would all count as *new* and
+        // join on the rule above — which is a different way of arriving at the
+        // same "never an empty rotation", and worth having both of.
+        scratch.set(["gone/One", "gone/Two"], forKey: "enabledEntries")
+        scratch.set(all.map(\.key) + ["gone/One", "gone/Two"], forKey: "knownEntries")
+        check("an entirely stale rotation means every look",
+              RotationStore.load(discovered: all, from: scratch) == nil
+                  && RotationStore.rotation(discovered: all, from: scratch).count == all.count,
+              "\(RotationStore.load(discovered: all, from: scratch)?.count ?? -1)")
+        scratch.set(["gone/One"], forKey: "knownEntries")
+        check("a rotation whose roster is stale too still lights everything up",
+              RotationStore.rotation(discovered: all, from: scratch).count == all.count)
+
+        // Deselecting everything must persist as everything, not as nothing.
+        RotationStore.save([], entries: all, to: scratch)
+        check("an empty selection is saved as the whole rotation",
+              scratch.stringArray(forKey: "enabledEntries")?.count == all.count
+                  && RotationStore.rotation(discovered: all, from: scratch).count == all.count,
+              "\(scratch.stringArray(forKey: "enabledEntries")?.count ?? -1) keys written")
+
+        // The pre-preset format: a set of shader *names*. Every look of a shader
+        // that was in it joins, because the user picked those shaders.
+        let legacyShader = all[0].shader
+        RotationStore.allKeys.forEach(scratch.removeObject(forKey:))
+        scratch.set([legacyShader], forKey: "enabledShaders")
+        scratch.set(all.map(\.shader), forKey: "knownShaders")
+        let migrated = RotationStore.load(discovered: all, from: scratch) ?? []
+        check("a rotation saved before presets existed still migrates",
+              !migrated.isEmpty && migrated.allSatisfy { $0.shader == legacyShader }
+                  && migrated.count == all.filter { $0.shader == legacyShader }.count,
+              "\(migrated.count) looks of \(legacyShader)")
+
+        // …and `Config.rotation` is the one place the policy lives; this is the
+        // same call the saver makes.
+        check("the empty-means-all policy is LerpCore's, not a copy of it",
+              LerpMetalView.Config.rotation(of: nil, from: all).count == all.count
+                  && LerpMetalView.Config.rotation(of: [], from: all).count == all.count
+                  && LerpMetalView.Config.rotation(of: subset, from: all).count == 3)
+        UserDefaults().removePersistentDomain(forName: Self.scratchSuite)
+    }
+
+    private var coldSeconds = 0.0
+    private var galleryEntries: [LerpRotationEntry] = []
+
+    /// The gallery itself, pointed at the user's *real* screensaver defaults —
+    /// because "a click in the playground changes what the screensaver shuffles
+    /// through" is the claim, and a test against a scratch domain would not make
+    /// it. The domain was backed up at launch and is put back in `finish()`.
+    private func rotationGalleryChecks() {
+        controller.rotationDefaults = RotationStore.saverDefaults()
+        // Not the playground's own preferences: the screensaver's, by way of the
+        // same call `LerpSaverView` makes.
+        check("the gallery writes the screensaver's own defaults domain",
+              controller.rotationDefaults.map { $0 is ScreenSaverDefaults } == true
+                  && RotationStore.module == "com.hergenroeder.lerping"
+                  && RotationStore.module != Bundle.main.bundleIdentifier,
+              controller.rotationDefaults.map { String(describing: type(of: $0)) } ?? "nil"
+                  + " for " + RotationStore.module)
+
+        // Start from a known rotation rather than from whatever was there.
+        galleryEntries = rotationEntriesNow()
+        RotationStore.save(Set(galleryEntries), entries: galleryEntries,
+                           to: controller.rotationDefaults)
+
+        // A cold cache, so the render path is exercised on every run and the
+        // warm check below has something to be warmer than.
+        let gallery = controller.rotationGallery()
+        gallery.window?.setContentSize(NSSize(width: 1200, height: 940))
+        gallery.evictThumbnails()
+        let started = CFAbsoluteTimeGetCurrent()
+        gallery.onLoaded = { [self] in
+            coldSeconds = CFAbsoluteTimeGetCurrent() - started
+            galleryLoaded()
+        }
+        gallery.show()
+        gallery.reload(shaders: controller.metalView.shaderLibrary.discover())
+        // Belt and braces: the watchdog would catch a stall, but a run that
+        // never renders should say so as a check rather than as a timeout.
+        wait(until: { [self] in coldSeconds > 0 }, timeout: 60) { [self] in
+            if coldSeconds == 0 {
+                check("every rotation still rendered", false, "gallery never finished loading")
+                finish()
+            }
+        }
+    }
+
+    private func galleryLoaded() {
+        guard let controllerWindow = controller.rotation else { return finish() }
+        let gallery = controllerWindow.gallery
+        let stats = controllerWindow.thumbnailStats
+        check("the gallery has one tile per rotation entry",
+              gallery.tileEntries.count == galleryEntries.count
+                  && Set(gallery.tileEntries) == Set(galleryEntries),
+              "\(gallery.tileEntries.count) tiles for \(galleryEntries.count) looks")
+        check("every tile got a still", stats.rendered + stats.disk + stats.memory == galleryEntries.count
+                  && stats.failed.isEmpty,
+              stats.failed.isEmpty
+                ? String(format: "%d rendered, %d off disk, in %.2f s", stats.rendered, stats.disk, coldSeconds)
+                : stats.failed.prefix(3).joined(separator: " / "))
+        check("the tiles are portrait, so a look reads as a look",
+              RotationTile.size.height > RotationTile.size.width,
+              "\(Int(RotationTile.size.width))×\(Int(RotationTile.size.height))")
+        check("every tile actually holds an image",
+              gallery.tileEntries.allSatisfy { gallery.tile(for: $0)?.image != nil },
+              "\(gallery.tileEntries.filter { gallery.tile(for: $0)?.image == nil }.count) blank")
+        print(String(format: "     cold gallery: %d stills in %.2f s (%d rendered, %d cached)",
+                     galleryEntries.count, coldSeconds, stats.rendered, stats.disk))
+
+        toggleChecks(gallery)
+        groupChecks(gallery)
+        filterChecks(gallery)
+        captureRotationUI()
+        warmCacheCheck()
+    }
+
+    /// What is on disk for the screensaver right now, read straight out of the
+    /// ByHost store rather than through any `UserDefaults` this process holds —
+    /// so a value that only ever reached an in-memory cache cannot pass.
+    private func persistedRotation() -> [String] {
+        (CFPreferencesCopyValue(RotationStore.enabledEntriesKey as CFString,
+                                RotationStore.module as CFString,
+                                kCFPreferencesCurrentUser,
+                                kCFPreferencesCurrentHost) as? [String]) ?? []
+    }
+
+    private func toggleChecks(_ gallery: RotationGalleryView) {
+        guard let victim = galleryEntries.first(where: { $0.preset != nil }) ?? galleryEntries.first
+        else { return }
+        gallery.click(victim)
+        check("clicking a tile takes its look out of the rotation",
+              gallery.tile(for: victim)?.isOn == false && !gallery.enabled.contains(victim))
+        // Through cfprefsd, in the screensaver's domain, under the screensaver's key.
+        let persisted = persistedRotation()
+        check("the click reached the screensaver's own ByHost defaults",
+              !persisted.contains(victim.key) && persisted.count == galleryEntries.count - 1,
+              "\(persisted.count) of \(galleryEntries.count) keys, \(victim.key) removed")
+        // …and the screensaver's own resolution of them agrees.
+        check("the saver's rotation policy resolves the change",
+              !RotationStore.rotation(discovered: galleryEntries,
+                                      from: controller.rotationDefaults).contains(victim))
+
+        gallery.click(victim)
+        check("clicking it again puts it back",
+              gallery.tile(for: victim)?.isOn == true
+                  && persistedRotation().contains(victim.key),
+              victim.key)
+    }
+
+    private func groupChecks(_ gallery: RotationGalleryView) {
+        // A shader with more than one look, so "the heading owns the group"
+        // means something.
+        guard let name = Dictionary(grouping: galleryEntries, by: \.shader)
+            .first(where: { $0.value.count > 1 })?.key else { return }
+        let group = galleryEntries.filter { $0.shader == name }
+        check("a shader heading exists for every shader",
+              gallery.header(for: name) != nil, name)
+
+        gallery.clickHeader(name)
+        check("a heading takes its whole group out at once",
+              group.allSatisfy { !gallery.enabled.contains($0) }
+                  && group.allSatisfy { !persistedRotation().contains($0.key) },
+              "\(group.count) looks of \(name)")
+        check("the heading shows the group is empty",
+              gallery.header(for: name)?.state == .off)
+
+        // One back in makes it partial, not on.
+        gallery.click(group[0])
+        check("a heading goes mixed when part of its group is in",
+              gallery.header(for: name)?.state == .mixed,
+              "\(gallery.header(for: name)?.state.rawValue ?? -99)")
+
+        gallery.clickHeader(name)
+        check("a heading puts its whole group back",
+              group.allSatisfy(gallery.enabled.contains)
+                  && gallery.header(for: name)?.state == .on
+                  && group.allSatisfy { persistedRotation().contains($0.key) })
+    }
+
+    private func filterChecks(_ gallery: RotationGalleryView) {
+        guard let name = galleryEntries.first?.shader else { return }
+        gallery.setFilter(name)
+        let expected = galleryEntries.filter {
+            ($0.shader + " " + ($0.preset ?? "defaults")).range(of: name, options: .caseInsensitive) != nil
+        }
+        check("the filter narrows the grid to what matches",
+              gallery.visibleTileCount == expected.count && gallery.visibleTileCount < galleryEntries.count,
+              "\(gallery.visibleTileCount) shown for “\(name)”, expected \(expected.count)")
+        check("the status line says what the filter is doing",
+              gallery.noteText.contains("\(expected.count) shown"), gallery.noteText)
+
+        // Select All with a filter up acts on what is on screen, which is the
+        // only reading of the button that is not a trap.
+        gallery.setFilter(name)
+        gallery.clickDeselectAll()
+        check("Deselect All with a filter up only clears what is shown",
+              expected.allSatisfy { !gallery.enabled.contains($0) }
+                  && gallery.enabled.count == galleryEntries.count - expected.count,
+              "\(gallery.enabled.count) still in")
+        gallery.clickSelectAll()
+        check("Select All puts them back",
+              gallery.enabled.count == galleryEntries.count)
+
+        gallery.setFilter("")
+        check("clearing the filter shows every look again",
+              gallery.visibleTileCount == galleryEntries.count,
+              "\(gallery.visibleTileCount)")
+
+        // The one thing that must never happen, through the UI this time.
+        gallery.clickDeselectAll()
+        check("deselecting everything is still saved as everything",
+              persistedRotation().count == galleryEntries.count
+                  && gallery.noteText.contains("saved as all"),
+              gallery.noteText)
+        gallery.clickSelectAll()
+    }
+
+    /// The second load: a brand-new cache with nothing in memory, over the same
+    /// directory on disk. Every still must come off the disk and none may be
+    /// rendered again — that is what "cached" has to mean.
+    private func warmCacheCheck() {
+        guard let window = controller.rotation else { return finish() }
+        let shaders = controller.metalView.shaderLibrary.discover()
+        let byName = Dictionary(uniqueKeysWithValues: shaders.map { ($0.name, $0) })
+        let jobs = galleryEntries.compactMap { entry in
+            byName[entry.shader].map { RotationThumbnails.Job(entry: entry, shader: $0) }
+        }
+        let fresh = RotationThumbnails(searchURLs: ShaderLocations.repoSearchURLs(),
+                                       directory: window.cacheDirectory)
+        let started = CFAbsoluteTimeGetCurrent()
+        var landed = 0
+        fresh.start(jobs, onImage: { _, _ in landed += 1 }, onProgress: { _, _ in }) { [self] in
+            let warm = CFAbsoluteTimeGetCurrent() - started
+            check("a second load resolves every still from the disk cache",
+                  fresh.diskHits == jobs.count && fresh.rendered == 0 && landed == jobs.count,
+                  "\(fresh.diskHits) off disk, \(fresh.rendered) re-rendered")
+            check("the warm load is far cheaper than the cold one", warm < coldSeconds,
+                  String(format: "cold %.2f s, warm %.2f s", coldSeconds, warm))
+            print(String(format: "     warm gallery: %d stills in %.2f s (all from %@)",
+                         jobs.count, warm, window.cacheDirectory.path))
+            editedShaderCheck(fresh)
+        }
+    }
+
+    /// Editing a shader has to invalidate that shader's stills and *only* that
+    /// shader's — the whole reason the cache key carries a source hash.
+    private func editedShaderCheck(_ cache: RotationThumbnails) {
+        let shaders = controller.metalView.shaderLibrary.discover()
+        guard let edited = shaders.first(where: { !$0.presets.isEmpty }) else { return finish() }
+        let others = shaders.filter { $0.name != edited.name }
+        let before = cache.key(entry: LerpRotationEntry(shader: edited.name), source: edited.source)
+        let after = cache.key(entry: LerpRotationEntry(shader: edited.name),
+                              source: edited.source + "\n// touched by the self-test\n")
+        check("editing a shader invalidates its own stills", before != after, edited.name)
+        check("…and no other shader's", others.allSatisfy { other in
+            cache.key(entry: LerpRotationEntry(shader: other.name), source: other.source)
+                == cache.key(entry: LerpRotationEntry(shader: other.name), source: other.source)
+        })
+        check("a preset's still is keyed apart from its shader's defaults",
+              edited.presets.allSatisfy { preset in
+                  cache.key(entry: LerpRotationEntry(shader: edited.name, preset: preset.name),
+                            source: edited.source) != before
+              }, edited.name)
+        check("the cache lives outside the repo, under ~/Library/Caches",
+              cache.cacheDirectory.path.contains("/Library/Caches/")
+                  && !cache.cacheDirectory.path.contains(FileManager.default.currentDirectoryPath),
+              cache.cacheDirectory.path)
+        check("the still hash is stable across processes, not per-launch",
+              RotationThumbnails.hash("lerping") == "4d064d192fb42960",
+              RotationThumbnails.hash("lerping"))
+        handOffRotation()
         finish()
+    }
+
+    /// True when the run was asked to *leave* the rotation it clicked behind
+    /// instead of restoring the user's. Off by default and off in
+    /// `make playground-test`; it exists so the round trip can be finished
+    /// outside this process — click here, then load the real `.saver` bundle in
+    /// another one and see what its own Options sheet comes up checked.
+    ///
+    ///     LERP_SELFTEST_KEEP_ROTATION=1 build/LerpPlaygroundSelfTest.app/…/LerpPlaygroundSelfTest --selftest
+    ///     LOADTEST_DUMP_ROTATION=1 build/loadtest build/Lerping@Home.saver
+    private var keepsRotation: Bool {
+        ProcessInfo.processInfo.environment["LERP_SELFTEST_KEEP_ROTATION"] != nil
+    }
+
+    /// Clicks the gallery down to a small, distinctive rotation and leaves it in
+    /// the screensaver's defaults for another process to read.
+    private func handOffRotation() {
+        guard keepsRotation, let gallery = controller.rotation?.gallery else { return }
+        gallery.setFilter("")
+        gallery.clickDeselectAll()
+        // Deselect-all is saved as *all*, by design; clicking three back on is
+        // what makes the rotation a set someone chose.
+        let picked = Array(galleryEntries.filter { $0.preset != nil }.prefix(3))
+        picked.forEach(gallery.click)
+        print("HANDOFF wrote \(picked.count) looks to \(RotationStore.module) (ByHost):")
+        persistedRotation().sorted().forEach { print("HANDOFF   \($0)") }
+    }
+
+    /// The gallery, drawn into a PNG so its layout and its on/off states can be
+    /// looked at rather than only counted. Half the tiles are switched off first,
+    /// because "off is unmistakable" is a claim about a picture.
+    private func captureRotationUI() {
+        guard let gallery = controller.rotation?.gallery,
+              let window = controller.rotation?.window else { return }
+        for (index, entry) in galleryEntries.enumerated() where index % 2 == 1 {
+            gallery.click(entry)
+        }
+        window.contentView?.layoutSubtreeIfNeeded()
+        if let view = window.contentView,
+           let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            let url = URL(fileURLWithPath: "build/rotation-gallery.png")
+            if let data = rep.representation(using: .png, properties: [:]), (try? data.write(to: url)) != nil {
+                print("     wrote \(url.path)")
+            }
+        }
+        gallery.clickSelectAll()
     }
 
     // MARK: Being an app
@@ -736,6 +1120,23 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         // running with nothing on screen for a later launch to be confused by.
         check("closing the window quits",
               PlaygroundAppDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApp))
+
+        // The gallery is reachable from the menu bar, and — because it opens a
+        // window of its own, from which the editor's controller is not in the
+        // responder chain — from the app delegate too, or the item would grey
+        // out exactly when the gallery is in front.
+        let shaderMenu = MainMenu.build().items.first { $0.title == "Shader" }?.submenu
+        let open = shaderMenu?.items.first {
+            $0.action == #selector(PlaygroundWindowController.showRotationGallery(_:))
+        }
+        check("the menu bar can open the rotation gallery",
+              open?.title == "Screensaver Rotation…" && open?.keyEquivalent == "r"
+                  && open?.keyEquivalentModifierMask == [.command, .option],
+              open?.title ?? "no such item")
+        check("both the window controller and the app delegate answer it",
+              controller.responds(to: #selector(PlaygroundWindowController.showRotationGallery(_:)))
+                  && PlaygroundAppDelegate().responds(
+                        to: #selector(PlaygroundAppDelegate.showRotationGallery(_:))))
     }
 
     // MARK: The time scrubber
@@ -1159,7 +1560,17 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         MIDIMappingStore.delete(Self.testMapping)
         try? FileManager.default.removeItem(at: ShaderPaths.customDirectory
             .appendingPathComponent(Self.parameterlessShader + ".metal"))
+        UserDefaults().removePersistentDomain(forName: Self.scratchSuite)
+        // The user's screensaver rotation, exactly as it was before the run —
+        // unless the run was explicitly asked to hand it on. See `handOffRotation`.
+        if keepsRotation {
+            print("HANDOFF the rotation above was left in place; "
+                  + "`defaults -currentHost delete \(RotationStore.module)` puts it back")
+        } else {
+            RotationStore.restore(savedRotation, to: RotationStore.saverDefaults())
+        }
         sender = nil                      // takes the virtual MIDI source with it
+        controller?.rotation?.close(cancellingWork: true)
         controller?.window?.orderOut(nil)
         print("\n\(checks - failures)/\(checks) checks passed")
         exit(failures == 0 ? 0 : 1)

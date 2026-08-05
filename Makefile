@@ -12,6 +12,12 @@ PLAYGROUND := $(wildcard Sources/Playground/*.swift)
 SHADERS    := $(wildcard Sources/Shaders/*.metal)
 FRAMEWORKS := -framework AppKit -framework Metal -framework QuartzCore \
               -framework CoreGraphics -framework ImageIO
+# The playground alone also links ScreenSaver, for one class: the rotation
+# gallery writes the screensaver's rotation through the very same
+# `ScreenSaverDefaults(forModuleWithName:)` the saver reads it with, rather than
+# reimplementing where a ByHost domain lives. Not added to FRAMEWORKS: the
+# preview app and the snapshot renderer still link nothing they do not use.
+PLAYGROUND_FW := $(FRAMEWORKS) -framework ScreenSaver
 SAVER_DIR  := $(BUILD)/Lerping@Home.saver
 CUSTOM_DIR := $(HOME)/Library/Application Support/Lerping/Shaders
 INSTALLED  := $(HOME)/Library/Screen Savers/Lerping@Home.saver
@@ -80,7 +86,7 @@ playground-build: $(PLAYGROUND_BIN)
 $(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/Playground/Info.plist
 	@mkdir -p $(PLAYGROUND_APP)/Contents/MacOS $(PLAYGROUND_APP)/Contents/Resources
 	swiftc -O -parse-as-library -target $(TARGET) \
-		-o $@ $(CORE) $(PLAYGROUND) $(FRAMEWORKS) $(MIDI_FLAGS)
+		-o $@ $(CORE) $(PLAYGROUND) $(PLAYGROUND_FW) $(MIDI_FLAGS)
 	cp Sources/Playground/Info.plist $(PLAYGROUND_APP)/Contents/Info.plist
 	cp $(PLAYGROUND_ICNS) $(PLAYGROUND_APP)/Contents/Resources/LerpPlayground.icns
 	codesign --force -s - $(PLAYGROUND_APP)
