@@ -1,0 +1,15 @@
+Lerping@Home
+Copyright (c) 2026 Cody Hergenroeder
+
+This project includes shaders ported from Paper Shaders
+(https://github.com/paper-design/shaders), Copyright Paper Design,
+licensed under the Apache License, Version 2.0
+(http://www.apache.org/licenses/LICENSE-2.0).
+
+Ported shaders (Sources/Shaders/): Mesh Gradient, Neuro Noise (original
+algorithm by @zozuar), Smoke Ring, Metaballs, Swirl, Spiral, Warp,
+Grain Gradient, Dot Orbit, God Rays, Water, Voronoi, Color Panels,
+Liquid Metal, Gem Smoke. Shared helpers in the shader prelude
+(hashes, value noise, simplex noise, banding fix) are also derived from
+Paper Shaders. The ports translate the original GLSL to Metal Shading
+Language and replace texture-based randomizers with procedural hashes.
