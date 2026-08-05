@@ -3,14 +3,18 @@ import AppKit
 /// The rotation gallery: every look the screensaver can shuffle through, as a
 /// picture you click to put it in or take it out.
 ///
-/// The screensaver's own Options… sheet lists the same 114 looks as a checkbox
-/// per row, which tells you their names and nothing else — there is no way to
-/// find out what `voronoi/Molten` is except to wait for it to come round. Here
-/// each look is a portrait still of itself, grouped under its shader, and the
-/// on/off state is the difference between a lit tile with an accent frame and a
-/// dimmed one behind a scrim. Clicking a tile writes the new rotation straight
-/// through to the screensaver's own defaults — there is no OK button, because
-/// there is nothing to confirm.
+/// A list of 114 checkboxes tells you their names and nothing else — there is no
+/// way to find out what `voronoi/Molten` is except to wait for it to come round.
+/// Here each look is a portrait still of itself, grouped under its shader, and
+/// the on/off state is the difference between a lit tile with an accent frame
+/// and a dimmed one behind a scrim.
+///
+/// This lives in `LerpCore` because it has two hosts and they cannot see each
+/// other's sources: the playground's `RotationWindowController`, which writes
+/// the screensaver's defaults as you click, and the screensaver's own Options…
+/// sheet in `Sources/Saver`, which collects the same set and writes it on OK.
+/// It owns no policy of its own — every toggle goes out through `onChange`, and
+/// what is on comes back in through `show(shaders:enabled:)`.
 
 // MARK: - One look
 
@@ -18,34 +22,50 @@ import AppKit
 /// labels: the whole tile is one hit target and one appearance, and drawing it
 /// in one place is what makes the off state read as *off* at a glance instead of
 /// as a slightly different shade of on.
-final class RotationTile: NSView {
+public final class RotationTile: NSView {
 
-    static let size = NSSize(width: 134, height: 240)
+    /// The tile the playground's gallery window uses. The Options… sheet asks
+    /// `size(width:)` for a narrower one; nothing else about the tile changes.
+    public static let size = size(width: 134)
+
     /// 2:3, which is what "vertical profile" means here and what the stills are
     /// rendered at.
     private static let imageAspect: CGFloat = 1.5
+    /// Caption block under the picture: two lines plus the padding around them.
+    private static let captionHeight: CGFloat = 41
     private static let accent = NSColor(srgbRed: 0.36, green: 0.69, blue: 1.0, alpha: 1)
 
-    let entry: LerpRotationEntry
-    let shaderTitle: String
-    var onToggle: ((LerpRotationEntry) -> Void)?
+    /// A tile `width` points across, tall enough for a 2:3 still and the two
+    /// caption lines. Derived rather than tabulated, so a narrower gallery
+    /// cannot crop its own captions.
+    public static func size(width: CGFloat) -> NSSize {
+        NSSize(width: width,
+               height: (4 + ((width - 8) * imageAspect).rounded() + captionHeight).rounded())
+    }
 
-    var image: NSImage? { didSet { needsDisplay = true } }
-    var isOn = true { didSet { if isOn != oldValue { needsDisplay = true } } }
+    public let entry: LerpRotationEntry
+    public let shaderTitle: String
+    public var onToggle: ((LerpRotationEntry) -> Void)?
+
+    public var image: NSImage? { didSet { needsDisplay = true } }
+    public var isOn = true { didSet { if isOn != oldValue { needsDisplay = true } } }
+    /// Off while the gallery is inactive — a pinned shader means the rotation
+    /// does not apply, so its tiles must not answer a click either.
+    public var isLive = true { didSet { needsDisplay = true } }
     private var isHot = false { didSet { if isHot != oldValue { needsDisplay = true } } }
 
-    init(entry: LerpRotationEntry, shaderTitle: String) {
+    public init(entry: LerpRotationEntry, shaderTitle: String, size: NSSize = RotationTile.size) {
         self.entry = entry
         self.shaderTitle = shaderTitle
-        super.init(frame: NSRect(origin: .zero, size: Self.size))
+        super.init(frame: NSRect(origin: .zero, size: size))
         toolTip = entry.shader + (entry.preset.map { " · " + $0 } ?? " · defaults")
     }
 
-    required init?(coder: NSCoder) { nil }
+    public required init?(coder: NSCoder) { nil }
 
-    override var isFlipped: Bool { true }
+    public override var isFlipped: Bool { true }
 
-    override func updateTrackingAreas() {
+    public override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: bounds,
@@ -53,11 +73,33 @@ final class RotationTile: NSView {
                                        owner: self))
     }
 
-    override func mouseEntered(with event: NSEvent) { isHot = true }
-    override func mouseExited(with event: NSEvent) { isHot = false }
+    public override func mouseEntered(with event: NSEvent) { isHot = isLive }
+    public override func mouseExited(with event: NSEvent) { isHot = false }
 
-    override func mouseDown(with event: NSEvent) {
+    public override func mouseDown(with event: NSEvent) {
+        guard isLive else { return }
         onToggle?(entry)
+    }
+
+    // MARK: Accessibility
+
+    /// A tile is a checkbox that happens to be a picture, and it says so. That
+    /// is what makes the gallery usable without sight of it — and it is also the
+    /// handle `make test-load` presses the sheet's tiles through, because the
+    /// loadtest links AppKit and ScreenSaver and nothing else and so cannot see
+    /// this type at all. A test that drives the UI the way an assistive client
+    /// does is testing the thing users get.
+    public override func isAccessibilityElement() -> Bool { true }
+    public override func accessibilityRole() -> NSAccessibility.Role? { .checkBox }
+    public override func accessibilityLabel() -> String? {
+        entry.shader + " · " + entry.displayName
+    }
+    public override func accessibilityValue() -> Any? { isOn ? 1 : 0 }
+    public override func isAccessibilityEnabled() -> Bool { isLive }
+    public override func accessibilityPerformPress() -> Bool {
+        guard isLive else { return false }
+        onToggle?(entry)
+        return true
     }
 
     /// Where the still goes. The rest of the tile is the caption.
@@ -66,7 +108,7 @@ final class RotationTile: NSView {
         return NSRect(x: 4, y: 4, width: width, height: (width * Self.imageAspect).rounded())
     }
 
-    override func draw(_ dirtyRect: NSRect) {
+    public override func draw(_ dirtyRect: NSRect) {
         let frame = imageRect
         let path = NSBezierPath(roundedRect: frame, xRadius: 7, yRadius: 7)
 
@@ -169,20 +211,16 @@ final class RotationTile: NSView {
 // MARK: - The gallery
 
 /// Search bar, a scrolling grid of tiles grouped by shader, and a status line.
-///
-/// It owns no policy: every toggle goes out through `onChange`, and what is on
-/// comes back in through `show(enabled:)`. The window controller is what talks
-/// to `RotationStore`.
-final class RotationGalleryView: NSView {
+public final class RotationGalleryView: NSView {
 
     /// The user changed the rotation. The set is the new one, in full.
-    var onChange: ((Set<LerpRotationEntry>) -> Void)?
-    /// The Regenerate button.
-    var onRegenerate: (() -> Void)?
+    public var onChange: ((Set<LerpRotationEntry>) -> Void)?
+    /// The Regenerate button, when the host asked for one.
+    public var onRegenerate: (() -> Void)?
 
-    private(set) var shaders: [LerpShader] = []
-    private(set) var entries: [LerpRotationEntry] = []
-    private(set) var enabled: Set<LerpRotationEntry> = []
+    public private(set) var shaders: [LerpShader] = []
+    public private(set) var entries: [LerpRotationEntry] = []
+    public private(set) var enabled: Set<LerpRotationEntry> = []
 
     private let search = NSSearchField()
     private let countLabel = Chrome.label("", size: 11, color: EditorTheme.text)
@@ -190,6 +228,9 @@ final class RotationGalleryView: NSView {
     private let progress = NSProgressIndicator()
     private let scroll = NSScrollView()
     private let canvas = Canvas()
+    private let tileSize: NSSize
+    private let showsRegenerate: Bool
+    private var buttons: [NSButton] = []
 
     private var tiles: [LerpRotationEntry: RotationTile] = [:]
     private var headers: [String: NSButton] = [:]
@@ -197,6 +238,11 @@ final class RotationGalleryView: NSView {
     /// Laid out in shader order, so the grid and the model cannot disagree.
     private var order: [String] = []
     private var filter = ""
+
+    /// Off when the rotation does not apply — the saver's Options… sheet greys
+    /// the whole gallery out while a single shader is pinned.
+    public private(set) var isActive = true
+    private var inactiveNote: String?
 
     private final class Canvas: NSView {
         override var isFlipped: Bool { true }
@@ -210,14 +256,26 @@ final class RotationGalleryView: NSView {
         }
     }
 
-    override init(frame frameRect: NSRect) {
+    public convenience override init(frame frameRect: NSRect) {
+        self.init(frame: frameRect, tileSize: RotationTile.size, showsRegenerate: true)
+    }
+
+    /// - Parameters:
+    ///   - tileSize: how big one look is drawn. The Options… sheet has less
+    ///     room than the playground's window and asks for a smaller tile.
+    ///   - showsRegenerate: the playground offers Regenerate because it edits
+    ///     shaders; nothing in the Options… sheet can change what a still shows.
+    public init(frame frameRect: NSRect, tileSize: NSSize, showsRegenerate: Bool) {
+        self.tileSize = tileSize
+        self.showsRegenerate = showsRegenerate
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = EditorTheme.background.cgColor
+        identifier = NSUserInterfaceItemIdentifier("rotation-gallery")
         build()
     }
 
-    required init?(coder: NSCoder) { nil }
+    public required init?(coder: NSCoder) { nil }
 
     // MARK: Construction
 
@@ -229,6 +287,7 @@ final class RotationGalleryView: NSView {
         search.sendsSearchStringImmediately = true
         search.target = self
         search.action = #selector(searchChanged)
+        search.identifier = NSUserInterfaceItemIdentifier("rotation-search")
         search.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
         progress.style = .bar
@@ -237,13 +296,18 @@ final class RotationGalleryView: NSView {
         progress.isHidden = true
         progress.widthAnchor.constraint(equalToConstant: 130).isActive = true
 
-        let bar = Chrome.bar([
-            search,
-            Chrome.button("Select All", target: self, action: #selector(selectAllLooks)),
-            Chrome.button("Deselect All", target: self, action: #selector(deselectAllLooks)),
-            Chrome.button("Regenerate", target: self, action: #selector(regenerate)),
-            Chrome.flexible(), progress, countLabel,
-        ])
+        let selectAll = Chrome.button("Select All", target: self, action: #selector(selectAllLooks))
+        let deselectAll = Chrome.button("Deselect All", target: self, action: #selector(deselectAllLooks))
+        buttons = [selectAll, deselectAll]
+        var controls: [NSView] = [search, selectAll, deselectAll]
+        if showsRegenerate {
+            let regenerate = Chrome.button("Regenerate", target: self, action: #selector(regenerate))
+            buttons.append(regenerate)
+            controls.append(regenerate)
+        }
+        countLabel.identifier = NSUserInterfaceItemIdentifier("rotation-count")
+        controls += [Chrome.flexible(), progress, countLabel]
+        let bar = Chrome.bar(controls)
 
         canvas.onLayout = { [weak self] width in self?.reflow(width: width) ?? 0 }
         canvas.autoresizingMask = [.width]
@@ -254,6 +318,7 @@ final class RotationGalleryView: NSView {
         scroll.borderType = .noBorder
         scroll.setContentHuggingPriority(.init(1), for: .vertical)
 
+        note.identifier = NSUserInterfaceItemIdentifier("rotation-note")
         let footer = Chrome.bar([note, Chrome.flexible()], height: 24)
 
         let stack = Chrome.pane([bar, scroll, footer])
@@ -272,7 +337,7 @@ final class RotationGalleryView: NSView {
     /// Rebuilds the grid for `shaders`. Tiles for looks that are still there
     /// keep their images, so a shader being edited redraws one row rather than
     /// blanking the whole gallery.
-    func show(shaders: [LerpShader], enabled: Set<LerpRotationEntry>) {
+    public func show(shaders: [LerpShader], enabled: Set<LerpRotationEntry>) {
         self.shaders = shaders
         self.entries = shaders.rotationEntries()
         self.enabled = enabled
@@ -298,17 +363,22 @@ final class RotationGalleryView: NSView {
                 box.allowsMixedState = true
                 box.font = .systemFont(ofSize: 12, weight: .semibold)
                 box.identifier = NSUserInterfaceItemIdentifier("shader:" + shader.name)
+                box.isEnabled = isActive
                 canvas.addSubview(box)
                 headers[shader.name] = box
 
+                // Tagged so `make test-load` can check the n/m beside a heading
+                // says the same thing the heading's own tri-state does.
                 let count = Chrome.label("", size: 10.5)
+                count.identifier = NSUserInterfaceItemIdentifier("count:" + shader.name)
                 canvas.addSubview(count)
                 headerCounts[shader.name] = count
             }
             for entry in [shader].rotationEntries() where tiles[entry] == nil {
-                let tile = RotationTile(entry: entry, shaderTitle: shader.displayName)
+                let tile = RotationTile(entry: entry, shaderTitle: shader.displayName, size: tileSize)
                 tile.onToggle = { [weak self] in self?.toggle($0) }
                 tile.identifier = NSUserInterfaceItemIdentifier("entry:" + entry.key)
+                tile.isLive = isActive
                 canvas.addSubview(tile)
                 tiles[entry] = tile
             }
@@ -318,22 +388,36 @@ final class RotationGalleryView: NSView {
     }
 
     /// A still arrived.
-    func show(image: NSImage, for entry: LerpRotationEntry) {
+    public func show(image: NSImage, for entry: LerpRotationEntry) {
         tiles[entry]?.image = image
     }
 
     /// Drops every still, so the next run redraws them all.
-    func clearImages() {
+    public func clearImages() {
         tiles.values.forEach { $0.image = nil }
     }
 
-    func showProgress(done: Int, total: Int) {
+    public func showProgress(done: Int, total: Int) {
         progress.isHidden = done >= total
         progress.maxValue = Double(max(total, 1))
         progress.doubleValue = Double(done)
         countLabel.stringValue = done >= total
             ? "\(entries.count) looks"
             : "rendering \(done) of \(total)…"
+    }
+
+    /// Greys the whole gallery out — what the Options… sheet does when a shader
+    /// is pinned and the rotation therefore does not apply. `inactive` replaces
+    /// the status line while it is off.
+    public func setActive(_ active: Bool, note inactive: String? = nil) {
+        isActive = active
+        inactiveNote = inactive
+        search.isEnabled = active
+        buttons.forEach { $0.isEnabled = active }
+        headers.values.forEach { $0.isEnabled = active }
+        tiles.values.forEach { $0.isLive = active }
+        alphaValue = active ? 1 : 0.55
+        refresh()
     }
 
     // MARK: Model out
@@ -345,9 +429,10 @@ final class RotationGalleryView: NSView {
 
     /// A shader heading owns its whole group: if every look under it is in, it
     /// takes them all out, otherwise it puts them all in. Read off the group
-    /// rather than off the checkbox's own next state — same rule the saver's
-    /// Options sheet uses, for the same reason.
+    /// rather than off the checkbox's own next state — a three-state box's idea
+    /// of what comes next is not what we mean.
     @objc private func groupToggled(_ sender: NSButton) {
+        guard isActive else { return }
         let name = (sender.identifier?.rawValue ?? "").replacingOccurrences(of: "shader:", with: "")
         let group = entries.filter { $0.shader == name }
         guard !group.isEmpty else { return }
@@ -359,15 +444,17 @@ final class RotationGalleryView: NSView {
         commit()
     }
 
-    /// Acts on what is on screen. With no filter that is everything, which is
-    /// what the saver's sheet does; with one it is the far more useful "all the
-    /// dark ones" rather than a button that quietly ignores the search.
+    /// Acts on what is on screen. With no filter that is everything; with one it
+    /// is the far more useful "all the dark ones" rather than a button that
+    /// quietly ignores the search.
     @objc private func selectAllLooks() {
+        guard isActive else { return }
         enabled.formUnion(visibleEntries())
         commit()
     }
 
     @objc private func deselectAllLooks() {
+        guard isActive else { return }
         enabled.subtract(visibleEntries())
         commit()
     }
@@ -395,7 +482,7 @@ final class RotationGalleryView: NSView {
         return haystack.range(of: filter, options: .caseInsensitive) != nil
     }
 
-    func visibleEntries() -> [LerpRotationEntry] { entries.filter(matches) }
+    public func visibleEntries() -> [LerpRotationEntry] { entries.filter(matches) }
 
     /// Pushes the model into every tile and heading, and writes the status line.
     ///
@@ -416,12 +503,20 @@ final class RotationGalleryView: NSView {
             headers[name]?.isHidden = !shown
             headerCounts[name]?.isHidden = !shown
         }
+        if progress.isHidden { countLabel.stringValue = "\(entries.count) looks" }
+        // Inactive: the status line's job is to say why nothing here applies,
+        // not to report a count that has no effect.
+        if !isActive, let inactiveNote {
+            note.stringValue = inactiveNote
+            return
+        }
         let shaderCount = Set(enabled.map(\.shader)).count
         if entries.isEmpty {
             note.stringValue = "No shaders found."
         } else if enabled.isEmpty {
-            // Same rule as the Options sheet: an empty rotation is a black
-            // screensaver, so an empty selection is saved as all of them.
+            // An empty rotation is a black screensaver, so an empty selection is
+            // saved as all of them. `Config.rotation` is where that is decided;
+            // this is the sentence that says so out loud.
             note.stringValue = "Nothing selected — saved as all \(entries.count) looks."
         } else {
             note.stringValue = "\(enabled.count) of \(entries.count) looks, "
@@ -430,7 +525,6 @@ final class RotationGalleryView: NSView {
         if !filter.isEmpty {
             note.stringValue += "  Filter “\(filter)”: \(visibleEntries().count) shown."
         }
-        if progress.isHidden { countLabel.stringValue = "\(entries.count) looks" }
     }
 
     // MARK: Layout
@@ -456,7 +550,7 @@ final class RotationGalleryView: NSView {
     /// cheaply, and because 114 tiles want a flat view tree.
     @discardableResult
     private func reflow(width: CGFloat) -> CGFloat {
-        let tile = RotationTile.size
+        let tile = tileSize
         let usable = max(tile.width, width - 2 * Self.pad)
         let perRow = max(1, min(Self.maxPerGroupRow,
                                 Int((usable + Self.gap) / (tile.width + Self.gap))))
@@ -504,7 +598,7 @@ final class RotationGalleryView: NSView {
         return max(bandTop + bandHeight + Self.pad, scroll.contentView.bounds.height)
     }
 
-    override func layout() {
+    public override func layout() {
         super.layout()
         canvas.needsLayout = true
     }
@@ -513,158 +607,37 @@ final class RotationGalleryView: NSView {
 
     /// The tiles, in rotation order — what `--selftest` counts against
     /// `rotationEntries()`.
-    var tileEntries: [LerpRotationEntry] { entries.filter { tiles[$0] != nil } }
-    func tile(for entry: LerpRotationEntry) -> RotationTile? { tiles[entry] }
-    func header(for shader: String) -> NSButton? { headers[shader] }
-    var noteText: String { note.stringValue }
-    var visibleTileCount: Int { tiles.values.filter { !$0.isHidden }.count }
+    public var tileEntries: [LerpRotationEntry] { entries.filter { tiles[$0] != nil } }
+    public func tile(for entry: LerpRotationEntry) -> RotationTile? { tiles[entry] }
+    public func header(for shader: String) -> NSButton? { headers[shader] }
+    public var noteText: String { note.stringValue }
+    public var visibleTileCount: Int { tiles.values.filter { !$0.isHidden }.count }
+
+    /// `make test-load` links AppKit and the ScreenSaver framework and nothing
+    /// else, so it cannot name a single type in this file. These two are
+    /// reachable by KVC from a process holding only an `NSView`, which is how it
+    /// checks that the sheet's stills actually arrived.
+    @objc public var stillsShown: Int { tiles.values.filter { $0.image != nil }.count }
+    @objc public var stillsMissing: Int { tiles.values.filter { $0.image == nil }.count }
 
     /// Clicks a tile the way a mouse would — through the tile's own handler, so
     /// a tile that is not wired up fails the test.
-    func click(_ entry: LerpRotationEntry) {
+    public func click(_ entry: LerpRotationEntry) {
         guard let tile = tiles[entry] else { return }
         tile.onToggle?(tile.entry)
     }
 
     /// Fires a shader heading through its own target/action.
-    func clickHeader(_ shader: String) {
+    public func clickHeader(_ shader: String) {
         guard let box = headers[shader] else { return }
         _ = box.target?.perform(box.action, with: box)
     }
 
-    func setFilter(_ text: String) {
+    public func setFilter(_ text: String) {
         search.stringValue = text
         searchChanged()
     }
 
-    func clickSelectAll() { selectAllLooks() }
-    func clickDeselectAll() { deselectAllLooks() }
-}
-
-// MARK: - The window
-
-/// A window of its own for the gallery: it is a different job from editing a
-/// shader, it wants the width, and the playground's three-pane layout has no
-/// room to spare.
-final class RotationWindowController: NSWindowController, NSWindowDelegate {
-
-    let gallery = RotationGalleryView(frame: NSRect(x: 0, y: 0, width: 1120, height: 760))
-    private let thumbnails: RotationThumbnails
-    private let defaults: UserDefaults?
-    private let searchURLs: [URL]
-    /// What the gallery was last built from, so an edit somewhere else in the
-    /// app can be recognised as one shader changing rather than a reload.
-    private var sourceFingerprint = ""
-
-    /// Timings for the report and for `--selftest`.
-    private(set) var lastLoadSeconds: Double = 0
-    var thumbnailStats: (memory: Int, disk: Int, rendered: Int, failed: [String]) {
-        (thumbnails.memoryHits, thumbnails.diskHits, thumbnails.rendered, thumbnails.failed)
-    }
-
-    /// `defaults` is injected so `--selftest` can point the whole thing at a
-    /// scratch domain instead of the user's screensaver settings.
-    init(searchURLs: [URL], defaults: UserDefaults?, hidden: Bool,
-         thumbnails: RotationThumbnails? = nil) {
-        self.searchURLs = searchURLs
-        self.defaults = defaults
-        self.thumbnails = thumbnails ?? RotationThumbnails(searchURLs: searchURLs)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                              backing: .buffered, defer: false)
-        window.title = "Rotation — what the screensaver shuffles through"
-        window.minSize = NSSize(width: 620, height: 420)
-        super.init(window: window)
-        window.delegate = self
-        window.contentView = gallery
-        if hidden {
-            // Same trick as the playground's own self-test window: real, laid
-            // out and drawing, but not on the user's screen. See
-            // `PlaygroundWindowController.hide`.
-            window.alphaValue = 0
-            window.ignoresMouseEvents = true
-            window.isExcludedFromWindowsMenu = true
-            window.collectionBehavior = [.stationary, .ignoresCycle, .fullScreenNone]
-        } else {
-            window.setFrameAutosaveName("LerpRotationWindow")
-        }
-
-        gallery.onChange = { [weak self] enabled in self?.persist(enabled) }
-        gallery.onRegenerate = { [weak self] in
-            guard let self else { return }
-            self.thumbnails.evictAll()
-            self.gallery.clearImages()
-            self.load(shaders: self.gallery.shaders, force: true)
-        }
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    /// Builds the gallery from `shaders` and starts filling the stills in.
-    /// A no-op when nothing about the shaders has changed since the last call.
-    func load(shaders: [LerpShader], force: Bool = false) {
-        let fingerprint = shaders.map { $0.name + ":" + RotationThumbnails.hash($0.source) }
-            .joined(separator: ",")
-        guard force || fingerprint != sourceFingerprint else { return }
-        sourceFingerprint = fingerprint
-
-        let entries = shaders.rotationEntries()
-        gallery.show(shaders: shaders,
-                     enabled: Set(LerpMetalView.Config.rotation(
-                        of: RotationStore.load(discovered: entries, from: defaults),
-                        from: entries)))
-
-        let byName = Dictionary(uniqueKeysWithValues: shaders.map { ($0.name, $0) })
-        let jobs = entries.compactMap { entry in
-            byName[entry.shader].map { RotationThumbnails.Job(entry: entry, shader: $0) }
-        }
-        let started = CFAbsoluteTimeGetCurrent()
-        gallery.showProgress(done: 0, total: jobs.count)
-        thumbnails.start(jobs,
-                         onImage: { [weak self] entry, image in
-                             self?.gallery.show(image: image, for: entry)
-                         },
-                         onProgress: { [weak self] done, total in
-                             self?.gallery.showProgress(done: done, total: total)
-                         },
-                         onFinished: { [weak self] in
-                             self?.lastLoadSeconds = CFAbsoluteTimeGetCurrent() - started
-                             self?.onLoaded?()
-                         })
-    }
-
-    /// Fired when every still for the current run has landed. `--selftest` waits
-    /// on it; nothing else does.
-    var onLoaded: (() -> Void)?
-
-    /// Rebuilds every still whether or not anything changed — the Regenerate
-    /// button, and what `--selftest` uses to get a genuinely cold run.
-    func reload(shaders: [LerpShader]) { load(shaders: shaders, force: true) }
-
-    /// Throws the whole cache away, on disk and in memory.
-    func evictThumbnails() {
-        thumbnails.evictAll()
-        gallery.clearImages()
-    }
-
-    var cacheDirectory: URL { thumbnails.cacheDirectory }
-
-    /// The whole point of the feature: a click writes the screensaver's own
-    /// rotation, in the screensaver's own domain, immediately.
-    private func persist(_ enabled: Set<LerpRotationEntry>) {
-        RotationStore.save(enabled, entries: gallery.entries, to: defaults)
-    }
-
-    func show() {
-        window?.makeKeyAndOrderFront(nil)
-    }
-
-    func close(cancellingWork: Bool) {
-        if cancellingWork { thumbnails.cancel() }
-        window?.orderOut(nil)
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        thumbnails.cancel()
-    }
+    public func clickSelectAll() { selectAllLooks() }
+    public func clickDeselectAll() { deselectAllLooks() }
 }

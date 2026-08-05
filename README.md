@@ -26,13 +26,27 @@ make install-playground    # optional: copies LerpPlayground.app to ~/Applicatio
 - First activation can show black briefly while Gatekeeper verifies the bundle.
 - Shader, preset, frame rate, and render scale are set behind the saver's Options…
   button. Pinning a shader also lets you pin one of its presets.
-- Options… also has an **In rotation** checklist: pick which *looks* Shuffle draws
-  from. Shuffle rotates over (shader, preset) pairs, not just shaders — each shader
-  contributes its declared defaults plus one entry per `// lerp-preset:` it
-  declares, which is 114 looks across the 31 shaders rather than 31. The list is
-  grouped: a shader heading whose checkbox turns its whole group on or off, with
-  its looks indented beneath. New shaders and newly added presets join the
-  rotation automatically; checking nothing means all.
+- Options… also has an **In rotation** gallery: pick which *looks* Shuffle draws
+  from, by looking at them. Shuffle rotates over (shader, preset) pairs, not just
+  shaders — each shader contributes its declared defaults plus one entry per
+  `// lerp-preset:` it declares, which is 114 looks across the 31 shaders rather
+  than 31. Every look is a portrait still of itself; click a tile to put it in or
+  take it out. They are grouped under a shader heading whose checkbox turns the
+  whole group on or off and carries an *n/m* count, and there is a search field,
+  Select All / Deselect All (which act on what the search is showing), and a
+  status line. New shaders and newly added presets join the rotation
+  automatically; selecting nothing means all.
+- The stills are rendered into the bundle by `make saver`, so opening Options…
+  does no GPU work: the sheet is built in about 120 ms and the pictures are on
+  screen a tenth of a second later. That matters because the sheet is built
+  inside `legacyScreenSaver`, which is App Sandboxed — see "What the sandbox
+  allows" below. Anything the bundle does not have a still for (a custom shader,
+  a shader edited since the build) is rendered on the spot, in parallel, into a
+  cache inside the sandbox container. Nothing ever blocks the sheet.
+- The same gallery is a window of its own in the playground
+  (**Shader → Screensaver Rotation…**, ⌥⌘R), where clicking a tile writes the
+  screensaver's rotation immediately. It is one implementation, in
+  `Sources/LerpCore/RotationGallery.swift`.
 - Options… has a **Set desktop picture to the last frame** checkbox, off by default.
   See "Desktop picture handoff" below.
 
@@ -268,8 +282,18 @@ Sources/Playground/  LerpPlayground editor + live render, hot reload
   Info.plist           the .app's identity: bundle id, name, icon
   SelfTest-Info.plist  the same executable under its own id, for --selftest
 Templates/           example shader
-scripts/             loadtest.swift
+scripts/             loadtest.swift, sandboxprobe.swift + its plist/entitlements
 ```
+
+`LerpCore` holds the rotation gallery (`RotationGallery.swift`,
+`RotationThumbnails.swift`) and the colours and control helpers it draws with
+(`UIChrome.swift`) because it has two hosts that cannot see each other's
+sources: the screensaver's Options… sheet and the playground's rotation window.
+What stays in `Sources/Playground/` is the part that is the playground's alone —
+`RotationWindow.swift`, the window, and `RotationStore.swift`, which writes the
+screensaver's ByHost domain the moment you click. `RotationStore` is deliberately
+*not* hoisted: it needs `-framework ScreenSaver`, and neither the preview app nor
+the snapshot renderer should have to link a framework they never use.
 
 ## Runtime behavior
 
@@ -300,6 +324,35 @@ scripts/             loadtest.swift
 ```sh
 log show --last 5m --info --style compact --predicate 'subsystem == "com.hergenroeder.lerping"'
 ```
+
+## What the sandbox allows
+
+`legacyScreenSaver.appex` — the process that hosts the saver *and* builds its
+Options… sheet — carries `com.apple.security.app-sandbox`. `make sandbox-probe`
+measures what that means, by wrapping `scripts/sandboxprobe.swift` in an .app,
+ad-hoc signing it with a transcription of legacyScreenSaver's own entitlements,
+and loading the real `.saver` into it. Measured on macOS 27, Apple M5:
+
+| | |
+|---|---|
+| `NSHomeDirectory()` | `~/Library/Containers/<id>/Data` — a real container |
+| `MTLCreateSystemDefaultDevice()` | yes |
+| `device.makeLibrary(source:)` | yes, 1–43 ms for a trivial shader |
+| write `<container>/Library/Caches/…` | yes |
+| write `~/Library/Caches/…` | **denied** — "You don't have permission to save the file" |
+| read `~/Library/Application Support/Lerping/Shaders` | yes — the appex holds a read-only exception for `/` |
+| read its own `Contents/Resources/Thumbnails` | yes |
+| build the real Options… sheet | 121 ms, 114 tiles |
+| fill it | 0.16 s — 113 stills off the bundle, 1 rendered |
+| reopen it | 90 ms, entirely from memory |
+
+So the sandbox can render, but it cannot cache anywhere the rest of the machine
+can see — which is why the stills are baked into the bundle by `make saver`
+rather than shared with the playground's `~/Library/Caches` copy, and why
+whatever the bundle is missing is cached in the container instead. The read-only
+exception for `/` is also why a custom shader in
+`~/Library/Application Support/Lerping/Shaders` shows up in the sheet's gallery
+even before `make install` bakes it into the bundle.
 
 ## Desktop picture handoff
 

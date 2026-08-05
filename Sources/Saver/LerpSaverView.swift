@@ -24,9 +24,19 @@ import ScreenSaver
 /// - We ignore `animateOneFrame` entirely; LerpMetalView drives its own
 ///   CADisplayLink with a capped frame rate.
 @objc(LerpSaverView)
-public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTableViewDelegate {
+public final class LerpSaverView: ScreenSaverView {
 
-    private static let defaultsModule = "com.hergenroeder.lerping"
+    /// The ByHost preferences module the saver reads and the Options… sheet
+    /// writes.
+    ///
+    /// Overridable by environment variable *only* so a test host can be pointed
+    /// at a throwaway domain of the same shape — `make test-load` presses OK on
+    /// the real sheet, and pressing OK on a real sheet against the user's live
+    /// rotation is not a test, it is a bug waiting for a badly-timed kill. The
+    /// screensaver itself is never launched with this set, so the default is
+    /// what every real host uses.
+    static let defaultsModule =
+        ProcessInfo.processInfo.environment["LERP_DEFAULTS_MODULE"] ?? "com.hergenroeder.lerping"
     static let log = Logger(subsystem: "com.hergenroeder.lerping", category: "saver")
 
     private var metalView: LerpMetalView?
@@ -58,24 +68,25 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         return instanceCounter
     }
 
-    /// One line of the Options… rotation list: either a shader heading, whose
-    /// checkbox owns the whole group beneath it, or one (shader, preset) entry.
-    /// A flat list of 114 entries is unusable; a heading per shader with its
-    /// looks indented under it is the same list you can actually scan.
-    private enum RotationRow {
-        case shader(LerpShader)
-        case entry(LerpRotationEntry)
-    }
-
-    // Rotation list state, live only while the configure sheet is open.
+    // Rotation state, live only while the configure sheet is open.
     private var rotationShaders: [LerpShader] = []
     private var rotationEntries: [LerpRotationEntry] = []
-    private var rotationRows: [RotationRow] = []
     private var rotationEnabled: Set<LerpRotationEntry> = []
-    private var rotationTable: NSTableView?
+    private var rotationGallery: RotationGalleryView?
     private var rotationLabel: NSTextField?
-    private var rotationNote: NSTextField?
-    private var rotationButtons: [NSButton] = []
+
+    /// Stills for the Options… gallery, kept on the view rather than on the
+    /// sheet: legacyScreenSaver builds the view once and the sheet every time
+    /// Options… is pressed, so this is what makes the second open instant.
+    private lazy var thumbnails = RotationThumbnails(
+        searchURLs: [],
+        directory: RotationThumbnails.writableCacheDirectory(named: Self.thumbnailCacheName),
+        readOnlyDirectories: RotationThumbnails.bundledDirectories())
+
+    /// Under `Library/Caches` — of the sandbox container inside
+    /// legacyScreenSaver, of the real home anywhere else. See
+    /// `RotationThumbnails.writableCacheDirectory`.
+    private static let thumbnailCacheName = "com.hergenroeder.lerping/RotationThumbnails"
 
     /// A popup's menu, in menu order: the titles it shows and the value each one
     /// stores. Titles, value → index and index → value all come out of the one
@@ -383,9 +394,22 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
 
     public override var hasConfigureSheet: Bool { true }
 
+    /// How wide one look is drawn in the sheet. Narrower than the playground's
+    /// 134, because the sheet is a sheet: at this width two shaders' worth of
+    /// looks sit side by side in the default 900-point panel, which is what
+    /// keeps a 31-shader gallery to a scroll rather than a trek.
+    private static let sheetTileWidth: CGFloat = 102
+    private static let sheetWidth: CGFloat = 900
+    /// How much of the sheet the gallery gets when it opens. The sheet is
+    /// resizable and the gallery reflows, so this is a starting point rather
+    /// than a shape — `sheetGalleryFloor` is the constraint that actually holds.
+    private static let sheetGalleryHeight: CGFloat = 430
+    private static let sheetGalleryFloor: CGFloat = 260
+
     public override var configureSheet: NSWindow? {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 460),
-                            styleMask: [.titled], backing: .buffered, defer: true)
+        let sheetStarted = CFAbsoluteTimeGetCurrent()
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: Self.sheetWidth, height: 640),
+                            styleMask: [.titled, .resizable], backing: .buffered, defer: true)
         panel.title = "Lerping@Home"
 
         let shaders = discoveredShaders()
@@ -409,53 +433,25 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         // fresh install) starts with every entry checked.
         rotationShaders = shaders
         rotationEntries = entries
-        // Rows come from the same `rotationEntries()` the rotation itself uses,
-        // so the list cannot show a look the shuffle does not offer.
-        rotationRows = shaders.flatMap { [RotationRow.shader($0)] + [$0].rotationEntries().map(RotationRow.entry) }
         rotationEnabled = Set(LerpMetalView.Config.rotation(of: settings.enabledEntries, from: entries))
 
-        let table = NSTableView()
-        table.headerView = nil
-        table.rowHeight = 20
-        table.style = .plain
-        table.selectionHighlightStyle = .none
-        table.allowsEmptySelection = true
-        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("shader")))
-        table.dataSource = self
-        table.delegate = self
-        rotationTable = table
-
-        let scroll = NSScrollView()
-        scroll.documentView = table
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            scroll.widthAnchor.constraint(equalToConstant: 250),
-            scroll.heightAnchor.constraint(equalToConstant: 240),
-        ])
-
-        func listButton(_ title: String, _ action: Selector) -> NSButton {
-            let button = NSButton(title: title, target: self, action: action)
-            button.bezelStyle = .rounded
-            button.controlSize = .small
-            button.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-            return button
-        }
-        let selectAll = listButton("Select All", #selector(selectAllShaders))
-        let deselectAll = listButton("Deselect All", #selector(deselectAllShaders))
-        rotationButtons = [selectAll, deselectAll]
-        let listControls = NSStackView(views: [selectAll, deselectAll])
-        listControls.spacing = 8
-
-        // Always-present status line: keeps the sheet a fixed height and says
-        // out loud what an empty selection will do.
-        let note = NSTextField(labelWithString: "")
-        note.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-        note.textColor = .secondaryLabelColor
-        note.lineBreakMode = .byTruncatingTail
-        note.widthAnchor.constraint(lessThanOrEqualToConstant: 250).isActive = true
-        rotationNote = note
+        // The gallery. Built from the same `rotationEntries()` the shuffle
+        // itself walks, so it cannot show a look the rotation does not offer.
+        // Nothing here waits on a picture: the tiles go up now and fill in as
+        // the stills land — see `startRotationStills`.
+        let gallery = RotationGalleryView(
+            frame: NSRect(x: 0, y: 0, width: Self.sheetWidth - 40, height: Self.sheetGalleryHeight),
+            tileSize: RotationTile.size(width: Self.sheetTileWidth),
+            showsRegenerate: false)
+        gallery.translatesAutoresizingMaskIntoConstraints = false
+        gallery.wantsLayer = true
+        gallery.layer?.cornerRadius = 6
+        gallery.layer?.masksToBounds = true
+        gallery.show(shaders: shaders, enabled: rotationEnabled)
+        // The sheet has an OK button, so unlike the playground's gallery this
+        // one only collects; `configureSheetOK` is what writes.
+        gallery.onChange = { [weak self] enabled in self?.rotationEnabled = enabled }
+        rotationGallery = gallery
 
         let fpsPopup = NSPopUpButton(frame: .zero, pullsDown: false)
         fpsPopup.addItems(withTitles: ["24", "30", "60"])
@@ -485,27 +481,23 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
             return field
         }
 
-        let inRotation = label("In rotation:")
-        rotationLabel = inRotation
-
+        // Two label/control pairs per row rather than one. Six stacked rows of
+        // settings above a gallery makes the gallery the afterthought; three
+        // short ones make it the page.
         let grid = NSGridView(views: [
-            [label("Shader:"), shaderPopup],
-            [label("Preset:"), presetPopup],
-            [inRotation, scroll],
-            [NSGridCell.emptyContentView, listControls],
-            [NSGridCell.emptyContentView, note],
-            [label("Frame rate:"), fpsPopup],
-            [label("Render scale:"), scalePopup],
-            [label("Still image:"), freezePopup],
-            [label("On stop:"), wallpaperCheck],
+            [label("Shader:"), shaderPopup, label("Frame rate:"), fpsPopup],
+            [label("Preset:"), presetPopup, label("Render scale:"), scalePopup],
+            [label("Still image:"), freezePopup, label("On stop:"), wallpaperCheck],
         ])
-        grid.column(at: 0).width = 100
+        grid.column(at: 0).width = 92
+        grid.column(at: 2).leadingPadding = 26
         grid.rowAlignment = .firstBaseline
-        grid.row(at: 2).topPadding = 6
-        grid.row(at: 2).yPlacement = .top
-        grid.row(at: 3).yPlacement = .center
-        grid.row(at: 4).bottomPadding = 6
         grid.translatesAutoresizingMaskIntoConstraints = false
+
+        let inRotation = NSTextField(labelWithString: "In rotation")
+        inRotation.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        inRotation.translatesAutoresizingMaskIntoConstraints = false
+        rotationLabel = inRotation
 
         let ok = NSButton(title: "OK", target: self, action: #selector(configureSheetOK))
         ok.keyEquivalent = "\r"
@@ -515,13 +507,23 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
 
         let content = panel.contentView!
         content.addSubview(grid)
+        content.addSubview(inRotation)
+        content.addSubview(gallery)
         content.addSubview(buttons)
         NSLayoutConstraint.activate([
             grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-            grid.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            grid.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 20),
+            grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             grid.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -20),
-            buttons.topAnchor.constraint(greaterThanOrEqualTo: grid.bottomAnchor, constant: 14),
+
+            inRotation.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 18),
+            inRotation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+
+            gallery.topAnchor.constraint(equalTo: inRotation.bottomAnchor, constant: 7),
+            gallery.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            gallery.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            gallery.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.sheetGalleryFloor),
+
+            buttons.topAnchor.constraint(equalTo: gallery.bottomAnchor, constant: 14),
             buttons.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             buttons.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
         ])
@@ -535,10 +537,74 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         self.wallpaperCheckbox = wallpaperCheck
         reloadPresetPopup(selecting: settings.preset)
         updateRotationControls()
-        // Grow the sheet to whatever the rotation list needs.
-        let fitting = content.fittingSize
-        panel.setContentSize(NSSize(width: max(fitting.width, 360), height: max(fitting.height, 300)))
+        // `fittingSize` sizes the gallery to its floor, so the difference is
+        // what the gallery is short of the height it wants to open at.
+        panel.setContentSize(NSSize(
+            width: Self.sheetWidth,
+            height: content.fittingSize.height + Self.sheetGalleryHeight - Self.sheetGalleryFloor))
+        panel.minSize = NSSize(width: 620, height: 460)
+        startRotationStills(shaders)
+        Self.log.info("options: sheet built in \(Int((CFAbsoluteTimeGetCurrent() - sheetStarted) * 1000)) ms, \(entries.count) looks, \(self.rotationEnabled.count) in rotation")
         return panel
+    }
+
+    // MARK: - Rotation stills
+
+    /// Starts filling the gallery in. Returns immediately, always: opening
+    /// Options… must not wait on 114 pictures, and inside legacyScreenSaver it
+    /// must not wait on a GPU either.
+    ///
+    /// Where the pictures come from, cheapest first:
+    ///
+    /// 1. **Memory**, if the sheet has been opened before in this process. That
+    ///    is why `thumbnails` hangs off the view and not off the sheet.
+    /// 2. **The bundle** — `Contents/Resources/Thumbnails`, rendered by
+    ///    `make saver` (and again by `make install`, after any custom shaders
+    ///    have been baked in). Inside the sandbox this is the whole gallery,
+    ///    every time, with no GPU work at all. The filenames carry a hash of
+    ///    each shader's source, so a baked still can never be a stale one: a
+    ///    `.metal` that has changed simply misses and is drawn instead.
+    /// 3. **The container cache**, for whatever the bundle did not have.
+    /// 4. **The GPU**, in parallel, for whatever nothing had.
+    private func startRotationStills(_ shaders: [LerpShader]) {
+        guard let gallery = rotationGallery else { return }
+        let jobs = RotationThumbnails.jobs(for: shaders)
+        let started = CFAbsoluteTimeGetCurrent()
+        gallery.showProgress(done: 0, total: jobs.count)
+        thumbnails.start(jobs,
+                         onImage: { [weak self] entry, image in
+                             self?.rotationGallery?.show(image: image, for: entry)
+                         },
+                         onProgress: { [weak self] done, total in
+                             self?.rotationGallery?.showProgress(done: done, total: total)
+                         },
+                         onFinished: { [weak self] in
+                             guard let self else { return }
+                             let seconds = CFAbsoluteTimeGetCurrent() - started
+                             Self.log.info("""
+                             options: \(jobs.count) stills in \(String(format: "%.2f", seconds)) s \
+                             — \(self.thumbnails.memoryHits) memory, \
+                             \(self.thumbnails.bundledHits) bundle, \
+                             \(self.thumbnails.diskHits - self.thumbnails.bundledHits) cache, \
+                             \(self.thumbnails.rendered) rendered, \
+                             \(self.thumbnails.failed.count) failed \
+                             (cache: \(self.thumbnails.cacheDirectory.path, privacy: .public))
+                             """)
+                         })
+    }
+
+    /// Where the Options… gallery's stills came from, as one line.
+    ///
+    /// `@objc` because it is read by KVC from two processes that cannot see a
+    /// single type this bundle defines: `make test-load`, and the sandboxed
+    /// probe app that establishes what legacyScreenSaver's sandbox actually
+    /// permits. "The bundle covered all of it and the GPU did nothing" is the
+    /// claim the whole design rests on, so it has to be observable from outside.
+    @objc public var rotationStillsSummary: String {
+        "memory=\(thumbnails.memoryHits) bundle=\(thumbnails.bundledHits) "
+            + "cache=\(thumbnails.diskHits - thumbnails.bundledHits) "
+            + "rendered=\(thumbnails.rendered) failed=\(thumbnails.failed.count) "
+            + "cache-dir=\(thumbnails.cacheDirectory.path)"
     }
 
     // MARK: - Rotation list
@@ -580,103 +646,16 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         updateRotationControls()
     }
 
-    @objc private func selectAllShaders() {
-        rotationEnabled = Set(rotationEntries)
-        updateRotationControls()
-    }
-
-    @objc private func deselectAllShaders() {
-        rotationEnabled.removeAll()
-        updateRotationControls()
-    }
-
-    /// A shader heading's checkbox owns its whole group: if every look under it
-    /// is on it turns them all off, otherwise it turns them all on. Read off the
-    /// group rather than off `sender.state`, because the row is rebuilt on every
-    /// reload and a three-state checkbox's own next state is not what we mean.
-    @objc private func rotationGroupToggled(_ sender: NSButton) {
-        guard case .shader(let shader)? = rotationRows[safe: sender.tag] else { return }
-        let group = rotationEntries.filter { $0.shader == shader.name }
-        if group.allSatisfy(rotationEnabled.contains) {
-            rotationEnabled.subtract(group)
-        } else {
-            rotationEnabled.formUnion(group)
-        }
-        updateRotationControls()
-    }
-
-    @objc private func rotationCheckboxToggled(_ sender: NSButton) {
-        guard case .entry(let entry)? = rotationRows[safe: sender.tag] else { return }
-        if sender.state == .on {
-            rotationEnabled.insert(entry)
-        } else {
-            rotationEnabled.remove(entry)
-        }
-        updateRotationControls()
-    }
-
-    /// The list only applies to shuffle mode; pinning one shader greys it out.
+    /// The gallery only applies to shuffle mode; pinning one shader greys it
+    /// out. Select All, Deselect All, the search field, the group headings and
+    /// the status line all belong to the gallery — this is the whole of what the
+    /// sheet still has to say about them.
     private func updateRotationControls() {
         let active = isShuffleMode
-        rotationTable?.isEnabled = active
-        rotationTable?.reloadData()
-        rotationButtons.forEach { $0.isEnabled = active }
         rotationLabel?.textColor = active ? .labelColor : .disabledControlTextColor
-        rotationNote?.textColor = active ? .secondaryLabelColor : .disabledControlTextColor
-        if rotationEntries.isEmpty {
-            rotationNote?.stringValue = "No shaders found."
-        } else if !active {
-            rotationNote?.stringValue = "Rotation applies to Shuffle."
-        } else if rotationEnabled.isEmpty {
-            rotationNote?.stringValue = "Nothing checked — using all \(rotationEntries.count)."
-        } else {
-            let shaders = Set(rotationEnabled.map(\.shader)).count
-            rotationNote?.stringValue = "\(rotationEnabled.count) of \(rotationEntries.count) looks, "
-                + "across \(shaders) of \(rotationShaders.count) shaders."
-        }
-    }
-
-    public func numberOfRows(in tableView: NSTableView) -> Int { rotationRows.count }
-
-    public func tableView(_ tableView: NSTableView,
-                          viewFor tableColumn: NSTableColumn?,
-                          row: Int) -> NSView? {
-        guard let entryRow = rotationRows[safe: row] else { return nil }
-        let check: NSButton
-        let indent: CGFloat
-        switch entryRow {
-        case .shader(let shader):
-            check = NSButton(checkboxWithTitle: shader.displayName, target: self,
-                             action: #selector(rotationGroupToggled(_:)))
-            check.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
-            check.allowsMixedState = true
-            let group = rotationEntries.filter { $0.shader == shader.name }
-            let on = group.filter(rotationEnabled.contains).count
-            check.state = on == 0 ? .off : (on == group.count ? .on : .mixed)
-            check.identifier = NSUserInterfaceItemIdentifier("shader:" + shader.name)
-            indent = 2
-        case .entry(let entry):
-            check = NSButton(checkboxWithTitle: entry.displayName, target: self,
-                             action: #selector(rotationCheckboxToggled(_:)))
-            check.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            check.state = rotationEnabled.contains(entry) ? .on : .off
-            check.identifier = NSUserInterfaceItemIdentifier("entry:" + entry.key)
-            indent = 20
-        }
-        check.tag = row
-        check.isEnabled = isShuffleMode
-        check.translatesAutoresizingMaskIntoConstraints = false
-
-        // The checkbox sits in a container purely so the preset rows can be
-        // indented under their shader; a table cell view is sized to the column.
-        let cell = NSView()
-        cell.addSubview(check)
-        NSLayoutConstraint.activate([
-            check.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: indent),
-            check.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            check.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor),
-        ])
-        return cell
+        rotationGallery?.setActive(active, note: rotationEntries.isEmpty
+                                   ? "No shaders found."
+                                   : "Rotation applies to Shuffle.")
     }
 
     @objc private func configureSheetOK() {
@@ -706,22 +685,16 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         } else {
             panel.orderOut(nil)
         }
+        // Whatever stills were still coming are no longer wanted. The decoded
+        // ones stay in `thumbnails`, which is what makes reopening instant.
+        thumbnails.cancel()
         configPanel = nil
-        rotationTable = nil
+        rotationGallery = nil
         rotationLabel = nil
-        rotationNote = nil
-        rotationButtons = []
-        rotationRows = []
         rotationShaders = []
         rotationEntries = []
         presetPopup = nil
         wallpaperCheckbox = nil
-    }
-}
-
-private extension Array {
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
     }
 }
 

@@ -1,76 +1,9 @@
 import AppKit
 
-/// Editor colors. Dark-only and hard-coded rather than semantic: the editor sits
-/// next to a live shader, and the two should not shift with the system theme.
-enum EditorTheme {
-    static let background = NSColor(srgbRed: 0.086, green: 0.090, blue: 0.110, alpha: 1)
-    static let chrome     = NSColor(srgbRed: 0.114, green: 0.122, blue: 0.145, alpha: 1)
-    static let text       = NSColor(srgbRed: 0.847, green: 0.871, blue: 0.914, alpha: 1)
-    static let dim        = NSColor(srgbRed: 0.365, green: 0.400, blue: 0.463, alpha: 1)
-    static let error      = NSColor(srgbRed: 1.000, green: 0.353, blue: 0.353, alpha: 1)
-    static let font       = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
-}
-
-/// The handful of AppKit idioms every pane in this app repeats. Stock controls
-/// in stack views — the point of these is that there is one copy of the
-/// spacing/colour decisions, not that they add any behaviour.
-enum Chrome {
-
-    static func configure(_ button: NSButton, title: String, target: AnyObject?, action: Selector) {
-        button.title = title
-        button.bezelStyle = .rounded
-        button.controlSize = .small
-        button.font = .systemFont(ofSize: 11)
-        button.target = target
-        button.action = action
-        button.setContentHuggingPriority(.required, for: .horizontal)
-    }
-
-    static func button(_ title: String, target: AnyObject?, action: Selector) -> NSButton {
-        let button = NSButton()
-        configure(button, title: title, target: target, action: action)
-        return button
-    }
-
-    static func label(_ text: String, size: CGFloat = 11, color: NSColor = EditorTheme.dim) -> NSTextField {
-        let field = NSTextField(labelWithString: text)
-        field.font = .systemFont(ofSize: size)
-        field.textColor = color
-        field.lineBreakMode = .byTruncatingTail
-        return field
-    }
-
-    /// A control strip. One `flexible()` in `controls` decides where the slack
-    /// goes — without one the stack's horizontal placement is ambiguous.
-    static func bar(_ controls: [NSView], height: CGFloat = 38) -> NSView {
-        let stack = NSStackView(views: controls)
-        stack.distribution = .fill
-        stack.spacing = 7
-        stack.alignment = .centerY
-        stack.edgeInsets = NSEdgeInsets(top: 0, left: 9, bottom: 0, right: 9)
-        stack.wantsLayer = true
-        stack.layer?.backgroundColor = EditorTheme.chrome.cgColor
-        stack.heightAnchor.constraint(equalToConstant: height).isActive = true
-        return stack
-    }
-
-    static func flexible() -> NSView {
-        let view = NSView()
-        view.setContentHuggingPriority(.init(1), for: .horizontal)
-        view.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        return view
-    }
-
-    static func pane(_ views: [NSView]) -> NSStackView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .vertical
-        stack.alignment = .width      // every row spans the pane
-        stack.spacing = 0
-        stack.wantsLayer = true
-        stack.layer?.backgroundColor = EditorTheme.background.cgColor
-        return stack
-    }
-}
+// `EditorTheme` and `Chrome` used to live here. They moved to
+// `Sources/LerpCore/UIChrome.swift` when the rotation gallery did, so the
+// screensaver's Options… sheet — which cannot import `Sources/Playground` —
+// draws the same gallery in the same colours rather than a second copy of it.
 
 /// NSTextView with the two editing affordances a shader scratchpad actually
 /// needs: soft tabs and newline auto-indent.

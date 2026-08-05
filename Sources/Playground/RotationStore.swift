@@ -31,6 +31,23 @@ enum RotationStore {
     /// identifier, on purpose.
     static let module = "com.hergenroeder.lerping"
 
+    /// A ByHost domain of the same shape, and no user's.
+    ///
+    /// `--selftest` clicks tiles and then reads the result back out of cfprefsd
+    /// to prove the click landed where the screensaver reads it. It used to do
+    /// that in `module` itself — the user's live rotation — backing it up first
+    /// and restoring it in `finish()`. That is a landmine: a run killed between
+    /// the first click and the restore leaves the user's deliberate selection
+    /// rewritten, and a "restore" from a stale backup is how genuinely chosen
+    /// settings get thrown away. A domain nobody's screensaver reads costs the
+    /// test nothing — it is the same class, the same call and the same keys —
+    /// and it cannot destroy anything.
+    static let testModule = module + ".uitest"
+
+    /// Whether the module a run is pointed at is the user's live one. Nothing in
+    /// the test suite may answer true.
+    static func isLiveModule(_ name: String) -> Bool { name == module }
+
     /// `LerpRotationEntry.key`s the user wants in the shuffle rotation.
     static let enabledEntriesKey = "enabledEntries"
     /// Every entry that existed when the rotation was last saved; anything
@@ -41,15 +58,30 @@ enum RotationStore {
     static let enabledShadersKey = "enabledShaders"
     static let knownShadersKey = "knownShaders"
 
-    /// Every key this file will ever touch. Used by the self-test to back the
-    /// user's real settings up and put them back.
+    /// Every key this file will ever touch.
     static let allKeys = [enabledEntriesKey, knownEntriesKey, enabledShadersKey, knownShadersKey]
 
     /// The screensaver's own defaults. `ScreenSaverDefaults` resolves to
     /// `~/Library/Preferences/ByHost/com.hergenroeder.lerping.<hardware UUID>.plist`,
     /// which is the file the saver and its Options sheet both read.
-    static func saverDefaults() -> UserDefaults? {
+    ///
+    /// `module` is a parameter so a test can be handed `testModule` and reach
+    /// the same class through the same call without going anywhere near the
+    /// user's settings.
+    static func saverDefaults(module: String = module) -> UserDefaults? {
         ScreenSaverDefaults(forModuleWithName: module)
+    }
+
+    /// Removes a whole ByHost domain. Only ever called on `testModule`; the
+    /// guard is there so a future edit cannot point it at the live one.
+    static func deleteDomain(_ name: String) {
+        guard !isLiveModule(name) else { return }
+        allKeys.forEach {
+            CFPreferencesSetValue($0 as CFString, nil, name as CFString,
+                                  kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
+        }
+        CFPreferencesSynchronize(name as CFString, kCFPreferencesCurrentUser,
+                                 kCFPreferencesCurrentHost)
     }
 
     // MARK: - Reading
@@ -124,24 +156,4 @@ enum RotationStore {
         return entries.map(\.shader).filter { seen.insert($0).inserted }
     }
 
-    // MARK: - Test support
-
-    /// The four rotation keys as they stand, so a test that writes into the
-    /// user's real screensaver settings can put them back exactly.
-    static func backup(_ defaults: UserDefaults?) -> [String: [String]?] {
-        guard let defaults else { return [:] }
-        return Dictionary(uniqueKeysWithValues: allKeys.map { ($0, defaults.stringArray(forKey: $0)) })
-    }
-
-    static func restore(_ backup: [String: [String]?], to defaults: UserDefaults?) {
-        guard let defaults else { return }
-        for key in allKeys {
-            if let value = backup[key] ?? nil {
-                defaults.set(value, forKey: key)
-            } else {
-                defaults.removeObject(forKey: key)
-            }
-        }
-        defaults.synchronize()
-    }
 }

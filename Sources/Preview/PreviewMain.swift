@@ -9,6 +9,8 @@ import Metal
 ///   LerpPreview --snapshot DIR      render every shader to PNG in DIR
 ///       [--size WxH] [--time T] [--seed S] [--shader NAME]
 ///       [--preset NAME] [--param name=value ...]
+///   LerpPreview --thumbnails SAVER  bake the Options… gallery's stills into
+///                                   a .saver bundle
 ///
 /// Live window keys: ←/→ switch shader, space pause/resume, r reload
 /// (recompiles, picks up custom-shader edits), q quit.
@@ -36,6 +38,14 @@ enum PreviewMain {
             for shader in library.discover() where only == nil || shader.name == only {
                 printParameters(of: shader)
             }
+            return
+        }
+
+        if let index = args.firstIndex(of: "--thumbnails") {
+            guard args.count > index + 1, !args[index + 1].hasPrefix("--") else {
+                fail("--thumbnails needs the path to a .saver bundle")
+            }
+            bakeThumbnails(into: URL(fileURLWithPath: args[index + 1]))
             return
         }
 
@@ -164,6 +174,53 @@ enum PreviewMain {
             }
         }
         exit(failed ? 1 : 0)
+    }
+
+    // MARK: - Baking the Options… gallery into a .saver bundle
+
+    /// Renders one still per (shader, preset) into `<bundle>/Contents/Resources/
+    /// Thumbnails`, using the exact cache the screensaver's Options… sheet reads
+    /// at runtime — same recipe, same content-addressed filenames.
+    ///
+    /// The shader list comes from the bundle's *own* `Resources/Shaders`, not
+    /// from `ShaderLibrary.discover()`. That is the point: the stills baked into
+    /// a bundle have to be the stills for the shaders in that bundle, whatever
+    /// happens to be in the repo or in the user's drop folder at the time. It is
+    /// also what makes `make install` correct — it bakes custom shaders into the
+    /// installed copy first, then runs this over the result, so a custom shader
+    /// gets a tile like every other look.
+    ///
+    /// Incremental for free: a still whose file is already there is a hit, so a
+    /// rebuild that changed one `.metal` redraws one shader's looks and nothing
+    /// else, and a rebuild that changed none redraws nothing.
+    static func bakeThumbnails(into bundle: URL) {
+        let resources = bundle.appendingPathComponent("Contents/Resources")
+        let shaderDir = resources.appendingPathComponent("Shaders")
+        let files = (try? FileManager.default.contentsOfDirectory(at: shaderDir,
+                                                                  includingPropertiesForKeys: nil)) ?? []
+        let shaders = files.filter { $0.pathExtension == "metal" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .compactMap { url -> LerpShader? in
+                guard let source = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+                return LerpShader(name: url.deletingPathExtension().lastPathComponent,
+                                  source: source, isBuiltIn: true, url: url)
+            }
+        guard !shaders.isEmpty else {
+            fail("no .metal files in \(shaderDir.path) — is that a Lerping@Home.saver bundle?")
+        }
+        let cache = RotationThumbnails(
+            searchURLs: [shaderDir],
+            directory: resources.appendingPathComponent(RotationThumbnails.bundledFolder))
+        let jobs = RotationThumbnails.jobs(for: shaders)
+        let started = CFAbsoluteTimeGetCurrent()
+        let result = cache.renderMissing(jobs)
+        let seconds = CFAbsoluteTimeGetCurrent() - started
+        for failure in result.failed { print("FAIL  \(failure)") }
+        print(String(format: "OK    %d gallery stills for %d shaders in %.2f s "
+                     + "(%d rendered, %d already there) -> %@",
+                     jobs.count, shaders.count, seconds, result.rendered, result.cached,
+                     cache.cacheDirectory.path))
+        exit(result.failed.isEmpty ? 0 : 1)
     }
 
     // MARK: - Live preview app

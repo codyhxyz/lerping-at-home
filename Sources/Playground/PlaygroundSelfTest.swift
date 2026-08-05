@@ -55,11 +55,10 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         // Deliberately no `NSApp.activate`: the window is invisible, so taking
         // the foreground for it would be taking it from the user for nothing.
         originalSource = controller.editor.text
-        // The rotation checks drive the gallery against the user's real
-        // screensaver settings, because that is the claim being tested. Taken
-        // before anything can touch them, and put back by `finish()` — which
-        // every path out of the run, including the watchdog, goes through.
-        savedRotation = RotationStore.backup(RotationStore.saverDefaults())
+        // The rotation checks drive the gallery against a ByHost domain of the
+        // test's own — same class, same call, same keys, nobody's screensaver.
+        // See `RotationStore.testModule` for why this is not the live one.
+        controller.rotationDefaults = RotationStore.saverDefaults(module: RotationStore.testModule)
         armWatchdog()
 
         // Timings are wall-clock on purpose — the point is to observe the real
@@ -835,10 +834,8 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
     private static let scratchSuite = "zz-selftest-rotation"
     private var scratch: UserDefaults!
 
-    /// The user's real screensaver rotation as it stood when the run started.
-    /// Taken in `applicationDidFinishLaunching` and put back in `finish()`, so
-    /// even the watchdog path restores it.
-    private var savedRotation: [String: [String]?] = [:]
+    /// The ByHost domain the gallery checks write to. Never the user's.
+    private static let testModule = RotationStore.testModule
 
     private func rotationEntriesNow() -> [LerpRotationEntry] {
         controller.metalView.shaderLibrary.discover().rotationEntries()
@@ -928,20 +925,24 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
     private var coldSeconds = 0.0
     private var galleryEntries: [LerpRotationEntry] = []
 
-    /// The gallery itself, pointed at the user's *real* screensaver defaults —
-    /// because "a click in the playground changes what the screensaver shuffles
-    /// through" is the claim, and a test against a scratch domain would not make
-    /// it. The domain was backed up at launch and is put back in `finish()`.
+    /// The gallery itself, pointed at a ByHost domain of the test's own.
+    ///
+    /// The claim under test is "a click lands in a ByHost screensaver domain,
+    /// through the very call `LerpSaverView` makes, under the keys it reads" —
+    /// and every part of that is true of `testModule`. What is *not* worth
+    /// testing is the last mile of the string: pointing this at the user's live
+    /// rotation buys one constant's worth of confidence and risks their
+    /// settings. The production wiring is checked below without writing a thing:
+    /// the app's own default is built from `RotationStore.module`.
     private func rotationGalleryChecks() {
-        controller.rotationDefaults = RotationStore.saverDefaults()
-        // Not the playground's own preferences: the screensaver's, by way of the
-        // same call `LerpSaverView` makes.
-        check("the gallery writes the screensaver's own defaults domain",
+        controller.rotationDefaults = RotationStore.saverDefaults(module: Self.testModule)
+        check("the gallery writes a ByHost screensaver domain, not the app's own preferences",
               controller.rotationDefaults.map { $0 is ScreenSaverDefaults } == true
                   && RotationStore.module == "com.hergenroeder.lerping"
-                  && RotationStore.module != Bundle.main.bundleIdentifier,
+                  && RotationStore.module != Bundle.main.bundleIdentifier
+                  && !RotationStore.isLiveModule(Self.testModule),
               controller.rotationDefaults.map { String(describing: type(of: $0)) } ?? "nil"
-                  + " for " + RotationStore.module)
+                  + " for " + Self.testModule)
 
         // Start from a known rotation rather than from whatever was there.
         galleryEntries = rotationEntriesNow()
@@ -999,12 +1000,12 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         warmCacheCheck()
     }
 
-    /// What is on disk for the screensaver right now, read straight out of the
-    /// ByHost store rather than through any `UserDefaults` this process holds —
+    /// What is on disk in the test's ByHost domain right now, read straight out
+    /// of cfprefsd rather than through any `UserDefaults` this process holds —
     /// so a value that only ever reached an in-memory cache cannot pass.
     private func persistedRotation() -> [String] {
         (CFPreferencesCopyValue(RotationStore.enabledEntriesKey as CFString,
-                                RotationStore.module as CFString,
+                                Self.testModule as CFString,
                                 kCFPreferencesCurrentUser,
                                 kCFPreferencesCurrentHost) as? [String]) ?? []
     }
@@ -1158,19 +1159,26 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// True when the run was asked to *leave* the rotation it clicked behind
-    /// instead of restoring the user's. Off by default and off in
+    /// instead of wiping the test domain. Off by default and off in
     /// `make playground-test`; it exists so the round trip can be finished
     /// outside this process — click here, then load the real `.saver` bundle in
-    /// another one and see what its own Options sheet comes up checked.
+    /// another one, point it at the same domain, and see what its own Options
+    /// sheet comes up checked.
     ///
     ///     LERP_SELFTEST_KEEP_ROTATION=1 build/LerpPlaygroundSelfTest.app/…/LerpPlaygroundSelfTest --selftest
-    ///     LOADTEST_DUMP_ROTATION=1 build/loadtest build/Lerping@Home.saver
+    ///     LERP_DEFAULTS_MODULE=com.hergenroeder.lerping.uitest \
+    ///         LOADTEST_DUMP_ROTATION=1 build/loadtest build/Lerping@Home.saver
+    ///
+    /// It used to hand off through the *user's* live domain, which made the
+    /// round trip real at the price of leaving a stranger's rotation in someone's
+    /// screensaver whenever a run was interrupted. Both ends take a module now,
+    /// so the round trip is just as real and lands nowhere near it.
     private var keepsRotation: Bool {
         ProcessInfo.processInfo.environment["LERP_SELFTEST_KEEP_ROTATION"] != nil
     }
 
     /// Clicks the gallery down to a small, distinctive rotation and leaves it in
-    /// the screensaver's defaults for another process to read.
+    /// the test's ByHost domain for another process to read.
     private func handOffRotation() {
         guard keepsRotation, let gallery = controller.rotation?.gallery else { return }
         gallery.setFilter("")
@@ -1179,7 +1187,7 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         // what makes the rotation a set someone chose.
         let picked = Array(galleryEntries.filter { $0.preset != nil }.prefix(3))
         picked.forEach(gallery.click)
-        print("HANDOFF wrote \(picked.count) looks to \(RotationStore.module) (ByHost):")
+        print("HANDOFF wrote \(picked.count) looks to \(Self.testModule) (ByHost):")
         persistedRotation().sorted().forEach { print("HANDOFF   \($0)") }
     }
 
@@ -1670,13 +1678,15 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.removeItem(at: ShaderPaths.customDirectory
             .appendingPathComponent(Self.parameterlessShader + ".metal"))
         UserDefaults().removePersistentDomain(forName: Self.scratchSuite)
-        // The user's screensaver rotation, exactly as it was before the run —
-        // unless the run was explicitly asked to hand it on. See `handOffRotation`.
+        // The test's own ByHost domain goes with the run — unless it was asked
+        // to leave it for another process. The user's is never touched: nothing
+        // in this file opens `RotationStore.module` for writing. See
+        // `RotationStore.testModule`.
         if keepsRotation {
-            print("HANDOFF the rotation above was left in place; "
-                  + "`defaults -currentHost delete \(RotationStore.module)` puts it back")
+            print("HANDOFF the rotation above was left in \(Self.testModule); "
+                  + "`defaults -currentHost delete \(Self.testModule)` clears it")
         } else {
-            RotationStore.restore(savedRotation, to: RotationStore.saverDefaults())
+            RotationStore.deleteDomain(Self.testModule)
         }
         sender = nil                      // takes the virtual MIDI source with it
         controller?.rotation?.close(cancellingWork: true)

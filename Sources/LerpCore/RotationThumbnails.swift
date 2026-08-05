@@ -13,8 +13,9 @@ import Metal
 ///
 /// - **Nothing blocks.** `start` returns immediately; tiles fill in as their
 ///   images land, in whatever order they land.
-/// - **Disk first.** Every request checks the cache before it queues a render,
-///   so the second launch draws the whole gallery without touching the GPU.
+/// - **Cheapest source first.** Memory, then the read-only stills baked into the
+///   host bundle, then the writable cache, then — only for what none of those
+///   had — the GPU.
 /// - **Then parallel.** The misses are grouped by shader and dealt round-robin
 ///   to a small pool of workers, each with a `ShaderLibrary` and `LerpRenderer`
 ///   of its own (neither is thread-safe; a `MTLDevice` is). Grouping by shader
@@ -30,35 +31,61 @@ import Metal
 /// cached stills. The hash is FNV-1a rather than `String.hashValue`, which is
 /// seeded per process and would invalidate the whole cache on every launch.
 ///
+/// That one property is also what makes the bundled tier safe. `make saver`
+/// renders the stills into `Contents/Resources/Thumbnails` under exactly these
+/// filenames, so a baked still and a freshly rendered one are the same file for
+/// the same shader source — and a `.metal` that has been changed without its
+/// still being redrawn simply misses, and is drawn at runtime. A stale bundled
+/// still cannot be shown, because a stale one has a different name.
+///
 /// The stills are rendered at a fixed `time` and `seed` so they are the same
-/// pictures every time the gallery opens, and so two launches agree about what
-/// a look looks like.
-final class RotationThumbnails {
+/// pictures every time the gallery opens, and so two hosts agree about what a
+/// look looks like.
+public final class RotationThumbnails {
 
     /// Everything that goes into a still besides the shader itself. `version`
     /// exists so a change to how stills are made can invalidate the cache
     /// without anyone having to find and delete it.
-    struct Recipe {
-        var width = 240
-        var height = 360
+    public struct Recipe {
+        public var width = 240
+        public var height = 360
         /// Far enough in that nothing is still easing out of its t=0 pose.
-        var time: Float = 6
+        public var time: Float = 6
         /// Fixed, so a tile is the same picture on every launch.
-        var seed: Float = 0.37
-        var version = 1
+        public var seed: Float = 0.37
+        public var version = 1
 
-        var token: String { "\(width)x\(height)-t\(time)-s\(seed)-v\(version)" }
+        public init() {}
+
+        public var token: String { "\(width)x\(height)-t\(time)-s\(seed)-v\(version)" }
     }
 
     /// One thing to draw: the rotation entry and the shader it belongs to.
-    struct Job {
-        let entry: LerpRotationEntry
-        let shader: LerpShader
+    public struct Job {
+        public let entry: LerpRotationEntry
+        public let shader: LerpShader
+
+        public init(entry: LerpRotationEntry, shader: LerpShader) {
+            self.entry = entry
+            self.shader = shader
+        }
     }
 
-    let recipe: Recipe
+    /// Every look these shaders offer, paired with the shader it came from —
+    /// the whole work list, in rotation order.
+    public static func jobs(for shaders: [LerpShader]) -> [Job] {
+        let byName = Dictionary(uniqueKeysWithValues: shaders.map { ($0.name, $0) })
+        return shaders.rotationEntries().compactMap { entry in
+            byName[entry.shader].map { Job(entry: entry, shader: $0) }
+        }
+    }
+
+    public let recipe: Recipe
     private let searchURLs: [URL]
     private let directory: URL
+    /// Directories searched for a ready-made still but never written to: the
+    /// stills baked into the host bundle. See `bundledDirectory(in:)`.
+    private let readOnlyDirectories: [URL]
 
     /// Decoded stills, keyed the same way the files are. Held so a filter
     /// change or a window resize redraws instantly.
@@ -70,21 +97,27 @@ final class RotationThumbnails {
 
     /// Counted for the self-test and the status line: how many stills came off
     /// disk versus how many the GPU had to draw. A warm gallery is all hits.
-    private(set) var diskHits = 0
-    private(set) var memoryHits = 0
-    private(set) var rendered = 0
-    private(set) var failed: [String] = []
+    private(set) public var diskHits = 0
+    /// The part of `diskHits` that came out of the host bundle rather than out
+    /// of the writable cache — inside the screensaver's sandbox that is the
+    /// number that matters, because it is the work the GPU did not have to do.
+    private(set) public var bundledHits = 0
+    private(set) public var memoryHits = 0
+    private(set) public var rendered = 0
+    private(set) public var failed: [String] = []
     /// Wall-clock seconds from `start` to the last delivery of the most recent
     /// run — the number the report calls "cold" or "warm".
-    private(set) var lastRunSeconds: Double = 0
+    private(set) public var lastRunSeconds: Double = 0
 
     private let queue = DispatchQueue(label: "lerping.rotation.thumbnails", qos: .userInitiated)
     private let lock = NSLock()
 
-    init(searchURLs: [URL], recipe: Recipe = Recipe(), directory: URL? = nil) {
+    public init(searchURLs: [URL], recipe: Recipe = Recipe(), directory: URL? = nil,
+                readOnlyDirectories: [URL] = []) {
         self.searchURLs = searchURLs
         self.recipe = recipe
         self.directory = directory ?? Self.defaultDirectory
+        self.readOnlyDirectories = readOnlyDirectories
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
     }
 
@@ -94,7 +127,7 @@ final class RotationThumbnails {
     /// place for something regenerable, outside the repo, and per-bundle — so
     /// `--selftest` (a bundle identifier of its own) cannot evict the stills the
     /// user's gallery is showing, and vice versa.
-    static var defaultDirectory: URL {
+    public static var defaultDirectory: URL {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let id = Bundle.main.bundleIdentifier ?? "com.hergenroeder.lerping.playground"
@@ -102,11 +135,66 @@ final class RotationThumbnails {
             .appendingPathComponent("RotationThumbnails", isDirectory: true)
     }
 
-    var cacheDirectory: URL { directory }
+    /// A cache directory a *sandboxed* host can actually write.
+    ///
+    /// The screensaver's Options… sheet is built inside `legacyScreenSaver`,
+    /// which is App Sandboxed. `NSHomeDirectory()` there is the sandbox
+    /// container, and the container is the only place it may write — the real
+    /// `~/Library` is denied, exactly as it is for the wallpaper handoff (see
+    /// `LerpSaverView.writableWallpaperDirectory`). The real home is kept as a
+    /// second candidate so an unsandboxed host of the same code — the loadtest,
+    /// the preview app — lands somewhere sensible instead of nowhere.
+    ///
+    /// Each candidate is probed by writing a file, because "the sandbox will let
+    /// me write here" is not something to assume.
+    public static func writableCacheDirectory(named name: String) -> URL? {
+        let suffix = "Library/Caches/" + name
+        var candidates = [URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(suffix)]
+        if let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir {
+            candidates.append(URL(fileURLWithPath: String(cString: home))
+                .appendingPathComponent(suffix))
+        }
+        var seen = Set<String>()
+        for dir in candidates where seen.insert(dir.path).inserted {
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let probe = dir.appendingPathComponent(".writable")
+                try Data().write(to: probe)
+                try? FileManager.default.removeItem(at: probe)
+                return dir
+            } catch {
+                continue
+            }
+        }
+        return nil
+    }
+
+    /// Where a host bundle keeps the stills that were rendered into it at build
+    /// time. `Bundle(for:)` is the `.saver` bundle when this code is linked into
+    /// it; `Bundle.main` covers the plain executables, where the two differ —
+    /// the same pair `ShaderLibrary.builtInDirectory` walks, for the same
+    /// reason.
+    public static func bundledDirectories() -> [URL] {
+        var out: [URL] = []
+        for bundle in [Bundle(for: RotationThumbnails.self), Bundle.main] {
+            guard let url = bundle.resourceURL?.appendingPathComponent(bundledFolder),
+                  FileManager.default.fileExists(atPath: url.path),
+                  !out.contains(url) else { continue }
+            out.append(url)
+        }
+        return out
+    }
+
+    /// The folder name `make saver` renders into and `bundledDirectories()`
+    /// looks for. One constant, so the Makefile and the lookup cannot drift.
+    public static let bundledFolder = "Thumbnails"
+
+    public var cacheDirectory: URL { directory }
+    public var bundledCacheDirectories: [URL] { readOnlyDirectories }
 
     /// Deterministic 64-bit FNV-1a. `String.hashValue` is seeded per process, so
     /// using it here would mean a cold cache on every single launch.
-    static func hash(_ text: String) -> String {
+    public static func hash(_ text: String) -> String {
         var value: UInt64 = 0xcbf2_9ce4_8422_2325
         for byte in text.utf8 {
             value ^= UInt64(byte)
@@ -117,15 +205,34 @@ final class RotationThumbnails {
 
     /// The cache key for a look: what it is, what its shader's source says, and
     /// how the still is made. Any of the three changing is a different picture.
-    func key(entry: LerpRotationEntry, source: String) -> String {
+    public func key(entry: LerpRotationEntry, source: String) -> String {
         Self.hash(entry.key + "\u{1}" + source + "\u{1}" + recipe.token)
     }
 
     /// `voronoi-Molten-4f0c….png` — the hash is what makes it unique; the
     /// readable part is so the cache directory can be looked at by a human.
-    func url(entry: LerpRotationEntry, source: String) -> URL {
-        let stem = Self.slug(entry.shader) + "-" + Self.slug(entry.preset ?? "defaults")
-        return directory.appendingPathComponent(stem + "-" + key(entry: entry, source: source) + ".png")
+    public func fileName(entry: LerpRotationEntry, source: String) -> String {
+        Self.slug(entry.shader) + "-" + Self.slug(entry.preset ?? "defaults")
+            + "-" + key(entry: entry, source: source) + ".png"
+    }
+
+    /// Where this still is written. Always the writable directory: the bundled
+    /// tier is read at `existingURL`, never written.
+    public func url(entry: LerpRotationEntry, source: String) -> URL {
+        directory.appendingPathComponent(fileName(entry: entry, source: source))
+    }
+
+    /// The first tier that already holds this still, or nil. The writable cache
+    /// comes first only because a still rendered this session is the one most
+    /// likely to be warm in the page cache; the two are the same picture by
+    /// construction, since the filename carries the source hash.
+    public func existingURL(entry: LerpRotationEntry, source: String) -> URL? {
+        let name = fileName(entry: entry, source: source)
+        for dir in [directory] + readOnlyDirectories {
+            let url = dir.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
     }
 
     private static func slug(_ text: String) -> String {
@@ -136,7 +243,7 @@ final class RotationThumbnails {
     // MARK: - Lookup
 
     /// The still for a look if it is already decoded, without touching the disk.
-    func image(entry: LerpRotationEntry, source: String) -> NSImage? {
+    public func image(entry: LerpRotationEntry, source: String) -> NSImage? {
         lock.lock(); defer { lock.unlock() }
         return memory[key(entry: entry, source: source)]
     }
@@ -147,14 +254,14 @@ final class RotationThumbnails {
     ///
     /// `onImage` and `onFinished` are called on the main queue. Calling `start`
     /// again supersedes the run in flight.
-    func start(_ jobs: [Job],
-               onImage: @escaping (LerpRotationEntry, NSImage) -> Void,
-               onProgress: @escaping (_ done: Int, _ total: Int) -> Void,
-               onFinished: @escaping () -> Void) {
+    public func start(_ jobs: [Job],
+                      onImage: @escaping (LerpRotationEntry, NSImage) -> Void,
+                      onProgress: @escaping (_ done: Int, _ total: Int) -> Void,
+                      onFinished: @escaping () -> Void) {
         lock.lock()
         generation += 1
         let run = generation
-        diskHits = 0; memoryHits = 0; rendered = 0; failed = []
+        diskHits = 0; bundledHits = 0; memoryHits = 0; rendered = 0; failed = []
         // Deliver what is already decoded before anything touches the disk, so
         // a filter change or a reopen paints instantly.
         var pending: [Job] = []
@@ -193,22 +300,23 @@ final class RotationThumbnails {
         }
 
         queue.async {
-            // Phase 1 — the disk. A whole warm gallery lands here.
+            // Phase 1 — the disk, bundle included. A whole warm gallery lands
+            // here, and inside the screensaver's sandbox so does a cold one.
             var misses: [Job] = []
             for job in pending {
                 guard self.isCurrent(run) else { return }
                 let key = self.key(entry: job.entry, source: job.shader.source)
-                let url = self.url(entry: job.entry, source: job.shader.source)
-                guard FileManager.default.fileExists(atPath: url.path),
+                guard let url = self.existingURL(entry: job.entry, source: job.shader.source),
                       let image = NSImage(contentsOf: url), image.isValid else {
                     // A half-written file from an interrupted run reads as a
                     // miss and is drawn again, rather than as a broken tile.
-                    try? FileManager.default.removeItem(at: url)
+                    try? FileManager.default.removeItem(
+                        at: self.url(entry: job.entry, source: job.shader.source))
                     misses.append(job)
                     continue
                 }
                 self.store(image, forKey: key)
-                self.countDiskHit()
+                self.countDiskHit(bundled: !url.path.hasPrefix(self.directory.path))
                 deliver(job.entry, image)
             }
 
@@ -216,7 +324,7 @@ final class RotationThumbnails {
             self.render(misses, run: run, deliver: deliver)
 
             self.prune(expected: Set(jobs.map {
-                self.url(entry: $0.entry, source: $0.shader.source).lastPathComponent
+                self.fileName(entry: $0.entry, source: $0.shader.source)
             }))
             DispatchQueue.main.async {
                 self.finish(run: run, started: started, onFinished: onFinished)
@@ -224,16 +332,43 @@ final class RotationThumbnails {
         }
     }
 
+    /// Renders whatever is missing and returns when it is done — what
+    /// `LerpPreview --thumbnails` uses to bake the stills into the `.saver`
+    /// bundle at build time. Same key, same files, same pictures as the runtime
+    /// path, because it is the runtime path.
+    @discardableResult
+    public func renderMissing(_ jobs: [Job]) -> (rendered: Int, cached: Int, failed: [String]) {
+        lock.lock()
+        generation += 1
+        let run = generation
+        rendered = 0; diskHits = 0; bundledHits = 0; memoryHits = 0; failed = []
+        lock.unlock()
+
+        var misses: [Job] = []
+        for job in jobs {
+            if existingURL(entry: job.entry, source: job.shader.source) != nil {
+                countDiskHit(bundled: false)
+            } else {
+                misses.append(job)
+            }
+        }
+        render(misses, run: run, deliver: { _, _ in })
+        prune(expected: Set(jobs.map { fileName(entry: $0.entry, source: $0.shader.source) }))
+        return (rendered, diskHits, failed)
+    }
+
     /// Drops any run in flight. Deliveries already queued are discarded.
-    func cancel() {
+    public func cancel() {
         lock.lock()
         generation += 1
         lock.unlock()
     }
 
-    /// Forgets every still, on disk and in memory, so the next `start` redraws
-    /// all of them. What the gallery's Regenerate button does.
-    func evictAll() {
+    /// Forgets every still it owns, on disk and in memory, so the next `start`
+    /// redraws all of them. What the gallery's Regenerate button does. The
+    /// bundled tier is not ours to delete and is left alone — a bundled still is
+    /// exactly as correct as a rendered one, so there is nothing to gain.
+    public func evictAll() {
         cancel()
         lock.lock()
         memory.removeAll()
@@ -259,7 +394,13 @@ final class RotationThumbnails {
         lock.lock(); memory[key] = image; lock.unlock()
     }
 
-    private func countDiskHit() { lock.lock(); diskHits += 1; lock.unlock() }
+    private func countDiskHit(bundled: Bool) {
+        lock.lock()
+        diskHits += 1
+        if bundled { bundledHits += 1 }
+        lock.unlock()
+    }
+
     private func countRender() { lock.lock(); rendered += 1; lock.unlock() }
 
     private func finish(run: Int, started: CFAbsoluteTime, onFinished: () -> Void) {
@@ -319,6 +460,7 @@ final class RotationThumbnails {
 
     /// Drops cache files no current look claims — which is how a shader that was
     /// edited stops paying rent for the still of the version before the edit.
+    /// Only ever in the writable directory; the bundle is not ours.
     private func prune(expected: Set<String>) {
         let files = (try? FileManager.default.contentsOfDirectory(at: directory,
                                                                   includingPropertiesForKeys: nil)) ?? []
