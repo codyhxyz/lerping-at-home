@@ -33,6 +33,7 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
     private var effectiveIsPreview = false
     private var configPanel: NSPanel?
     private var shaderPopup: NSPopUpButton?
+    private var presetPopup: NSPopUpButton?
     private var fpsPopup: NSPopUpButton?
     private var scalePopup: NSPopUpButton?
     private var freezePopup: NSPopUpButton?
@@ -57,9 +58,20 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         return instanceCounter
     }
 
+    /// One line of the Options… rotation list: either a shader heading, whose
+    /// checkbox owns the whole group beneath it, or one (shader, preset) entry.
+    /// A flat list of 114 entries is unusable; a heading per shader with its
+    /// looks indented under it is the same list you can actually scan.
+    private enum RotationRow {
+        case shader(LerpShader)
+        case entry(LerpRotationEntry)
+    }
+
     // Rotation list state, live only while the configure sheet is open.
-    private var rotationNames: [String] = []
-    private var rotationEnabled: Set<String> = []
+    private var rotationShaders: [LerpShader] = []
+    private var rotationEntries: [LerpRotationEntry] = []
+    private var rotationRows: [RotationRow] = []
+    private var rotationEnabled: Set<LerpRotationEntry> = []
     private var rotationTable: NSTableView?
     private var rotationLabel: NSTextField?
     private var rotationNote: NSTextField?
@@ -109,12 +121,12 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         ScreenSaverDefaults(forModuleWithName: defaultsModule)
     }
 
-    private func discoveredShaderNames() -> [String] {
-        metalView?.shaderLibrary.discover().map(\.name) ?? []
+    private func discoveredShaders() -> [LerpShader] {
+        metalView?.shaderLibrary.discover() ?? []
     }
 
     private func currentConfig() -> LerpMetalView.Config {
-        Settings.load(from: Self.defaults(), discovered: discoveredShaderNames()).config
+        Settings.load(from: Self.defaults(), discovered: discoveredShaders().rotationEntries()).config
     }
 
     private func setUpMetalView() {
@@ -219,9 +231,12 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
 
     // MARK: - Wallpaper handoff
 
-    /// The exact state a wallpaper still has to reproduce.
+    /// The exact state a wallpaper still has to reproduce. The rotation entry
+    /// rather than a bare shader name: the still is rendered in a second process
+    /// from scratch, so it has to be told which preset was on screen or it
+    /// reproduces the defaults instead.
     private struct CapturedFrame {
-        let shaderName: String
+        let entry: LerpRotationEntry
         let time: Float
         let seed: Float
     }
@@ -231,13 +246,12 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         // legacyScreenSaver builds two view instances per host and only ever puts
         // one of them in a window. The windowless one has a shader and a clock but
         // has never drawn a pixel, so it must not publish anything.
-        guard enabled, window != nil, let view = metalView, !view.currentShaderName.isEmpty else {
+        guard enabled, window != nil, let view = metalView, let entry = view.currentEntry,
+              !entry.shader.isEmpty else {
             Self.log.info("[\(self.instanceID)] wallpaper skipped: enabled=\(enabled) window=\(self.window != nil) shader='\(self.metalView?.currentShaderName ?? "", privacy: .public)'")
             return nil
         }
-        return CapturedFrame(shaderName: view.currentShaderName,
-                             time: Float(view.time),
-                             seed: view.seed)
+        return CapturedFrame(entry: entry, time: Float(view.time), seed: view.seed)
     }
 
     /// Directory for generated stills.
@@ -291,7 +305,8 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
                                    height: max(1, screen.frame.height * scale)))
         }
         guard !targets.isEmpty, let directory = Self.writableWallpaperDirectory() else { return }
-        let shaderName = frame.shaderName, time = frame.time, seed = frame.seed
+        let entry = frame.entry, time = frame.time, seed = frame.seed
+        let shaderName = entry.shader
         let stamp = UUID().uuidString.prefix(8)
 
         DispatchQueue.global(qos: .utility).async {
@@ -305,6 +320,12 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
                 Self.log.error("wallpaper: shader \(shaderName, privacy: .public) not found")
                 return
             }
+            // Same (shader, time, seed, params) the view was rendering, so the
+            // still is the frame the saver stopped on and not a different look.
+            var values = shader.defaultParameterValues()
+            if let name = entry.preset, let preset = shader.preset(named: name) {
+                values.apply(preset)
+            }
 
             var written: [(NSScreen, URL)] = []
             for (index, target) in targets.enumerated() {
@@ -312,7 +333,7 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
                 let result = LerpSnapshot.render(shader: shader, library: library, renderer: renderer,
                                                  width: Int(target.pixels.width),
                                                  height: Int(target.pixels.height),
-                                                 time: time, seed: seed, to: url)
+                                                 time: time, seed: seed, params: values, to: url)
                 if let error = result.error {
                     Self.log.error("wallpaper: render failed: \(error, privacy: .public)")
                 } else {
@@ -367,8 +388,10 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
                             styleMask: [.titled], backing: .buffered, defer: true)
         panel.title = "Lerping@Home"
 
-        let shaderNames = discoveredShaderNames()
-        let settings = Settings.load(from: Self.defaults(), discovered: shaderNames)
+        let shaders = discoveredShaders()
+        let shaderNames = shaders.map(\.name)
+        let entries = shaders.rotationEntries()
+        let settings = Settings.load(from: Self.defaults(), discovered: entries)
 
         let shaderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
         shaderPopup.addItem(withTitle: Settings.shuffleTitle)
@@ -378,11 +401,18 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         shaderPopup.target = self
         shaderPopup.action = #selector(shaderModeChanged)
 
+        // Pinning is (shader, preset) too, so a pin can reach any of the 114
+        // looks and not just the 31 sets of defaults.
+        let presetPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+
         // Rotation subset. Unset defaults mean "everything", so an upgrade (or a
-        // fresh install) starts with every shader checked.
-        rotationNames = shaderNames
-        rotationEnabled = Set(LerpMetalView.Config.rotation(of: settings.enabledShaders,
-                                                           from: shaderNames))
+        // fresh install) starts with every entry checked.
+        rotationShaders = shaders
+        rotationEntries = entries
+        // Rows come from the same `rotationEntries()` the rotation itself uses,
+        // so the list cannot show a look the shuffle does not offer.
+        rotationRows = shaders.flatMap { [RotationRow.shader($0)] + [$0].rotationEntries().map(RotationRow.entry) }
+        rotationEnabled = Set(LerpMetalView.Config.rotation(of: settings.enabledEntries, from: entries))
 
         let table = NSTableView()
         table.headerView = nil
@@ -401,8 +431,8 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         scroll.borderType = .bezelBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            scroll.widthAnchor.constraint(equalToConstant: 230),
-            scroll.heightAnchor.constraint(equalToConstant: 200),
+            scroll.widthAnchor.constraint(equalToConstant: 250),
+            scroll.heightAnchor.constraint(equalToConstant: 240),
         ])
 
         func listButton(_ title: String, _ action: Selector) -> NSButton {
@@ -424,7 +454,7 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         note.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         note.textColor = .secondaryLabelColor
         note.lineBreakMode = .byTruncatingTail
-        note.widthAnchor.constraint(lessThanOrEqualToConstant: 230).isActive = true
+        note.widthAnchor.constraint(lessThanOrEqualToConstant: 250).isActive = true
         rotationNote = note
 
         let fpsPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -460,6 +490,7 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
 
         let grid = NSGridView(views: [
             [label("Shader:"), shaderPopup],
+            [label("Preset:"), presetPopup],
             [inRotation, scroll],
             [NSGridCell.emptyContentView, listControls],
             [NSGridCell.emptyContentView, note],
@@ -470,10 +501,10 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         ])
         grid.column(at: 0).width = 100
         grid.rowAlignment = .firstBaseline
-        grid.row(at: 1).topPadding = 6
-        grid.row(at: 1).yPlacement = .top
-        grid.row(at: 2).yPlacement = .center
-        grid.row(at: 3).bottomPadding = 6
+        grid.row(at: 2).topPadding = 6
+        grid.row(at: 2).yPlacement = .top
+        grid.row(at: 3).yPlacement = .center
+        grid.row(at: 4).bottomPadding = 6
         grid.translatesAutoresizingMaskIntoConstraints = false
 
         let ok = NSButton(title: "OK", target: self, action: #selector(configureSheetOK))
@@ -497,10 +528,12 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
 
         self.configPanel = panel
         self.shaderPopup = shaderPopup
+        self.presetPopup = presetPopup
         self.fpsPopup = fpsPopup
         self.scalePopup = scalePopup
         self.freezePopup = freezePopup
         self.wallpaperCheckbox = wallpaperCheck
+        reloadPresetPopup(selecting: settings.preset)
         updateRotationControls()
         // Grow the sheet to whatever the rotation list needs.
         let fitting = content.fittingSize
@@ -512,12 +545,43 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
 
     private var isShuffleMode: Bool { (shaderPopup?.indexOfSelectedItem ?? 0) == 0 }
 
+    /// The shader the popup is pinned to, or nil in shuffle mode.
+    private var pinnedShader: LerpShader? {
+        guard !isShuffleMode, let title = shaderPopup?.titleOfSelectedItem else { return nil }
+        return rotationShaders.named(title)
+    }
+
+    /// The preset popup's first item, which means "the shader's declared
+    /// defaults" — the same thing a `nil` preset means everywhere else.
+    private static let defaultsTitle = "Defaults"
+
+    /// Rebuilds the preset popup for whatever shader is pinned. Greyed out in
+    /// shuffle mode, where each rotation entry brings its own preset.
+    private func reloadPresetPopup(selecting preset: String?) {
+        guard let popup = presetPopup else { return }
+        let shader = pinnedShader
+        popup.removeAllItems()
+        popup.addItem(withTitle: Self.defaultsTitle)
+        popup.addItems(withTitles: shader?.presets.map(\.name) ?? [])
+        popup.selectItem(withTitle: preset.flatMap { name in
+            shader?.preset(named: name)?.name
+        } ?? Self.defaultsTitle)
+        popup.isEnabled = shader != nil && (shader?.presets.isEmpty == false)
+    }
+
+    /// The preset the popup is on, or nil for the shader's defaults.
+    private var selectedPreset: String? {
+        guard let popup = presetPopup, popup.indexOfSelectedItem > 0 else { return nil }
+        return popup.titleOfSelectedItem
+    }
+
     @objc private func shaderModeChanged() {
+        reloadPresetPopup(selecting: nil)
         updateRotationControls()
     }
 
     @objc private func selectAllShaders() {
-        rotationEnabled = Set(rotationNames)
+        rotationEnabled = Set(rotationEntries)
         updateRotationControls()
     }
 
@@ -526,13 +590,27 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         updateRotationControls()
     }
 
-    @objc private func rotationCheckboxToggled(_ sender: NSButton) {
-        guard rotationNames.indices.contains(sender.tag) else { return }
-        let name = rotationNames[sender.tag]
-        if sender.state == .on {
-            rotationEnabled.insert(name)
+    /// A shader heading's checkbox owns its whole group: if every look under it
+    /// is on it turns them all off, otherwise it turns them all on. Read off the
+    /// group rather than off `sender.state`, because the row is rebuilt on every
+    /// reload and a three-state checkbox's own next state is not what we mean.
+    @objc private func rotationGroupToggled(_ sender: NSButton) {
+        guard case .shader(let shader)? = rotationRows[safe: sender.tag] else { return }
+        let group = rotationEntries.filter { $0.shader == shader.name }
+        if group.allSatisfy(rotationEnabled.contains) {
+            rotationEnabled.subtract(group)
         } else {
-            rotationEnabled.remove(name)
+            rotationEnabled.formUnion(group)
+        }
+        updateRotationControls()
+    }
+
+    @objc private func rotationCheckboxToggled(_ sender: NSButton) {
+        guard case .entry(let entry)? = rotationRows[safe: sender.tag] else { return }
+        if sender.state == .on {
+            rotationEnabled.insert(entry)
+        } else {
+            rotationEnabled.remove(entry)
         }
         updateRotationControls()
     }
@@ -545,43 +623,73 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         rotationButtons.forEach { $0.isEnabled = active }
         rotationLabel?.textColor = active ? .labelColor : .disabledControlTextColor
         rotationNote?.textColor = active ? .secondaryLabelColor : .disabledControlTextColor
-        if rotationNames.isEmpty {
+        if rotationEntries.isEmpty {
             rotationNote?.stringValue = "No shaders found."
         } else if !active {
             rotationNote?.stringValue = "Rotation applies to Shuffle."
         } else if rotationEnabled.isEmpty {
-            rotationNote?.stringValue = "Nothing checked — using all \(rotationNames.count)."
+            rotationNote?.stringValue = "Nothing checked — using all \(rotationEntries.count)."
         } else {
-            rotationNote?.stringValue = "\(rotationEnabled.count) of \(rotationNames.count) shaders in rotation."
+            let shaders = Set(rotationEnabled.map(\.shader)).count
+            rotationNote?.stringValue = "\(rotationEnabled.count) of \(rotationEntries.count) looks, "
+                + "across \(shaders) of \(rotationShaders.count) shaders."
         }
     }
 
-    public func numberOfRows(in tableView: NSTableView) -> Int { rotationNames.count }
+    public func numberOfRows(in tableView: NSTableView) -> Int { rotationRows.count }
 
     public func tableView(_ tableView: NSTableView,
                           viewFor tableColumn: NSTableColumn?,
                           row: Int) -> NSView? {
-        guard rotationNames.indices.contains(row) else { return nil }
-        let name = rotationNames[row]
-        let check = NSButton(checkboxWithTitle: name,
-                             target: self,
+        guard let entryRow = rotationRows[safe: row] else { return nil }
+        let check: NSButton
+        let indent: CGFloat
+        switch entryRow {
+        case .shader(let shader):
+            check = NSButton(checkboxWithTitle: shader.displayName, target: self,
+                             action: #selector(rotationGroupToggled(_:)))
+            check.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
+            check.allowsMixedState = true
+            let group = rotationEntries.filter { $0.shader == shader.name }
+            let on = group.filter(rotationEnabled.contains).count
+            check.state = on == 0 ? .off : (on == group.count ? .on : .mixed)
+            check.identifier = NSUserInterfaceItemIdentifier("shader:" + shader.name)
+            indent = 2
+        case .entry(let entry):
+            check = NSButton(checkboxWithTitle: entry.displayName, target: self,
                              action: #selector(rotationCheckboxToggled(_:)))
+            check.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            check.state = rotationEnabled.contains(entry) ? .on : .off
+            check.identifier = NSUserInterfaceItemIdentifier("entry:" + entry.key)
+            indent = 20
+        }
         check.tag = row
-        check.state = rotationEnabled.contains(name) ? .on : .off
         check.isEnabled = isShuffleMode
-        return check
+        check.translatesAutoresizingMaskIntoConstraints = false
+
+        // The checkbox sits in a container purely so the preset rows can be
+        // indented under their shader; a table cell view is sized to the column.
+        let cell = NSView()
+        cell.addSubview(check)
+        NSLayoutConstraint.activate([
+            check.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: indent),
+            check.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            check.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor),
+        ])
+        return cell
     }
 
     @objc private func configureSheetOK() {
         if let defaults = Self.defaults() {
             var settings = Settings()
             settings.shader = shaderPopup?.titleOfSelectedItem ?? Settings.shuffleTitle
-            settings.enabledShaders = rotationEnabled
+            settings.preset = selectedPreset
+            settings.enabledEntries = rotationEnabled
             settings.fps = Int(fpsPopup?.titleOfSelectedItem ?? "30") ?? 30
             settings.renderScale = Self.value(of: scalePopup, in: Self.renderScales, default: 0)
             settings.freezeMinutes = Self.value(of: freezePopup, in: Self.freezeChoices, default: 3)
             settings.setsWallpaper = wallpaperCheckbox?.state == .on
-            settings.save(to: defaults, rotation: rotationNames)
+            settings.save(to: defaults, entries: rotationEntries)
         }
         metalView?.config = currentConfig()
         endConfigureSheet()
@@ -603,7 +711,17 @@ public final class LerpSaverView: ScreenSaverView, NSTableViewDataSource, NSTabl
         rotationLabel = nil
         rotationNote = nil
         rotationButtons = []
+        rotationRows = []
+        rotationShaders = []
+        rotationEntries = []
+        presetPopup = nil
         wallpaperCheckbox = nil
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 
@@ -621,20 +739,30 @@ private struct Settings {
     static let shuffleTitle = "Shuffle"
 
     private static let shaderKey = "shader"
+    /// Preset for the pinned shader. Absent means its declared defaults.
+    private static let presetKey = "preset"
     private static let fpsKey = "fps"
     private static let renderScaleKey = "renderScale"
     private static let shuffleMinutesKey = "shuffleMinutes"
     private static let freezeMinutesKey = "freezeAfterMinutes"
-    /// Names the user wants in the shuffle rotation.
+    /// `LerpRotationEntry.key`s the user wants in the shuffle rotation.
+    private static let enabledEntriesKey = "enabledEntries"
+    /// Every entry that existed the last time the rotation was saved. Anything
+    /// discovered later counts as new and joins the rotation automatically —
+    /// including a preset added to a shader that was already there.
+    private static let knownEntriesKey = "knownEntries"
+    /// The pre-preset shape of the same two keys: sets of shader *names*, from
+    /// before the rotation counted presets. Read for migration, and still
+    /// written, so a downgrade to an older build finds a sensible subset.
     private static let enabledShadersKey = "enabledShaders"
-    /// Every shader that existed the last time the rotation was saved. Anything
-    /// discovered later counts as new and joins the rotation automatically.
     private static let knownShadersKey = "knownShaders"
     /// Opt-in: hand the last rendered frame off to the desktop picture.
     static let wallpaperKey = "setWallpaperOnStop"
 
     /// `shuffleTitle`, or the name of the single pinned shader.
     var shader = shuffleTitle
+    /// Preset for the pinned shader, or nil for its declared defaults.
+    var preset: String?
     var fps = 30
     var renderScale = 1.0
     /// No UI offers this one; it is read but never written back.
@@ -643,30 +771,40 @@ private struct Settings {
     var setsWallpaper = false
     /// The shuffle rotation — see `LerpMetalView.Config.rotation(of:from:)` for
     /// what nil and empty both mean.
-    var enabledShaders: Set<String>?
+    var enabledEntries: Set<LerpRotationEntry>?
 
-    static func load(from defaults: UserDefaults?, discovered: [String]) -> Settings {
+    static func load(from defaults: UserDefaults?, discovered: [LerpRotationEntry]) -> Settings {
         var settings = Settings()
         guard let defaults else { return settings }
         settings.shader = defaults.string(forKey: shaderKey) ?? settings.shader
+        settings.preset = defaults.string(forKey: presetKey)
         settings.fps = (defaults.object(forKey: fpsKey) as? Int) ?? settings.fps
         settings.renderScale = (defaults.object(forKey: renderScaleKey) as? Double) ?? settings.renderScale
         settings.shuffleMinutes = (defaults.object(forKey: shuffleMinutesKey) as? Double) ?? settings.shuffleMinutes
         settings.freezeMinutes = (defaults.object(forKey: freezeMinutesKey) as? Double) ?? settings.freezeMinutes
         settings.setsWallpaper = defaults.bool(forKey: wallpaperKey)
-        settings.enabledShaders = savedRotation(discovered: discovered, defaults: defaults)
+        settings.enabledEntries = savedRotation(discovered: discovered, defaults: defaults)
         return settings
     }
 
-    /// Writes back everything the Options sheet controls. `rotation` is the full
-    /// shader list the sheet offered, in display order; an empty one leaves the
+    /// Writes back everything the Options sheet controls. `entries` is the full
+    /// rotation the sheet offered, in display order; an empty one leaves the
     /// saved rotation alone, so a host that discovered nothing cannot wipe it.
-    func save(to defaults: UserDefaults, rotation: [String]) {
+    func save(to defaults: UserDefaults, entries: [LerpRotationEntry]) {
         defaults.set(shader, forKey: Self.shaderKey)
-        if !rotation.isEmpty {
-            defaults.set(LerpMetalView.Config.rotation(of: enabledShaders, from: rotation),
-                         forKey: Self.enabledShadersKey)
-            defaults.set(rotation, forKey: Self.knownShadersKey)
+        if let preset {
+            defaults.set(preset, forKey: Self.presetKey)
+        } else {
+            defaults.removeObject(forKey: Self.presetKey)
+        }
+        if !entries.isEmpty {
+            let picked = LerpMetalView.Config.rotation(of: enabledEntries, from: entries)
+            defaults.set(picked.map(\.key), forKey: Self.enabledEntriesKey)
+            defaults.set(entries.map(\.key), forKey: Self.knownEntriesKey)
+            // A shader counts as in the pre-preset rotation when any of its
+            // looks is, so the old keys keep saying something true.
+            defaults.set(Self.shaderNames(of: picked), forKey: Self.enabledShadersKey)
+            defaults.set(Self.shaderNames(of: entries), forKey: Self.knownShadersKey)
         }
         defaults.set(fps, forKey: Self.fpsKey)
         defaults.set(renderScale, forKey: Self.renderScaleKey)
@@ -675,34 +813,57 @@ private struct Settings {
         defaults.synchronize()
     }
 
+    /// The shaders these entries name, once each, in order.
+    private static func shaderNames(of entries: [LerpRotationEntry]) -> [String] {
+        var seen = Set<String>()
+        return entries.map(\.shader).filter { seen.insert($0).inserted }
+    }
+
     /// What these settings ask the view to render.
     var config: LerpMetalView.Config {
+        let pinned = shader == Self.shuffleTitle ? nil : shader
         var config = LerpMetalView.Config(
-            shaderName: shader == Self.shuffleTitle ? nil : shader,
+            shaderName: pinned,
+            presetName: pinned == nil ? nil : preset,
             framesPerSecond: fps,
             renderScale: renderScale,
             shuffleInterval: shuffleMinutes * 60,
             freezeAfter: freezeMinutes * 60)
-        config.enabledShaderNames = enabledShaders
+        config.enabledEntries = enabledEntries
         return config
     }
 
-    /// The shuffle rotation implied by saved defaults, or nil for "every shader".
+    /// The shuffle rotation implied by saved defaults, or nil for "every entry".
     ///
     /// - Nothing ever saved (including every install that predates this setting):
     ///   nil, i.e. the full rotation. Never an empty one.
-    /// - Saved names that no longer exist are dropped.
-    /// - Shaders discovered since the last save default to enabled, so dropping a
-    ///   new .metal file into the bundle does not silently do nothing.
-    /// - An empty result is reported as nil (all shaders) rather than a black
+    /// - Saved entries that no longer exist are dropped.
+    /// - Entries discovered since the last save default to enabled, so dropping a
+    ///   new .metal file into the bundle — or adding a preset to one that is
+    ///   already there — does not silently do nothing.
+    /// - A rotation saved before presets counted holds a set of shader *names*.
+    ///   Every look of a shader that was in it joins: the user picked those
+    ///   shaders, and the presets are more of the same shaders, not new ones.
+    /// - An empty result is reported as nil (all entries) rather than a black
     ///   screen. The sheet also refuses to persist an empty set, so this only
     ///   fires for hand-edited defaults or a rotation gone entirely stale.
-    private static func savedRotation(discovered: [String], defaults: UserDefaults?) -> Set<String>? {
-        guard let saved = defaults?.stringArray(forKey: enabledShadersKey) else { return nil }
+    private static func savedRotation(discovered: [LerpRotationEntry],
+                                      defaults: UserDefaults?) -> Set<LerpRotationEntry>? {
+        guard let defaults else { return nil }
         let all = Set(discovered)
-        // No roster saved: take the saved list at face value, nothing is "new".
-        let known = Set(defaults?.stringArray(forKey: knownShadersKey) ?? discovered)
-        let enabled = all.intersection(saved).union(all.subtracting(known))
+        if let saved = defaults.stringArray(forKey: enabledEntriesKey) {
+            // No roster saved: take the saved list at face value, nothing is "new".
+            let known = Set((defaults.stringArray(forKey: knownEntriesKey) ?? discovered.map(\.key))
+                .map(LerpRotationEntry.init(key:)))
+            let enabled = all.intersection(saved.map(LerpRotationEntry.init(key:)))
+                .union(all.subtracting(known))
+            return enabled.isEmpty ? nil : enabled
+        }
+        guard let legacy = defaults.stringArray(forKey: enabledShadersKey) else { return nil }
+        let shaders = Set(discovered.map(\.shader))
+        let knownShaders = Set(defaults.stringArray(forKey: knownShadersKey) ?? Array(shaders))
+        let picked = shaders.intersection(legacy).union(shaders.subtracting(knownShaders))
+        let enabled = all.filter { picked.contains($0.shader) }
         return enabled.isEmpty ? nil : enabled
     }
 }

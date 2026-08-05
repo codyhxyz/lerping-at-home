@@ -21,9 +21,15 @@ make install     # builds and copies Lerping@Home.saver to ~/Library/Screen Save
 
 - Select **Lerping@Home** in System Settings → Screen Saver.
 - First activation can show black briefly while Gatekeeper verifies the bundle.
-- Shader, frame rate, and render scale are set behind the saver's Options… button.
-- Options… also has an **In rotation** checklist: pick which shaders Shuffle draws
-  from. New shaders join the rotation automatically; checking nothing means all.
+- Shader, preset, frame rate, and render scale are set behind the saver's Options…
+  button. Pinning a shader also lets you pin one of its presets.
+- Options… also has an **In rotation** checklist: pick which *looks* Shuffle draws
+  from. Shuffle rotates over (shader, preset) pairs, not just shaders — each shader
+  contributes its declared defaults plus one entry per `// lerp-preset:` it
+  declares, which is 114 looks across the 31 shaders rather than 31. The list is
+  grouped: a shader heading whose checkbox turns its whole group on or off, with
+  its looks indented beneath. New shaders and newly added presets join the
+  rotation automatically; checking nothing means all.
 - Options… has a **Set desktop picture to the last frame** checkbox, off by default.
   See "Desktop picture handoff" below.
 

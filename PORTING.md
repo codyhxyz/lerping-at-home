@@ -99,6 +99,13 @@ into one preset, which is how you keep long presets readable. A preset applies
 on top of the *defaults*, so anything it doesn't mention returns to its
 declared default. Setting a parameter the file doesn't declare is an error.
 
+A preset is also a stop in the screensaver's shuffle: the rotation is a list of
+(shader, preset) pairs, where the shader's declared defaults are one of the
+pairs. Adding a preset to a file therefore adds a look to the rotation with no
+other change, and a file that declares none still takes its turn at its
+defaults. The snapshot suite renders every shader at its defaults and nothing
+else, so a preset can never move a snapshot.
+
 **Rules of thumb when porting.** Use the upstream prop names and ranges
 verbatim. Set the default to whatever this port currently renders, so the
 existing look is preserved; put upstream's own defaults in a preset instead.

@@ -10,9 +10,12 @@ public final class LerpMetalView: NSView {
     public struct Config {
         /// Shader name to render, or nil for shuffle mode.
         public var shaderName: String?
-        /// Names eligible for shuffle. See `Config.rotation(of:from:)` for what
-        /// nil, empty and stale sets all mean.
-        public var enabledShaderNames: Set<String>?
+        /// Preset to put the pinned shader in, or nil for its declared defaults.
+        /// Ignored in shuffle mode, where every rotation entry carries its own.
+        public var presetName: String?
+        /// Rotation entries — (shader, preset) pairs — eligible for shuffle. See
+        /// `Config.rotation(of:from:)` for what nil, empty and stale sets mean.
+        public var enabledEntries: Set<LerpRotationEntry>?
         public var framesPerSecond: Int
         /// 1.0 = native. 0.5 renders quarter the pixels and upscales — usually
         /// indistinguishable for noise-type shaders, ~4x cheaper.
@@ -23,37 +26,49 @@ public final class LerpMetalView: NSView {
         public var freezeAfter: TimeInterval
 
         public init(shaderName: String? = nil,
+                    presetName: String? = nil,
                     framesPerSecond: Int = 30,
                     renderScale: Double = 1.0,
                     shuffleInterval: TimeInterval = 300,
                     freezeAfter: TimeInterval = 0) {
             self.shaderName = shaderName
+            self.presetName = presetName
             self.framesPerSecond = framesPerSecond
             self.renderScale = renderScale
             self.shuffleInterval = shuffleInterval
             self.freezeAfter = freezeAfter
         }
 
-        /// Which of `available` a set of enabled names actually selects.
+        /// Which of `available` a set of enabled entries actually selects.
         ///
         /// The one statement of the policy: nil, empty, and entirely-stale sets
-        /// all mean *every* shader. An empty rotation is a black screensaver,
+        /// all mean *every* entry. An empty rotation is a black screensaver,
         /// and no setting should be able to produce one — the saver's Options
         /// sheet says so out loud, and this is what makes that true.
-        public static func rotation(of enabled: Set<String>?, from available: [String]) -> [String] {
+        public static func rotation(of enabled: Set<LerpRotationEntry>?,
+                                    from available: [LerpRotationEntry]) -> [LerpRotationEntry] {
             let picked = available.filter { enabled?.contains($0) ?? true }
             return picked.isEmpty ? available : picked
         }
     }
 
+    /// Each field is re-applied only when it actually moved. The drawable is the
+    /// expensive one: a host that reassigns the whole struct to change the frame
+    /// rate must not make the layer throw its textures away and build new ones.
+    /// (`updateDrawableSize` also no-ops on an unchanged size, but this keeps the
+    /// work off the assignment path entirely.)
     public var config = Config() {
         didSet {
-            applyFrameRate()
-            updateDrawableSize()
+            if config.framesPerSecond != oldValue.framesPerSecond { applyFrameRate() }
+            if config.renderScale != oldValue.renderScale { updateDrawableSize() }
         }
     }
 
     public private(set) var currentShaderName: String = ""
+    /// The rotation entry on screen: the shader plus the preset it is wearing,
+    /// or nil before anything has been loaded. `setShader` resets it to that
+    /// shader's defaults entry, because that is what `setShader` renders.
+    public private(set) var currentEntry: LerpRotationEntry?
     public var onCompileError: ((String, String) -> Void)?
 
     private let renderer: LerpRenderer
@@ -65,7 +80,7 @@ public final class LerpMetalView: NSView {
     /// driving it every shader renders exactly at its defaults.
     public private(set) var parameterValues: LerpParameterValues?
     private var displayLink: CADisplayLink?
-    private var shuffleOrder: [String] = []
+    private var shuffleOrder: [LerpRotationEntry] = []
     private var lastShuffleSwitch: CFTimeInterval = 0
 
     /// Per-launch random seed handed to shaders as `u.seed`. Settable so a host
@@ -207,17 +222,19 @@ public final class LerpMetalView: NSView {
     private func selectInitialShader() {
         let available = library.discover()
         guard !available.isEmpty else { return }
-        if let name = config.shaderName, let shader = available.named(name) {
-            setShader(shader)
+        if let name = config.shaderName, available.named(name) != nil {
+            // Pinned. A preset the file no longer declares falls back to the
+            // shader's defaults rather than to some other shader.
+            setEntry(LerpRotationEntry(shader: name, preset: config.presetName), from: available)
         } else {
-            let names = available.map(\.name)
-            shuffleOrder = Config.rotation(of: config.enabledShaderNames, from: names).shuffled()
+            let all = available.rotationEntries()
+            shuffleOrder = Config.rotation(of: config.enabledEntries, from: all).shuffled()
             lastShuffleSwitch = CACurrentMediaTime()
             advanceShuffle(by: 0)
-            if pipeline == nil, shuffleOrder.count < available.count {
-                // Every enabled shader failed to compile: widen to all of them
+            if pipeline == nil, shuffleOrder.count < all.count {
+                // Every enabled entry failed to compile: widen to all of them
                 // rather than presenting nothing.
-                shuffleOrder = names.shuffled()
+                shuffleOrder = all.shuffled()
                 advanceShuffle(by: 0)
             }
         }
@@ -225,34 +242,45 @@ public final class LerpMetalView: NSView {
 
     /// Steps the shuffle rotation. `by: 0` loads the rotation's first entry.
     private func advanceShuffle(by offset: Int) {
-        loadShader(after: currentShaderName, offset: offset, in: shuffleOrder)
+        loadEntry(after: currentEntry, offset: offset, in: shuffleOrder, from: library.discover())
     }
 
-    /// Loads the first shader that compiles, starting `offset` places from
+    /// Loads the first entry that compiles, starting `offset` places from
     /// `current` and then continuing in the same direction, wrapping once
-    /// through `order` (the discovery order when nil). Returns false only when
-    /// nothing at all could be loaded.
+    /// through `order`. Returns false only when nothing at all could be loaded.
     ///
     /// Skipping over a shader that will not compile is the whole point: a failed
-    /// `setShader` leaves the previous pipeline bound and `currentShaderName`
+    /// `setEntry` leaves the previous pipeline bound and `currentEntry`
     /// unchanged, so stopping at the first failure both shows the wrong shader
     /// and sticks there — the next step would set out from the same place and
     /// retry the same broken file.
     @discardableResult
-    private func loadShader(after current: String, offset: Int, in order: [String]? = nil) -> Bool {
-        let available = library.discover()
-        let names = order ?? available.map(\.name)
-        guard !names.isEmpty else { return false }
+    private func loadEntry(after current: LerpRotationEntry?, offset: Int,
+                           in order: [LerpRotationEntry], from available: [LerpShader]) -> Bool {
+        guard !order.isEmpty else { return false }
         let step = offset < 0 ? -1 : 1
         var anchor = current
-        for attempt in 0..<names.count {
-            guard let candidate = ShaderLibrary.name(in: names, after: anchor,
+        for attempt in 0..<order.count {
+            guard let candidate = ShaderLibrary.step(in: order, after: anchor,
                                                      offset: attempt == 0 ? offset : step)
             else { return false }
             anchor = candidate
-            if let shader = available.named(candidate), setShader(shader) { return true }
+            if setEntry(candidate, from: available) { return true }
         }
         return false
+    }
+
+    /// Compiles the entry's shader and puts it in the entry's preset. A preset
+    /// name the file no longer declares leaves the shader at its defaults — and
+    /// leaves `currentEntry` saying so.
+    @discardableResult
+    private func setEntry(_ entry: LerpRotationEntry, from available: [LerpShader]) -> Bool {
+        guard let shader = available.named(entry.shader), setShader(shader) else { return false }
+        if let name = entry.preset, let preset = shader.preset(named: name) {
+            parameterValues?.apply(preset)
+            currentEntry = entry
+        }
+        return true
     }
 
     @discardableResult
@@ -262,6 +290,7 @@ public final class LerpMetalView: NSView {
             dataProvider = try library.dataProvider(for: shader)
             parameterValues = shader.defaultParameterValues()
             currentShaderName = shader.name
+            currentEntry = LerpRotationEntry(shader: shader.name)
             return true
         } catch {
             onCompileError?(shader.name, String(describing: error))
@@ -284,13 +313,18 @@ public final class LerpMetalView: NSView {
         guard let shader = library.shader(named: currentShaderName),
               let preset = shader.preset(named: name) else { return false }
         parameterValues?.apply(preset)
+        currentEntry = LerpRotationEntry(shader: currentShaderName, preset: preset.name)
         return true
     }
 
     /// Steps to the next (or, for a negative `direction`, previous) discovered
-    /// shader, skipping any that fail to compile.
+    /// shader, skipping any that fail to compile. Shader-level on purpose: this
+    /// is the ←/→ keys, which walk the shader list at its defaults rather than
+    /// the shuffle's much longer (shader, preset) rotation.
     public func showNextShader(_ direction: Int = 1) {
-        loadShader(after: currentShaderName, offset: direction)
+        let available = library.discover()
+        loadEntry(after: LerpRotationEntry(shader: currentShaderName), offset: direction,
+                  in: available.map { LerpRotationEntry(shader: $0.name) }, from: available)
     }
 
     // MARK: - Display link

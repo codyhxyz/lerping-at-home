@@ -63,6 +63,47 @@ public struct LerpShader: Sendable {
     }
 }
 
+/// One stop in the shuffle rotation: a shader, optionally wearing one of its
+/// declared `// lerp-preset:` looks.
+///
+/// A `nil` preset means the shader's *declared defaults*, and that is a look in
+/// its own right rather than a stand-in for "the first preset". The porting rule
+/// is that a shader's defaults reproduce what it rendered before it had
+/// parameters, and upstream's own settings go into a preset instead — so the
+/// defaults are visually distinct from every preset the file declares, and a
+/// shader with N presets contributes N+1 entries. (Checked: of the 83 presets in
+/// the tree, not one packs to the same uniform block as its shader's defaults,
+/// including the three literally named "Default".)
+public struct LerpRotationEntry: Hashable, Sendable {
+    public let shader: String
+    /// Preset name, or nil for the shader's declared defaults.
+    public let preset: String?
+
+    public init(shader: String, preset: String? = nil) {
+        self.shader = shader
+        self.preset = (preset?.isEmpty ?? true) ? nil : preset
+    }
+
+    /// Stable string form, for `UserDefaults` and for test hooks.
+    ///
+    /// Shader names are file stems, so they can never contain `/`; splitting on
+    /// the *first* one therefore round-trips even a preset name that has slashes
+    /// in it.
+    public var key: String { preset.map { "\(shader)/\($0)" } ?? shader }
+
+    public init(key: String) {
+        if let slash = key.firstIndex(of: "/") {
+            self.init(shader: String(key[key.startIndex..<slash]),
+                      preset: String(key[key.index(after: slash)...]))
+        } else {
+            self.init(shader: key, preset: nil)
+        }
+    }
+
+    /// What the Options list calls this entry underneath its shader heading.
+    public var displayName: String { preset ?? "Defaults" }
+}
+
 public enum ShaderLocations {
     /// Directories scanned for user-supplied .metal shader files, in priority order.
     /// `NSHomeDirectory()` resolves to the sandbox container inside legacyScreenSaver
@@ -110,6 +151,18 @@ public extension Collection where Element == LerpShader {
     /// The shader with this name, if this list has one.
     func named(_ name: String) -> LerpShader? {
         first { $0.name == name }
+    }
+
+    /// Every rotation entry these shaders offer, in list order: each shader's
+    /// defaults first, then one entry per declared preset in declaration order.
+    ///
+    /// Every shader contributes at least its defaults entry, so a file that
+    /// declares no presets at all (`pipes`) still takes its turn.
+    func rotationEntries() -> [LerpRotationEntry] {
+        flatMap { shader in
+            [LerpRotationEntry(shader: shader.name)]
+                + shader.presets.map { LerpRotationEntry(shader: shader.name, preset: $0.name) }
+        }
     }
 }
 
@@ -179,17 +232,25 @@ public final class ShaderLibrary {
         discover().named(name)
     }
 
-    /// The name `offset` places from `current` in `names`, wrapping at both ends;
-    /// nil for an empty list. A `current` the list does not contain counts as
-    /// position 0, so stepping forward from nothing lands on the first name.
+    /// The item `offset` places from `current` in `items`, wrapping at both ends;
+    /// nil for an empty list. A `current` that is nil, or that the list does not
+    /// contain, counts as position 0, so stepping forward from nothing lands on
+    /// the first item.
     ///
-    /// This is the only place shader cycling wraps around. The ←/→ keys, the
-    /// shuffle rotation and the playground's next/previous all used to spell the
-    /// same `(i + d + n) % n` out for themselves.
+    /// This is the only place cycling wraps around. The ←/→ keys, the shuffle
+    /// rotation and the playground's next/previous all used to spell the same
+    /// `(i + d + n) % n` out for themselves. Generic because the shuffle now
+    /// steps over `LerpRotationEntry` while the playground still steps over
+    /// shader names.
+    public static func step<T: Equatable>(in items: [T], after current: T?, offset: Int) -> T? {
+        guard !items.isEmpty else { return nil }
+        let index = current.flatMap { items.firstIndex(of: $0) } ?? 0
+        return items[(((index + offset) % items.count) + items.count) % items.count]
+    }
+
+    /// `step(in:after:offset:)` under the name the shader-name callers use.
     public static func name(in names: [String], after current: String, offset: Int) -> String? {
-        guard !names.isEmpty else { return nil }
-        let index = names.firstIndex(of: current) ?? 0
-        return names[(((index + offset) % names.count) + names.count) % names.count]
+        step(in: names, after: current, offset: offset)
     }
 
     /// Records `message` as this shader's compile error and throws it. Every
