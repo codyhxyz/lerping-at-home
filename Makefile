@@ -8,6 +8,7 @@ SDK        := $(shell xcrun --show-sdk-path --sdk macosx)
 CORE       := $(wildcard Sources/LerpCore/*.swift)
 SAVER_SRC  := Sources/Saver/LerpSaverView.swift
 PREVIEW    := $(wildcard Sources/Preview/*.swift)
+PLAYGROUND := $(wildcard Sources/Playground/*.swift)
 SHADERS    := $(wildcard Sources/Shaders/*.metal)
 FRAMEWORKS := -framework AppKit -framework Metal -framework QuartzCore \
               -framework CoreGraphics -framework ImageIO
@@ -15,7 +16,8 @@ SAVER_DIR  := $(BUILD)/Lerping@Home.saver
 CUSTOM_DIR := $(HOME)/Library/Application Support/Lerping/Shaders
 INSTALLED  := $(HOME)/Library/Screen Savers/Lerping@Home.saver
 
-.PHONY: all preview saver snapshots test-load install install-example clean
+.PHONY: all preview playground playground-build playground-test saver snapshots \
+        test-load install install-example clean
 
 all: saver preview
 
@@ -25,6 +27,25 @@ $(BUILD)/LerpPreview: $(CORE) $(PREVIEW)
 	@mkdir -p $(BUILD)
 	swiftc -O -parse-as-library -target $(TARGET) \
 		-o $@ $(CORE) $(PREVIEW) $(FRAMEWORKS)
+
+# Live shader playground: source editor + hot-reloading Metal view.
+# `make playground` builds and runs it; `make playground-build` only builds.
+# Run it from the repo root — it finds Sources/Shaders relative to the cwd
+# (and falls back to walking up from the binary).
+playground: playground-build
+	$(BUILD)/LerpPlayground
+
+playground-build: $(BUILD)/LerpPlayground
+
+# Scripted UI test: opens the real window, checks that it renders, edits the
+# shader, breaks it, and fixes it. Exits non-zero on any failed check.
+playground-test: playground-build
+	$(BUILD)/LerpPlayground --selftest
+
+$(BUILD)/LerpPlayground: $(CORE) $(PLAYGROUND)
+	@mkdir -p $(BUILD)
+	swiftc -O -parse-as-library -target $(TARGET) \
+		-o $@ $(CORE) $(PLAYGROUND) $(FRAMEWORKS)
 
 saver: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/Info.plist
 	@mkdir -p $(SAVER_DIR)/Contents/MacOS $(SAVER_DIR)/Contents/Resources/Shaders

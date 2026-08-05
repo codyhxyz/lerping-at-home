@@ -32,6 +32,34 @@ make preview && ./build/LerpPreview
   (`--size WxH --time T --seed S --shader name`); exits non-zero on compile
   errors, so it doubles as the test suite.
 
+## Shader playground
+
+```sh
+make playground
+```
+
+Split window: `.metal` source on the left, the live render on the right.
+Editing recompiles ~300 ms after you stop typing and swaps the pipeline in
+place. It's the same LerpCore path the screensaver uses, so what you see is
+what the saver will do.
+
+- **Compile errors** land in a console under the editor with `line:column`
+  (Metal's numbers match the file — the prelude ends with `#line 1`), the bad
+  lines are marked in the gutter, and the last good pipeline keeps rendering.
+  A broken shader never blanks the view or kills the app.
+- **Picker** lists everything in `Sources/Shaders/` plus your custom folder,
+  and refreshes when files change on disk. If the open file changes underneath
+  you and you have no unsaved edits, it reloads.
+- **New…** (⌘N) scaffolds a valid starter shader into `Sources/Shaders/`.
+- **Save** (⌘S) writes back to the real `.metal` file. ⌘R recompiles, ⌘\
+  play/pause, ⇧⌘R re-rolls the seed, ⇧⌘[ / ⇧⌘] change shader.
+- Time scrubber, render-scale (100/75/50/25%) and an fps readout map onto
+  `LerpUniforms` / `LerpMetalView.Config`.
+
+`make playground-test` runs a scripted UI test — it opens the real window,
+checks it is drawing frames, edits the shader, breaks it, and fixes it. Exits
+non-zero on any failed check.
+
 ## Custom shaders
 
 Put `.metal` files here:
@@ -89,6 +117,7 @@ Sources/LerpCore/     shared engine (no ScreenSaver dependency)
 Sources/Shaders/     built-in shaders (.metal source, shipped as Resources)
 Sources/Saver/       ScreenSaverView shim + Info.plist
 Sources/Preview/     LerpPreview dev app / snapshot CLI
+Sources/Playground/  LerpPlayground editor + live render, hot reload
 ```
 
 Design decisions:
