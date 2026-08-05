@@ -52,12 +52,12 @@ make playground
 - Uses the same LerpCore compile path as the screensaver.
 - Editing recompiles 300 ms after the last keystroke and swaps the pipeline in place.
 - On a compile error the last successful pipeline keeps rendering; the view does not blank and the process does not exit.
-- Compile errors are listed in a console below the editor as `line:column`, and marked in the gutter.
+- Compile errors are listed in a console below the editor as `line:column`; the offending lines are highlighted, and `⌘E` (or clicking the status bar) jumps to the first one.
 - Metal's reported line numbers match the shader file, because the prelude ends with `#line 1`.
 - The picker lists `Sources/Shaders/` plus the custom shader directory, and refreshes when files change on disk.
 - An externally modified open file reloads if there are no unsaved edits.
 - Time scrubber, render scale (100/75/50/25%), and fps readout map onto `LerpUniforms` and `LerpMetalView.Config`.
-- Editor has a line-number gutter, MSL syntax highlighting, soft tabs, and auto-indent.
+- Editor is a plain `NSTextView` with soft tabs, auto-indent, undo, and find. No syntax highlighting or gutter — the shader next to it is the thing worth looking at.
 
 Keys:
 

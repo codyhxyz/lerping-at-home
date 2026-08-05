@@ -16,14 +16,24 @@ enum PlaygroundMain {
     static func main() {
         if CommandLine.arguments.contains("--selftest") {
             PlaygroundSelfTest.run()
-            return
+        } else {
+            boot(PlaygroundAppDelegate())
         }
+    }
+
+    /// `NSApplication.delegate` is weak, so the delegate needs an owner that
+    /// outlives `run()`.
+    private nonisolated(unsafe) static var appDelegate: NSApplicationDelegate?
+
+    /// Starts AppKit with the playground's appearance and hands over to `delegate`.
+    static func boot(_ delegate: NSApplicationDelegate) -> Never {
+        appDelegate = delegate
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
         app.appearance = NSAppearance(named: .darkAqua)
-        let delegate = PlaygroundAppDelegate()
         app.delegate = delegate
         app.run()
+        exit(0)
     }
 }
 
@@ -52,7 +62,8 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
 
 /// Built in code because the project has no Xcode project and therefore no nib.
 /// The Edit menu is not optional garnish — without it the text view loses
-/// undo/copy/paste/find.
+/// undo/copy/paste/find. Items with unqualified selectors are dispatched up the
+/// responder chain to `PlaygroundWindowController`.
 enum MainMenu {
 
     static func build() -> NSMenu {
@@ -60,87 +71,75 @@ enum MainMenu {
         let main = NSMenu()
 
         main.addItem(submenu(name, [
-            .item("About \(name)", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
-            .separator,
-            .item("Hide \(name)", #selector(NSApplication.hide(_:)), "h"),
-            .item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
-            .item("Show All", #selector(NSApplication.unhideAllApplications(_:)), ""),
-            .separator,
-            .item("Quit \(name)", #selector(NSApplication.terminate(_:)), "q"),
+            item("About \(name)", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
+            .separator(),
+            item("Hide \(name)", #selector(NSApplication.hide(_:)), "h"),
+            item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
+            .separator(),
+            item("Quit \(name)", #selector(NSApplication.terminate(_:)), "q"),
         ]))
 
         main.addItem(submenu("File", [
-            .item("New Shader…", Selector(("newShader:")), "n"),
-            .separator,
-            .item("Save", Selector(("saveShader:")), "s"),
-            .item("Revert to Saved", Selector(("revertShader:")), ""),
-            .separator,
-            .item("Close", #selector(NSWindow.performClose(_:)), "w"),
+            item("New Shader…", Selector(("newShader:")), "n"),
+            .separator(),
+            item("Save", Selector(("saveShader:")), "s"),
+            item("Revert to Saved", Selector(("revertShader:")), ""),
+            .separator(),
+            item("Close", #selector(NSWindow.performClose(_:)), "w"),
         ]))
 
         main.addItem(submenu("Edit", [
-            .item("Undo", Selector(("undo:")), "z"),
-            .item("Redo", Selector(("redo:")), "z", [.command, .shift]),
-            .separator,
-            .item("Cut", #selector(NSText.cut(_:)), "x"),
-            .item("Copy", #selector(NSText.copy(_:)), "c"),
-            .item("Paste", #selector(NSText.paste(_:)), "v"),
-            .item("Select All", #selector(NSText.selectAll(_:)), "a"),
-            .separator,
-            .finder("Find…", .showFindInterface, "f"),
-            .finder("Find Next", .nextMatch, "g"),
-            .finder("Find Previous", .previousMatch, "G"),
+            item("Undo", Selector(("undo:")), "z"),
+            item("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            .separator(),
+            item("Cut", #selector(NSText.cut(_:)), "x"),
+            item("Copy", #selector(NSText.copy(_:)), "c"),
+            item("Paste", #selector(NSText.paste(_:)), "v"),
+            item("Select All", #selector(NSText.selectAll(_:)), "a"),
+            .separator(),
+            find("Find…", .showFindInterface, "f"),
+            find("Find Next", .nextMatch, "g"),
+            find("Find Previous", .previousMatch, "G"),
         ]))
 
         main.addItem(submenu("Shader", [
-            .item("Recompile", Selector(("recompile:")), "r"),
-            .item("Play / Pause", Selector(("togglePlayPause:")), "\\"),
-            .item("Re-roll Seed", Selector(("rerollSeed:")), "r", [.command, .shift]),
-            .separator,
-            .item("Next Shader", Selector(("nextShader:")), "]", [.command, .shift]),
-            .item("Previous Shader", Selector(("previousShader:")), "[", [.command, .shift]),
-            .separator,
-            .item("Jump to First Error", Selector(("jumpToFirstError")), "e"),
+            item("Recompile", Selector(("recompile:")), "r"),
+            item("Play / Pause", Selector(("togglePlayPause:")), "\\"),
+            item("Re-roll Seed", Selector(("rerollSeed:")), "r", [.command, .shift]),
+            .separator(),
+            item("Next Shader", Selector(("nextShader:")), "]", [.command, .shift]),
+            item("Previous Shader", Selector(("previousShader:")), "[", [.command, .shift]),
+            .separator(),
+            item("Jump to First Error", Selector(("jumpToFirstError")), "e"),
         ]))
 
         main.addItem(submenu("Window", [
-            .item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
-            .item("Zoom", #selector(NSWindow.performZoom(_:)), ""),
+            item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
+            item("Zoom", #selector(NSWindow.performZoom(_:)), ""),
         ]))
 
         return main
     }
 
-    // MARK: Tiny menu DSL
-
-    enum Entry {
-        case separator
-        case item(String, Selector, String, NSEvent.ModifierFlags = .command)
-        case finder(String, NSTextFinder.Action, String)
-
-        var menuItem: NSMenuItem {
-            switch self {
-            case .separator:
-                return .separator()
-            case let .item(title, action, key, modifiers):
-                let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
-                item.keyEquivalentModifierMask = modifiers
-                return item
-            case let .finder(title, action, key):
-                let item = NSMenuItem(title: title,
-                                      action: #selector(NSTextView.performTextFinderAction(_:)),
-                                      keyEquivalent: key.lowercased())
-                item.keyEquivalentModifierMask = key.first?.isUppercase == true
-                    ? [.command, .shift] : .command
-                item.tag = action.rawValue
-                return item
-            }
-        }
+    private static func item(_ title: String, _ action: Selector, _ key: String,
+                             _ modifiers: NSEvent.ModifierFlags = .command) -> NSMenuItem {
+        let entry = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        entry.keyEquivalentModifierMask = modifiers
+        return entry
     }
 
-    private static func submenu(_ title: String, _ entries: [Entry]) -> NSMenuItem {
+    /// The find commands share one selector and are told apart by the item's tag.
+    /// An uppercase key means the shortcut wants shift.
+    private static func find(_ title: String, _ action: NSTextFinder.Action, _ key: String) -> NSMenuItem {
+        let entry = item(title, #selector(NSTextView.performTextFinderAction(_:)), key.lowercased(),
+                         key.first?.isUppercase == true ? [.command, .shift] : .command)
+        entry.tag = action.rawValue
+        return entry
+    }
+
+    private static func submenu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         let menu = NSMenu(title: title)
-        for entry in entries { menu.addItem(entry.menuItem) }
+        items.forEach(menu.addItem)
         let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         holder.submenu = menu
         return holder
