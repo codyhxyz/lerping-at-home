@@ -6,39 +6,28 @@ enum ShaderPaths {
 
     /// The repo's `Sources/Shaders` directory, if we can find it. Tries the
     /// working directory first (that's how `make playground` runs us), then
-    /// walks up from the executable so the binary also works when launched
-    /// from Finder or a different cwd.
-    static func repoShaderDirectory() -> URL? {
-        var candidates: [URL] = [
-            URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                .appendingPathComponent("Sources/Shaders"),
-        ]
-        var dir = URL(fileURLWithPath: CommandLine.arguments[0])
-            .resolvingSymlinksInPath()
-            .deletingLastPathComponent()
-        for _ in 0..<5 {
-            candidates.append(dir.appendingPathComponent("Sources/Shaders"))
-            dir = dir.deletingLastPathComponent()
+    /// walks up from the executable so the binary also works when launched from
+    /// Finder or a different cwd.
+    static var repoShaders: URL? {
+        var roots = [URL(fileURLWithPath: FileManager.default.currentDirectoryPath)]
+        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        for _ in 0..<6 {
+            dir.deleteLastPathComponent()
+            roots.append(dir)
         }
-        var isDirectory: ObjCBool = false
-        for candidate in candidates
-        where FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory)
-            && isDirectory.boolValue {
-            return candidate.standardizedFileURL
-        }
-        return nil
+        return roots.map { $0.appendingPathComponent("Sources/Shaders") }
+            .first { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }?
+            .standardizedFileURL
     }
 
     /// `~/Library/Application Support/Lerping/Shaders` — the drop folder the
-    /// preview app and screensaver already scan. Used when the repo isn't
-    /// around (e.g. the binary was copied elsewhere).
-    static var customDirectory: URL {
-        ShaderLocations.customShaderDirectories()[0]
-    }
+    /// preview app and screensaver already scan.
+    static var customDirectory: URL { ShaderLocations.customShaderDirectories()[0] }
 
-    /// Destination for newly scaffolded shaders.
-    static func newShaderDirectory() -> URL {
-        if let repo = repoShaderDirectory() { return repo }
+    /// Destination for newly scaffolded shaders: the repo when we are running
+    /// inside one, otherwise the drop folder.
+    static var newShaderDirectory: URL {
+        if let repo = repoShaders { return repo }
         try? FileManager.default.createDirectory(at: customDirectory, withIntermediateDirectories: true)
         return customDirectory
     }
@@ -51,44 +40,33 @@ enum ShaderScaffold {
     /// `My Cool Shader` → `my-cool-shader`. Returns nil if nothing usable is left.
     static func sanitize(name raw: String) -> String? {
         var out = ""
-        var lastWasDash = false
         for character in raw.lowercased() {
             if character.isLetter || character.isNumber {
                 out.append(character)
-                lastWasDash = false
-            } else if !out.isEmpty && !lastWasDash {
+            } else if !out.isEmpty && !out.hasSuffix("-") {
                 out.append("-")
-                lastWasDash = true
             }
         }
         while out.hasSuffix("-") { out.removeLast() }
         return out.isEmpty ? nil : out
     }
 
-    static func displayName(for stem: String) -> String {
-        stem.split(separator: "-").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
-    }
-
     /// PORTING.md asks for a shader-specific prefix on file-local symbols so
     /// nothing collides with the prelude. `smoke-ring` → `SR`.
     static func symbolPrefix(for stem: String) -> String {
-        let initials = stem.split(separator: "-").compactMap { $0.first }.map(String.init).joined().uppercased()
-        let trimmed = String(initials.prefix(3))
-        return trimmed.isEmpty ? "SH" : trimmed
+        let initials = stem.split(separator: "-").compactMap(\.first).map(String.init).joined().uppercased()
+        return initials.isEmpty ? "SH" : String(initials.prefix(3))
     }
 
     /// A starter shader that compiles, animates, uses the seed, and dithers —
     /// i.e. it already passes the PORTING.md checklist before you touch it.
     static func template(for stem: String) -> String {
         let prefix = symbolPrefix(for: stem)
+        let title = LerpShader(name: stem, source: "", isBuiltIn: false, url: nil).displayName
         return """
-        // \(displayName(for: stem)) — Lerping@Home shader.
-        //
-        // Contract (PORTING.md): exactly one entry point,
-        //   fragment half4 lerpMain(float4 pos [[position]],
-        //                          constant LerpUniforms& u [[buffer(0)]])
-        // Sources/LerpCore/Prelude.swift is prepended before compilation, so do
-        // not redefine anything it declares — prefix file-local helpers instead.
+        // \(title) — Lerping@Home shader. Contract in PORTING.md:
+        // exactly one entry point, `lerpMain`, and no redefinition of anything
+        // Sources/LerpCore/Prelude.swift declares (prefix file-local helpers).
         //
         // Uniforms:  u.resolution (px)  u.time (s)  u.seed ([0,1), per launch)
         // Prelude:   lerpUV, lerpScreenUV, rotate, hash11/21/22, valueNoise,
@@ -153,42 +131,32 @@ enum ShaderDiagnostics {
     /// parses (linker errors, missing `lerpMain`, …).
     static func parse(_ error: Error) -> (items: [ShaderDiagnostic], raw: String) {
         let nsError = error as NSError
-        var raw = nsError.localizedDescription
-        if !raw.contains("program_source") {
-            let described = String(describing: error)
-            if described.contains("program_source") { raw = described }
-        }
-        // Metal sometimes stashes the full log here.
-        if let log = nsError.userInfo["MTLCompilerLog"] as? String, log.contains("program_source") {
-            raw = log
-        }
+        // Metal stashes the compiler log in different places depending on how
+        // the failure happened; take the first one that actually has line info.
+        let raw = [nsError.userInfo["MTLCompilerLog"] as? String,
+                   nsError.localizedDescription,
+                   String(describing: error)]
+            .compactMap { $0 }
+            .first { $0.contains("program_source") } ?? nsError.localizedDescription
 
-        let full = NSRange(raw.startIndex..., in: raw)
         var items: [ShaderDiagnostic] = []
-        pattern.enumerateMatches(in: raw, range: full) { match, _, _ in
-            guard let match,
-                  let lineRange = Range(match.range(at: 1), in: raw),
-                  let columnRange = Range(match.range(at: 2), in: raw),
-                  let severityRange = Range(match.range(at: 3), in: raw),
-                  let messageRange = Range(match.range(at: 4), in: raw),
-                  let line = Int(raw[lineRange]), let column = Int(raw[columnRange]) else { return }
+        pattern.enumerateMatches(in: raw, range: NSRange(raw.startIndex..., in: raw)) { match, _, _ in
+            guard let match else { return }
+            let field = { (index: Int) in
+                Range(match.range(at: index), in: raw).map { String(raw[$0]) } ?? "" }
+            guard let line = Int(field(1)), let column = Int(field(2)) else { return }
             items.append(ShaderDiagnostic(line: line, column: column,
-                                          severity: String(raw[severityRange]),
-                                          message: String(raw[messageRange])
-                                              .trimmingCharacters(in: .whitespaces)))
+                                          severity: field(3),
+                                          message: field(4).trimmingCharacters(in: .whitespaces)))
         }
-        return (items, cleanUp(raw))
-    }
-
-    private static func cleanUp(_ raw: String) -> String {
-        raw
+        let cleaned = raw
             .replacingOccurrences(of: "program_source:", with: "")
             .replacingOccurrences(of: "Error Domain=MTLLibraryErrorDomain ", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (items, cleaned)
     }
 
     static func summary(items: [ShaderDiagnostic], raw: String) -> String {
-        guard !items.isEmpty else { return raw }
-        return items.map(\.display).joined(separator: "\n")
+        items.isEmpty ? raw : items.map(\.display).joined(separator: "\n")
     }
 }
