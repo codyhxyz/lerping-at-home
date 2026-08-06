@@ -214,13 +214,18 @@ public final class LerpSaverView: ScreenSaverView {
             startRendering("startAnimation/preview")
             return
         }
-        // Real saver: rendering is gated on the screensaver notifications, not on
-        // this call. legacyScreenSaver also calls startAnimation on hosts that are
-        // never visible (the desktop-wallpaper layer), and those hosts never get a
-        // stop of any kind — that was the ~5% CPU / ~50% GPU burn. The one
-        // exception is an instance built after `didstart` already landed: the
-        // session is genuinely running, so it may draw.
-        if Self.sessionActive { startRendering("startAnimation/in-session") }
+        // Real saver: draw. Gating this on `didstart` produced a black screensaver,
+        // because legacyScreenSaver spawns the host *after* that notification has
+        // already been broadcast — distributed notifications are not queued, so a
+        // freshly spawned process can never observe it. Observed on macOS 27: the
+        // visible full-screen host logs `sessionActive=false` at startAnimation and
+        // only ever receives willstop/didstop.
+        //
+        // This reinstates the ~5% CPU burn from hosts that are never visible and
+        // never receive a stop. A blank screensaver is the worse failure, so it
+        // renders until a stop arrives; `endSession` still tears the display link
+        // down and retains the window.
+        startRendering("startAnimation")
     }
 
     public override func stopAnimation() {
