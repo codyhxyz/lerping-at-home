@@ -1,4 +1,5 @@
 import AppKit
+import Metal
 import MIDIDeps
 import ScreenSaver
 
@@ -46,7 +47,22 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
     private var originalSource = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let controller = PlaygroundWindowController.make(hidden: true) else {
+        // The window now picks what to open from the screensaver's rotation, so
+        // the rotation has to be settled *before* it is built — and it has to be
+        // one this test wrote, in a ByHost domain of the test's own. Same class,
+        // same call, same keys, nobody's screensaver. See `RotationStore.
+        // testModule` for why this is not the live one.
+        //
+        // The last-opened memory goes too: it beats the rotation by design, and
+        // a run that inherited the shader the *previous* run happened to end on
+        // would be testing nothing and would drift.
+        OpeningShader.forget()
+        let rotationDefaults = RotationStore.saverDefaults(module: Self.testModule)
+        seedOpeningRotation(into: rotationDefaults)
+
+        guard let controller = PlaygroundWindowController.make(hidden: true,
+                                                               rotationDefaults: rotationDefaults)
+        else {
             print("FAIL  no Metal device")
             exit(1)
         }
@@ -55,10 +71,6 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         // Deliberately no `NSApp.activate`: the window is invisible, so taking
         // the foreground for it would be taking it from the user for nothing.
         originalSource = controller.editor.text
-        // The rotation checks drive the gallery against a ByHost domain of the
-        // test's own — same class, same call, same keys, nobody's screensaver.
-        // See `RotationStore.testModule` for why this is not the live one.
-        controller.rotationDefaults = RotationStore.saverDefaults(module: RotationStore.testModule)
         armWatchdog()
 
         // Timings are wall-clock on purpose — the point is to observe the real
@@ -133,6 +145,200 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         check("window opened with a shader", controller.window?.isVisible == true
                 && controller.editor.text.contains("lerpMain"), controller.currentName)
         check("initial compile succeeded", isCompiled, stateDetail)
+        openedFromRotation()
+    }
+
+    // MARK: What the window opens on
+
+    /// The line `editValid` inverts. Named here because two things depend on it:
+    /// the edit itself, and the choice of shader to seed the opening rotation
+    /// with — a shader without this line would make the hot-reload checks below
+    /// assert on an edit that never happened.
+    private static let editTarget = "return half4(half3(color), 1.0h);"
+
+    /// The looks the window is allowed to open on, and the shader they belong to.
+    private var openingCandidates: [LerpRotationEntry] = []
+    private var openingShader: LerpShader?
+
+    /// Writes the rotation the window will open from, before the window exists.
+    ///
+    /// Two deliberate choices. **Not the first shader on disk**: opening on that
+    /// is exactly the behaviour this replaced, and a rotation seeded with it
+    /// could not tell the two apart. **Presets only, no defaults entry**: a
+    /// rotation entry is a (shader, preset) pair, so whichever one is drawn has
+    /// a preset to apply, and "the preset was applied" becomes assertable
+    /// against the packed uniform bytes rather than against a popup title.
+    private func seedOpeningRotation(into defaults: UserDefaults?) {
+        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        let discovered = ShaderLibrary(device: device,
+                                       extraSearchURLs: RepoLocation.searchURLs).discover()
+        guard let shader = discovered.dropFirst().first(where: {
+            !$0.presets.isEmpty && $0.source.contains(Self.editTarget)
+        }) else { return }
+        openingShader = shader
+        openingCandidates = shader.presets.map {
+            LerpRotationEntry(shader: shader.name, preset: $0.name)
+        }
+        RotationStore.save(Set(openingCandidates), entries: discovered.rotationEntries(),
+                           to: defaults)
+    }
+
+    /// The regression this whole feature is: the window used to open on whatever
+    /// came first alphabetically, which for this repo is `aurora` — a look the
+    /// user may well have taken out of their rotation on purpose.
+    private func openedFromRotation() {
+        guard let shader = openingShader, !openingCandidates.isEmpty else {
+            return check("a rotation to open from was seeded", false,
+                         "no shader on disk has presets and the line the edit checks need")
+        }
+        let opened = controller.currentEntry
+        check("the window opened on a look that is in the enabled rotation",
+              openingCandidates.contains(opened),
+              "\(opened.key) — enabled: \(openingCandidates.map(\.key).joined(separator: ", "))")
+        check("…and not simply on the first shader on disk",
+              opened.shader != controller.knownShaderNames.first,
+              "opened \(opened.shader), first on disk is \(controller.knownShaderNames.first ?? "nothing")")
+
+        // The entry's preset, proved by the bytes the fragment shader is handed
+        // rather than by the label above them.
+        var expected = shader.defaultParameterValues()
+        if let name = opened.preset, let preset = shader.preset(named: name) { expected.apply(preset) }
+        let live = controller.metalView.parameterValues?.packedTail
+        check("the entry's preset was applied, not just named",
+              live == expected.packedTail && live != shader.defaultParameterValues().packedTail,
+              "\(opened.key): \(live?.count ?? -1) packed bytes, "
+                + "\(zip(live ?? [], shader.defaultParameterValues().packedTail).filter { $0 != $1 }.count)"
+                + " of them away from defaults")
+        check("the inspector's preset popup says which look that is",
+              controller.currentPreset == opened.preset, controller.currentPreset ?? "Defaults")
+
+        // Reading a rotation is not writing one. Launching the app must leave
+        // the screensaver's settings exactly as it found them.
+        check("launching did not write the rotation it read",
+              Set(persistedRotation()) == Set(openingCandidates.map(\.key)),
+              persistedRotation().sorted().joined(separator: " "))
+    }
+
+    /// Every fallback `OpeningShader.choose` has to survive, driven directly
+    /// because none of them can be arranged by launching the app: a tree where
+    /// nothing compiles, a rotation naming shaders that are all gone, no
+    /// screensaver defaults at all.
+    private func openingPolicyUnits() {
+        let discovered = controller.metalView.shaderLibrary.discover()
+        let all = discovered.rotationEntries()
+        guard all.count > 6, let first = all.first else { return }
+        let opensEverything: (LerpRotationEntry) -> Bool = { _ in true }
+        func choose(_ defaults: UserDefaults?, remembered: LerpRotationEntry? = nil,
+                    opens: @escaping (LerpRotationEntry) -> Bool = { _ in true },
+                    from index: Int = 0) -> LerpRotationEntry? {
+            OpeningShader.choose(discovered: discovered, rotation: defaults, remembered: remembered,
+                                 opens: opens, randomIndex: { _ in index })
+        }
+
+        check("no readable screensaver defaults still opens a look",
+              choose(nil) == first, choose(nil)?.key ?? "nothing")
+
+        UserDefaults().removePersistentDomain(forName: Self.scratchSuite)
+        guard let scratch = UserDefaults(suiteName: Self.scratchSuite) else { return }
+
+        // Every fallback that means "all of them" goes through
+        // `Config.rotation`, so these check the wiring, not a second copy of the
+        // policy. An empty selection first…
+        scratch.set([String](), forKey: RotationStore.enabledEntriesKey)
+        scratch.set(all.map(\.key), forKey: RotationStore.knownEntriesKey)
+        check("an empty enabled set opens from the whole rotation, not from none",
+              choose(scratch, from: 3) == all[3], choose(scratch, from: 3)?.key ?? "nothing")
+
+        // …then a rotation whose every entry has been deleted from disk.
+        scratch.set(["gone/One", "gone/Two"], forKey: RotationStore.enabledEntriesKey)
+        scratch.set(all.map(\.key) + ["gone/One", "gone/Two"], forKey: RotationStore.knownEntriesKey)
+        check("a rotation whose looks have all gone falls back to every look",
+              choose(scratch, from: 2) == all[2], choose(scratch, from: 2)?.key ?? "nothing")
+
+        // A real subset, drawn at random: every draw has to land inside it. This
+        // is the claim the feature makes, so it is checked against the real RNG
+        // rather than against an injected index.
+        let subset = Array(all.suffix(4))
+        RotationStore.save(Set(subset), entries: all, to: scratch)
+        let draws = (0..<300).compactMap {
+            _ in OpeningShader.choose(discovered: discovered, rotation: scratch,
+                                      remembered: nil, opens: opensEverything)
+        }
+        check("300 random draws all landed inside the enabled rotation",
+              draws.count == 300 && draws.allSatisfy(subset.contains),
+              "\(Set(draws.map(\.key)).count) distinct of \(subset.count) enabled")
+        check("the draw is a draw — it does not always give the same look",
+              Set(draws.map(\.key)).count > 1, Set(draws.map(\.key)).sorted().joined(separator: " "))
+
+        // A broken shader is stepped over, not stopped on. `opens` says no to
+        // everything up to the last enabled look.
+        let survivor = subset[subset.count - 1]
+        check("a look that will not compile is stepped past, not opened",
+              choose(scratch, opens: { $0 == survivor }, from: 0) == survivor,
+              choose(scratch, opens: { $0 == survivor }, from: 0)?.key ?? "nothing")
+        check("an enabled set where nothing compiles widens to the whole rotation",
+              choose(scratch, opens: { $0 == first }, from: 0) == first,
+              choose(scratch, opens: { $0 == first }, from: 0)?.key ?? "nothing")
+        check("a tree where nothing at all compiles still opens onto a file",
+              choose(scratch, opens: { _ in false }, from: 0) == first,
+              "so the editor and its diagnostics are there to fix it with")
+        check("no shaders at all is the only answer that is nothing",
+              OpeningShader.choose(discovered: [], rotation: scratch, remembered: nil,
+                                   opens: opensEverything) == nil)
+
+        // The last-opened memory beats the rotation — that is what makes the
+        // randomness free, because it can only fire when there is no place to
+        // lose. `subset` is the enabled set, so a remembered look outside it is
+        // the case that matters: you were editing something you had deselected.
+        let outsider = all.first { !subset.contains($0) && $0.preset != nil } ?? first
+        check("a remembered look wins over the rotation, even one not in it",
+              choose(scratch, remembered: outsider) == outsider,
+              choose(scratch, remembered: outsider)?.key ?? "nothing")
+        check("a remembered shader that has been deleted falls back to the rotation",
+              subset.contains(choose(scratch, remembered: LerpRotationEntry(key: "gone/One"),
+                                     from: 1) ?? first))
+        check("a remembered look whose preset the file dropped opens its defaults",
+              choose(scratch, remembered: LerpRotationEntry(shader: outsider.shader,
+                                                            preset: "no such preset"))
+                  == LerpRotationEntry(shader: outsider.shader))
+        check("a remembered shader that will not compile falls back to the rotation",
+              subset.contains(choose(scratch, remembered: outsider,
+                                     opens: { $0 != outsider }, from: 1) ?? first))
+
+        // And the memory itself: the playground's own preferences, never the
+        // screensaver's ByHost domain.
+        check("the last-opened memory is not one of the rotation's keys",
+              !RotationStore.allKeys.contains(OpeningShader.lastOpenedKey),
+              OpeningShader.lastOpenedKey)
+        check("the window remembered the look it is showing",
+              OpeningShader.remembered() == controller.currentEntry,
+              OpeningShader.remembered()?.key ?? "nothing")
+
+        UserDefaults().removePersistentDomain(forName: Self.scratchSuite)
+        secondLaunchResumes(among: all)
+    }
+
+    /// The one link the checks above cannot reach: that the *window* consults
+    /// the memory on the way up. Builds a second one — hidden, never shown,
+    /// never started, thrown away at the end of the check — with a remembered
+    /// look planted in front of it.
+    ///
+    /// The look planted is deliberately one the seeded rotation does not
+    /// contain, so opening on it can only be the memory: a draw would never have
+    /// offered it. That is also the case that matters in real use, where the
+    /// shader you were up to at midnight is quite likely one you took out of the
+    /// screensaver precisely because you are still working on it.
+    private func secondLaunchResumes(among all: [LerpRotationEntry]) {
+        guard let wanted = all.first(where: { $0.preset != nil && !openingCandidates.contains($0) })
+        else { return }
+        OpeningShader.remember(wanted)
+        guard let second = PlaygroundWindowController
+            .make(hidden: true, rotationDefaults: RotationStore.saverDefaults(module: Self.testModule))
+        else { return check("a second launch reopens the look you left", false, "no Metal device") }
+        check("a second launch reopens the look you left, not another draw",
+              second.currentEntry == wanted,
+              "\(second.currentEntry.key), wanted \(wanted.key)")
+        second.window?.orderOut(nil)
     }
 
     private func rendering() {
@@ -143,7 +349,7 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
     private func editValid() {
         // A real edit: invert the shader's output. Compiles, looks different.
         controller.editor.replaceTextAsEdit(originalSource.replacingOccurrences(
-            of: "return half4(half3(color), 1.0h);",
+            of: Self.editTarget,
             with: "return half4(half3(1.0 - color), 1.0h);"))
     }
 
@@ -823,6 +1029,7 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         renderColorSweep()
         captureUI()
         rotationUnits()
+        openingPolicyUnits()
         rotationGalleryChecks()      // async; chains on to finish()
     }
 
@@ -1678,6 +1885,11 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.removeItem(at: ShaderPaths.customDirectory
             .appendingPathComponent(Self.parameterlessShader + ".metal"))
         UserDefaults().removePersistentDomain(forName: Self.scratchSuite)
+        // The window opened dozens of shaders on the way through, and the last
+        // one is now remembered. It is the test bundle's own preferences and not
+        // the app's, but leaving it behind would make the next run open on
+        // wherever this one ended rather than on its seeded rotation.
+        OpeningShader.forget()
         // The test's own ByHost domain goes with the run — unless it was asked
         // to leave it for another process. The user's is never touched: nothing
         // in this file opens `RotationStore.module` for writing. See

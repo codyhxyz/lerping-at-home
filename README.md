@@ -131,6 +131,17 @@ make playground
   `~/Applications` where Spotlight will offer it; that one is told which
   checkout to edit, because it has none above it. See "Install" above.)
 - Split window: `.metal` source on the left, live render on the right.
+- **What it opens on.** The look you last had open, if it is still on disk and
+  still compiles — closing the window mid-shader and coming back to a different
+  one loses your place, and nothing is worth that. Failing that (a first launch,
+  a deleted shader, one that no longer builds) it draws a look at random from the
+  looks your *screensaver* shuffles through, preset and all, so it opens on
+  something you actually chose rather than on whatever sorts first. It reads that
+  rotation and never writes it; the last-opened look is remembered in the app's
+  own preferences, not the screensaver's.
+  - A rotation with nothing enabled means all of them — the same one policy
+    function the saver uses — so no setting can make the playground open onto
+    nothing, and a look that will not compile is stepped past rather than opened.
 - Uses the same LerpCore compile path as the screensaver.
 - Editing recompiles 300 ms after the last keystroke and swaps the pipeline in place.
 - On a compile error the last successful pipeline keeps rendering; the view does not blank and the process does not exit.
@@ -155,6 +166,7 @@ Other targets:
 - `make playground-build` — build only, to `build/LerpPlayground.app`. The app icon is rendered from the `mesh-gradient` shader by `build/LerpPreview`, the same way the saver's System Settings thumbnail is; nothing binary is checked in.
 - `make install-playground` / `make uninstall-playground` — the copy Spotlight will offer, in `~/Applications`. See "Install" above.
 - `build/LerpPlayground.app/Contents/MacOS/LerpPlayground --shaders` — print the checkout this copy reads, how it resolved it, and the shaders in it. Exits non-zero if there are none.
+- `build/LerpPlayground.app/Contents/MacOS/LerpPlayground --capture out.png` — build the real window the way a launch does, say what it opened on and whether that came from the memory or from a draw against your rotation, and write a PNG of it. Reads your screensaver settings, writes none of them, and puts the last-opened memory back as it found it. The render pane is empty in the PNG: it is a `CAMetalLayer`, which `cacheDisplay` cannot reach.
 - `make playground-test` — scripted UI test: drives the real window, asserts frames are drawing, edits the shader, breaks it, fixes it. Exits non-zero on any failed check.
   - It runs out of `build/LerpPlaygroundSelfTest.app`, a second bundle holding the same executable under an identifier of its own, so it can neither be mistaken for the app by the single-instance check nor activate it, and its preferences land in a domain of its own.
   - Nothing of it reaches your screen: no Dock tile, no menu bar, no stolen focus, and a window that is real and rendering but at zero opacity. Every exit — including the watchdog that fires if a step never hands on — closes the window, and `alarm(2)` backs that up if the process wedges entirely.

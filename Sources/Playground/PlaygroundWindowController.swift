@@ -28,6 +28,16 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// the two differing is exactly what "unsaved changes" means.
     private var current = LerpShader(name: "", source: "", isBuiltIn: false, url: nil)
     var currentName: String { current.name }
+    /// The preset the open shader is wearing, or nil for its declared defaults.
+    /// Set by `applyPreset` — which is where every preset change goes, whatever
+    /// asked for it — and cleared by opening a shader.
+    private(set) var currentPreset: String?
+    /// The open shader *and* the look it is in: a rotation entry, the same pair
+    /// the screensaver shuffles over. What the window opened on, and what it
+    /// will be remembered as.
+    var currentEntry: LerpRotationEntry {
+        LerpRotationEntry(shader: current.name, preset: currentPreset)
+    }
     private var isDirty: Bool { editor.text != current.source }
     /// The shader as it was at the last successful compile — i.e. what is on the
     /// GPU, and therefore what the inspector is showing controls for.
@@ -92,16 +102,25 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private let hidden: Bool
 
     /// Returns nil when there is no Metal device to render with.
-    static func make(hidden: Bool = false) -> PlaygroundWindowController? {
+    ///
+    /// `rotationDefaults` is injected rather than reached for, because the
+    /// window now consults the screensaver's rotation *while it is being built*
+    /// — see `openingEntry` — and a test that could only swap the domain
+    /// afterwards would be a test of the user's own rotation.
+    static func make(hidden: Bool = false,
+                     rotationDefaults: UserDefaults? = RotationStore.saverDefaults())
+    -> PlaygroundWindowController? {
         guard let view = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 760, height: 760),
                                        extraSearchURLs: RepoLocation.searchURLs)
         else { return nil }
-        return PlaygroundWindowController(metalView: view, hidden: hidden)
+        return PlaygroundWindowController(metalView: view, hidden: hidden,
+                                          rotationDefaults: rotationDefaults)
     }
 
-    private init(metalView view: LerpMetalView, hidden: Bool) {
+    private init(metalView view: LerpMetalView, hidden: Bool, rotationDefaults: UserDefaults?) {
         metalView = view
         self.hidden = hidden
+        self.rotationDefaults = rotationDefaults
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1500, height: 900),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
@@ -113,8 +132,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         buildUI()
         startMIDI()
         let shaders = refreshList(metalView.shaderLibrary.discover())
-        if let first = shaders.first {
-            open(first)
+        if let entry = openingEntry(among: shaders), let shader = shaders.named(entry.shader) {
+            open(shader, preset: entry.preset)
         } else {
             setStatus("No shaders found. Use New… to create one.", tint: EditorTheme.error)
         }
@@ -419,14 +438,58 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func open(_ shader: LerpShader) {
+    /// What this window opens on, and the only place the screensaver's rotation
+    /// is read. Read-only: nothing on this path writes the saver's domain.
+    ///
+    /// The compile probe is memoised per shader because a rotation is
+    /// (shader, preset) pairs — `swirl` and `swirl/Candy` are one compile — and
+    /// because the widen-to-everything fallback would otherwise rebuild the same
+    /// broken pipelines a second time. `pipeline(for:)` caches its successes, so
+    /// the winner is compiled once here and once more by `open`, which clears
+    /// the cache first to keep hot reload from growing it.
+    private func openingEntry(among shaders: [LerpShader]) -> LerpRotationEntry? {
+        var verdicts: [String: Bool] = [:]
+        let library = metalView.shaderLibrary
+        func opens(_ entry: LerpRotationEntry) -> Bool {
+            if let known = verdicts[entry.shader] { return known }
+            let verdict = shaders.named(entry.shader)
+                .map { (try? library.pipeline(for: $0)) != nil } ?? false
+            verdicts[entry.shader] = verdict
+            return verdict
+        }
+        return OpeningShader.choose(discovered: shaders, rotation: rotationDefaults,
+                                    remembered: OpeningShader.remembered(), opens: opens)
+    }
+
+    /// Opens a shader, optionally wearing one of its presets — i.e. opens a
+    /// rotation entry, which is what the screensaver shuffles over and what
+    /// `openingEntry` hands back.
+    ///
+    /// The preset goes on through the inspector's own popup rather than straight
+    /// into the view, so the control says what the render is doing. A preset the
+    /// file no longer declares is simply not applied: the shader's defaults are
+    /// a look in their own right, not a failure.
+    private func open(_ shader: LerpShader, preset: String? = nil) {
         current = shader
         parameterState.removeAll()      // a new shader starts at its own defaults
+        currentPreset = nil
         select(shader.name)
         editor.setText(shader.source)
         metalView.config.shaderName = shader.name
         compileNow(force: true)
+        if let wanted = preset, let declared = shader.preset(named: wanted),
+           compiled?.name == shader.name {
+            inspector.choosePreset(declared.name)
+        }
         updateChrome()
+        rememberCurrent()
+    }
+
+    /// Records the look on screen as where to come back to. The playground's own
+    /// preferences — never the screensaver's.
+    private func rememberCurrent() {
+        guard !current.name.isEmpty else { return }
+        OpeningShader.remember(currentEntry)
     }
 
     /// Opens a shader by name, discarding nothing — the caller is responsible
@@ -543,6 +606,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     /// nil applies the shader's declared defaults.
     func applyPreset(_ name: String?) {
+        defer { rememberCurrent() }
+        currentPreset = name.flatMap { compiled?.preset(named: $0)?.name }
         guard let name else {
             for param in shownParameters { metalView.setParameter(param.name, param.defaultValue) }
             adoptViewValues()
@@ -863,11 +928,18 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// 114 stills, and an app that never opens it should never pay for them.
     private(set) var rotation: RotationWindowController?
 
-    /// Where the gallery writes. The real app writes the screensaver's own
-    /// ByHost domain, which is the entire point of the feature; `--selftest`
-    /// swaps in a scratch domain so a test run cannot touch the user's
-    /// screensaver settings by accident.
-    var rotationDefaults: UserDefaults? = RotationStore.saverDefaults()
+    /// The screensaver's rotation, as this window sees it. Written by the
+    /// gallery — the entire point of that feature — and *read* by `openingEntry`
+    /// on launch, which is the one place this app looks at the rotation without
+    /// being asked to.
+    ///
+    /// Injected through `make(hidden:rotationDefaults:)` (and settable
+    /// afterwards) so `--selftest` runs against a scratch ByHost domain and
+    /// cannot touch the user's screensaver settings by accident. No default
+    /// here on purpose: every initialiser supplies one, and a default would mean
+    /// opening the live domain on the way past even when the caller named
+    /// another.
+    var rotationDefaults: UserDefaults?
 
     /// The gallery window, built on first use. Deliberately does *not* load —
     /// the caller decides when the stills start arriving, so a test can arrange

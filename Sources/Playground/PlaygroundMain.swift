@@ -9,6 +9,9 @@ import Metal
 ///   open -a LerpPlayground      launch it, or raise the copy already running
 ///   LerpPlayground --shaders    print which checkout this copy reads, and what
 ///                               it found there
+///   LerpPlayground --capture P  open exactly the way a launch does, say what it
+///                               chose and why, and leave a PNG of the window
+///                               at P. Changes nothing.
 ///
 /// Left pane edits a `.metal` file, right pane renders it through the exact
 /// same LerpCore path the screensaver uses. Edits recompile ~300 ms after you
@@ -33,6 +36,10 @@ enum PlaygroundMain {
             PlaygroundSelfTest.run()
         } else if CommandLine.arguments.contains("--shaders") {
             reportShaders()
+        } else if let index = CommandLine.arguments.firstIndex(of: "--capture") {
+            let next = CommandLine.arguments.dropFirst(index + 1).first
+            let path = next.flatMap { $0.hasPrefix("-") ? nil : $0 } ?? "build/opening.png"
+            boot(OpeningCaptureDelegate(path: path), policy: .accessory)
         } else {
             handOffToRunningInstance()
             boot(PlaygroundAppDelegate())
@@ -153,6 +160,107 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
     /// item would grey out. NSApp asks its delegate last; this is that.
     @objc func showRotationGallery(_ sender: Any?) {
         controller?.showRotationGallery(sender)
+    }
+}
+
+// MARK: - `--capture`
+
+/// `--capture PATH`: build the real window the way `applicationDidFinishLaunching`
+/// does, against the real screensaver rotation and the real last-opened memory,
+/// and report what it opened on and why.
+///
+/// This exists because "the playground opens on a look you actually shuffle
+/// through" is a claim about the machine it is running on — the rotation is in
+/// the user's ByHost domain, not in the repo — and `make playground-test` cannot
+/// assert it without reading their settings. `--shaders` is the same shape of
+/// tool for the same reason: not a claim the suite can make, so the app makes it
+/// about itself.
+///
+/// It disturbs nothing:
+///
+/// - The screensaver's rotation is **read** and never written, like on every
+///   other launch.
+/// - The last-opened memory is put back exactly as it was found, so running this
+///   neither creates a memory nor destroys one — it only reports through which
+///   of the two doors the window came.
+/// - `.accessory` with a hidden window: no Dock tile, no ⌘-Tab entry, no stolen
+///   focus, and no window on top of whatever you are doing. The window is real
+///   and rendering — see `PlaygroundWindowController.hide` — it is just at zero
+///   opacity, which is also why the render pane comes out empty in the PNG. The
+///   PNG is of the chrome: the shader popup, the inspector and its preset.
+final class OpeningCaptureDelegate: NSObject, NSApplicationDelegate {
+    private let path: String
+    private var controller: PlaygroundWindowController?
+    private var previousMemory: LerpRotationEntry?
+
+    init(path: String) { self.path = path }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        previousMemory = OpeningShader.remembered()
+
+        guard let controller = PlaygroundWindowController.make(hidden: true) else {
+            FileHandle.standardError.write(Data("no Metal device\n".utf8))
+            finish(1)
+        }
+        self.controller = controller
+        controller.showAndStart()
+        // Long enough for the display link to have produced frames, so the fps
+        // line in the report means something.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in report() }
+    }
+
+    private func report() {
+        guard let controller else { finish(1) }
+        let library = controller.metalView.shaderLibrary
+        let discovered = library.discover()
+        let all = discovered.rotationEntries()
+        let enabled = RotationStore.rotation(discovered: all, from: RotationStore.saverDefaults())
+        let opened = controller.currentEntry
+        // The memory beats the rotation, so a remembered look that came back is
+        // the memory's doing even when the rotation would also have allowed it.
+        let resumed = previousMemory != nil && previousMemory?.shader == opened.shader
+
+        print("opened:   \(opened.key)")
+        print("from:     " + (resumed ? "the look this app last had open"
+                                      : "a draw from the enabled rotation"))
+        print("memory:   \(previousMemory?.key ?? "nothing — this is a first launch")")
+        print("rotation: \(enabled.count) of \(all.count) looks enabled, "
+              + "across \(Set(enabled.map(\.shader)).count) of \(discovered.count) shaders")
+        print("in it:    \(enabled.contains(opened))")
+        print("fps:      \(controller.metalView.statusText)")
+
+        // The preset, proved by the bytes rather than by the label: the tail of
+        // the uniform block is literally what the fragment shader is handed.
+        if let shader = discovered.named(opened.shader) {
+            let defaults = shader.defaultParameterValues().packedTail
+            let live = controller.metalView.parameterValues?.packedTail ?? []
+            let differing = zip(defaults, live).filter { $0 != $1 }.count
+                + abs(defaults.count - live.count)
+            print("preset:   \(opened.preset ?? "(shader defaults)")"
+                  + " — \(differing) of \(max(defaults.count, live.count)) packed bytes"
+                  + " differ from \(shader.name)'s defaults")
+        }
+
+        if let view = controller.window?.contentView,
+           let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            if let data = rep.representation(using: .png, properties: [:]),
+               (try? data.write(to: URL(fileURLWithPath: path))) != nil {
+                print("wrote:    \(path)")
+            }
+        }
+        finish(opened.shader.isEmpty ? 1 : 0)
+    }
+
+    /// Puts the last-opened memory back the way it was found, then goes.
+    private func finish(_ status: Int32) -> Never {
+        if let previousMemory {
+            OpeningShader.remember(previousMemory)
+        } else {
+            OpeningShader.forget()
+        }
+        controller?.window?.orderOut(nil)
+        exit(status)
     }
 }
 
