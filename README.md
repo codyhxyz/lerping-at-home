@@ -36,6 +36,15 @@ make install-playground    # optional: copies LerpPlayground.app to ~/Applicatio
   Select All / Deselect All (which act on what the search is showing), and a
   status line. New shaders and newly added presets join the rotation
   automatically; selecting nothing means all.
+- **Point at a tile and it starts moving** — from the still's own instant, not
+  from t=0, so the first live frame is the picture that was already there and
+  nothing jumps. One shared `LerpMetalView` is reparented into whichever tile
+  the pointer is over (114 renderers is not a thing anyone is having), the
+  install is debounced so sweeping across the grid compiles one pipeline rather
+  than twenty, and scrolling, leaving, or the window losing key all stop it.
+  This works because a frame here is a pure function of (shader source,
+  parameters, time, seed) — the same property that lets the stills be cached on
+  disk and baked into the bundle. See `Sources/LerpCore/RotationPreview.swift`.
 - The stills are rendered into the bundle by `make saver`, so opening Options…
   does no GPU work: the sheet is built in about 120 ms and the pictures are on
   screen a tenth of a second later. That matters because the sheet is built
@@ -45,8 +54,11 @@ make install-playground    # optional: copies LerpPlayground.app to ~/Applicatio
   cache inside the sandbox container. Nothing ever blocks the sheet.
 - The same gallery is a window of its own in the playground
   (**Shader → Screensaver Rotation…**, ⌥⌘R), where clicking a tile writes the
-  screensaver's rotation immediately. It is one implementation, in
-  `Sources/LerpCore/RotationGallery.swift`.
+  screensaver's rotation immediately and **double-clicking one opens it in the
+  editor**, preset and all. It is one implementation, in
+  `Sources/LerpCore/RotationGallery.swift` — and the same tile is what the
+  playground's toolbar picker is made of, with its primary action inverted. See
+  "Shader playground".
 - Options… has a **Set desktop picture to the last frame** checkbox, off by default.
   See "Desktop picture handoff" below.
 
@@ -147,13 +159,31 @@ make playground
 - On a compile error the last successful pipeline keeps rendering; the view does not blank and the process does not exit.
 - Compile errors are listed in a console below the editor as `line:column`; the offending lines are highlighted, and `⌘E` (or clicking the status bar) jumps to the first one.
 - Metal's reported line numbers match the shader file, because the prelude ends with `#line 1`.
-- The picker lists `Sources/Shaders/` plus the custom shader directory, and refreshes when files change on disk.
+- **The shader picker is a grid of pictures, not a dropdown.** The toolbar
+  button opens a popover (⌘O, or **Shader → Open Look…**) built from the very
+  tile the rotation gallery uses, over `Sources/Shaders/` plus the custom shader
+  directory, refreshed when files change on disk. It lists *looks* — all 114 —
+  rather than the 31 shader names the old text dropdown could name but not show.
+  - The two surfaces invert each other on purpose. In the **gallery** a click
+    toggles the look in or out of the screensaver's rotation and a double-click
+    opens it; in the **popover** a click opens it and the corner badge toggles
+    the rotation. Each makes its own job one click.
+  - A look that is out of the rotation is drawn dimmed and opens on exactly the
+    same click. Not shuffling a look is no reason to be unable to edit it —
+    usually it is out precisely because you are still working on it.
+  - **Typing still works**, which is the one thing the dropdown did better than
+    a wall of pictures: the popover opens with the caret in the filter field,
+    and ⏎ opens the first look still showing.
+  - Pointing at a tile plays it, exactly as in the gallery — it is the same tile.
+  - Both grids mark the look the editor has open, and share one cache of stills,
+    so opening the popover after the gallery costs no GPU at all.
 - An externally modified open file reloads if there are no unsaved edits.
 - Time scrubber, render scale (100/75/50/25%), and fps readout map onto `LerpUniforms` and `LerpMetalView.Config`.
 - Editor is a plain `NSTextView` with soft tabs, auto-indent, undo, and find. No syntax highlighting and no line-number gutter.
 
 Keys:
 
+- `⌘O` — open the shader picker; type to filter, ⏎ opens the first match.
 - `⌘N` — scaffold a new starter shader into `Sources/Shaders/`.
 - `⌘S` — write the buffer back to the `.metal` file.
 - `⌘R` — recompile.
@@ -296,12 +326,14 @@ scripts/             loadtest.swift, sandboxprobe.swift + its plist/entitlements
 ```
 
 `LerpCore` holds the rotation gallery (`RotationGallery.swift`,
-`RotationThumbnails.swift`) and the colours and control helpers it draws with
-(`UIChrome.swift`) because it has two hosts that cannot see each other's
-sources: the screensaver's Options… sheet and the playground's rotation window.
-What stays in `Sources/Playground/` is the part that is the playground's alone —
-`RotationWindow.swift`, the window, and `RotationStore.swift`, which writes the
-screensaver's ByHost domain the moment you click. `RotationStore` is
+`RotationThumbnails.swift`, `RotationPreview.swift`) and the colours and control
+helpers it draws with (`UIChrome.swift`) because it has three hosts that cannot
+see each other's sources: the screensaver's Options… sheet, the playground's
+rotation window, and the playground's toolbar picker popover. What stays in
+`Sources/Playground/` is the part that is the playground's alone —
+`RotationWindow.swift` and `ShaderPicker.swift`, the two surfaces, and
+`RotationStore.swift`, which writes the screensaver's ByHost domain the moment
+you click. `RotationStore` is
 *not* hoisted: it needs `-framework ScreenSaver`, and neither the preview app nor
 the snapshot renderer should have to link a framework they never use.
 
