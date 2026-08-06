@@ -96,8 +96,8 @@ PROBE_BIN  := $(PROBE_APP)/Contents/MacOS/LerpSandboxProbe
 PROBE_ID   := com.hergenroeder.lerping.sandboxprobe
 
 .PHONY: all preview playground playground-build playground-test saver snapshots \
-        test-load sandbox-probe midi-deps install install-example install-playground \
-        uninstall-playground clean
+        test-load test-host sandbox-probe midi-deps install install-example \
+        install-playground uninstall-playground clean
 
 all: saver preview
 
@@ -230,6 +230,27 @@ test-load: saver scripts/loadtest.swift
 	@defaults -currentHost delete $(LOADTEST_MODULE) 2>/dev/null || true
 	LERP_DEFAULTS_MODULE=$(LOADTEST_MODULE) $(BUILD)/loadtest $(SAVER_DIR)
 	@defaults -currentHost delete $(LOADTEST_MODULE) 2>/dev/null || true
+
+# Does the saver render, and does it stop when nothing can see it?
+#
+# `test-load` and `sandbox-probe` both drive the Options… sheet and neither of
+# them draws a frame. This one loads the same bundle as a *non-preview* host,
+# in each of the two shapes legacyScreenSaver produces — one on screen, one
+# full-screen at the wallpaper layer where nothing of it is ever scanned out —
+# and reads back what the saver concluded about itself.
+#
+# It puts a small window on screen for the length of the first phase. That is
+# the point of it: "the code path is taken" is not evidence that a screensaver
+# renders, and the black screensaver this check exists to prevent shipped twice
+# without anyone watching pixels.
+#
+# Not part of `all`, for the same reason: it wants the screen.
+HOSTTEST_SECONDS ?= 20
+
+test-host: saver scripts/hosttest.swift
+	swiftc -target $(TARGET) -o $(BUILD)/hosttest scripts/hosttest.swift \
+		-framework ScreenSaver -framework AppKit
+	$(BUILD)/hosttest $(SAVER_DIR) $(HOSTTEST_SECONDS)
 
 # What the Options… sheet can do inside an App Sandbox — the one thing
 # `test-load` cannot tell you, because it runs with the run of the machine and

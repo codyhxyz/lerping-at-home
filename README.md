@@ -310,7 +310,7 @@ the snapshot renderer should have to link a framework they never use.
 - Frame rate is capped at 30 fps by default via `CADisplayLink.preferredFrameRateRange`.
 - Frame rate drops to 0 fps when the window is occluded — but only where AppKit actually
   reports occlusion. It does not for a `legacyScreenSaver` host at the desktop-wallpaper
-  layer, which is why the saver gates on the screensaver notifications instead.
+  layer, which is why the saver has a second, independent check; see below.
 - Low Power Mode caps the frame rate at 20 fps.
 - Internal render scale is selectable at 100%, 75%, or 50%; the compositor upscales.
 - The animation clock is frozen while paused, so time does not jump on resume.
@@ -319,14 +319,19 @@ the snapshot renderer should have to link a framework they never use.
 ## legacyScreenSaver behavior handled in `Sources/Saver/`
 
 - The system does not destroy saver instances, and never reports occlusion for a host parked at the desktop-wallpaper layer (`CGWindowLevel -2147483625`, full-screen bounds, `onscreen=false`). Neither of `LerpMetalView`'s own stop paths is reachable there, so such a host renders forever behind the desktop. Measured on macOS 27: **5.5% CPU sustained** (`ps -o time=` delta of 1.65 s over a 30 s window) with the screensaver not running.
-- `stopAnimation` *is* called on macOS 27, ~400 ms after `didstop` — contrary to the older Sonoma-era note this file used to carry. It arrives after the notifications have already stopped rendering, and it never arrives for a host that is not currently displaying the saver. Both `startAnimation` and `stopAnimation` stay wired up, but neither is the primary signal.
-- The real saver therefore renders **only** between the distributed `com.apple.screensaver` start and stop notifications, and at no other time. `startAnimation` does not start rendering; a host that never receives a start notification never draws a frame. Same measurement after the change: **0.00 s over 30 s**.
+- **The saver always draws on `startAnimation`.** Gating that on the start notifications produced a permanently black screensaver, twice: legacyScreenSaver spawns the host *after* `willstart`/`didstart` are broadcast, distributed notifications are not queued, and a fresh process therefore cannot ever see the start of its own session. A host only ever observes the stops.
+- `stopAnimation` *is* called on macOS 27, ~400 ms after `didstop`. Both `startAnimation` and `stopAnimation` stay wired up; the stop notifications are what usually ends a session first.
+- **Nothing about the host tells you which kind it is.** Measured, and each rules out an obvious fix:
+  - Both kinds sit at window level `-2147483625`. So does WallpaperAgent's own window.
+  - A host that is *visibly rendering the screensaver* has `kCGWindowIsOnscreen` **false** on its own window for the whole session — its layer is composited into a window belonging to WallpaperAgent and its own window is never ordered in. Sampled once a second from outside the process across two real activations, one of them 11 minutes long. `NSWindow.isVisible` and `occlusionState` follow the same window, which is also why occlusion notifications never arrive. Anything keyed on them blacks out the real screensaver.
+- So the saver does not classify itself. It draws, and it drops to **one frame a second** only when it can prove nothing it draws can be on screen: every display asleep, the session not on the console, or somebody demonstrably working at the machine for five consecutive seconds (any input at all ends a screensaver, so that cannot be true of the host the user is looking at). All three are verified to answer truthfully inside the sandbox by `make sandbox-probe`.
+- Against those stands one piece of positive evidence that overrides all of them: `CAMetalDrawable.presentedTime`, i.e. a frame of ours that actually reached a display. Measured with this view's exact shape — 299 non-zero times out of 300 frames in a window that is on screen, 0 out of 300 in one that is not. It is evidence in one direction only; a visible layer that is composited rather than given a display plane can report zero too, so its absence proves nothing and is never read as proof.
+- Parking is one frame a second rather than zero on purpose. A host parked by mistake is a slow screensaver for one second, not a black one, and the frame it draws each second is what re-tests the verdict. Measured on a full-screen 1512×982 hidden host: **1.42% CPU rendering → 0.32% parked**, parked 8 s in.
 - The host process is never terminated. `exit(0)` on `willstop` raced the lock-screen UI, which is why the lock screen was blank, animated, or static at random. A retained window with its backing store intact costs nothing and makes the lock screen deterministic — it shows the frame the saver stopped on.
 - Consequence: after `willstop` the lock screen shows a **frozen** last frame, not animation. `willstop` is the system saying the session is over.
-- `com.apple.screensaver.willstart` is not posted on macOS 27; `didstart` is. Both are observed, and `didstop` is observed as a backstop for `willstop`.
-- legacyScreenSaver constructs **two** `LerpSaverView` instances per host, and the second one is built ~165 ms *after* `didstart` has already been delivered. "A session is running" is therefore process-wide state, not per-instance: an instance that missed the notification starts from its own `startAnimation`. Without it the second instance stays dark for the whole session.
-- Only one of those two instances is ever put in a window. Anything with a side effect (the wallpaper handoff) is gated on `window != nil`.
-- The System Settings preview instance keeps the classic `startAnimation`/`stopAnimation` contract and ignores the distributed notifications, so a real screensaver cycle cannot freeze the thumbnail.
+- A host never sees `willstart`/`didstart` for its own session, but a host that outlives one *does* see the next one's. That is what un-parks a host that parked itself in error. Hosts are reused: the same pid was observed serving two sessions, building a new window for each.
+- legacyScreenSaver can construct **two** `LerpSaverView` instances per host, the second ~165 ms after the session has already started. Only one of them is ever put in a window; anything with a side effect (the wallpaper handoff) is gated on `window != nil`.
+- The System Settings preview instance keeps the classic `startAnimation`/`stopAnimation` contract, ignores the distributed notifications and is never parked, so neither a real screensaver cycle nor a verdict can freeze or slow the thumbnail.
 - `isPreview` is unreliable on macOS Tahoe, so a small frame size is also treated as preview.
 - `animateOneFrame` is not used; the view drives its own display link.
 - Lifecycle is logged to `com.hergenroeder.lerping` at `info` level; nothing about this path is debuggable without it:

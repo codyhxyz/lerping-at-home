@@ -43,6 +43,39 @@ report("app-sandboxed", home != realHome && home.contains("/Library/Containers/"
        "NSHomeDirectory() = \(home)")
 print("PROBE     real home = \(realHome)")
 
+// MARK: - Telling a displayed host from a hidden one
+
+// The saver has to decide, from inside a sandboxed host, whether anything it
+// draws is reaching a screen. Every candidate signal is a system query, and a
+// system query that the sandbox quietly answers with a constant is worse than
+// no signal at all — it would park a *visible* screensaver at one frame a
+// second. So establish here, in a real sandbox, that each one answers.
+
+let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+report("session-dictionary", session?["kCGSSessionOnConsoleKey"] != nil,
+       "kCGSSessionOnConsoleKey = \(session?["kCGSSessionOnConsoleKey"] ?? "absent"), "
+       + "locked = \(session?["CGSSessionScreenIsLocked"] ?? "absent")")
+
+// Two reads a second apart. Idle seconds must *advance* between them: a
+// sandboxed constant (0, or a fixed number) is exactly the failure that would
+// make the saver think a user is permanently at the keyboard.
+let anyEvent = CGEventType(rawValue: ~0)!
+let idle1 = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyEvent)
+Thread.sleep(forTimeInterval: 1.0)
+let idle2 = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyEvent)
+report("hid-idle-seconds", idle2 > idle1 || idle2 < idle1,
+       String(format: "%.2f s then %.2f s — %@", idle1, idle2,
+              idle2 > idle1 ? "advancing, nobody touched the machine"
+                            : "went backwards, i.e. real input arrived"))
+
+var online = [CGDirectDisplayID](repeating: 0, count: 16)
+var onlineCount: UInt32 = 0
+CGGetOnlineDisplayList(UInt32(online.count), &online, &onlineCount)
+let displays = Array(online.prefix(Int(onlineCount)))
+report("display-sleep-state", onlineCount > 0,
+       displays.map { "\($0): asleep=\(CGDisplayIsAsleep($0) != 0) active=\(CGDisplayIsActive($0) != 0)" }
+           .joined(separator: ", "))
+
 // MARK: - Metal
 
 // Both of these are things the shipped screensaver already does inside this
