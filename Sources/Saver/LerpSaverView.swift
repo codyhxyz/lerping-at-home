@@ -84,6 +84,10 @@ public final class LerpSaverView: ScreenSaverView {
     private var rotationEnabled: Set<LerpRotationEntry> = []
     private var rotationGallery: RotationGalleryView?
     private var rotationLabel: NSTextField?
+    /// The saved rotation as it stood when this sheet was built. `OK` merges
+    /// against it, so a sheet left open while the playground's gallery is
+    /// clicked writes back only what *this* sheet changed.
+    private var rotationBase: LerpRotationState?
 
     /// Stills for the Options… gallery, kept on the view rather than on the
     /// sheet: legacyScreenSaver builds the view once and the sheet every time
@@ -615,6 +619,7 @@ public final class LerpSaverView: ScreenSaverView {
         rotationShaders = shaders
         rotationEntries = entries
         rotationEnabled = Set(LerpMetalView.Config.rotation(of: settings.enabledEntries, from: entries))
+        rotationBase = settings.rotationBase
 
         // The gallery. Built from the same `rotationEntries()` the shuffle
         // itself walks, so it cannot show a look the rotation does not offer.
@@ -861,6 +866,7 @@ public final class LerpSaverView: ScreenSaverView {
             settings.shader = shaderPopup?.titleOfSelectedItem ?? Settings.shuffleTitle
             settings.preset = selectedPreset
             settings.enabledEntries = rotationEnabled
+            settings.rotationBase = rotationBase
             settings.fps = Int(fpsPopup?.titleOfSelectedItem ?? "30") ?? 30
             settings.renderScale = Self.value(of: scalePopup, in: Self.renderScales, default: 0)
             settings.freezeMinutes = Self.value(of: freezePopup, in: Self.freezeChoices, default: 3)
@@ -915,19 +921,13 @@ private struct Settings {
     private static let renderScaleKey = "renderScale"
     private static let shuffleMinutesKey = "shuffleMinutes"
     private static let freezeMinutesKey = "freezeAfterMinutes"
-    /// `LerpRotationEntry.key`s the user wants in the shuffle rotation.
-    private static let enabledEntriesKey = "enabledEntries"
-    /// Every entry that existed the last time the rotation was saved. Anything
-    /// discovered later counts as new and joins the rotation automatically —
-    /// including a preset added to a shader that was already there.
-    private static let knownEntriesKey = "knownEntries"
-    /// The pre-preset shape of the same two keys: sets of shader *names*, from
-    /// before the rotation counted presets. Read for migration, and still
-    /// written, so a downgrade to an older build finds a sensible subset.
-    private static let enabledShadersKey = "enabledShaders"
-    private static let knownShadersKey = "knownShaders"
     /// Opt-in: hand the last rendered frame off to the desktop picture.
     static let wallpaperKey = "setWallpaperOnStop"
+
+    /// Which host this is, in the saved state's `writer` field. Diagnostics
+    /// only — nothing branches on it — but "who turned this back on?" was not
+    /// answerable at all before, and two processes write this domain.
+    static let writerName = "saver"
 
     /// `shuffleTitle`, or the name of the single pinned shader.
     var shader = shuffleTitle
@@ -942,6 +942,10 @@ private struct Settings {
     /// The shuffle rotation — see `LerpMetalView.Config.rotation(of:from:)` for
     /// what nil and empty both mean.
     var enabledEntries: Set<LerpRotationEntry>?
+    /// The persisted rotation exactly as this load found it. Carried so that
+    /// `save` can tell whether anything landed in the domain while the sheet was
+    /// open, and merge rather than trample if it did. See `LerpRotation.write`.
+    var rotationBase: LerpRotationState?
 
     static func load(from defaults: UserDefaults?, discovered: [LerpRotationEntry]) -> Settings {
         var settings = Settings()
@@ -953,7 +957,8 @@ private struct Settings {
         settings.shuffleMinutes = (defaults.object(forKey: shuffleMinutesKey) as? Double) ?? settings.shuffleMinutes
         settings.freezeMinutes = (defaults.object(forKey: freezeMinutesKey) as? Double) ?? settings.freezeMinutes
         settings.setsWallpaper = defaults.bool(forKey: wallpaperKey)
-        settings.enabledEntries = savedRotation(discovered: discovered, defaults: defaults)
+        settings.rotationBase = LerpRotation.read(defaults, discovered: discovered)
+        settings.enabledEntries = LerpRotation.enabled(discovered: discovered, in: defaults)
         return settings
     }
 
@@ -967,26 +972,15 @@ private struct Settings {
         } else {
             defaults.removeObject(forKey: Self.presetKey)
         }
-        if !entries.isEmpty {
-            let picked = LerpMetalView.Config.rotation(of: enabledEntries, from: entries)
-            defaults.set(picked.map(\.key), forKey: Self.enabledEntriesKey)
-            defaults.set(entries.map(\.key), forKey: Self.knownEntriesKey)
-            // A shader counts as in the pre-preset rotation when any of its
-            // looks is, so the old keys keep saying something true.
-            defaults.set(Self.shaderNames(of: picked), forKey: Self.enabledShadersKey)
-            defaults.set(Self.shaderNames(of: entries), forKey: Self.knownShadersKey)
-        }
+        let state = LerpRotation.write(enabled: enabledEntries, base: rotationBase,
+                                       discovered: entries, writer: Self.writerName,
+                                       to: defaults)
         defaults.set(fps, forKey: Self.fpsKey)
         defaults.set(renderScale, forKey: Self.renderScaleKey)
         defaults.set(freezeMinutes, forKey: Self.freezeMinutesKey)
         defaults.set(setsWallpaper, forKey: Self.wallpaperKey)
         defaults.synchronize()
-    }
-
-    /// The shaders these entries name, once each, in order.
-    private static func shaderNames(of entries: [LerpRotationEntry]) -> [String] {
-        var seen = Set<String>()
-        return entries.map(\.shader).filter { seen.insert($0).inserted }
+        LerpSaverView.log.info("options: saved rotation \(state.summary, privacy: .public)")
     }
 
     /// What these settings ask the view to render.
@@ -1003,37 +997,4 @@ private struct Settings {
         return config
     }
 
-    /// The shuffle rotation implied by saved defaults, or nil for "every entry".
-    ///
-    /// - Nothing ever saved (including every install that predates this setting):
-    ///   nil, i.e. the full rotation. Never an empty one.
-    /// - Saved entries that no longer exist are dropped.
-    /// - Entries discovered since the last save default to enabled, so dropping a
-    ///   new .metal file into the bundle — or adding a preset to one that is
-    ///   already there — does not silently do nothing.
-    /// - A rotation saved before presets counted holds a set of shader *names*.
-    ///   Every look of a shader that was in it joins: the user picked those
-    ///   shaders, and the presets are more of the same shaders, not new ones.
-    /// - An empty result is reported as nil (all entries) rather than a black
-    ///   screen. The sheet also refuses to persist an empty set, so this only
-    ///   fires for hand-edited defaults or a rotation gone entirely stale.
-    private static func savedRotation(discovered: [LerpRotationEntry],
-                                      defaults: UserDefaults?) -> Set<LerpRotationEntry>? {
-        guard let defaults else { return nil }
-        let all = Set(discovered)
-        if let saved = defaults.stringArray(forKey: enabledEntriesKey) {
-            // No roster saved: take the saved list at face value, nothing is "new".
-            let known = Set((defaults.stringArray(forKey: knownEntriesKey) ?? discovered.map(\.key))
-                .map(LerpRotationEntry.init(key:)))
-            let enabled = all.intersection(saved.map(LerpRotationEntry.init(key:)))
-                .union(all.subtracting(known))
-            return enabled.isEmpty ? nil : enabled
-        }
-        guard let legacy = defaults.stringArray(forKey: enabledShadersKey) else { return nil }
-        let shaders = Set(discovered.map(\.shader))
-        let knownShaders = Set(defaults.stringArray(forKey: knownShadersKey) ?? Array(shaders))
-        let picked = shaders.intersection(legacy).union(shaders.subtracting(knownShaders))
-        let enabled = all.filter { picked.contains($0.shader) }
-        return enabled.isEmpty ? nil : enabled
-    }
 }

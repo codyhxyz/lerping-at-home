@@ -1029,6 +1029,9 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         renderColorSweep()
         captureUI()
         rotationUnits()
+        deselectionUnits()
+        renameUnits()
+        staleWriterUnits()
         openingPolicyUnits()
         rotationGalleryChecks()      // async; chains on to finish()
     }
@@ -1127,6 +1130,302 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
                   && LerpMetalView.Config.rotation(of: [], from: all).count == all.count
                   && LerpMetalView.Config.rotation(of: subset, from: all).count == 3)
         UserDefaults().removePersistentDomain(forName: Self.scratchSuite)
+    }
+
+    // MARK: A deselected look cannot play
+
+    /// A throwaway directory of `.metal` files, so the checks below can describe
+    /// a shader library exactly — three looks that compile, one that never will
+    /// — without touching the repo or the user's drop folder.
+    ///
+    /// `LerpMetalView(frame:extraSearchURLs:)` still scans the bundle and the
+    /// user's folder as well, so these are *extra* shaders rather than the only
+    /// ones. That is on purpose: the claims below are about what the rotation
+    /// excludes, and they are stronger when there is more around to be wrongly
+    /// included.
+    private func writeShaders(_ files: [String: String]) -> URL? {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lerp-selftest-shaders-" + UUID().uuidString)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for (name, source) in files {
+                try source.write(to: directory.appendingPathComponent(name + ".metal"),
+                                 atomically: true, encoding: .utf8)
+            }
+        } catch { return nil }
+        return directory
+    }
+
+    /// A shader that compiles, with `presets` declared on it.
+    private static func shaderSource(presets: [String]) -> String {
+        var text = "// lerp-param: tint float 0 1 = 0.5 \"Tint\"\n"
+        for (index, name) in presets.enumerated() {
+            text += "// lerp-preset: \(name) tint=\(Double(index + 1) / Double(presets.count + 1))\n"
+        }
+        return text + """
+        fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+            float2 uv = lerpScreenUV(pos, u.resolution);
+            return half4(half3(half(u.tint * uv.x), half(uv.y), half(u.seed)), 1.0h);
+        }
+        """
+    }
+
+    /// The regression this whole file's rotation section exists for.
+    ///
+    /// `legacyScreenSaver` builds a host and never destroys it, so one
+    /// `LerpMetalView` outlives many screensaver sessions and many trips through
+    /// the Options… sheet. The shuffle order used to be built once, the first
+    /// time a pipeline was compiled, and nothing rebuilt it — so deselecting a
+    /// look wrote the defaults correctly, the next session read them correctly,
+    /// and the view went on shuffling the list it had built before the click.
+    /// The look came back minutes later with every setting saying it should not
+    /// have. That is the bug; these are the checks that it cannot come back.
+    private func deselectionUnits() {
+        let names = ["zz-selftest-a", "zz-selftest-b", "zz-selftest-c"]
+        var files: [String: String] = [:]
+        for name in names { files[name] = Self.shaderSource(presets: ["One", "Two"]) }
+        guard let directory = writeShaders(files) else {
+            return check("a throwaway shader directory could be written", false)
+        }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        guard let view = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 64, height: 64),
+                                       extraSearchURLs: [directory]) else {
+            return check("a second Metal view for the rotation checks", false, "no device")
+        }
+
+        let all = view.shaderLibrary.discover().rotationEntries()
+        let mine = all.filter { names.contains($0.shader) }
+        guard mine.count == 9 else {
+            return check("the throwaway shaders were discovered", false,
+                         "\(mine.count) of 9 looks, from \(all.count) in total")
+        }
+
+        // Start the view on the *full* rotation and let it build a pipeline —
+        // this is the state a long-lived host is in when the user goes to
+        // System Settings and starts unticking things.
+        view.config.shuffleInterval = 3600
+        view.config.enabledEntries = Set(all)
+        view.start()
+        check("the view picked a look to start on", view.currentEntry != nil,
+              view.currentEntry?.key ?? "nothing")
+
+        // Now deselect: everything belonging to the first shader, plus whatever
+        // happens to be on screen, so the check covers both "never pick it
+        // again" and "stop showing it now".
+        let banned = Set(all.filter { $0.shader == names[0] })
+            .union([view.currentEntry].compactMap { $0 })
+        let kept = Set(all).subtracting(banned)
+        view.config.enabledEntries = kept
+
+        check("deselecting the look on screen takes it off the screen now, "
+              + "not at the end of the interval",
+              view.currentEntry.map { !banned.contains($0) } ?? false,
+              view.currentEntry?.key ?? "nothing")
+        check("the rotation the view reports is exactly what is enabled",
+              Set(view.rotationNow) == kept,
+              "\(view.rotationNow.count) looks for \(kept.count) enabled")
+
+        // Five hundred advances through the real interval path. The shuffle is
+        // random, so one advance proves nothing; the claim is that *no* number
+        // of them can reach a deselected look.
+        var seen: Set<LerpRotationEntry> = []
+        for _ in 0..<500 {
+            view.advanceShuffle(by: 1)
+            if let entry = view.currentEntry { seen.insert(entry) }
+        }
+        let escaped = seen.intersection(banned)
+        check("500 shuffle advances never reached a deselected look",
+              escaped.isEmpty, escaped.map(\.key).sorted().prefix(4).joined(separator: ", "))
+        check("…and they did move around inside the enabled set",
+              seen.count > 3 && seen.isSubset(of: kept),
+              "\(seen.count) distinct looks, all enabled: \(seen.isSubset(of: kept))")
+
+        // A shader pinned by name is a different contract — the rotation does
+        // not apply to it — but it must not leave a stale order behind either.
+        view.config.shaderName = names[0]
+        check("pinning a deselected shader is still allowed, because pinning is not the rotation",
+              view.currentShaderName == names[0], view.currentShaderName)
+        view.config.shaderName = nil
+        view.advanceShuffle(by: 1)
+        check("un-pinning returns to the enabled rotation, not to the pinned shader",
+              view.currentEntry.map(kept.contains) ?? false,
+              view.currentEntry?.key ?? "nothing")
+        view.stop()
+
+        compileFallbackUnits()
+    }
+
+    /// The other way a deselected look used to reach the screen.
+    ///
+    /// `selectInitialShader` had a fallback: if nothing in the enabled rotation
+    /// compiled, widen to *every* look rather than present nothing. It is gone.
+    /// A user who has switched a look off has not asked to see it when the
+    /// alternative is inconvenient, and the widening was never much of a rescue
+    /// anyway — every shader builds through the same device and the same
+    /// prelude, so a failure broad enough to take out the whole rotation takes
+    /// out the rest too.
+    private func compileFallbackUnits() {
+        let broken = "this is not Metal source and never will be"
+        guard let directory = writeShaders(["zz-selftest-broken": broken,
+                                            "zz-selftest-fine": Self.shaderSource(presets: ["One"])])
+        else { return check("a throwaway shader directory for the compile check", false) }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        guard let view = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 64, height: 64),
+                                       extraSearchURLs: [directory]) else { return }
+
+        let all = view.shaderLibrary.discover().rotationEntries()
+        let brokenEntry = LerpRotationEntry(shader: "zz-selftest-broken")
+        guard all.contains(brokenEntry), all.count > 2 else {
+            return check("the deliberately broken shader was discovered", false, "\(all.count) looks")
+        }
+
+        // A rotation of exactly one look, which cannot be built. It resolves —
+        // the entry exists, so this is not the "entirely stale means all" case
+        // — it simply will not compile.
+        view.config.enabledEntries = [brokenEntry]
+        view.start()
+        check("a rotation whose only look will not compile renders nothing, "
+              + "rather than something the user switched off",
+              view.currentEntry == nil, view.currentEntry?.key ?? "nothing")
+        check("…and the compile failure was reported rather than swallowed",
+              view.shaderLibrary.compileErrors["zz-selftest-broken"] != nil)
+        view.stop()
+
+        // With one buildable look in the rotation beside it, the broken one is
+        // stepped over — which is the behaviour the widening was confused with.
+        guard let fine = all.first(where: { $0.shader == "zz-selftest-fine" }) else { return }
+        guard let second = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 64, height: 64),
+                                         extraSearchURLs: [directory]) else { return }
+        second.config.enabledEntries = [brokenEntry, fine]
+        second.start()
+        check("a broken look in the rotation is stepped over, not stopped on",
+              second.currentEntry == fine, second.currentEntry?.key ?? "nothing")
+        second.stop()
+    }
+
+    // MARK: Renaming a preset
+
+    /// Renaming a preset used to do two bad things at once: the old key went
+    /// stale and fell out of `enabledEntries`, and the new key was in nobody's
+    /// roster so it counted as newly discovered and joined the rotation. Net
+    /// effect, a look the user had deliberately switched off came back on
+    /// because somebody edited a comment. It has destroyed a real selection
+    /// twice.
+    private func renameUnits() {
+        UserDefaults().removePersistentDomain(forName: Self.scratchSuite)
+        guard let scratch = UserDefaults(suiteName: Self.scratchSuite) else { return }
+        defer { UserDefaults().removePersistentDomain(forName: Self.scratchSuite) }
+
+        func entries(_ presets: [String]) -> [LerpRotationEntry] {
+            [LerpRotationEntry(shader: "zz-rename")]
+                + presets.map { LerpRotationEntry(shader: "zz-rename", preset: $0) }
+        }
+        let before = entries(["Default", "SineWave", "Bugs"])
+        let off = LerpRotationEntry(shader: "zz-rename", preset: "SineWave")
+        RotationStore.save(Set(before).subtracting([off]), entries: before, to: scratch)
+        check("the look starts out switched off",
+              RotationStore.load(discovered: before, from: scratch)?.contains(off) == false)
+
+        // The rename itself: same position in the file, new spelling.
+        let after = entries(["Default", "Sine Wave", "Bugs"])
+        let renamed = LerpRotationEntry(shader: "zz-rename", preset: "Sine Wave")
+        let reloaded = RotationStore.load(discovered: after, from: scratch) ?? []
+        check("renaming a preset does not switch a deselected look back on",
+              !reloaded.contains(renamed),
+              reloaded.map(\.key).sorted().joined(separator: " "))
+        check("…and leaves every other look of that shader alone",
+              reloaded == Set(after).subtracting([renamed]),
+              "\(reloaded.count) of \(after.count) enabled")
+
+        // The behaviour that must survive: a genuinely new preset still joins.
+        let added = entries(["Default", "Sine Wave", "Bugs", "Fresh"])
+        let fresh = LerpRotationEntry(shader: "zz-rename", preset: "Fresh")
+        check("a genuinely new preset still joins the rotation on its own",
+              RotationStore.load(discovered: added, from: scratch)?.contains(fresh) == true)
+
+        // …and so does a genuinely new shader.
+        let newShader = added + [LerpRotationEntry(shader: "zz-brand-new")]
+        check("a genuinely new shader still joins the rotation on its own",
+              RotationStore.load(discovered: newShader, from: scratch)?
+                  .contains(LerpRotationEntry(shader: "zz-brand-new")) == true)
+
+        // A rename and an addition in the same edit: the rename is still a
+        // rename, and the addition is still an addition.
+        let both = entries(["Default", "Sine Wave", "Beetles", "Fresh"])
+        let bugsOff = entries(["Default", "SineWave", "Bugs"])
+        RotationStore.save(Set(bugsOff).subtracting([LerpRotationEntry(shader: "zz-rename", preset: "Bugs")]),
+                           entries: bugsOff,
+                           base: RotationStore.state(discovered: bugsOff, from: scratch),
+                           to: scratch)
+        let mixed = RotationStore.load(discovered: both, from: scratch) ?? []
+        check("a rename beside an addition keeps the rename off and lets the addition in",
+              !mixed.contains(LerpRotationEntry(shader: "zz-rename", preset: "Beetles"))
+                  && mixed.contains(LerpRotationEntry(shader: "zz-rename", preset: "Fresh")),
+              mixed.map(\.key).sorted().joined(separator: " "))
+
+        // The pairing rule itself, stated once so a future edit to it has
+        // something to fail against.
+        check("a name in both lists is itself, not a rename",
+              LerpRotation.renamePairs(from: ["A", "B"], to: ["A", "B"]).isEmpty)
+        check("a preset only removed is not a rename of nothing",
+              LerpRotation.renamePairs(from: ["A", "B"], to: ["A"]).isEmpty)
+        check("a preset only added is not a rename of nothing",
+              LerpRotation.renamePairs(from: ["A"], to: ["A", "B"]).isEmpty)
+        check("a rename at the same position is paired",
+              LerpRotation.renamePairs(from: ["A", "B"], to: ["A", "Bee"])
+                  .map { $0.old + "->" + $0.new } == ["B->Bee"])
+    }
+
+    // MARK: Two writers
+
+    /// The saver's Options… sheet and the playground's gallery write the same
+    /// ByHost domain, and neither used to know the other existed. A sheet opened
+    /// before a click in the playground would, on OK, write back the selection
+    /// it had read minutes earlier and quietly undo it — with nothing in the
+    /// stored state to say which write was newer.
+    private func staleWriterUnits() {
+        UserDefaults().removePersistentDomain(forName: Self.scratchSuite)
+        guard let scratch = UserDefaults(suiteName: Self.scratchSuite) else { return }
+        defer { UserDefaults().removePersistentDomain(forName: Self.scratchSuite) }
+
+        let all = rotationEntriesNow()
+        guard all.count > 6 else { return }
+        let mine = all[1], theirs = all[2]
+
+        RotationStore.save(Set(all), entries: all, to: scratch)
+        let base = RotationStore.state(discovered: all, from: scratch)
+        check("a write is stamped with a revision and a writer",
+              base.revision > 0 && !base.writer.isEmpty, base.summary)
+
+        // Somebody else switches `theirs` off while this caller holds `base`.
+        RotationStore.save(Set(all).subtracting([theirs]), entries: all, base: base, to: scratch)
+        let newer = RotationStore.state(discovered: all, from: scratch)
+        check("the second write moved the revision on", newer.revision > base.revision,
+              "\(base.revision) → \(newer.revision)")
+
+        // Now the stale caller saves what it read, minus one look of its own.
+        RotationStore.save(Set(all).subtracting([mine]), entries: all, base: base, to: scratch)
+        let merged = RotationStore.load(discovered: all, from: scratch) ?? []
+        check("a stale writer's own change still lands", !merged.contains(mine), mine.key)
+        check("a stale writer cannot undo a newer click it never saw",
+              !merged.contains(theirs), theirs.key)
+        check("…and touches nothing else", merged == Set(all).subtracting([mine, theirs]),
+              "\(merged.count) of \(all.count) enabled")
+
+        // An up-to-date writer is not merged against anything: it says what the
+        // rotation is, in full.
+        let fresh = RotationStore.state(discovered: all, from: scratch)
+        RotationStore.save(Set(all), entries: all, base: fresh, to: scratch)
+        check("an up-to-date writer replaces the selection outright",
+              RotationStore.load(discovered: all, from: scratch) == Set(all))
+
+        // An older build writes only the v1 keys. The v2 record must notice and
+        // step aside rather than silently outranking it forever.
+        scratch.set(all.dropLast(3).map(\.key), forKey: RotationStore.enabledEntriesKey)
+        scratch.set(all.map(\.key), forKey: RotationStore.knownEntriesKey)
+        check("a write by an older build that only knows the v1 keys still wins",
+              RotationStore.load(discovered: all, from: scratch) == Set(all.dropLast(3)),
+              "\(RotationStore.load(discovered: all, from: scratch)?.count ?? -1) of \(all.count)")
     }
 
     private var coldSeconds = 0.0
