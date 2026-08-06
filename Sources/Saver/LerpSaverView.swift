@@ -5,22 +5,29 @@ import ScreenSaver
 /// Thin ScreenSaverView shim around LerpMetalView, with the known
 /// legacyScreenSaver workarounds baked in:
 ///
-/// - The system never destroys instances, and `NSWindow.didChangeOcclusionState`
-///   never fires for a host parked at the desktop-wallpaper layer — so neither of
-///   the view's own "stop burning power" paths is reachable there, and such a
-///   host renders full-screen behind the desktop forever (measured: 5.5% CPU).
-///   The real saver therefore renders only between the distributed
-///   `com.apple.screensaver` start and stop notifications and at no other time.
-///   We never terminate the host: a retained window with an intact backing store
-///   costs nothing (measured: 0.00 s over 30 s) and keeps the lock screen
+/// - **It always draws.** legacyScreenSaver spawns the host process *after* the
+///   `com.apple.screensaver.willstart`/`didstart` notifications have been
+///   broadcast, and distributed notifications are not queued, so a fresh
+///   process can never see the start of its own session. Gating rendering on
+///   them produced a permanently black screensaver, twice. `startAnimation`
+///   therefore renders, unconditionally.
+/// - **Except when it can prove nothing it draws can be on screen.** The same
+///   API also builds full-screen hosts at the desktop-wallpaper layer that are
+///   never shown and never stopped; those used to render forever (measured:
+///   5.5% CPU, 43-55% GPU, with the user at their desktop). See
+///   "Hosts that are never shown" below for what counts as proof and why each
+///   of the obvious signals — window level, `kCGWindowIsOnscreen`, occlusion —
+///   does not.
+/// - We never terminate the host: a retained window with an intact backing
+///   store costs nothing (measured: 0.00 s over 30 s) and keeps the lock screen
 ///   deterministic — it shows the frame we stopped on instead of racing an
 ///   `exit(0)` against the lock UI.
-/// - `startAnimation`/`stopAnimation` are still wired up but are not the primary
-///   signal. `stopAnimation` does fire on macOS 27, ~400 ms after `didstop`.
+/// - The stop notifications *are* delivered, and are the primary way a session
+///   ends. `stopAnimation` also fires on macOS 27, ~400 ms after `didstop`.
 /// - `isPreview` is unreliable on recent macOS, so a small frame also counts
 ///   as preview. Preview instances keep the classic startAnimation/stopAnimation
-///   contract and ignore the distributed notifications entirely, so a real
-///   screensaver cycle cannot freeze the System Settings thumbnail.
+///   contract and ignore all of the above, so a real screensaver cycle cannot
+///   freeze the System Settings thumbnail and no verdict can slow it down.
 /// - We ignore `animateOneFrame` entirely; LerpMetalView drives its own
 ///   CADisplayLink with a capped frame rate.
 @objc(LerpSaverView)
@@ -50,17 +57,20 @@ public final class LerpSaverView: ScreenSaverView {
     private var wallpaperCheckbox: NSButton?
 
     /// True between a screensaver start notification and the matching stop.
-    ///
-    /// Process-wide, not per-instance, on purpose: legacyScreenSaver builds a
-    /// second `LerpSaverView` 130-165 ms *after* `didstart` lands (observed twice
-    /// on macOS 27), so a per-instance flag would leave that one dark for the
-    /// whole session if it is the one the host actually displays. A session is a
-    /// fact about the host, not about any one view.
+    /// Logged rather than obeyed — a host never sees the start of its own
+    /// session — but a long-lived host does see later ones, which is what
+    /// un-parks it.
     private static var sessionActive = false
     /// Instances that have started rendering for the current session, so the
     /// second start is a no-op instead of a double display link.
     private var rendering = false
     private var lifecycleObservers: [NSObjectProtocol] = []
+
+    /// See "Hosts that are never shown".
+    private var hostWatch: Timer?
+    private var renderingSince: CFTimeInterval = 0
+    private var presenceSamples = 0
+    private var parkedReason: String?
     private let instanceID = LerpSaverView.nextInstanceID()
     private static var instanceCounter = 0
     private static func nextInstanceID() -> Int {
@@ -126,6 +136,7 @@ public final class LerpSaverView: ScreenSaverView {
 
     deinit {
         lifecycleObservers.forEach(DistributedNotificationCenter.default().removeObserver)
+        hostWatch?.invalidate()
     }
 
     private static func defaults() -> ScreenSaverDefaults? {
@@ -179,15 +190,22 @@ public final class LerpSaverView: ScreenSaverView {
 
     private func beginSession(_ reason: String) {
         Self.sessionActive = true
+        // A host that was parked has just been told, by the system, that a
+        // screensaver session is starting. Whatever it concluded about itself
+        // during the last one no longer applies.
+        unpark(reason)
         startRendering(reason)
     }
 
     private func startRendering(_ reason: String) {
+        renderingSince = CACurrentMediaTime()
+        presenceSamples = 0
         guard !rendering else { return }
         rendering = true
         Self.log.info("[\(self.instanceID)] start rendering (\(reason, privacy: .public))")
         metalView?.config = currentConfig()
         metalView?.start()
+        if !effectiveIsPreview { startHostWatch() }
     }
 
     /// Stops rendering. The window, its layer and the last presented drawable
@@ -195,6 +213,9 @@ public final class LerpSaverView: ScreenSaverView {
     /// showing the frame we ended on instead of black.
     private func endSession(_ reason: String) {
         Self.sessionActive = false
+        stopHostWatch()
+        parkedReason = nil
+        presenceSamples = 0
         guard rendering else { return }
         rendering = false
         // Read the exact frame the view is on *before* stopping it.
@@ -202,6 +223,159 @@ public final class LerpSaverView: ScreenSaverView {
         metalView?.stop()
         Self.log.info("[\(self.instanceID)] session end (\(reason, privacy: .public)) — display link torn down, window retained")
         if let frame { publishWallpaper(frame) }
+    }
+
+    // MARK: - Hosts that are never shown
+
+    /// legacyScreenSaver builds two kinds of full-screen host and gives them no
+    /// way to tell each other apart. One is the screensaver the user is looking
+    /// at. The other is never displayed, never receives a stop of any kind, and
+    /// used to render until the machine was rebooted — 5.5% CPU and 43-55% GPU,
+    /// with the user sitting at their desktop.
+    ///
+    /// Measured on macOS 27, and each one rules out an obvious fix:
+    ///
+    /// - Both sit at window level -2147483625, the wallpaper layer. So does
+    ///   WallpaperAgent's own window. Level says nothing.
+    /// - The host that is *visibly rendering the screensaver* has
+    ///   `kCGWindowIsOnscreen` **false** on its own window, for the whole
+    ///   session: its layer is composited into a window belonging to
+    ///   WallpaperAgent, and its own window is never ordered in. Sampled once a
+    ///   second from outside the process, across a real 11-minute activation.
+    ///   Anything keyed on the host's own window being on screen — including
+    ///   `NSWindow.isVisible` and `occlusionState`, which is why occlusion
+    ///   notifications never arrive either — blacks out the real screensaver.
+    /// - The start notifications cannot help: the host is spawned after they
+    ///   are broadcast, and they are not queued.
+    ///
+    /// So the saver does not try to classify itself. It draws, and it stops
+    /// drawing only when it can *prove* that nothing it draws can be on screen.
+    /// The three proofs below are states in which no screensaver can be
+    /// displayed in this session at all, so none of them can be true of the
+    /// host the user is looking at. Against them stands one piece of positive
+    /// evidence — a frame of ours that actually reached a display — which
+    /// overrides all three.
+    ///
+    /// And the penalty is one frame a second, not zero: a host parked by
+    /// mistake is a slow screensaver for one second, never a black one, and the
+    /// frame it draws each second is also what re-tests the verdict.
+
+    /// Full rate for this long after `startAnimation` before any verdict. The
+    /// window has to be picked up and composited by its host process first, and
+    /// eight seconds of a rate we would have run anyway costs nothing.
+    private static let verdictGrace: TimeInterval = 8
+    /// How recent an input event has to be to count as somebody being here.
+    private static let inputRecency: TimeInterval = 2
+    /// …and for how many consecutive one-second samples. Any input at all ends
+    /// a screensaver, so five seconds of continuous input means this host is
+    /// certainly not showing one. A single stray event is not enough.
+    private static let presenceSamples = 5
+    /// How fresh the last scanned-out frame has to be to veto a park.
+    private static let displayedRecency: TimeInterval = 2
+
+    private func startHostWatch() {
+        guard hostWatch == nil else { return }
+        // Weakly, so the timer is not what keeps a view alive: legacyScreenSaver
+        // already never destroys one, and a retain cycle on top of that would
+        // mean `deinit` could not run even in the hosts that do.
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.checkWhetherAnyoneCanSeeThis()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hostWatch = timer
+    }
+
+    private func stopHostWatch() {
+        hostWatch?.invalidate()
+        hostWatch = nil
+    }
+
+    private func checkWhetherAnyoneCanSeeThis() {
+        guard rendering, let view = metalView else { return }
+        // "Still image after N minutes" has already taken the display link
+        // away and is holding the frame the user asked to keep. Parking it
+        // would change nothing and drawing it once a second would undo it.
+        guard !view.isFrozen else { return }
+        let now = CACurrentMediaTime()
+
+        // Positive evidence, and the only kind there is: a frame this view drew
+        // was scanned out to a display within the last couple of seconds. It
+        // beats every proof below, because those are arguments and this is the
+        // thing itself.
+        if now - view.lastDisplayedFrameTime < Self.displayedRecency {
+            presenceSamples = 0
+            unpark("a frame reached a display")
+            return
+        }
+
+        // One frame a second while parked: enough that a host parked by mistake
+        // is slow rather than frozen, and enough to keep asking the question
+        // above. Costs ~1/30th of what running does.
+        if parkedReason != nil { view.renderOnce() }
+
+        let idle = Self.secondsSinceLastInput()
+        presenceSamples = idle < Self.inputRecency ? presenceSamples + 1 : 0
+
+        let proof: String?
+        if Self.everyDisplayAsleep() {
+            proof = "every display is asleep"
+        } else if !Self.sessionIsOnConsole() {
+            proof = "this session is not on the console"
+        } else if presenceSamples >= Self.presenceSamples {
+            proof = "somebody has been working at this machine for \(presenceSamples)s"
+        } else {
+            proof = nil
+        }
+
+        guard let proof, now - renderingSince > Self.verdictGrace else { return }
+        park(proof)
+    }
+
+    private func park(_ reason: String) {
+        guard parkedReason == nil else { return }
+        parkedReason = reason
+        metalView?.park()
+        Self.log.info("[\(self.instanceID)] parked at 1 fps — \(reason, privacy: .public)")
+    }
+
+    private func unpark(_ reason: String) {
+        // Also resets the grace period: whatever just happened is a fresh
+        // reason to believe this host might be the one on screen.
+        renderingSince = CACurrentMediaTime()
+        guard let parked = parkedReason else { return }
+        parkedReason = nil
+        metalView?.unpark()
+        Self.log.info("[\(self.instanceID)] resumed — \(reason, privacy: .public) (was parked: \(parked, privacy: .public))")
+    }
+
+    /// Seconds since the last input event of any kind in this session.
+    /// Verified to work, and to advance, inside legacyScreenSaver's sandbox —
+    /// see the `hid-idle-seconds` check in `make sandbox-probe`.
+    private static func secondsSinceLastInput() -> TimeInterval {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState,
+                                                eventType: CGEventType(rawValue: ~0)!)
+    }
+
+    /// True when there is no awake display to put a screensaver on. A machine
+    /// with no displays at all counts, for the same reason.
+    private static func everyDisplayAsleep() -> Bool {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(UInt32(ids.count), &ids, &count) == .success else { return false }
+        return !ids.prefix(Int(count)).contains { CGDisplayIsAsleep($0) == 0 }
+    }
+
+    /// False after a fast user switch, when this session owns no screen.
+    ///
+    /// The key really does carry the extra S; `kCGSessionOnConsoleKey` is a
+    /// CFSTR macro for `"kCGSSessionOnConsoleKey"` and macros do not reach
+    /// Swift. Confirmed against a live dictionary, and by the
+    /// `session-dictionary` check in `make sandbox-probe`.
+    private static func sessionIsOnConsole() -> Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+              let onConsole = session["kCGSSessionOnConsoleKey"] as? NSNumber
+        else { return true }   // unreadable: assume we are, and keep drawing
+        return onConsole.boolValue
     }
 
     // MARK: - ScreenSaverView
@@ -214,23 +388,25 @@ public final class LerpSaverView: ScreenSaverView {
             startRendering("startAnimation/preview")
             return
         }
-        // Real saver: draw. Gating this on `didstart` produced a black screensaver,
-        // because legacyScreenSaver spawns the host *after* that notification has
-        // already been broadcast — distributed notifications are not queued, so a
-        // freshly spawned process can never observe it. Observed on macOS 27: the
-        // visible full-screen host logs `sessionActive=false` at startAnimation and
-        // only ever receives willstop/didstop.
+        // Real saver: draw, unconditionally. Gating this on `didstart` produced
+        // a black screensaver, because legacyScreenSaver spawns the host *after*
+        // that notification has already been broadcast — distributed
+        // notifications are not queued, so a freshly spawned process can never
+        // observe it. Observed on macOS 27: the visible full-screen host logs
+        // `sessionActive=false` at startAnimation and only ever receives
+        // willstop/didstop.
         //
-        // This reinstates the ~5% CPU burn from hosts that are never visible and
-        // never receive a stop. A blank screensaver is the worse failure, so it
-        // renders until a stop arrives; `endSession` still tears the display link
-        // down and retains the window.
+        // What keeps a host that is never displayed from rendering forever is
+        // not this decision but the watchdog `startRendering` arms — see
+        // "Hosts that are never shown". Being wrong there costs one frame a
+        // second; being wrong here costs a black screen.
+        unpark("startAnimation")
         startRendering("startAnimation")
     }
 
     public override func stopAnimation() {
         super.stopAnimation()
-        Self.log.info("[\(self.instanceID)] stopAnimation preview=\(self.effectiveIsPreview)")
+        Self.log.info("[\(self.instanceID)] stopAnimation preview=\(self.effectiveIsPreview) parked=\(self.parkedReason ?? "no", privacy: .public)")
         if effectiveIsPreview {
             rendering = false
             metalView?.stop()
@@ -605,6 +781,22 @@ public final class LerpSaverView: ScreenSaverView {
     /// probe app that establishes what legacyScreenSaver's sandbox actually
     /// permits. "The bundle covered all of it and the GPU did nothing" is the
     /// claim the whole design rests on, so it has to be observable from outside.
+    /// What this host is doing right now, as one line.
+    ///
+    /// `@objc` for the same reason as `rotationStillsSummary`: the claims this
+    /// file makes — that a host always draws, that one nothing can see drops to
+    /// a frame a second, that a host being shown never does — are only worth
+    /// anything if a harness in another process, which cannot see a single type
+    /// this bundle defines, can read them back.
+    @objc public var renderStateSummary: String {
+        let displayed = metalView?.lastDisplayedFrameTime ?? 0
+        let since = displayed > 0
+            ? String(format: "%.2fs", CACurrentMediaTime() - displayed) : "never"
+        return "rendering=\(rendering ? 1 : 0) parked=\(parkedReason ?? "no") "
+            + String(format: "fps=%.1f ", metalView?.measuredFPS ?? 0)
+            + "lastDisplayedFrame=\(since) shader=\(metalView?.currentShaderName ?? "")"
+    }
+
     @objc public var rotationStillsSummary: String {
         "memory=\(thumbnails.memoryHits) bundle=\(thumbnails.bundledHits) "
             + "cache=\(thumbnails.diskHits - thumbnails.bundledHits) "

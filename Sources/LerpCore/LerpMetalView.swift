@@ -1,5 +1,6 @@
 import AppKit
 import Metal
+import os
 import QuartzCore
 
 /// CAMetalLayer-backed view that renders one Lerping@Home shader with strict power
@@ -90,7 +91,26 @@ public final class LerpMetalView: NSView {
     private var resumeStamp: CFTimeInterval = 0
     private var running = false
     private var frozen = false
+    private var parked = false
     private var freezeBaseline: CFTimeInterval = 0
+
+    /// When a frame this view drew was last actually scanned out to a display,
+    /// on `CACurrentMediaTime()`'s clock. Zero if that has never happened.
+    ///
+    /// `CAMetalDrawable.presentedTime` is the only thing available from inside a
+    /// screensaver host that says "this reached a screen" rather than "AppKit
+    /// believes this window is fine". Measured on macOS 27, with this view's
+    /// exact shape — a CAMetalLayer-backed subview of a layer-backed parent:
+    /// 299 non-zero times out of 300 frames in a window that is on screen,
+    /// 0 out of 300 in a window that is not.
+    ///
+    /// Evidence in one direction only. A layer that is visible but composited
+    /// rather than handed to a display plane can report zero as well (measured:
+    /// four such windows at once, and only the frontmost kept reporting), so a
+    /// recent non-zero time proves this host is being shown and its absence
+    /// proves nothing at all. Callers must not invert it.
+    private let displayed = OSAllocatedUnfairLock<CFTimeInterval>(initialState: 0)
+    public var lastDisplayedFrameTime: CFTimeInterval { displayed.withLock { $0 } }
 
     // Rough FPS estimate for the preview app's titlebar.
     public private(set) var measuredFPS: Double = 0
@@ -169,6 +189,7 @@ public final class LerpMetalView: NSView {
         guard !running else { return }
         running = true
         frozen = false
+        parked = false
         freezeBaseline = elapsed
         resumeClock()
         fpsWindowStart = resumeStamp
@@ -183,8 +204,37 @@ public final class LerpMetalView: NSView {
     public func stop() {
         guard running else { return }
         running = false
+        parked = false
         pauseClock()
         tearDownDisplayLink()
+    }
+
+    /// Whether the display link has been taken away by `park()`.
+    public var isParked: Bool { parked }
+
+    /// Whether `freezeAfter` has already put the view on its last frame. A host
+    /// policing its own power has nothing left to do here.
+    public var isFrozen: Bool { frozen }
+
+    /// Gives up the display link but keeps animating, so the caller can drive
+    /// the view by hand with `renderOnce()` at whatever rate it likes.
+    ///
+    /// Unlike occlusion, this deliberately leaves the clock running: a host
+    /// that turns out to have been parked by mistake should come back to a
+    /// picture that has moved on, not to the frame it was parked at. And unlike
+    /// `stop()`, it leaves `running` set, so the freeze timer and the shuffle
+    /// keep their place.
+    public func park() {
+        guard running, !parked else { return }
+        parked = true
+        tearDownDisplayLink()
+    }
+
+    public func unpark() {
+        guard parked else { return }
+        parked = false
+        guard running else { return }
+        installDisplayLink()
     }
 
     public override func viewDidMoveToWindow() {
@@ -330,7 +380,7 @@ public final class LerpMetalView: NSView {
     // MARK: - Display link
 
     private func installDisplayLink() {
-        guard displayLink == nil, window != nil, !frozen else { return }
+        guard displayLink == nil, window != nil, !frozen, !parked else { return }
         let link = self.displayLink(target: self, selector: #selector(tick(_:)))
         displayLink = link
         applyFrameRate()
@@ -402,20 +452,31 @@ public final class LerpMetalView: NSView {
             advanceShuffle(by: 1)
         }
 
-        frameCount += 1
-        if now - fpsWindowStart >= 1.0 {
-            measuredFPS = Double(frameCount) / (now - fpsWindowStart)
-            frameCount = 0
-            fpsWindowStart = now
-        }
-
         drawFrame(at: time)
     }
 
     private func drawFrame(at time: CFTimeInterval) {
         guard let pipeline else { return }
+        // Counted here rather than in `tick`, so the readout tells the truth
+        // about a parked view too: parked, the display link is gone and the
+        // host draws by hand, and an FPS frozen at the rate it used to run is
+        // exactly the number nobody should be shown.
+        frameCount += 1
+        let now = CACurrentMediaTime()
+        if now - fpsWindowStart >= 1.0 {
+            measuredFPS = Double(frameCount) / (now - fpsWindowStart)
+            frameCount = 0
+            fpsWindowStart = now
+        }
         autoreleasepool {
             guard let drawable = metalLayer.nextDrawable() else { return }
+            // Note the lock, not self: this fires on a Metal thread once per
+            // frame, and a screensaver has no business retaining its view
+            // thirty times a second.
+            drawable.addPresentedHandler { [displayed] drawable in
+                guard drawable.presentedTime > 0 else { return }
+                displayed.withLock { $0 = CACurrentMediaTime() }
+            }
             let uniforms = LerpUniforms(
                 resolution: SIMD2<Float>(Float(metalLayer.drawableSize.width),
                                          Float(metalLayer.drawableSize.height)),
