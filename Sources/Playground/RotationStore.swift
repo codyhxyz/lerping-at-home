@@ -11,19 +11,24 @@ import ScreenSaver
 /// this writes into the saver's domain, under the saver's key names, in the
 /// saver's format. There is no second store and no sync step.
 ///
-/// The load/save policy below is a *transcription* of the `Settings` struct at
-/// the bottom of `Sources/Saver/LerpSaverView.swift`, which is private to the
-/// saver and so cannot be called from here. The transcription is deliberate and
-/// narrow: the four rotation keys and nothing else, so the playground can never
-/// clobber the frame rate, the pinned shader or the wallpaper opt-in. The one
-/// piece of policy that is *not* transcribed is the "empty means all" rule —
-/// that lives in `LerpMetalView.Config.rotation(of:from:)` in LerpCore and is
-/// called, here and in the saver, rather than restated.
+/// The load/save policy used to be a hand *transcription* of the `Settings`
+/// struct at the bottom of `Sources/Saver/LerpSaverView.swift`. Two copies of a
+/// rule about which of a user's looks may appear on their screen is one copy too
+/// many, and they had already begun to matter separately. Both now call
+/// `LerpRotation` in LerpCore, which is the single statement of the policy;
+/// what is left here is the part that is genuinely the playground's — which
+/// domain to open, and the guard that keeps the tests out of the live one.
 ///
-/// `--selftest` asserts every invariant this file has to keep (empty means all,
+/// The write path stays narrow on purpose: the rotation keys and nothing else,
+/// so the playground can never clobber the frame rate, the pinned shader or the
+/// wallpaper opt-in.
+///
+/// `--selftest` asserts every invariant this has to keep (empty means all,
 /// entirely-stale means all, entries discovered since the last save join
-/// automatically, a pre-preset `enabledShaders` list still migrates) and then
-/// checks the result against the real `.saver` bundle's own Options sheet.
+/// automatically, a renamed preset does *not* count as discovered-since, a
+/// pre-preset `enabledShaders` list still migrates, a stale writer cannot undo
+/// a newer click) and then checks the result against the real `.saver` bundle's
+/// own Options sheet.
 enum RotationStore {
 
     /// The screensaver's defaults module — the string `LerpSaverView` passes to
@@ -48,18 +53,23 @@ enum RotationStore {
     /// the test suite may answer true.
     static func isLiveModule(_ name: String) -> Bool { name == module }
 
-    /// `LerpRotationEntry.key`s the user wants in the shuffle rotation.
-    static let enabledEntriesKey = "enabledEntries"
-    /// Every entry that existed when the rotation was last saved; anything
-    /// discovered later counts as new and joins automatically.
-    static let knownEntriesKey = "knownEntries"
-    /// The pre-preset shape of the same two keys — sets of shader *names*. Read
-    /// for migration and still written, so an older build finds a sane subset.
-    static let enabledShadersKey = "enabledShaders"
-    static let knownShadersKey = "knownShaders"
+    /// The versioned rotation state — the schema, the migrations and the
+    /// stale-writer merge all live in `LerpRotation`.
+    static let stateKey = LerpRotation.stateKey
+    /// `LerpRotationEntry.key`s the user wants in the shuffle rotation. Legacy,
+    /// still written so an older build finds a sane rotation.
+    static let enabledEntriesKey = LerpRotation.enabledEntriesKey
+    /// Every entry that existed when the rotation was last saved.
+    static let knownEntriesKey = LerpRotation.knownEntriesKey
+    /// The pre-preset shape of the same two keys — sets of shader *names*.
+    static let enabledShadersKey = LerpRotation.enabledShadersKey
+    static let knownShadersKey = LerpRotation.knownShadersKey
 
     /// Every key this file will ever touch.
-    static let allKeys = [enabledEntriesKey, knownEntriesKey, enabledShadersKey, knownShadersKey]
+    static let allKeys = LerpRotation.allKeys
+
+    /// Which host this is, in the saved state's `writer` field.
+    static let writerName = "playground"
 
     /// The screensaver's own defaults. `ScreenSaverDefaults` resolves to
     /// `~/Library/Preferences/ByHost/com.hergenroeder.lerping.<hardware UUID>.plist`,
@@ -88,33 +98,27 @@ enum RotationStore {
 
     /// The shuffle rotation implied by saved defaults, or nil for "every entry".
     ///
-    /// Transcribed from `Settings.savedRotation`. The four cases it has to keep:
+    /// `LerpRotation.enabled` is the policy; the cases it has to keep:
     ///
     /// - Nothing ever saved: nil, i.e. the full rotation. Never an empty one.
     /// - Saved entries that no longer exist are dropped.
     /// - Entries discovered since the last save default to enabled, so a new
     ///   `.metal` file — or a new preset on a file that was already there — does
     ///   not silently sit out of the rotation.
+    /// - A preset that was *renamed* is not "discovered since": it keeps
+    ///   whatever the user decided about it under its old name.
     /// - A rotation saved before presets counted holds shader *names*; every
     ///   look of a shader that was in it joins.
     static func load(discovered: [LerpRotationEntry],
                      from defaults: UserDefaults?) -> Set<LerpRotationEntry>? {
-        guard let defaults else { return nil }
-        let all = Set(discovered)
-        if let saved = defaults.stringArray(forKey: enabledEntriesKey) {
-            // No roster saved: take the saved list at face value, nothing is "new".
-            let known = Set((defaults.stringArray(forKey: knownEntriesKey) ?? discovered.map(\.key))
-                .map(LerpRotationEntry.init(key:)))
-            let enabled = all.intersection(saved.map(LerpRotationEntry.init(key:)))
-                .union(all.subtracting(known))
-            return enabled.isEmpty ? nil : enabled
-        }
-        guard let legacy = defaults.stringArray(forKey: enabledShadersKey) else { return nil }
-        let shaders = Set(discovered.map(\.shader))
-        let knownShaders = Set(defaults.stringArray(forKey: knownShadersKey) ?? Array(shaders))
-        let picked = shaders.intersection(legacy).union(shaders.subtracting(knownShaders))
-        let enabled = all.filter { picked.contains($0.shader) }
-        return enabled.isEmpty ? nil : enabled
+        LerpRotation.enabled(discovered: discovered, in: defaults)
+    }
+
+    /// The persisted state behind `load`, for a caller that is going to write
+    /// and therefore needs to know what it is writing on top of.
+    static func state(discovered: [LerpRotationEntry],
+                      from defaults: UserDefaults?) -> LerpRotationState {
+        LerpRotation.read(defaults, discovered: discovered)
     }
 
     /// What the screensaver will actually shuffle through, given what is saved
@@ -128,7 +132,8 @@ enum RotationStore {
 
     // MARK: - Writing
 
-    /// Writes the rotation the way `Settings.save` writes it, and nothing else.
+    /// Writes the rotation the way the saver's Options sheet writes it, and
+    /// nothing else.
     ///
     /// `entries` is the full rotation in display order; an empty one leaves the
     /// saved rotation alone, so a host that discovered nothing cannot wipe it.
@@ -136,24 +141,19 @@ enum RotationStore {
     /// `Config.rotation` says an empty rotation means all of them — the saver
     /// does exactly this, and it is why a deselect-all can never black the
     /// screensaver out.
+    ///
+    /// `base` is the state the caller last read. Pass the real one from any
+    /// window with a checkbox in it: it is what stops a gallery that has been
+    /// sitting open from undoing an Options… sheet that was pressed in the
+    /// meantime. Omitting it declares the rotation outright, which is what a
+    /// test fixture wants and a UI does not. The state actually written comes
+    /// back, for the caller to adopt as its next base.
+    @discardableResult
     static func save(_ enabled: Set<LerpRotationEntry>?,
                      entries: [LerpRotationEntry],
-                     to defaults: UserDefaults?) {
-        guard let defaults, !entries.isEmpty else { return }
-        let picked = LerpMetalView.Config.rotation(of: enabled, from: entries)
-        defaults.set(picked.map(\.key), forKey: enabledEntriesKey)
-        defaults.set(entries.map(\.key), forKey: knownEntriesKey)
-        // A shader counts as in the pre-preset rotation when any of its looks
-        // is, so the legacy keys keep saying something true.
-        defaults.set(shaderNames(of: picked), forKey: enabledShadersKey)
-        defaults.set(shaderNames(of: entries), forKey: knownShadersKey)
-        defaults.synchronize()
+                     base: LerpRotationState? = nil,
+                     to defaults: UserDefaults?) -> LerpRotationState {
+        LerpRotation.write(enabled: enabled, base: base, discovered: entries,
+                           writer: writerName, to: defaults)
     }
-
-    /// The shaders these entries name, once each, in order.
-    private static func shaderNames(of entries: [LerpRotationEntry]) -> [String] {
-        var seen = Set<String>()
-        return entries.map(\.shader).filter { seen.insert($0).inserted }
-    }
-
 }

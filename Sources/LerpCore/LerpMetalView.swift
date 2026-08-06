@@ -8,6 +8,11 @@ import QuartzCore
 /// optional reduced internal resolution, and a frozen clock while paused.
 public final class LerpMetalView: NSView {
 
+    /// Same subsystem the saver logs under, so one `log show` predicate covers
+    /// the whole story of a session. Used only where a silent answer would be
+    /// indistinguishable from a broken one.
+    static let log = Logger(subsystem: "com.hergenroeder.lerping", category: "rotation")
+
     public struct Config {
         /// Shader name to render, or nil for shuffle mode.
         public var shaderName: String?
@@ -42,14 +47,26 @@ public final class LerpMetalView: NSView {
 
         /// Which of `available` a set of enabled entries actually selects.
         ///
-        /// The one statement of the policy: nil, empty, and entirely-stale sets
-        /// all mean *every* entry. An empty rotation is a black screensaver,
-        /// and no setting should be able to produce one — the saver's Options
-        /// sheet says so out loud, and this is what makes that true.
+        /// The one statement of the policy, and it is now a short one: a `nil`
+        /// set means nobody has ever chosen, so every look is in. Anything else
+        /// is taken **literally**.
+        ///
+        /// It used to say more. An empty set, and a set whose every entry had
+        /// gone stale, both widened to the full library — as did a rotation
+        /// that resolved but would not compile, and a `knownEntries` roster
+        /// that had fallen behind. Each of those was defending something real
+        /// (an empty rotation is a black screensaver, which has shipped twice)
+        /// and each defended it by doing the opposite of what the user asked:
+        /// the one action that reliably brought a deselected look back was
+        /// deselecting enough of them.
+        ///
+        /// So the invariant moved to where it can be kept honestly — the
+        /// gallery will not let you turn off the last look — and every widening
+        /// downstream of it is gone. What this returns is what plays.
         public static func rotation(of enabled: Set<LerpRotationEntry>?,
                                     from available: [LerpRotationEntry]) -> [LerpRotationEntry] {
-            let picked = available.filter { enabled?.contains($0) ?? true }
-            return picked.isEmpty ? available : picked
+            guard let enabled else { return available }
+            return available.filter(enabled.contains)
         }
     }
 
@@ -62,6 +79,11 @@ public final class LerpMetalView: NSView {
         didSet {
             if config.framesPerSecond != oldValue.framesPerSecond { applyFrameRate() }
             if config.renderScale != oldValue.renderScale { updateDrawableSize() }
+            if config.enabledEntries != oldValue.enabledEntries
+                || config.shaderName != oldValue.shaderName
+                || config.presetName != oldValue.presetName {
+                rotationChanged()
+            }
         }
     }
 
@@ -274,25 +296,121 @@ public final class LerpMetalView: NSView {
         guard !available.isEmpty else { return }
         if let name = config.shaderName, available.named(name) != nil {
             // Pinned. A preset the file no longer declares falls back to the
-            // shader's defaults rather than to some other shader.
-            setEntry(LerpRotationEntry(shader: name, preset: config.presetName), from: available)
+            // shader's defaults rather than to some other shader — the rotation
+            // is not involved, so there is no selection to contradict.
+            setEntry(LerpRotationEntry(shader: name, preset: config.presetName),
+                     from: available, allowingDefaultsFallback: true)
         } else {
-            let all = available.rotationEntries()
-            shuffleOrder = Config.rotation(of: config.enabledEntries, from: all).shuffled()
+            refreshShuffleOrder(available)
             lastShuffleSwitch = CACurrentMediaTime()
             advanceShuffle(by: 0)
-            if pipeline == nil, shuffleOrder.count < all.count {
-                // Every enabled entry failed to compile: widen to all of them
-                // rather than presenting nothing.
-                shuffleOrder = all.shuffled()
-                advanceShuffle(by: 0)
+            // There used to be a fallback here: if nothing in the rotation
+            // compiled, widen to *every* entry and try again. It is gone, and
+            // deliberately.
+            //
+            // It could only help in one situation — every look the user chose
+            // is individually broken while some look they rejected is fine —
+            // and it cost the thing this whole feature is for: the one report
+            // that got this called a failure was a deselected shader playing
+            // anyway. Nothing the user switched off may be put on their screen,
+            // and "we had nothing else to show" is not an exception to that.
+            //
+            // Nor is it much of a rescue in practice. Every shader compiles
+            // through the same device and the same prelude, so a failure broad
+            // enough to take out a hundred looks takes out the other fourteen
+            // too. `loadEntry` has already tried every enabled entry in turn by
+            // the time we get here; if none of them built, there is no shader
+            // to show and the honest answer is to show none — loudly, so the
+            // next person to look has something to go on.
+            if pipeline == nil {
+                Self.log.error("""
+                nothing to render: \(self.shuffleOrder.count, privacy: .public) look(s) in the \
+                rotation of \(available.rotationEntries().count, privacy: .public) discovered, \
+                and none of them could be built. Not widening to the looks that were switched \
+                off. Compile errors: \
+                \(self.library.compileErrors.keys.sorted().joined(separator: ", "), privacy: .public)
+                """)
             }
         }
     }
 
+    /// Rebuilds `shuffleOrder` from the rotation `config` currently asks for.
+    ///
+    /// Called before every step of the shuffle, not once at startup. That is the
+    /// whole of the deselection bug: `legacyScreenSaver` builds a host and never
+    /// destroys it, and `start()` only reaches `selectInitialShader` while
+    /// `pipeline` is nil — so a shuffle order computed during the first session
+    /// of the day survived every later one. Deselecting a look in Options…
+    /// wrote the defaults correctly, the next session re-read them correctly,
+    /// and the view then went on shuffling the list it had built before the
+    /// click. The look came back minutes later and the settings all said it
+    /// should not have.
+    ///
+    /// Reshuffles only when the eligible *set* changes, so this can be called on
+    /// every advance without the order being re-rolled underneath the user.
+    ///
+    /// An empty rotation leaves the order empty, and `loadEntry` then does
+    /// nothing at all — so whatever is already on screen stays there. That is
+    /// the last valid pick, and it is the right answer: the alternatives are a
+    /// black screen or the full library, and the full library is how a
+    /// deselected look reached the screen in the first place. Unreachable
+    /// through the gallery, which will not let the last look be switched off.
+    private func refreshShuffleOrder(_ available: [LerpShader]) {
+        let picked = Config.rotation(of: config.enabledEntries, from: available.rotationEntries())
+        guard Set(picked) != Set(shuffleOrder) else { return }
+        shuffleOrder = picked.shuffled()
+    }
+
+    /// The looks this view will actually shuffle through, as it would compute
+    /// them right now. The rotation is a function of `config` plus what is on
+    /// disk and is never cached across a change to either, so this is the whole
+    /// truth about what can appear — which is what makes "a deselected look
+    /// cannot play" a thing a test in another module can check rather than a
+    /// claim in a comment.
+    public var rotationNow: [LerpRotationEntry] {
+        guard config.shaderName == nil else { return [] }
+        return Config.rotation(of: config.enabledEntries,
+                               from: library.discover().rotationEntries())
+    }
+
     /// Steps the shuffle rotation. `by: 0` loads the rotation's first entry.
-    private func advanceShuffle(by offset: Int) {
-        loadEntry(after: currentEntry, offset: offset, in: shuffleOrder, from: library.discover())
+    ///
+    /// Public because it is the one thing about the shuffle a host cannot
+    /// observe by waiting: the interval is minutes long, and the check that
+    /// matters — that a hundred advances never leave the enabled set — is not
+    /// one anybody can sit through. The interval timer calls exactly this, so a
+    /// test that drives it is driving the real path rather than a copy of it.
+    public func advanceShuffle(by offset: Int) {
+        let available = library.discover()
+        refreshShuffleOrder(available)
+        loadEntry(after: currentEntry, offset: offset, in: shuffleOrder, from: available)
+    }
+
+    /// The rotation, or the pin, changed under us.
+    ///
+    /// Nothing to do before the first pipeline exists — `start()` will run
+    /// `selectInitialShader` and pick from the new rotation anyway. After that,
+    /// a look that has just been deselected has to leave the screen now: the
+    /// user pressed OK on a sheet that says this look is out, and making them
+    /// wait out the rest of a five-minute interval to find out whether it took
+    /// is how a setting stops being believed.
+    private func rotationChanged() {
+        guard pipeline != nil else { return }
+        guard config.shaderName == nil else {
+            // Newly pinned: honour it immediately, the same way a fresh start
+            // would have.
+            let available = library.discover()
+            if let name = config.shaderName, available.named(name) != nil {
+                setEntry(LerpRotationEntry(shader: name, preset: config.presetName),
+                         from: available, allowingDefaultsFallback: true)
+            }
+            return
+        }
+        let available = library.discover()
+        refreshShuffleOrder(available)
+        guard let current = currentEntry, !shuffleOrder.contains(current) else { return }
+        lastShuffleSwitch = CACurrentMediaTime()
+        loadEntry(after: nil, offset: 0, in: shuffleOrder, from: available)
     }
 
     /// Loads the first entry that compiles, starting `offset` places from
@@ -320,13 +438,29 @@ public final class LerpMetalView: NSView {
         return false
     }
 
-    /// Compiles the entry's shader and puts it in the entry's preset. A preset
-    /// name the file no longer declares leaves the shader at its defaults — and
-    /// leaves `currentEntry` saying so.
+    /// Compiles the entry's shader and puts it in the entry's preset.
+    ///
+    /// `allowingDefaultsFallback` decides what a preset the file no longer
+    /// declares means, and the two answers are not interchangeable:
+    ///
+    /// - **Pinned** (true): fall back to the shader's declared defaults. The
+    ///   user asked for this shader by name and there is no rotation to
+    ///   contradict, so showing it at its defaults beats showing nothing.
+    /// - **Shuffling** (false): refuse, and let `loadEntry` move to the next
+    ///   entry. A shader's defaults are a rotation entry in their own right and
+    ///   may well be one the user switched off — `spiral/Swirl` in, `spiral`
+    ///   out is a real selection somebody made — so quietly substituting them
+    ///   for a missing preset puts a deselected look on screen. It also lied
+    ///   about it: `currentEntry` said "defaults", which is what the wallpaper
+    ///   handoff then rendered.
     @discardableResult
-    private func setEntry(_ entry: LerpRotationEntry, from available: [LerpShader]) -> Bool {
-        guard let shader = available.named(entry.shader), setShader(shader) else { return false }
-        if let name = entry.preset, let preset = shader.preset(named: name) {
+    private func setEntry(_ entry: LerpRotationEntry, from available: [LerpShader],
+                          allowingDefaultsFallback: Bool = false) -> Bool {
+        guard let shader = available.named(entry.shader) else { return false }
+        let preset = entry.preset.flatMap { shader.preset(named: $0) }
+        if entry.preset != nil, preset == nil, !allowingDefaultsFallback { return false }
+        guard setShader(shader) else { return false }
+        if let preset {
             parameterValues?.apply(preset)
             currentEntry = entry
         }

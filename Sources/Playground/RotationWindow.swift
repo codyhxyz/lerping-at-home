@@ -24,6 +24,12 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     /// What the gallery was last built from, so an edit somewhere else in the
     /// app can be recognised as one shader changing rather than a reload.
     private var sourceFingerprint = ""
+    /// The saved rotation as this window last saw it. A click writes against it
+    /// rather than against nothing, so a gallery left open all afternoon cannot
+    /// undo an Options… sheet that was pressed while it sat there. Updated on
+    /// every load *and* every write, so this window is only ever one click
+    /// behind at worst.
+    private var base: LerpRotationState?
 
     /// A look was double-clicked: go and open it in the editor.
     var onOpen: ((LerpRotationEntry) -> Void)?
@@ -100,7 +106,12 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
         sourceFingerprint = fingerprint
 
         let entries = shaders.rotationEntries()
-        gallery.show(shaders: shaders, enabled: Self.enabled(for: entries, in: defaults))
+        let state = RotationStore.state(discovered: entries, from: defaults)
+        base = state
+        gallery.show(shaders: shaders,
+                     enabled: Set(LerpMetalView.Config.rotation(
+                        of: LerpRotation.enabled(discovered: entries, in: state),
+                        from: entries)))
 
         let started = CFAbsoluteTimeGetCurrent()
         gallery.showProgress(done: 0, total: entries.count)
@@ -148,7 +159,7 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     /// The whole point of the feature: a click writes the screensaver's own
     /// rotation, in the screensaver's own domain, immediately.
     private func persist(_ enabled: Set<LerpRotationEntry>) {
-        RotationStore.save(enabled, entries: gallery.entries, to: defaults)
+        base = RotationStore.save(enabled, entries: gallery.entries, base: base, to: defaults)
     }
 
     func show() {
