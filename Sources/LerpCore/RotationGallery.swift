@@ -1,20 +1,25 @@
 import AppKit
 
 /// The rotation gallery: every look the screensaver can shuffle through, as a
-/// picture you click to put it in or take it out.
+/// picture you click to put it in or take it out — and, since it is the only
+/// place in the project where all 114 looks are visible at once, also the way to
+/// *find* a look and go and edit it.
 ///
 /// A list of 114 checkboxes tells you their names and nothing else — there is no
 /// way to find out what `voronoi/Molten` is except to wait for it to come round.
-/// Here each look is a portrait still of itself, grouped under its shader, and
-/// the on/off state is the difference between a lit tile with an accent frame
-/// and a dimmed one behind a scrim.
+/// Here each look is a portrait still of itself, grouped under its shader, the
+/// on/off state is the difference between a lit tile with an accent frame and a
+/// dimmed one behind a scrim, and pointing at a tile starts it *moving* — from
+/// the still's own instant, so the picture carries on rather than restarting.
 ///
-/// This lives in `LerpCore` because it has two hosts and they cannot see each
+/// This lives in `LerpCore` because it has three hosts and they cannot see each
 /// other's sources: the playground's `RotationWindowController`, which writes
-/// the screensaver's defaults as you click, and the screensaver's own Options…
-/// sheet in `Sources/Saver`, which collects the same set and writes it on OK.
-/// It owns no policy of its own — every toggle goes out through `onChange`, and
-/// what is on comes back in through `show(shaders:enabled:)`.
+/// the screensaver's defaults as you click; the playground's toolbar popover
+/// (`ShaderPicker`), which replaced a plain text dropdown with the same tiles;
+/// and the screensaver's own Options… sheet in `Sources/Saver`, which collects
+/// the same set and writes it on OK. It owns no policy of its own — every toggle
+/// goes out through `onChange`, every "open this one" through `onOpen`, and what
+/// is on comes back in through `show(shaders:enabled:)`.
 
 // MARK: - One look
 
@@ -24,12 +29,28 @@ import AppKit
 /// as a slightly different shade of on.
 public final class RotationTile: NSView {
 
+    /// What a click on the picture means. The two hosts invert each other, on
+    /// purpose, because they are asking different questions.
+    ///
+    /// - `.rotation` — the gallery window and the Options… sheet. A single click
+    ///   *toggles* the look in or out of the rotation: that is the whole job of
+    ///   those two surfaces and it is worth one click. A double-click opens the
+    ///   look in the editor.
+    /// - `.picker` — the playground's toolbar popover. There a click *opens*,
+    ///   because choosing what to edit is the job, and the badge in the picture's
+    ///   corner is the rotation toggle. A look that is out of the rotation is
+    ///   drawn dimmed but is opened by exactly the same click: not shuffling a
+    ///   look is no reason to be unable to edit it.
+    public enum Mode { case rotation, picker }
+
     /// The tile the playground's gallery window uses. The Options… sheet asks
-    /// `size(width:)` for a narrower one; nothing else about the tile changes.
+    /// `size(width:)` for a narrower one, and so does the toolbar popover;
+    /// nothing else about the tile changes.
     public static let size = size(width: 134)
 
     /// 2:3, which is what "vertical profile" means here and what the stills are
-    /// rendered at.
+    /// rendered at. It is also why a live preview can be laid straight over a
+    /// still without either being cropped or squashed.
     private static let imageAspect: CGFloat = 1.5
     /// Caption block under the picture: two lines plus the padding around them.
     private static let captionHeight: CGFloat = 41
@@ -45,71 +66,209 @@ public final class RotationTile: NSView {
 
     public let entry: LerpRotationEntry
     public let shaderTitle: String
+    public var mode: Mode = .rotation { didSet { updateToolTip() } }
+
+    /// Put this look in or take it out of the screensaver's rotation.
     public var onToggle: ((LerpRotationEntry) -> Void)?
+    /// Open this look in the editor.
+    public var onOpen: ((LerpRotationEntry) -> Void)?
+    /// The pointer arrived (`true`) or left (`false`). The gallery answers by
+    /// lending this tile the one shared live view — see `RotationPreviewPlayer`.
+    public var onHover: ((RotationTile, Bool) -> Void)?
 
     public var image: NSImage? { didSet { needsDisplay = true } }
-    public var isOn = true { didSet { if isOn != oldValue { needsDisplay = true } } }
+    public var isOn = true { didSet { if isOn != oldValue { redraw() } } }
     /// Off while the gallery is inactive — a pinned shader means the rotation
     /// does not apply, so its tiles must not answer a click either.
-    public var isLive = true { didSet { needsDisplay = true } }
-    private var isHot = false { didSet { if isHot != oldValue { needsDisplay = true } } }
+    public var isLive = true { didSet { redraw() } }
+    /// The look the editor currently has open, in the picker. Marked so the
+    /// popover answers "where am I?" as well as "what is there?".
+    public var isCurrent = false { didSet { if isCurrent != oldValue { redraw() } } }
+    private var isHot = false { didSet { if isHot != oldValue { redraw() } } }
+
+    /// True while the shared live view is parented in this tile.
+    public private(set) var isPlaying = false {
+        didSet {
+            guard isPlaying != oldValue else { return }
+            chrome?.isHidden = !isPlaying
+            redraw()
+        }
+    }
+
+    private var preview: NSView?
+    private var chrome: Overlay?
 
     public init(entry: LerpRotationEntry, shaderTitle: String, size: NSSize = RotationTile.size) {
         self.entry = entry
         self.shaderTitle = shaderTitle
         super.init(frame: NSRect(origin: .zero, size: size))
-        toolTip = entry.shader + (entry.preset.map { " · " + $0 } ?? " · defaults")
+        updateToolTip()
     }
 
     public required init?(coder: NSCoder) { nil }
 
     public override var isFlipped: Bool { true }
 
+    private func redraw() {
+        needsDisplay = true
+        chrome?.needsDisplay = true
+    }
+
+    private func updateToolTip() {
+        let look = entry.shader + (entry.preset.map { " · " + $0 } ?? " · defaults")
+        toolTip = look + (mode == .picker
+            ? " — click to open it; the badge puts it in or out of the rotation"
+            : " — click to put it in or out of the rotation; double-click to open it")
+    }
+
+    // MARK: Pointer
+
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: bounds,
-                                       options: [.mouseEnteredAndExited, .activeInKeyWindow],
+        // `.inVisibleRect` keeps the tracking rect in step with the scroll view
+        // by itself, so a tile that scrolls out from under a stationary pointer
+        // is exited rather than left thinking it is still hovered.
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseEnteredAndExited, .activeInKeyWindow,
+                                                 .inVisibleRect],
                                        owner: self))
     }
 
-    public override func mouseEntered(with event: NSEvent) { isHot = isLive }
-    public override func mouseExited(with event: NSEvent) { isHot = false }
+    public override func mouseEntered(with event: NSEvent) {
+        isHot = isLive
+        guard isLive else { return }
+        onHover?(self, true)
+    }
 
+    public override func mouseExited(with event: NSEvent) {
+        isHot = false
+        onHover?(self, false)
+    }
+
+    /// The inverted primary actions, in one place.
+    ///
+    /// The double-click in `.rotation` mode has one wrinkle worth stating: the
+    /// first click of it has already fired `onToggle`, because a single click has
+    /// to be instant — waiting out the double-click interval before honouring
+    /// every click would make the gallery's whole point feel laggy. So the second
+    /// click reports itself as `.open`, and the gallery puts the toggle back
+    /// before opening. Toggling is its own inverse, so the rotation ends exactly
+    /// where it started and opening a look never silently changes it.
     public override func mouseDown(with event: NSEvent) {
         guard isLive else { return }
-        onToggle?(entry)
+        switch mode {
+        case .rotation:
+            if event.clickCount == 1 { onToggle?(entry) }
+            else if event.clickCount == 2 { onOpen?(entry) }
+        case .picker:
+            let point = convert(event.locationInWindow, from: nil)
+            if badgeHitRect.contains(point) { onToggle?(entry) } else { onOpen?(entry) }
+        }
+    }
+
+    // MARK: The live preview
+
+    /// Where the shared live view goes, and where the still is drawn — the same
+    /// rectangle, so one replaces the other exactly.
+    public var pictureFrame: NSRect {
+        let width = bounds.width - 8
+        return NSRect(x: 4, y: 4, width: width, height: (width * Self.imageAspect).rounded())
+    }
+
+    /// The hover halo is drawn 2.5 points *outside* the picture, so the overlay
+    /// has to be bigger than the picture or it would clip the one piece of
+    /// chrome that says the pointer is here.
+    private static let chromeInset: CGFloat = 4
+
+    /// Takes the shared live view in, under the chrome overlay so the frame, the
+    /// badge, the halo and the scrim still read over a moving picture.
+    public func attachPreview(_ view: NSView) {
+        let overlay = chrome ?? makeChrome()
+        overlay.isHidden = false
+        view.frame = pictureFrame
+        addSubview(view, positioned: .below, relativeTo: overlay)
+        preview = view
+        isPlaying = true
+    }
+
+    public func detachPreview() {
+        preview?.removeFromSuperview()
+        preview = nil
+        isPlaying = false
+    }
+
+    private var chromeFrame: NSRect {
+        pictureFrame.insetBy(dx: -Self.chromeInset, dy: -Self.chromeInset)
+    }
+
+    private func makeChrome() -> Overlay {
+        let overlay = Overlay(frame: chromeFrame)
+        overlay.tile = self
+        addSubview(overlay)
+        chrome = overlay
+        return overlay
+    }
+
+    public override func layout() {
+        super.layout()
+        preview?.frame = pictureFrame
+        chrome?.frame = chromeFrame
+    }
+
+    /// Everything that is drawn *over* the picture, as a view rather than as more
+    /// lines in `draw`, because while a preview is playing the picture is a
+    /// `CAMetalLayer` subview and anything the tile draws itself is underneath
+    /// it. Both states call `drawChrome`, so there is one appearance and not two.
+    ///
+    /// It never takes a click: the tile owns the whole hit target, including the
+    /// badge, so the decision about what a click means stays in `mouseDown`.
+    private final class Overlay: NSView {
+        weak var tile: RotationTile?
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func draw(_ dirtyRect: NSRect) {
+            tile?.drawChrome(in: bounds.insetBy(dx: RotationTile.chromeInset,
+                                                dy: RotationTile.chromeInset))
+        }
     }
 
     // MARK: Accessibility
 
-    /// A tile is a checkbox that happens to be a picture, and it says so. That
-    /// is what makes the gallery usable without sight of it — and it is also the
-    /// handle `make test-load` presses the sheet's tiles through, because the
-    /// loadtest links AppKit and ScreenSaver and nothing else and so cannot see
-    /// this type at all. A test that drives the UI the way an assistive client
-    /// does is testing the thing users get.
+    /// A tile is a checkbox that happens to be a picture — or, in the picker, a
+    /// button that happens to be a picture — and it says so. That is what makes
+    /// the gallery usable without sight of it, and it is also the handle
+    /// `make test-load` presses the sheet's tiles through, because the loadtest
+    /// links AppKit and ScreenSaver and nothing else and so cannot see this type
+    /// at all. A test that drives the UI the way an assistive client does is
+    /// testing the thing users get.
     public override func isAccessibilityElement() -> Bool { true }
-    public override func accessibilityRole() -> NSAccessibility.Role? { .checkBox }
+    public override func accessibilityRole() -> NSAccessibility.Role? {
+        mode == .picker ? .button : .checkBox
+    }
     public override func accessibilityLabel() -> String? {
         entry.shader + " · " + entry.displayName
+            + (mode == .picker && !isOn ? " (not in the rotation)" : "")
     }
     public override func accessibilityValue() -> Any? { isOn ? 1 : 0 }
     public override func isAccessibilityEnabled() -> Bool { isLive }
     public override func accessibilityPerformPress() -> Bool {
         guard isLive else { return false }
-        onToggle?(entry)
+        if mode == .picker { onOpen?(entry) } else { onToggle?(entry) }
+        return true
+    }
+    /// The non-primary action of each mode, so both are reachable without a
+    /// mouse: opening from the gallery, and toggling the rotation from the picker.
+    public override func accessibilityPerformShowMenu() -> Bool {
+        guard isLive else { return false }
+        if mode == .picker { onToggle?(entry) } else { onOpen?(entry) }
         return true
     }
 
-    /// Where the still goes. The rest of the tile is the caption.
-    private var imageRect: NSRect {
-        let width = bounds.width - 8
-        return NSRect(x: 4, y: 4, width: width, height: (width * Self.imageAspect).rounded())
-    }
+    // MARK: Drawing
 
     public override func draw(_ dirtyRect: NSRect) {
-        let frame = imageRect
+        let frame = pictureFrame
         let path = NSBezierPath(roundedRect: frame, xRadius: 7, yRadius: 7)
 
         // The picture. Stills are rendered at exactly the tile's 2:3, so this
@@ -131,11 +290,25 @@ public final class RotationTile: NSView {
                                      y: frame.midY - waiting.size().height / 2))
         }
 
-        // Off looks off: a scrim over the picture, not a tint of it.
+        // While a preview is playing the overlay draws these instead, on top of
+        // the live layer.
+        if !isPlaying { drawChrome(in: frame) }
+        drawCaption(below: frame)
+    }
+
+    /// The scrim, the frame, the hover halo, the current-look mark and the badge
+    /// — everything that belongs over the picture, wherever the picture came from.
+    private func drawChrome(in frame: NSRect) {
+        let path = NSBezierPath(roundedRect: frame, xRadius: 7, yRadius: 7)
+
+        // Off looks off: a scrim over the picture, not a tint of it. Lifted while
+        // a preview is playing — you pointed at it to see it, and the grey frame
+        // and the hollow badge still say it is out of the rotation.
         if !isOn {
             NSGraphicsContext.saveGraphicsState()
             path.addClip()
-            NSColor(srgbRed: 0.055, green: 0.06, blue: 0.075, alpha: 0.74).setFill()
+            NSColor(srgbRed: 0.055, green: 0.06, blue: 0.075,
+                    alpha: isPlaying ? 0.30 : 0.74).setFill()
             frame.fill()
             NSGraphicsContext.restoreGraphicsState()
         }
@@ -157,12 +330,33 @@ public final class RotationTile: NSView {
             halo.stroke()
         }
 
+        // The look the editor has open, in the corner the badge does not use. A
+        // dark disc under an accent core, so it reads over a pale still as well
+        // as over a dark one — half these looks are nearly white.
+        if isCurrent {
+            let dot = NSRect(x: frame.minX + 6, y: frame.minY + 6, width: 14, height: 14)
+            NSColor(srgbRed: 0.04, green: 0.07, blue: 0.11, alpha: 0.88).setFill()
+            NSBezierPath(ovalIn: dot).fill()
+            Self.accent.setFill()
+            NSBezierPath(ovalIn: dot.insetBy(dx: 3.5, dy: 3.5)).fill()
+        }
+
         drawBadge(in: frame)
-        drawCaption(below: frame)
     }
 
+    /// Where the badge is. In `.picker` mode it is the rotation toggle, so it is
+    /// also a hit target and gets a little slack around it — 20 points is a small
+    /// thing to ask someone to hit.
+    private var badgeRect: NSRect {
+        let frame = pictureFrame, side: CGFloat = 20
+        return NSRect(x: frame.maxX - side - 6, y: frame.minY + 6, width: side, height: side)
+    }
+
+    private var badgeHitRect: NSRect { badgeRect.insetBy(dx: -6, dy: -6) }
+
     /// Filled tick when in, empty ring when out. The redundant signal, for
-    /// anyone who cannot rely on the frame colour.
+    /// anyone who cannot rely on the frame colour — and, in the picker, the
+    /// control itself.
     private func drawBadge(in frame: NSRect) {
         let side: CGFloat = 20
         let box = NSRect(x: frame.maxX - side - 6, y: frame.minY + 6, width: side, height: side)
@@ -190,15 +384,16 @@ public final class RotationTile: NSView {
 
     private func drawCaption(below frame: NSRect) {
         let title = entry.displayName
-        let strong: NSColor = isOn ? EditorTheme.text : NSColor(srgbRed: 0.44, green: 0.47, blue: 0.53, alpha: 1)
+        var strong: NSColor = isOn ? EditorTheme.text : NSColor(srgbRed: 0.44, green: 0.47, blue: 0.53, alpha: 1)
         let weak: NSColor = isOn ? EditorTheme.dim : NSColor(srgbRed: 0.31, green: 0.34, blue: 0.39, alpha: 1)
+        if isCurrent { strong = Self.accent }
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byTruncatingTail
         style.alignment = .center
 
         let box = NSRect(x: 4, y: frame.maxY + 6, width: bounds.width - 8, height: 15)
         NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
+            .font: NSFont.systemFont(ofSize: 11.5, weight: isCurrent ? .semibold : .medium),
             .foregroundColor: strong, .paragraphStyle: style,
         ]).draw(in: box)
         NSAttributedString(string: shaderTitle, attributes: [
@@ -206,21 +401,67 @@ public final class RotationTile: NSView {
             .foregroundColor: weak, .paragraphStyle: style,
         ]).draw(in: box.offsetBy(dx: 0, dy: 15))
     }
+
+    // MARK: Test hooks
+
+    /// Drives the pointer the way AppKit does — a real enter/exit event through
+    /// the tile's own handler, so a tile whose tracking is not wired up fails.
+    public func synthesizeHover(_ inside: Bool) {
+        guard let event = NSEvent.enterExitEvent(
+            with: inside ? .mouseEntered : .mouseExited,
+            location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window?.windowNumber ?? 0, context: nil,
+            eventNumber: 0, trackingNumber: 0, userData: nil) else { return }
+        if inside { mouseEntered(with: event) } else { mouseExited(with: event) }
+    }
+
+    /// A real click, at a real point, with a real click count — so the badge/body
+    /// split and the single/double split are both exercised rather than assumed.
+    @discardableResult
+    public func synthesizeClick(at point: NSPoint, clickCount: Int) -> Bool {
+        guard let event = NSEvent.mouseEvent(
+            with: .leftMouseDown, location: convert(point, to: nil), modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window?.windowNumber ?? 0, context: nil,
+            eventNumber: 0, clickCount: clickCount, pressure: 1) else { return false }
+        mouseDown(with: event)
+        return true
+    }
+
+    /// The middle of the picture — a point that is the tile's body in either
+    /// mode, never the badge.
+    public var bodyPoint: NSPoint { NSPoint(x: pictureFrame.midX, y: pictureFrame.midY) }
+    public var badgePoint: NSPoint { NSPoint(x: badgeRect.midX, y: badgeRect.midY) }
 }
 
 // MARK: - The gallery
 
 /// Search bar, a scrolling grid of tiles grouped by shader, and a status line.
-public final class RotationGalleryView: NSView {
+public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
 
     /// The user changed the rotation. The set is the new one, in full.
     public var onChange: ((Set<LerpRotationEntry>) -> Void)?
+    /// The user asked to edit a look: double-click in the gallery, a click in
+    /// the picker, or ⏎ on the filter field. nil in a host that has no editor to
+    /// open one in — the screensaver's Options… sheet — and the tiles simply do
+    /// not offer it there.
+    public var onOpen: ((LerpRotationEntry) -> Void)?
     /// The Regenerate button, when the host asked for one.
     public var onRegenerate: (() -> Void)?
 
     public private(set) var shaders: [LerpShader] = []
     public private(set) var entries: [LerpRotationEntry] = []
     public private(set) var enabled: Set<LerpRotationEntry> = []
+    /// The look the host's editor has open, marked in the grid.
+    public private(set) var currentEntry: LerpRotationEntry?
+
+    /// What a click means here. See `RotationTile.Mode`.
+    public let mode: RotationTile.Mode
+
+    /// The one live view the grid lends to the tile under the pointer.
+    public let preview = RotationPreviewPlayer()
+    /// Off for a host that would rather not spend a GPU on hover.
+    public var previewsOnHover = true
 
     private let search = NSSearchField()
     private let countLabel = Chrome.label("", size: 11, color: EditorTheme.text)
@@ -262,12 +503,17 @@ public final class RotationGalleryView: NSView {
 
     /// - Parameters:
     ///   - tileSize: how big one look is drawn. The Options… sheet has less
-    ///     room than the playground's window and asks for a smaller tile.
+    ///     room than the playground's window and asks for a smaller tile; so
+    ///     does the toolbar popover.
     ///   - showsRegenerate: the playground offers Regenerate because it edits
     ///     shaders; nothing in the Options… sheet can change what a still shows.
-    public init(frame frameRect: NSRect, tileSize: NSSize, showsRegenerate: Bool) {
+    ///   - mode: what a click on a tile does. Defaulted so the Options… sheet,
+    ///     which is the surface whose behaviour must not change, needs no edit.
+    public init(frame frameRect: NSRect, tileSize: NSSize, showsRegenerate: Bool,
+                mode: RotationTile.Mode = .rotation) {
         self.tileSize = tileSize
         self.showsRegenerate = showsRegenerate
+        self.mode = mode
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = EditorTheme.background.cgColor
@@ -277,16 +523,21 @@ public final class RotationGalleryView: NSView {
 
     public required init?(coder: NSCoder) { nil }
 
+    deinit { NotificationCenter.default.removeObserver(self) }
+
     // MARK: Construction
 
     private func build() {
-        search.placeholderString = "Filter shaders and presets"
+        search.placeholderString = mode == .picker
+            ? "Type to filter — ⏎ opens the first"
+            : "Filter shaders and presets"
         search.controlSize = .small
         search.font = .systemFont(ofSize: 11)
         search.sendsWholeSearchString = false
         search.sendsSearchStringImmediately = true
         search.target = self
         search.action = #selector(searchChanged)
+        search.delegate = self
         search.identifier = NSUserInterfaceItemIdentifier("rotation-search")
         search.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
@@ -296,16 +547,24 @@ public final class RotationGalleryView: NSView {
         progress.isHidden = true
         progress.widthAnchor.constraint(equalToConstant: 130).isActive = true
 
-        let selectAll = Chrome.button("Select All", target: self, action: #selector(selectAllLooks))
-        let deselectAll = Chrome.button("Deselect All", target: self, action: #selector(deselectAllLooks))
-        buttons = [selectAll, deselectAll]
-        var controls: [NSView] = [search, selectAll, deselectAll]
-        if showsRegenerate {
-            let regenerate = Chrome.button("Regenerate", target: self, action: #selector(regenerate))
-            buttons.append(regenerate)
-            controls.append(regenerate)
-        }
         countLabel.identifier = NSUserInterfaceItemIdentifier("rotation-count")
+        var controls: [NSView] = [search]
+        if mode == .picker {
+            // The picker inverts the primary action, so it says so once, here,
+            // rather than leaving it to be discovered by clicking something.
+            controls.append(Chrome.label("Click opens · badge toggles rotation", size: 11))
+        } else {
+            let selectAll = Chrome.button("Select All", target: self, action: #selector(selectAllLooks))
+            let deselectAll = Chrome.button("Deselect All", target: self,
+                                            action: #selector(deselectAllLooks))
+            buttons = [selectAll, deselectAll]
+            controls += [selectAll, deselectAll]
+            if showsRegenerate {
+                let regenerate = Chrome.button("Regenerate", target: self, action: #selector(regenerate))
+                buttons.append(regenerate)
+                controls.append(regenerate)
+            }
+        }
         controls += [Chrome.flexible(), progress, countLabel]
         let bar = Chrome.bar(controls)
 
@@ -317,6 +576,15 @@ public final class RotationGalleryView: NSView {
         scroll.backgroundColor = EditorTheme.background
         scroll.borderType = .noBorder
         scroll.setContentHuggingPriority(.init(1), for: .vertical)
+
+        // Scrolling moves tiles under a stationary pointer. `.inVisibleRect`
+        // tracking keeps the enter/exit bookkeeping honest, but a preview that
+        // carries on animating while the grid slides past it is still wrong, so
+        // the scroll ends it outright.
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled),
+                                               name: NSView.boundsDidChangeNotification,
+                                               object: scroll.contentView)
 
         note.identifier = NSUserInterfaceItemIdentifier("rotation-note")
         let footer = Chrome.bar([note, Chrome.flexible()], height: 24)
@@ -338,6 +606,9 @@ public final class RotationGalleryView: NSView {
     /// keep their images, so a shader being edited redraws one row rather than
     /// blanking the whole gallery.
     public func show(shaders: [LerpShader], enabled: Set<LerpRotationEntry>) {
+        // A tile that is about to be taken away must not still be holding the
+        // shared live view.
+        preview.stop()
         self.shaders = shaders
         self.entries = shaders.rotationEntries()
         self.enabled = enabled
@@ -376,7 +647,10 @@ public final class RotationGalleryView: NSView {
             }
             for entry in [shader].rotationEntries() where tiles[entry] == nil {
                 let tile = RotationTile(entry: entry, shaderTitle: shader.displayName, size: tileSize)
+                tile.mode = mode
                 tile.onToggle = { [weak self] in self?.toggle($0) }
+                tile.onOpen = { [weak self] in self?.open($0) }
+                tile.onHover = { [weak self] tile, inside in self?.hovered(tile, inside) }
                 tile.identifier = NSUserInterfaceItemIdentifier("entry:" + entry.key)
                 tile.isLive = isActive
                 canvas.addSubview(tile)
@@ -397,6 +671,12 @@ public final class RotationGalleryView: NSView {
         tiles.values.forEach { $0.image = nil }
     }
 
+    /// Marks the look the host's editor has open.
+    public func showCurrent(_ entry: LerpRotationEntry?) {
+        currentEntry = entry
+        for (key, tile) in tiles { tile.isCurrent = key == entry }
+    }
+
     public func showProgress(done: Int, total: Int) {
         progress.isHidden = done >= total
         progress.maxValue = Double(max(total, 1))
@@ -412,6 +692,7 @@ public final class RotationGalleryView: NSView {
     public func setActive(_ active: Bool, note inactive: String? = nil) {
         isActive = active
         inactiveNote = inactive
+        if !active { preview.stop() }
         search.isEnabled = active
         buttons.forEach { $0.isEnabled = active }
         headers.values.forEach { $0.isEnabled = active }
@@ -420,11 +701,52 @@ public final class RotationGalleryView: NSView {
         refresh()
     }
 
+    /// Puts the caret in the filter field. The popover calls it as it opens, so
+    /// typing is the first thing that works — which is the one thing the text
+    /// dropdown it replaced did better than a grid of pictures.
+    public func focusSearch() {
+        window?.makeFirstResponder(search)
+    }
+
+    // MARK: Hover
+
+    /// The pointer arrived on, or left, a tile.
+    private func hovered(_ tile: RotationTile, _ inside: Bool) {
+        guard previewsOnHover else { return }
+        guard inside else { return preview.leave(tile) }
+        guard isActive, let shader = shaders.named(tile.entry.shader) else { return }
+        preview.want(tile, shader: shader)
+    }
+
+    @objc private func scrolled() { preview.stop() }
+
+    @objc private func windowResignedKey() { preview.stop() }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification,
+                                                  object: nil)
+        guard let window else { return preview.stop() }
+        NotificationCenter.default.addObserver(self, selector: #selector(windowResignedKey),
+                                               name: NSWindow.didResignKeyNotification,
+                                               object: window)
+    }
+
     // MARK: Model out
 
     private func toggle(_ entry: LerpRotationEntry) {
         if enabled.contains(entry) { enabled.remove(entry) } else { enabled.insert(entry) }
         commit()
+    }
+
+    /// Opening from the gallery arrives on the *second* click of a double-click,
+    /// and the first one already toggled — see `RotationTile.mouseDown`. Undoing
+    /// it here rather than in the tile keeps that a model operation: toggling is
+    /// its own inverse, so the rotation is exactly where it was and the host is
+    /// told about it either way.
+    private func open(_ entry: LerpRotationEntry) {
+        if mode == .rotation { toggle(entry) }
+        onOpen?(entry)
     }
 
     /// A shader heading owns its whole group: if every look under it is in, it
@@ -465,8 +787,20 @@ public final class RotationGalleryView: NSView {
 
     @objc private func searchChanged() {
         filter = search.stringValue.trimmingCharacters(in: .whitespaces)
+        preview.stop()          // the tile it was on may be about to be hidden
         refresh()
         canvas.needsLayout = true
+    }
+
+    /// Typeahead. The dropbox this grid replaced had one thing over it — you
+    /// could type the first few letters of a shader and hit return — so the
+    /// filter field keeps it: ⏎ opens the first look still showing.
+    public func control(_ control: NSControl, textView: NSTextView,
+                        doCommandBy selector: Selector) -> Bool {
+        guard control === search, selector == #selector(NSResponder.insertNewline(_:)),
+              let first = visibleEntries().first, onOpen != nil else { return false }
+        onOpen?(first)
+        return true
     }
 
     private func commit() {
@@ -492,6 +826,7 @@ public final class RotationGalleryView: NSView {
     private func refresh() {
         for (entry, tile) in tiles {
             tile.isOn = enabled.contains(entry)
+            tile.isCurrent = entry == currentEntry
             tile.isHidden = !matches(entry)
         }
         for name in order {
@@ -612,6 +947,7 @@ public final class RotationGalleryView: NSView {
     public func header(for shader: String) -> NSButton? { headers[shader] }
     public var noteText: String { note.stringValue }
     public var visibleTileCount: Int { tiles.values.filter { !$0.isHidden }.count }
+    public var filterText: String { search.stringValue }
 
     /// `make test-load` links AppKit and the ScreenSaver framework and nothing
     /// else, so it cannot name a single type in this file. These two are
@@ -624,7 +960,42 @@ public final class RotationGalleryView: NSView {
     /// a tile that is not wired up fails the test.
     public func click(_ entry: LerpRotationEntry) {
         guard let tile = tiles[entry] else { return }
-        tile.onToggle?(tile.entry)
+        tile.synthesizeClick(at: tile.bodyPoint, clickCount: 1)
+    }
+
+    /// The second click of a double-click on the picture: what "go to this look"
+    /// is in the gallery.
+    public func doubleClick(_ entry: LerpRotationEntry) {
+        guard let tile = tiles[entry] else { return }
+        tile.synthesizeClick(at: tile.bodyPoint, clickCount: 1)
+        tile.synthesizeClick(at: tile.bodyPoint, clickCount: 2)
+    }
+
+    /// A click on the corner badge: what "in or out of the rotation" is in the
+    /// picker.
+    public func clickBadge(_ entry: LerpRotationEntry) {
+        guard let tile = tiles[entry] else { return }
+        tile.synthesizeClick(at: tile.badgePoint, clickCount: 1)
+    }
+
+    public func hoverEnter(_ entry: LerpRotationEntry) { tiles[entry]?.synthesizeHover(true) }
+    public func hoverExit(_ entry: LerpRotationEntry) { tiles[entry]?.synthesizeHover(false) }
+
+    /// Scrolls the grid the way a scroller does — through the clip view, so the
+    /// bounds notification the hover handling listens for is the real one.
+    /// False when the grid had nowhere to go, which a test has to know about
+    /// rather than read as a pass.
+    @discardableResult
+    public func scrollBy(_ delta: CGFloat) -> Bool {
+        let clip = scroll.contentView
+        let before = clip.bounds.origin
+        // Clamped here rather than left to the clip view: `scroll(to:)` takes a
+        // point at its word, and a large negative one leaves the grid off the
+        // top of its own scroller.
+        let limit = max(0, canvas.frame.height - clip.bounds.height)
+        clip.scroll(to: NSPoint(x: before.x, y: min(max(0, before.y + delta), limit)))
+        scroll.reflectScrolledClipView(clip)
+        return clip.bounds.origin != before
     }
 
     /// Fires a shader heading through its own target/action.
@@ -636,6 +1007,12 @@ public final class RotationGalleryView: NSView {
     public func setFilter(_ text: String) {
         search.stringValue = text
         searchChanged()
+    }
+
+    /// ⏎ in the filter field, through the very delegate callback AppKit calls.
+    @discardableResult
+    public func pressReturnInSearch() -> Bool {
+        control(search, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:)))
     }
 
     public func clickSelectAll() { selectAllLooks() }

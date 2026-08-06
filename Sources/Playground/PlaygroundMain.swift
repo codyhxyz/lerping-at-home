@@ -309,6 +309,8 @@ enum MainMenu {
         ]))
 
         main.addItem(submenu("Shader", [
+            item("Open Look…", #selector(PlaygroundWindowController.showShaderPicker(_:)), "o"),
+            .separator(),
             item("Recompile", Selector(("recompile:")), "r"),
             item("Play / Pause", Selector(("togglePlayPause:")), "\\"),
             item("Re-roll Seed", Selector(("rerollSeed:")), "r", [.command, .shift]),

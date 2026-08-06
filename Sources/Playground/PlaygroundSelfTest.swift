@@ -966,8 +966,18 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
     private func colorMenu(_ param: LerpParam) {
         // Task 2's editor is a menu item rather than two more fields per row,
         // so the scope has to be legible from the item's title.
-        var preset = controller.activeMapping!
-        preset.bind(preset.binding(for: param.name, component: .hue)!.withRange(low: 0.25, high: 0.75))
+        //
+        // Guarded rather than force-unwrapped: a MIDI round trip that does not
+        // come back is a *failed check*, and a run that traps here reports
+        // nothing at all — not the checks it had already passed, and not the
+        // ones after it. (Observed once, on a machine where Core MIDI had been
+        // handed a dozen virtual sources in a row.)
+        guard var preset = controller.activeMapping,
+              let hue = preset.binding(for: param.name, component: .hue) else {
+            return check("the range editor reports its scope in the menu", false,
+                         "no hue binding survived the MIDI round trip")
+        }
+        preset.bind(hue.withRange(low: 0.25, high: 0.75))
         controller.applyMapping(preset)
         check("the range editor reports its scope in the menu",
               controller.inspector.midiMenuTitles(named: param.name, component: .hue)
@@ -1361,8 +1371,460 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         check("the still hash is stable across processes, not per-launch",
               RotationThumbnails.hash("lerping") == "4d064d192fb42960",
               RotationThumbnails.hash("lerping"))
-        handOffRotation()
-        finish()
+        hoverChecks()          // async; chains on through the picker to finish()
+    }
+
+    // MARK: Hover-to-play
+
+    /// The claim: pointing at a tile starts it moving *from the still's own
+    /// instant*, so the picture carries on instead of snapping back to t=0.
+    ///
+    /// Everything below goes through the tile's real `mouseEntered`/`mouseExited`
+    /// with real enter/exit events — the self-test's window is invisible and
+    /// takes no mouse, so a hover has to be synthesised, but it is synthesised at
+    /// the point AppKit delivers one and not below it. A tile whose tracking is
+    /// not wired up fails.
+    private var hoverTarget: LerpRotationEntry?
+    private var hoverSweep: [LerpRotationEntry] = []
+
+    private func hoverChecks() {
+        guard let gallery = controller.rotation?.gallery, galleryEntries.count > 8 else {
+            return pickerChecks()
+        }
+        // A look with a preset, so "the preset the still was rendered with is
+        // the preset the live view is wearing" has something to be true about —
+        // and one near the top of the grid, so the capture below has it on
+        // screen without scrolling, which would end the hover.
+        guard let target = galleryEntries.dropFirst(6).first(where: { $0.preset != nil }) else {
+            return pickerChecks()
+        }
+        hoverTarget = target
+        check("nothing is playing until something is pointed at",
+              !gallery.preview.isPlaying)
+
+        // A pointer swept across the grid: every tile entered, none of them left
+        // long enough to start. Only the one it came to rest on may play, or a
+        // sweep would compile a pipeline per tile to show none of them.
+        hoverSweep = Array(galleryEntries.prefix(6)) + [target]
+        for entry in hoverSweep { gallery.hoverEnter(entry) }
+        check("a pointer swept across the grid starts nothing on the way past",
+              !gallery.preview.isPlaying, "\(hoverSweep.count) tiles entered in one turn")
+        wait(until: { gallery.preview.isPlaying }, timeout: 5, then: hoverStarted)
+    }
+
+    private func hoverStarted() {
+        guard let gallery = controller.rotation?.gallery, let target = hoverTarget else {
+            return pickerChecks()
+        }
+        let player = gallery.preview
+        guard let view = player.liveView, let tile = gallery.tile(for: target) else {
+            check("pointing at a tile starts it playing", false, "no live view")
+            return pickerChecks()
+        }
+        check("pointing at a tile starts it playing", player.isPlaying && view.isRunning,
+              player.playingEntry?.key ?? "nothing")
+        check("only the tile the pointer came to rest on is playing",
+              player.playingEntry == target
+                  && hoverSweep.dropLast().allSatisfy { gallery.tile(for: $0)?.isPlaying == false },
+              "\(player.playingEntry?.key ?? "nothing"), wanted \(target.key)")
+        check("the one live view was reparented into that tile, not built per tile",
+              view.superview === tile && tile.isPlaying,
+              view.superview.map { String(describing: type(of: $0)) } ?? "nowhere")
+        check("the live view covers exactly where the still is drawn",
+              view.frame == tile.pictureFrame,
+              "\(NSStringFromRect(view.frame)) vs \(NSStringFromRect(tile.pictureFrame))")
+        check("it is drawing frames", view.isRunning && !view.isParked)
+
+        // The live layer is on top of the whole picture, so a click on a playing
+        // tile lands on *it* first. It has no mouse handling of its own, so the
+        // event walks up to the tile — but "walks up to the tile" is the part
+        // that would silently stop working, so it is checked rather than assumed.
+        let hit = tile.superview.flatMap { $0.hitTest(tile.convert(tile.bodyPoint, to: $0)) }
+        var responder: NSResponder? = hit
+        var reachesTile = false
+        while let step = responder, !reachesTile {
+            reachesTile = step === tile
+            responder = step.nextResponder
+        }
+        check("a click on a playing tile still reaches the tile, through the live layer",
+              hit != nil && reachesTile,
+              hit.map { String(describing: type(of: $0)) } ?? "nothing hit")
+
+        // The continuity claim, in three parts: the clock, the seed and the
+        // parameters. A frame is a pure function of the four, so all four
+        // agreeing with the recipe the still was baked at *is* "no jump".
+        let recipe = player.recipe
+        check("the clock resumed at the still's own time rather than restarting",
+              abs(view.time - CFTimeInterval(recipe.time)) < 0.6 && view.time > 1,
+              String(format: "t = %.3f, the still was baked at t = %.1f", view.time, recipe.time))
+        check("…and at the still's seed", view.seed == recipe.seed,
+              "\(view.seed) vs \(recipe.seed)")
+        check("…and wearing the still's preset, proved by the packed bytes",
+              livePackedTailMatchesStill(target, view: view),
+              target.key)
+        continuityPicture(target, tile: tile, view: view)
+        captureHoveredTile(tile)
+
+        gallery.hoverExit(target)
+        check("taking the pointer away puts the still back",
+              !player.isPlaying && !tile.isPlaying && view.superview == nil && !view.isRunning,
+              player.playingEntry?.key ?? "stopped")
+
+        scrollAndKeyChecks(gallery, target: target)
+    }
+
+    /// The parameters the live view is holding are the ones the still was
+    /// rendered with: the shader's declared defaults, plus the entry's preset.
+    private func livePackedTailMatchesStill(_ entry: LerpRotationEntry,
+                                            view: LerpMetalView) -> Bool {
+        guard let shader = controller.metalView.shaderLibrary.shader(named: entry.shader)
+        else { return false }
+        var expected = shader.defaultParameterValues()
+        if let name = entry.preset, let preset = shader.preset(named: name) { expected.apply(preset) }
+        return view.parameterValues?.packedTail == expected.packedTail
+    }
+
+    /// …and the same thing again as a picture, because "no visual jump" is a
+    /// claim about pixels. Renders the frame the live view is showing — its own
+    /// shader, its own parameters, its own seed, at the recipe's time — and
+    /// compares it to the still the tile was showing a moment ago. Both are
+    /// written out so the two can be looked at side by side.
+    private func continuityPicture(_ entry: LerpRotationEntry, tile: RotationTile,
+                                   view: LerpMetalView) {
+        guard let shader = controller.metalView.shaderLibrary.shader(named: entry.shader),
+              let still = tile.image else {
+            return check("the first live frame is the still it replaced", false, "no still to compare")
+        }
+        let library = controller.metalView.shaderLibrary
+        guard let renderer = LerpRenderer(device: library.device) else { return }
+        let recipe = controller.rotation!.gallery.preview.recipe
+        let directory = URL(fileURLWithPath: "build/hover-continuity")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let slug = entry.key.replacingOccurrences(of: "/", with: "-")
+        let liveURL = directory.appendingPathComponent(slug + "-first-live-frame.png")
+        let stillURL = directory.appendingPathComponent(slug + "-baked-still.png")
+
+        let result = LerpSnapshot.render(shader: shader, library: library, renderer: renderer,
+                                         width: recipe.width, height: recipe.height,
+                                         time: recipe.time, seed: view.seed,
+                                         params: view.parameterValues, to: liveURL)
+        guard result.error == nil, let live = NSImage(contentsOf: liveURL) else {
+            return check("the first live frame is the still it replaced", false,
+                         result.error ?? "unreadable render")
+        }
+        writePNG(still, to: stillURL)
+
+        let size = NSSize(width: recipe.width, height: recipe.height)
+        guard let a = samples(of: still, size: size), let b = samples(of: live, size: size) else {
+            return check("the first live frame is the still it replaced", false, "could not sample")
+        }
+        let diffs = zip(a, b).map { abs(Int($0) - Int($1)) }
+        let worst = diffs.max() ?? 255
+        let mean = Double(diffs.reduce(0, +)) / Double(max(diffs.count, 1))
+        check("the first live frame is the still it replaced, pixel for pixel",
+              mean < 1.5 && worst < 24,
+              String(format: "%d×%d, mean |Δ| %.2f/255, worst %d/255",
+                     recipe.width, recipe.height, mean, worst))
+        print("     wrote \(directory.path)/")
+    }
+
+    /// One tile mid-hover, drawn by AppKit. `cacheDisplay` cannot draw a
+    /// `CAMetalLayer`, so what shows in the picture area is the still sitting
+    /// underneath the live layer — which is itself worth seeing, because it is
+    /// why there is no gap on the way in or out. What the picture is *for* is
+    /// the ring around it: frame, hover halo and badge, all drawn by the chrome
+    /// overlay, which is the only way they can be on top of a Metal layer and
+    /// is the whole reason that overlay is a view and not more lines in `draw`.
+    private func captureHoveredTile(_ tile: RotationTile) {
+        // Through the whole gallery rather than the tile, so the scroll view's
+        // own dark background is in the picture — the halo is white at 16%, and
+        // against nothing at all it is nothing at all.
+        guard let canvas = tile.superview, let gallery = controller.rotation?.gallery else { return }
+        let box = gallery.convert(tile.frame.insetBy(dx: -12, dy: -12), from: canvas)
+        guard box.intersects(gallery.bounds),
+              let rep = gallery.bitmapImageRepForCachingDisplay(in: box) else { return }
+        gallery.cacheDisplay(in: box, to: rep)
+        let url = URL(fileURLWithPath: "build/hover-continuity/hovered-tile-chrome.png")
+        guard let data = rep.representation(using: .png, properties: [:]),
+              (try? data.write(to: url)) != nil else { return }
+        print("     wrote \(url.path)")
+    }
+
+    private func writePNG(_ image: NSImage, to url: URL) {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let data = rep.representation(using: .png, properties: [:]) else { return }
+        try? data.write(to: url)
+    }
+
+    /// Both images drawn into the same bitmap, so they are comparable whatever
+    /// they were decoded from.
+    private func samples(of image: NSImage, size: NSSize) -> [UInt8]? {
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                         pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                         isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: Int(size.width) * 4, bitsPerPixel: 32)
+        else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let bytes = rep.bitmapData else { return nil }
+        return Array(UnsafeBufferPointer(start: bytes, count: Int(size.width * size.height) * 4))
+    }
+
+    /// The two ways a hover ends without the pointer moving: the grid scrolls
+    /// out from under it, and the window stops being key. Both have to stop the
+    /// preview — a screensaver animating in a background window is exactly the
+    /// power drain the rest of this project is careful about.
+    private func scrollAndKeyChecks(_ gallery: RotationGalleryView, target: LerpRotationEntry) {
+        controller.rotation?.window?.makeKeyAndOrderFront(nil)
+        gallery.hoverEnter(target)
+        wait(until: { gallery.preview.isPlaying }, timeout: 5) { [self] in
+            check("it plays again when pointed at a second time", gallery.preview.isPlaying)
+            let moved = gallery.scrollBy(150)
+            check("scrolling the grid out from under the pointer stops the preview",
+                  moved && !gallery.preview.isPlaying,
+                  moved ? "" : "the grid had nowhere to scroll, so this proved nothing")
+
+            gallery.hoverEnter(target)
+            wait(until: { gallery.preview.isPlaying }, timeout: 5) { [self] in
+                // Really resigning key, by giving key to the editor's window —
+                // when there is any to give. This run is an `.accessory` that
+                // never takes the foreground and whose windows are invisible, so
+                // on most machines nothing here is key at all and AppKit posts
+                // no resignation to observe. When that is the case the
+                // notification is posted by hand: that AppKit sends it is the
+                // framework's promise, and what is ours to get right is that the
+                // gallery listens for it, for its own window, and stops.
+                let wasKey = controller.rotation?.window?.isKeyWindow == true
+                controller.window?.makeKeyAndOrderFront(nil)
+                if !wasKey {
+                    NotificationCenter.default.post(name: NSWindow.didResignKeyNotification,
+                                                    object: controller.rotation?.window)
+                }
+                wait(until: { !gallery.preview.isPlaying }, timeout: 3) { [self] in
+                    check("the gallery window losing key stops the preview",
+                          !gallery.preview.isPlaying,
+                          wasKey ? "a real resignation"
+                                 : "no window was key in this run; the notification was posted")
+                    galleryOpenChecks(gallery)
+                }
+            }
+        }
+    }
+
+    // MARK: "Go to" a look from the gallery
+
+    /// A double-click in the gallery opens the look in the editor. The awkward
+    /// part is that the first click of it has already toggled the rotation —
+    /// see `RotationTile.mouseDown` — so the thing worth asserting is not only
+    /// that it opened, but that the rotation came out exactly where it went in.
+    private func galleryOpenChecks(_ gallery: RotationGalleryView) {
+        // A clean buffer, or `openEntry`'s unsaved-changes alert would sit there
+        // waiting for a click nobody is going to give it.
+        if let subject { controller.openShader(named: subject.name) }
+        // Near the top of the grid, so `captureGalleryUI` has the mark it leaves
+        // behind in shot.
+        guard let target = galleryEntries.first(where: {
+            $0.preset != nil && $0.shader != controller.currentName
+        }) else { return pickerChecks() }
+
+        let before = Set(persistedRotation())
+        gallery.doubleClick(target)
+        check("double-clicking a tile opens that look in the editor",
+              controller.currentEntry == target,
+              "\(controller.currentEntry.key), wanted \(target.key)")
+        check("…including its preset, not just its shader",
+              controller.currentPreset == target.preset, controller.currentPreset ?? "Defaults")
+        check("…and leaves the rotation exactly as it was",
+              Set(persistedRotation()) == before,
+              "\(persistedRotation().count) of \(galleryEntries.count) still in")
+        check("the grid marks the look the editor now has open",
+              gallery.tile(for: target)?.isCurrent == true
+                  && gallery.tileEntries.filter { gallery.tile(for: $0)?.isCurrent == true }.count == 1)
+
+        // A single click still means what it has always meant. This is the
+        // behaviour the double-click was not allowed to cost.
+        let victim = galleryEntries[0]
+        let wasIn = gallery.enabled.contains(victim)
+        gallery.click(victim)
+        check("a single click still just toggles the rotation",
+              gallery.enabled.contains(victim) == !wasIn
+                  && controller.currentEntry == target,
+              "\(victim.key) \(wasIn ? "out" : "in")")
+        gallery.click(victim)
+
+        captureGalleryUI()
+        pickerChecks()
+    }
+
+    // MARK: The toolbar picker
+
+    /// The popover that replaced the toolbar's text dropdown: the same tiles,
+    /// with the primary action inverted. Driven without presenting it — an
+    /// `NSPopover` is a real window and this run is deliberately invisible — so
+    /// the content goes into a hidden window of the test's own, laid out for
+    /// real, and every click below goes through the tile's own `mouseDown`.
+    private var pickerHost: NSWindow?
+
+    private func pickerChecks() {
+        guard galleryEntries.count > 2 else { return finish() }
+        let picker = controller.preparePicker()
+        let host = NSWindow(contentRect: NSRect(origin: .zero, size: ShaderPicker.contentSize),
+                            styleMask: [.titled], backing: .buffered, defer: false)
+        host.alphaValue = 0
+        host.ignoresMouseEvents = true
+        host.isExcludedFromWindowsMenu = true
+        host.collectionBehavior = [.stationary, .ignoresCycle, .fullScreenNone]
+        host.contentView = picker.gallery
+        host.orderFront(nil)
+        picker.gallery.layoutSubtreeIfNeeded()
+        pickerHost = host
+
+        let grid = picker.gallery
+        let wiring = picker.popoverWiring
+        check("the popover is wired to that grid, and dismisses itself",
+              wiring.content === grid && wiring.behavior == .transient
+                  && wiring.size == ShaderPicker.contentSize,
+              "\(wiring.content.map { String(describing: type(of: $0)) } ?? "nothing"), "
+                + "behavior \(wiring.behavior.rawValue)")
+        check("the picker is built from the same tile as the gallery, in picker mode",
+              grid.mode == .picker && grid.tileEntries.count == galleryEntries.count
+                  && Set(grid.tileEntries) == Set(galleryEntries),
+              "\(grid.tileEntries.count) tiles")
+
+        // The two grids share one `RotationThumbnails`, so opening the picker
+        // must cost no GPU at all: every still is already decoded.
+        wait(until: { grid.tileEntries.allSatisfy { grid.tile(for: $0)?.image != nil } },
+             timeout: 30) { [self] in pickerActionChecks(grid) }
+    }
+
+    private func pickerActionChecks(_ grid: RotationGalleryView) {
+        check("every picker tile got a still, off the cache the gallery already filled",
+              grid.tileEntries.allSatisfy { grid.tile(for: $0)?.image != nil }
+                  && controller.rotation?.thumbnailStats.rendered == 0,
+              "\(grid.tileEntries.filter { grid.tile(for: $0)?.image == nil }.count) blank, "
+                + "\(controller.rotation?.thumbnailStats.rendered ?? -1) re-rendered")
+        check("a picker tile is a button, where a gallery tile is a checkbox",
+              grid.tile(for: galleryEntries[0])?.accessibilityRole() == .button
+                  && controller.rotation?.gallery.tile(for: galleryEntries[0])?
+                      .accessibilityRole() == .checkBox)
+        check("the picker marks the look the editor has open",
+              grid.tile(for: controller.currentEntry)?.isCurrent == true,
+              controller.currentEntry.key)
+
+        // Out of the rotation, through the badge — the picker's *secondary*
+        // action, and the one the gallery spends its primary click on.
+        let victim = galleryEntries.first { $0 != controller.currentEntry } ?? galleryEntries[0]
+        let before = Set(persistedRotation())
+        grid.clickBadge(victim)
+        check("clicking a picker tile's badge takes it out of the rotation",
+              grid.tile(for: victim)?.isOn == false && !grid.enabled.contains(victim))
+        check("…and that reached the screensaver's own ByHost defaults",
+              !persistedRotation().contains(victim.key)
+                  && persistedRotation().count == before.count - 1,
+              "\(persistedRotation().count) of \(galleryEntries.count) keys")
+        check("…and the gallery window, showing the same looks, agrees",
+              controller.rotation?.gallery.tile(for: victim)?.isOn == false)
+        check("a look that is out of the rotation is drawn dimmed, not hidden",
+              grid.tile(for: victim)?.isHidden == false
+                  && grid.tile(for: victim)?.isOn == false)
+
+        // …and it opens on a click all the same. Being out of the screensaver's
+        // rotation is not a reason to be unable to edit a look — usually it is
+        // out precisely *because* you are still working on it.
+        grid.click(victim)
+        check("a click on a picker tile opens that look in the editor",
+              controller.currentEntry == victim,
+              "\(controller.currentEntry.key), wanted \(victim.key)")
+        check("an out-of-rotation look opens on exactly the same click",
+              controller.currentEntry == victim && !grid.enabled.contains(victim))
+        grid.clickBadge(victim)
+        check("the badge puts it back", persistedRotation().contains(victim.key))
+
+        typeaheadChecks(grid)
+    }
+
+    /// The one thing the text dropdown did better than a wall of pictures, and
+    /// the reason this is a popover with a filter field rather than the carousel
+    /// that was the other idea: you can type.
+    private func typeaheadChecks(_ grid: RotationGalleryView) {
+        let wanted = galleryEntries.last(where: {
+            $0.preset != nil && $0.shader != controller.currentName
+        }) ?? galleryEntries[0]
+        grid.setFilter(wanted.shader)
+        let showing = grid.visibleEntries()
+        check("typing narrows the grid to what matches",
+              grid.visibleTileCount == showing.count && showing.count < galleryEntries.count
+                  && showing.allSatisfy { $0.shader.localizedCaseInsensitiveContains(wanted.shader)
+                                            || ($0.preset ?? "").localizedCaseInsensitiveContains(wanted.shader) },
+              "\(grid.visibleTileCount) shown for “\(wanted.shader)”")
+
+        check("⏎ in the filter field opens the first look still showing",
+              grid.pressReturnInSearch() && controller.currentEntry == showing.first,
+              "\(controller.currentEntry.key), first shown is \(showing.first?.key ?? "nothing")")
+
+        // Two of the shown looks taken out of the rotation before the picture is
+        // taken, so the capture carries the claim that matters here: a look that
+        // is out is drawn unmistakably dimmed and is still sitting there to be
+        // clicked open, right beside the ones that are in.
+        let dimmed = Array(showing.dropFirst().prefix(2))
+        dimmed.forEach(grid.clickBadge)
+        check("out-of-rotation looks stay in the grid, dimmed and openable",
+              dimmed.allSatisfy { grid.tile(for: $0)?.isOn == false
+                                    && grid.tile(for: $0)?.isHidden == false },
+              dimmed.map(\.key).joined(separator: ", "))
+        capturePickerUI(grid, filtered: true)
+        dimmed.forEach(grid.clickBadge)
+        check("and putting them back is the same click again",
+              dimmed.allSatisfy(grid.enabled.contains)
+                  && dimmed.allSatisfy { persistedRotation().contains($0.key) })
+
+        grid.setFilter("")
+        check("clearing the filter shows every look again",
+              grid.visibleTileCount == galleryEntries.count, "\(grid.visibleTileCount)")
+        capturePickerUI(grid, filtered: false)
+
+        // Nothing may be left animating when the popover goes away.
+        grid.hoverEnter(galleryEntries[0])
+        wait(until: { grid.preview.isPlaying }, timeout: 5) { [self] in
+            check("a picker tile plays on hover too — it is the same tile",
+                  grid.preview.isPlaying, grid.preview.playingEntry?.key ?? "nothing")
+            controller.picker?.close()
+            check("closing the picker stops whatever it was playing", !grid.preview.isPlaying)
+            pickerHost?.contentView = NSView()
+            pickerHost?.orderOut(nil)
+            pickerHost = nil
+            handOffRotation()
+            finish()
+        }
+    }
+
+    private func capturePickerUI(_ grid: RotationGalleryView, filtered: Bool) {
+        grid.layoutSubtreeIfNeeded()
+        guard let rep = grid.bitmapImageRepForCachingDisplay(in: grid.bounds) else { return }
+        grid.cacheDisplay(in: grid.bounds, to: rep)
+        let url = URL(fileURLWithPath: filtered ? "build/shader-picker-filtered.png"
+                                                : "build/shader-picker.png")
+        guard let data = rep.representation(using: .png, properties: [:]),
+              (try? data.write(to: url)) != nil else { return }
+        print("     wrote \(url.path)")
+    }
+
+    /// The gallery again, once it has a look marked as open — the state the
+    /// "go to" feature leaves it in.
+    private func captureGalleryUI() {
+        controller.rotation?.gallery.scrollBy(-100_000)      // back to the top
+        guard let window = controller.rotation?.window, let view = window.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.layoutSubtreeIfNeeded()
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let url = URL(fileURLWithPath: "build/rotation-gallery-current.png")
+        guard let data = rep.representation(using: .png, properties: [:]),
+              (try? data.write(to: url)) != nil else { return }
+        print("     wrote \(url.path)")
     }
 
     /// True when the run was asked to *leave* the rotation it clicked behind

@@ -44,7 +44,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private(set) var compiled: LerpShader?
 
     private let split = NSSplitViewController()
-    private let shaderPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// Opens the shader picker. Where a plain `NSPopUpButton` listing 114 look
+    /// *names* used to be — see `ShaderPicker` for why a grid of stills replaced
+    /// it, and for what the dropdown did better and had to be kept.
+    private let shaderButton = NSButton()
     private let saveButton = NSButton(), revertButton = NSButton(), playButton = NSButton()
     private let status = NSButton()
     private let console = NSTextView()
@@ -195,11 +198,18 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func editorPane() -> NSView {
-        shaderPopUp.target = self
-        shaderPopUp.action = #selector(shaderPopUpChanged)
-        shaderPopUp.controlSize = .small
-        shaderPopUp.font = .systemFont(ofSize: 11)
-        shaderPopUp.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
+        Chrome.configure(shaderButton, title: "Shader", target: self,
+                         action: #selector(showShaderPicker))
+        shaderButton.alignment = .left
+        // The title carries a shader name *and* a preset name, either of which
+        // can be long, so it gives way rather than pushing Rotation… off the bar.
+        shaderButton.cell?.lineBreakMode = .byTruncatingTail
+        shaderButton.setContentHuggingPriority(.init(1), for: .horizontal)
+        shaderButton.setContentCompressionResistancePriority(.init(2), for: .horizontal)
+        shaderButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 178).isActive = true
+        shaderButton.widthAnchor.constraint(lessThanOrEqualToConstant: 320).isActive = true
+        shaderButton.toolTip = "Pick a look to edit, by picture"
+        shaderButton.identifier = NSUserInterfaceItemIdentifier("shader-picker-button")
 
         let newButton = Chrome.button("New…", target: self, action: #selector(newShader))
         Chrome.configure(saveButton, title: "Save", target: self, action: #selector(saveShader))
@@ -232,7 +242,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         editor.onEdit = { [weak self] in self?.scheduleCompile() }
         editor.setContentHuggingPriority(.init(1), for: .vertical)
 
-        return Chrome.pane([Chrome.bar([shaderPopUp, newButton, saveButton, revertButton,
+        return Chrome.pane([Chrome.bar([shaderButton, newButton, saveButton, revertButton,
                                         Chrome.flexible(), rotationButton]),
                             editor,
                             Chrome.bar([status, Chrome.flexible()], height: 22),
@@ -419,23 +429,31 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Shader list
 
-    /// Rebuilds the picker from `shaders`. Never changes what is in the editor.
+    /// Takes note of what is on disk, and refreshes the picker if it happens to
+    /// be open. Never changes what is in the editor.
     @discardableResult
     private func refreshList(_ shaders: [LerpShader]) -> [LerpShader] {
         knownShaderNames = shaders.map(\.name)
-        shaderPopUp.removeAllItems()
-        for shader in shaders {
-            shaderPopUp.addItem(withTitle: shader.isBuiltIn ? shader.name : shader.name + "  · custom")
-            shaderPopUp.lastItem?.representedObject = shader.name
-        }
-        select(current.name)
+        // Read off the discovered list rather than off `current`, because
+        // `saveShader` rebuilds the open shader as `isBuiltIn: false` whether or
+        // not it came from the drop folder — so `current` is not a witness to
+        // where the file lives, and the directory it was found in is.
+        customShaderNames = Set(shaders.filter { !$0.isBuiltIn }.map(\.name))
+        updateShaderButton()
+        if let picker, picker.isShown { loadPicker(picker, shaders: shaders) }
         return shaders
     }
 
-    private func select(_ name: String) {
-        if let item = shaderPopUp.itemArray.first(where: { $0.representedObject as? String == name }) {
-            shaderPopUp.select(item)
-        }
+    private var customShaderNames: Set<String> = []
+
+    /// The toolbar button says which look is open, the way the dropdown's
+    /// selected item used to — plus the preset, which the dropdown could not say
+    /// at all, and a chevron so it reads as something that opens.
+    private func updateShaderButton() {
+        let name = current.name.isEmpty ? "Shader" : current.name
+        let preset = currentPreset.map { " · " + $0 } ?? ""
+        let custom = customShaderNames.contains(current.name) ? "  · custom" : ""
+        shaderButton.title = "◱  " + name + preset + custom + "  ▾"
     }
 
     /// What this window opens on, and the only place the screensaver's rotation
@@ -473,7 +491,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         current = shader
         parameterState.removeAll()      // a new shader starts at its own defaults
         currentPreset = nil
-        select(shader.name)
         editor.setText(shader.source)
         metalView.config.shaderName = shader.name
         compileNow(force: true)
@@ -483,6 +500,27 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
         updateChrome()
         rememberCurrent()
+        showCurrentEverywhere()
+    }
+
+    /// Both grids mark the look the editor has open, so "where am I in these
+    /// 114 pictures" is answerable without reading captions.
+    private func showCurrentEverywhere() {
+        rotation?.showCurrent(currentEntry)
+        picker?.gallery.showCurrent(currentEntry)
+    }
+
+    /// Opens a look — a (shader, preset) pair — from either grid: the gallery
+    /// window's double-click or the toolbar popover's click. The same `open` the
+    /// launch path takes, plus the unsaved-changes prompt and bringing the
+    /// editor back to the front, since the click may have come from another
+    /// window entirely.
+    func openEntry(_ entry: LerpRotationEntry) {
+        guard entry != currentEntry else { return raise() }
+        guard confirmDiscardIfDirty(),
+              let shader = metalView.shaderLibrary.shader(named: entry.shader) else { return }
+        open(shader, preset: entry.preset)
+        raise()
     }
 
     /// Records the look on screen as where to come back to. The playground's own
@@ -497,16 +535,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     func openShader(named name: String) {
         guard let shader = metalView.shaderLibrary.shader(named: name) else { return }
         open(shader)
-    }
-
-    @objc private func shaderPopUpChanged() {
-        guard let name = shaderPopUp.selectedItem?.representedObject as? String, name != current.name
-        else { return }
-        guard confirmDiscardIfDirty() else {
-            select(current.name)
-            return
-        }
-        if let shader = metalView.shaderLibrary.shader(named: name) { open(shader) }
     }
 
     // MARK: - Compilation / hot reload
@@ -606,7 +634,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     /// nil applies the shader's declared defaults.
     func applyPreset(_ name: String?) {
-        defer { rememberCurrent() }
+        defer {
+            rememberCurrent()
+            updateShaderButton()
+            showCurrentEverywhere()
+        }
         currentPreset = name.flatMap { compiled?.preset(named: $0)?.name }
         guard let name else {
             for param in shownParameters { metalView.setParameter(param.name, param.defaultValue) }
@@ -941,6 +973,19 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// another.
     var rotationDefaults: UserDefaults?
 
+    /// The toolbar's picker popover, once it has been asked for. Same reason as
+    /// the gallery window: 114 stills is not a bill an app that never opens it
+    /// should pay.
+    private(set) var picker: ShaderPicker?
+
+    /// One cache of stills for both grids. They show the same 114 looks, and
+    /// `RotationThumbnails.start` supersedes the run in flight — two instances
+    /// would mean two copies of 114 decoded images, and one instance driven by
+    /// two hosts would mean whichever asked second silently stopping the first
+    /// one's deliveries. So there is one instance, and each host hands the
+    /// images it receives to the other; whichever run is live feeds both.
+    private lazy var thumbnails = RotationThumbnails(searchURLs: RepoLocation.searchURLs)
+
     /// The gallery window, built on first use. Deliberately does *not* load —
     /// the caller decides when the stills start arriving, so a test can arrange
     /// a cold cache and hook `onLoaded` before anything is in flight.
@@ -948,7 +993,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     func rotationGallery() -> RotationWindowController {
         if let rotation { return rotation }
         let made = RotationWindowController(searchURLs: RepoLocation.searchURLs,
-                                            defaults: rotationDefaults, hidden: hidden)
+                                            defaults: rotationDefaults, hidden: hidden,
+                                            thumbnails: thumbnails)
+        made.onOpen = { [weak self] entry in self?.openEntry(entry) }
+        made.onChange = { [weak self] enabled in self?.picker?.showEnabled(enabled) }
+        made.onImage = { [weak self] entry, image in self?.picker?.showImage(image, for: entry) }
+        made.showCurrent(currentEntry)
         rotation = made
         return made
     }
@@ -956,14 +1006,63 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     @objc func showRotationGallery(_ sender: Any?) {
         let gallery = rotationGallery()
         gallery.load(shaders: metalView.shaderLibrary.discover())
+        gallery.showCurrent(currentEntry)
         gallery.show()
     }
 
-    /// A shader was saved, or changed on disk. The gallery keys its stills on
-    /// each shader's source, so handing it the fresh list is all it takes for
+    /// The picker, built on first use.
+    @discardableResult
+    func shaderPicker() -> ShaderPicker {
+        if let picker { return picker }
+        let made = ShaderPicker(thumbnails: thumbnails)
+        made.onOpen = { [weak self] entry in self?.openEntry(entry) }
+        made.onChange = { [weak self] enabled in self?.persistRotation(enabled) }
+        made.onImage = { [weak self] entry, image in
+            self?.rotation?.gallery.show(image: image, for: entry)
+        }
+        picker = made
+        return made
+    }
+
+    /// The toolbar button, and the Shader menu's Open Look… item.
+    @objc func showShaderPicker(_ sender: Any?) {
+        preparePicker().present(from: shaderButton)
+    }
+
+    /// Everything `showShaderPicker` does short of putting a popover on screen.
+    /// Split out for `--selftest`, which runs with no window on the user's
+    /// display and an `NSPopover` is a real one — the content, its tiles and
+    /// their handlers are what is under test, and this builds all of it.
+    @discardableResult
+    func preparePicker() -> ShaderPicker {
+        let picker = shaderPicker()
+        loadPicker(picker, shaders: metalView.shaderLibrary.discover())
+        return picker
+    }
+
+    private func loadPicker(_ picker: ShaderPicker, shaders: [LerpShader]) {
+        let entries = shaders.rotationEntries()
+        picker.prepare(shaders: shaders,
+                       enabled: RotationWindowController.enabled(for: entries, in: rotationDefaults),
+                       current: currentEntry)
+    }
+
+    /// A badge in the picker was clicked. Writes the screensaver's rotation the
+    /// same way the gallery window's click does — through `RotationStore`, into
+    /// the saver's own ByHost domain — and brings the gallery window's copy of
+    /// the grid up to date if it happens to be open.
+    private func persistRotation(_ enabled: Set<LerpRotationEntry>) {
+        let entries = metalView.shaderLibrary.discover().rotationEntries()
+        RotationStore.save(enabled, entries: entries, to: rotationDefaults)
+        rotation?.showEnabled(enabled)
+    }
+
+    /// A shader was saved, or changed on disk. Both grids key their stills on
+    /// each shader's source, so handing them the fresh list is all it takes for
     /// the edited shader's tiles — and only those — to be drawn again.
     private func refreshRotation(_ shaders: [LerpShader]) {
         rotation?.load(shaders: shaders)
+        if let picker, picker.isShown { loadPicker(picker, shaders: shaders) }
     }
 
     // MARK: - Actions
@@ -1119,6 +1218,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         let dirty = isDirty
         saveButton.isEnabled = dirty
         revertButton.isEnabled = dirty && current.url != nil
+        updateShaderButton()
         window?.title = "Lerping@Home Playground — \(current.name)\(dirty ? " •" : "")"
             + Self.repoSuffix
         window?.isDocumentEdited = dirty
