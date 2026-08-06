@@ -957,8 +957,9 @@ private struct Settings {
         settings.shuffleMinutes = (defaults.object(forKey: shuffleMinutesKey) as? Double) ?? settings.shuffleMinutes
         settings.freezeMinutes = (defaults.object(forKey: freezeMinutesKey) as? Double) ?? settings.freezeMinutes
         settings.setsWallpaper = defaults.bool(forKey: wallpaperKey)
-        settings.rotationBase = LerpRotation.read(defaults, discovered: discovered)
-        settings.enabledEntries = LerpRotation.enabled(discovered: discovered, in: defaults)
+        let state = LerpRotation.read(defaults, discovered: discovered)
+        settings.rotationBase = state
+        settings.enabledEntries = LerpRotation.enabled(discovered: discovered, in: state)
         return settings
     }
 

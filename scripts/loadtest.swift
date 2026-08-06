@@ -318,11 +318,24 @@ guard note.stringValue.contains("\(checked.count - 1) of \(entryKeys.count) look
 _ = victim.accessibilityPerformPress()
 guard isOn(victim) else { fail("pressing '\(victimKey)' again did not put it back") }
 
-// Deselect All has to be safe: an empty rotation is a black screensaver, and
-// the sheet says out loud that it will be saved as all of them.
-press(button("Deselect All"))
-guard tiles.allSatisfy({ !isOn($0) }), note.stringValue.contains("saved as all") else {
-    fail("Deselect All left \(tiles.filter(isOn).count) on and said “\(note.stringValue)”")
+// Deselect All has to be safe, and "safe" no longer means what it used to. An
+// empty rotation is a black screensaver, so it used to be *saved as all of
+// them* — which meant the one action that reliably brought a look the user had
+// switched off back onto their screen was switching off enough of them. The
+// invariant now lives at the point of selection instead: the control is off
+// when pressing it would clear the rotation, and it says why.
+guard let deselectAll = button("Deselect All"), !deselectAll.isEnabled else {
+    fail("Deselect All is enabled with no filter up, so the whole rotation can still be cleared")
+}
+// Compared against what was on a moment ago rather than against "everything",
+// because the sheet comes up on the user's real rotation and most of these runs
+// have looks switched off in it already.
+let beforeDeselectAll = Set(tiles.filter(isOn).map(identifier))
+press(deselectAll)
+guard Set(tiles.filter(isOn).map(identifier)) == beforeDeselectAll,
+      note.stringValue.contains("at least one look") else {
+    fail("Deselect All changed the rotation from \(beforeDeselectAll.count) looks to "
+         + "\(tiles.filter(isOn).count) and said “\(note.stringValue)” — it must refuse and say so")
 }
 press(button("Select All"))
 guard tiles.allSatisfy(isOn) else { fail("Select All missed \(tiles.filter { !isOn($0) }.count) looks") }
@@ -378,6 +391,42 @@ guard groupTiles.allSatisfy(isOn), heading.state == .on else {
     fail("a heading did not put its whole group back")
 }
 print("OK: the '\(multi.shader)' heading owns its \(multi.entries.count) looks, and goes mixed for a partial one")
+
+// MARK: - The floor
+
+// Every widening that used to keep the rotation from being empty has been
+// deleted, because each of them kept it by putting a look the user had switched
+// off back on their screen. What replaces all of them is this: the last look
+// cannot be unticked. It is one rule, in one place, and it is the reason
+// `Config.rotation` is now allowed to mean what it says — so it is checked here
+// too, in the real sheet, through the same accessibility API a user's
+// assistive client would use.
+let survivorKey = entryKeys[0]
+for tile in tiles where identifier(tile) != "entry:" + survivorKey && isOn(tile) {
+    _ = tile.accessibilityPerformPress()
+}
+guard let survivor = tiles.first(where: { identifier($0) == "entry:" + survivorKey }),
+      tiles.filter(isOn).map(identifier) == ["entry:" + survivorKey] else {
+    fail("could not get the rotation down to one look: \(tiles.filter(isOn).count) still on")
+}
+guard !survivor.accessibilityPerformPress(), isOn(survivor) else {
+    fail("the last look in the rotation answered a press and went out — an empty rotation "
+         + "must be unreachable, because nothing downstream widens one any more")
+}
+guard survivor.accessibilityValue() as? Int == 1, !survivor.isAccessibilityEnabled() else {
+    fail("the last look is still advertised as a live checkbox, so an assistive client is "
+         + "told it can be switched off when it cannot")
+}
+guard note.stringValue.contains("at least one look") else {
+    fail("the sheet refused the press without saying why: “\(note.stringValue)”")
+}
+guard button("Deselect All")?.isEnabled == false else {
+    fail("Deselect All is live with one look left")
+}
+press(button("Select All"))
+guard tiles.allSatisfy(isOn) else { fail("Select All did not restore the rotation") }
+print("OK: the rotation goes down to one look ('\(survivorKey)') and no further — "
+      + "the last tile refuses the press and says so")
 
 // MARK: - The rest of the sheet
 
@@ -486,6 +535,55 @@ if mayWrite {
     }
     print("OK: OK wrote \(written.count) of \(secondTiles.count) looks to \(module) (ByHost), "
           + "roster \(roster.count)")
+
+    // The versioned record beside them. Checked from out here, in another
+    // process, through cfprefsd — because the two claims it makes are both
+    // about processes that cannot see each other: that a stale writer can be
+    // recognised as stale, and that a renamed preset can be recognised as a
+    // rename. Neither is worth anything if the record does not survive the trip
+    // to disk in the shape the reader expects.
+    guard let state = CFPreferencesCopyValue("rotationState" as CFString, module as CFString,
+                                             kCFPreferencesCurrentUser,
+                                             kCFPreferencesCurrentHost) as? [String: Any] else {
+        fail("OK wrote no versioned rotation state, so nothing can tell a stale write from a "
+             + "fresh one and a renamed preset is indistinguishable from a new look")
+    }
+    let version = state["version"] as? Int ?? 0
+    let revision = state["revision"] as? Int ?? 0
+    let updatedAt = state["updatedAt"] as? Double ?? 0
+    let disabled = state["disabled"] as? [String] ?? []
+    let presets = state["roster"] as? [String: [String]] ?? [:]
+    guard version >= 2, revision >= 1, updatedAt > 1_700_000_000,
+          !(state["writer"] as? String ?? "").isEmpty else {
+        fail("the versioned state is version \(version) revision \(revision) "
+             + "writer '\(state["writer"] as? String ?? "")' at \(updatedAt) — a write with no "
+             + "revision or no timestamp cannot lose to a newer one")
+    }
+    // The off-set, not the on-set: an unheard-of look is in the rotation
+    // because nothing says otherwise, which is what lets a new shader join
+    // without a roster entry having to be written for it first.
+    guard disabled == [droppedKey] else {
+        let shown = disabled.prefix(3).joined(separator: ", ")
+        fail("the state records \(disabled.count) looks as switched off (\(shown)); "
+             + "exactly one was, '\(droppedKey)'")
+    }
+    // Presets in declaration order, per shader. This is the whole of what makes
+    // a rename tellable from a new preset.
+    guard presets.count == groups.count,
+          groups.allSatisfy({ presets[$0.shader]?.count == $0.entries.count - 1 }) else {
+        let wrong = groups.filter { presets[$0.shader]?.count != $0.entries.count - 1 }
+        fail("the roster covers \(presets.count) of \(groups.count) shaders and disagrees on "
+             + "\(wrong.count) of them (\(wrong.prefix(3).map(\.shader).joined(separator: ", ")))")
+    }
+    guard let ordered = groups.first(where: { $0.entries.count > 2 }),
+          presets[ordered.shader] == ordered.entries.dropFirst().map({
+              String($0.dropFirst(ordered.shader.count + 1)) }) else {
+        fail("the roster does not keep each shader's presets in declaration order, so a rename "
+             + "cannot be told from a preset being removed and another added")
+    }
+    print("OK: versioned state v\(version) rev \(revision), \(disabled.count) look(s) off, "
+          + "roster of \(presets.count) shaders in declaration order "
+          + "(\(ordered.shader): \(presets[ordered.shader]?.joined(separator: ", ") ?? ""))")
 } else {
     print("OK: read-only run against \(module) — nothing was written "
           + "(set LERP_DEFAULTS_MODULE to exercise OK)")

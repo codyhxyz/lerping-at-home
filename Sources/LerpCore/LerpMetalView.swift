@@ -8,6 +8,11 @@ import QuartzCore
 /// optional reduced internal resolution, and a frozen clock while paused.
 public final class LerpMetalView: NSView {
 
+    /// Same subsystem the saver logs under, so one `log show` predicate covers
+    /// the whole story of a session. Used only where a silent answer would be
+    /// indistinguishable from a broken one.
+    static let log = Logger(subsystem: "com.hergenroeder.lerping", category: "rotation")
+
     public struct Config {
         /// Shader name to render, or nil for shuffle mode.
         public var shaderName: String?
@@ -42,20 +47,26 @@ public final class LerpMetalView: NSView {
 
         /// Which of `available` a set of enabled entries actually selects.
         ///
-        /// The one statement of the policy: nil, empty, and entirely-stale sets
-        /// all mean *every* entry. An empty rotation is a black screensaver,
-        /// and no setting should be able to produce one — the saver's Options
-        /// sheet says so out loud, and this is what makes that true.
+        /// The one statement of the policy, and it is now a short one: a `nil`
+        /// set means nobody has ever chosen, so every look is in. Anything else
+        /// is taken **literally**.
         ///
-        /// Note what this does *not* do: it never widens a selection that
-        /// resolved to something. If even one enabled entry exists, the result
-        /// is exactly the entries the user chose. Everything downstream — the
-        /// shuffle order, the interval switch, the compile-failure path —
-        /// stays inside that list, so a deselected look has no way back in.
+        /// It used to say more. An empty set, and a set whose every entry had
+        /// gone stale, both widened to the full library — as did a rotation
+        /// that resolved but would not compile, and a `knownEntries` roster
+        /// that had fallen behind. Each of those was defending something real
+        /// (an empty rotation is a black screensaver, which has shipped twice)
+        /// and each defended it by doing the opposite of what the user asked:
+        /// the one action that reliably brought a deselected look back was
+        /// deselecting enough of them.
+        ///
+        /// So the invariant moved to where it can be kept honestly — the
+        /// gallery will not let you turn off the last look — and every widening
+        /// downstream of it is gone. What this returns is what plays.
         public static func rotation(of enabled: Set<LerpRotationEntry>?,
                                     from available: [LerpRotationEntry]) -> [LerpRotationEntry] {
-            let picked = available.filter { enabled?.contains($0) ?? true }
-            return picked.isEmpty ? available : picked
+            guard let enabled else { return available }
+            return available.filter(enabled.contains)
         }
     }
 
@@ -309,7 +320,17 @@ public final class LerpMetalView: NSView {
             // enough to take out a hundred looks takes out the other fourteen
             // too. `loadEntry` has already tried every enabled entry in turn by
             // the time we get here; if none of them built, there is no shader
-            // to show and the honest answer is to show none.
+            // to show and the honest answer is to show none — loudly, so the
+            // next person to look has something to go on.
+            if pipeline == nil {
+                Self.log.error("""
+                nothing to render: \(self.shuffleOrder.count, privacy: .public) look(s) in the \
+                rotation of \(available.rotationEntries().count, privacy: .public) discovered, \
+                and none of them could be built. Not widening to the looks that were switched \
+                off. Compile errors: \
+                \(self.library.compileErrors.keys.sorted().joined(separator: ", "), privacy: .public)
+                """)
+            }
         }
     }
 
@@ -327,6 +348,13 @@ public final class LerpMetalView: NSView {
     ///
     /// Reshuffles only when the eligible *set* changes, so this can be called on
     /// every advance without the order being re-rolled underneath the user.
+    ///
+    /// An empty rotation leaves the order empty, and `loadEntry` then does
+    /// nothing at all — so whatever is already on screen stays there. That is
+    /// the last valid pick, and it is the right answer: the alternatives are a
+    /// black screen or the full library, and the full library is how a
+    /// deselected look reached the screen in the first place. Unreachable
+    /// through the gallery, which will not let the last look be switched off.
     private func refreshShuffleOrder(_ available: [LerpShader]) {
         let picked = Config.rotation(of: config.enabledEntries, from: available.rotationEntries())
         guard Set(picked) != Set(shuffleOrder) else { return }

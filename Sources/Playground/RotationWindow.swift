@@ -79,10 +79,11 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
         sourceFingerprint = fingerprint
 
         let entries = shaders.rotationEntries()
-        base = RotationStore.state(discovered: entries, from: defaults)
+        let state = RotationStore.state(discovered: entries, from: defaults)
+        base = state
         gallery.show(shaders: shaders,
                      enabled: Set(LerpMetalView.Config.rotation(
-                        of: RotationStore.load(discovered: entries, from: defaults),
+                        of: LerpRotation.enabled(discovered: entries, in: state),
                         from: entries)))
 
         let started = CFAbsoluteTimeGetCurrent()

@@ -76,14 +76,17 @@ enum OpeningShader {
     ///    one along, wrapping once through the rotation. Skipping past a broken
     ///    shader rather than stopping on it is `LerpMetalView.loadEntry`'s rule,
     ///    for its reason: stopping shows the wrong thing and sticks there.
-    /// 3. Every entry, on the same terms, for when the whole enabled set is
-    ///    broken. (`Config.rotation` has already widened an empty or entirely
-    ///    stale *selection* to everything before we get here; this covers the
-    ///    different case of a selection that resolves but does not compile,
-    ///    which is what the saver does too.)
-    /// 4. The first entry there is, compiling or not — so a tree in which
-    ///    nothing at all builds still opens onto a file and its diagnostics
-    ///    rather than onto an empty window with no way back.
+    /// 3. A random enabled entry that does *not* compile, when none of them
+    ///    will. An editor has to open onto a file — that is where the
+    ///    diagnostics are, and a window with nothing in it has no way back — but
+    ///    it opens onto one of *your* looks, broken, rather than onto a working
+    ///    look you took out of the rotation. This step used to widen to every
+    ///    entry on disk, which is the same mistake the saver was making: the one
+    ///    thing we know about the user's opinion of their looks is which ones
+    ///    they deselected, and "the alternative was inconvenient" is not a
+    ///    reason to overrule it.
+    /// 4. The first entry there is, and only when the rotation is empty — which
+    ///    the gallery does not let happen.
     static func choose(discovered: [LerpShader],
                        rotation: UserDefaults?,
                        remembered: LerpRotationEntry?,
@@ -96,15 +99,20 @@ enum OpeningShader {
             return wanted
         }
 
-        // The one statement of "empty means all" is `Config.rotation`'s, reached
-        // through `RotationStore` so the playground reads the rotation exactly
-        // the way the saver does.
+        // Read exactly the way the saver reads it — same call, same policy, so
+        // the playground cannot come to a different view of which looks are in.
         let enabled = LerpMetalView.Config.rotation(
             of: RotationStore.load(discovered: all, from: rotation), from: all)
 
-        return firstThatOpens(in: enabled, randomIndex: randomIndex, opens: opens)
-            ?? firstThatOpens(in: all, randomIndex: randomIndex, opens: opens)
-            ?? fallback
+        if let opening = firstThatOpens(in: enabled, randomIndex: randomIndex, opens: opens) {
+            return opening
+        }
+        // Nothing enabled compiles. Open on an enabled look anyway rather than
+        // on a working one that is out of the rotation.
+        if !enabled.isEmpty {
+            return enabled[min(max(randomIndex(enabled.count), 0), enabled.count - 1)]
+        }
+        return fallback
     }
 
     /// A remembered entry brought up to date with what is on disk: nil when the

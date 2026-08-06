@@ -52,6 +52,26 @@ public final class RotationTile: NSView {
     /// Off while the gallery is inactive — a pinned shader means the rotation
     /// does not apply, so its tiles must not answer a click either.
     public var isLive = true { didSet { needsDisplay = true } }
+    /// On, and the only look left in the rotation, so it cannot be turned off.
+    ///
+    /// This is where "the rotation is never empty" is enforced, and it is the
+    /// only place. Everything downstream used to defend the same invariant by
+    /// quietly reading an empty selection as *all* of them — which meant the one
+    /// way to be sure a look never played was the one way that turned it back
+    /// on. Stopping the last tick here costs one disabled control and buys the
+    /// right to take every one of those widenings out.
+    public var isLocked = false {
+        didSet {
+            guard isLocked != oldValue else { return }
+            toolTip = isLocked
+                ? label + " — the rotation must keep at least one look, and this is the last one"
+                : label
+            needsDisplay = true
+        }
+    }
+    /// Whether a click on this tile does anything at all.
+    public var isToggleable: Bool { isLive && !isLocked }
+    private var label: String { entry.shader + (entry.preset.map { " · " + $0 } ?? " · defaults") }
     private var isHot = false { didSet { if isHot != oldValue { needsDisplay = true } } }
 
     public init(entry: LerpRotationEntry, shaderTitle: String, size: NSSize = RotationTile.size) {
@@ -59,6 +79,25 @@ public final class RotationTile: NSView {
         self.shaderTitle = shaderTitle
         super.init(frame: NSRect(origin: .zero, size: size))
         toolTip = entry.shader + (entry.preset.map { " · " + $0 } ?? " · defaults")
+    }
+
+    /// The padlock drawn on the one look that cannot be turned off. Small, in
+    /// the corner opposite the tick, so the tile still reads as "in" first and
+    /// "and it has to stay in" second.
+    private func drawLock(in frame: NSRect) {
+        let side: CGFloat = 15
+        let box = NSRect(x: frame.minX + 6, y: frame.minY + 6, width: side, height: side)
+        NSColor(white: 0, alpha: 0.5).setFill()
+        NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4).fill()
+        let body = NSRect(x: box.minX + 3.5, y: box.midY - 0.5, width: side - 7, height: 6)
+        Self.accent.setFill()
+        NSBezierPath(roundedRect: body, xRadius: 1.4, yRadius: 1.4).fill()
+        let shackle = NSBezierPath()
+        shackle.appendArc(withCenter: NSPoint(x: box.midX, y: body.minY),
+                          radius: 2.6, startAngle: 0, endAngle: 180)
+        shackle.lineWidth = 1.5
+        Self.accent.setStroke()
+        shackle.stroke()
     }
 
     public required init?(coder: NSCoder) { nil }
@@ -73,11 +112,11 @@ public final class RotationTile: NSView {
                                        owner: self))
     }
 
-    public override func mouseEntered(with event: NSEvent) { isHot = isLive }
+    public override func mouseEntered(with event: NSEvent) { isHot = isToggleable }
     public override func mouseExited(with event: NSEvent) { isHot = false }
 
     public override func mouseDown(with event: NSEvent) {
-        guard isLive else { return }
+        guard isToggleable else { return }
         onToggle?(entry)
     }
 
@@ -95,9 +134,9 @@ public final class RotationTile: NSView {
         entry.shader + " · " + entry.displayName
     }
     public override func accessibilityValue() -> Any? { isOn ? 1 : 0 }
-    public override func isAccessibilityEnabled() -> Bool { isLive }
+    public override func isAccessibilityEnabled() -> Bool { isToggleable }
     public override func accessibilityPerformPress() -> Bool {
-        guard isLive else { return false }
+        guard isToggleable else { return false }
         onToggle?(entry)
         return true
     }
@@ -158,6 +197,7 @@ public final class RotationTile: NSView {
         }
 
         drawBadge(in: frame)
+        if isLocked { drawLock(in: frame) }
         drawCaption(below: frame)
     }
 
@@ -231,6 +271,10 @@ public final class RotationGalleryView: NSView {
     private let tileSize: NSSize
     private let showsRegenerate: Bool
     private var buttons: [NSButton] = []
+    /// Held by reference rather than found by title: this one is switched off
+    /// whenever pressing it would clear the rotation, and a lookup that missed
+    /// would leave the floor unenforced with no sign of it.
+    private var deselectAllButton: NSButton?
 
     private var tiles: [LerpRotationEntry: RotationTile] = [:]
     private var headers: [String: NSButton] = [:]
@@ -298,6 +342,7 @@ public final class RotationGalleryView: NSView {
 
         let selectAll = Chrome.button("Select All", target: self, action: #selector(selectAllLooks))
         let deselectAll = Chrome.button("Deselect All", target: self, action: #selector(deselectAllLooks))
+        deselectAllButton = deselectAll
         buttons = [selectAll, deselectAll]
         var controls: [NSView] = [search, selectAll, deselectAll]
         if showsRegenerate {
@@ -422,8 +467,36 @@ public final class RotationGalleryView: NSView {
 
     // MARK: Model out
 
+    /// The floor, and the only place it is enforced: taking `victims` out must
+    /// leave at least one look in.
+    ///
+    /// Everything that reads this selection now takes it literally — there is no
+    /// longer any code that turns an empty rotation into a full one, because
+    /// that is the behaviour that made a deselected look play. The price of
+    /// deleting those widenings is that an empty selection has to be
+    /// unreachable, and this is where it becomes unreachable.
+    private func wouldEmpty(_ victims: some Sequence<LerpRotationEntry>) -> Bool {
+        enabled.subtracting(victims).isEmpty
+    }
+
+    /// Said out loud when a click is refused. Cleared by the next one that is
+    /// not, so it reads as a response rather than as a state.
+    private var refusal: String?
+    private static let floorNote = "The rotation must keep at least one look."
+
+    private func refuse(_ why: String) {
+        refusal = why
+        refresh()
+        NSSound.beep()
+    }
+
     private func toggle(_ entry: LerpRotationEntry) {
-        if enabled.contains(entry) { enabled.remove(entry) } else { enabled.insert(entry) }
+        if enabled.contains(entry) {
+            guard !wouldEmpty([entry]) else { return refuse(Self.floorNote) }
+            enabled.remove(entry)
+        } else {
+            enabled.insert(entry)
+        }
         commit()
     }
 
@@ -437,6 +510,12 @@ public final class RotationGalleryView: NSView {
         let group = entries.filter { $0.shader == name }
         guard !group.isEmpty else { return }
         if group.allSatisfy(enabled.contains) {
+            guard !wouldEmpty(group) else {
+                // Put the box back where it was: it is a checkbox, and it has
+                // already flipped itself by the time we are called.
+                refresh()
+                return refuse("\(name) is the whole rotation. " + Self.floorNote)
+            }
             enabled.subtract(group)
         } else {
             enabled.formUnion(group)
@@ -453,9 +532,20 @@ public final class RotationGalleryView: NSView {
         commit()
     }
 
+    /// Disabled outright when it would empty the rotation — which, with no
+    /// filter up, it always would. Refusing here rather than "succeeding" and
+    /// having the saved set silently mean *all of them* is the whole of this
+    /// change: a control that cannot do the wrong thing beats a control that
+    /// does the opposite of what it says.
     @objc private func deselectAllLooks() {
         guard isActive else { return }
-        enabled.subtract(visibleEntries())
+        let victims = visibleEntries()
+        guard !wouldEmpty(victims) else {
+            return refuse(filter.isEmpty
+                          ? Self.floorNote + " Filter first, then deselect what you filtered."
+                          : "That would clear the whole rotation. " + Self.floorNote)
+        }
+        enabled.subtract(victims)
         commit()
     }
 
@@ -470,6 +560,7 @@ public final class RotationGalleryView: NSView {
     }
 
     private func commit() {
+        refusal = nil
         refresh()
         onChange?(enabled)
     }
@@ -490,10 +581,17 @@ public final class RotationGalleryView: NSView {
     /// hid it" is a fact about the model and has to be true the moment the
     /// filter changes — not on the next layout pass.
     private func refresh() {
+        // The one look that cannot be turned off, when there is only one left.
+        let lastOne = enabled.count == 1 ? enabled.first : nil
         for (entry, tile) in tiles {
             tile.isOn = enabled.contains(entry)
+            tile.isLocked = entry == lastOne
             tile.isHidden = !matches(entry)
         }
+        // Deselect All goes with them: a button that would clear the rotation is
+        // off, not silently ignored.
+        deselectAllButton?.isEnabled = isActive && !wouldEmpty(visibleEntries())
+        deselectAllButton?.toolTip = deselectAllButton?.isEnabled == true ? nil : Self.floorNote
         for name in order {
             let group = entries.filter { $0.shader == name }
             let on = group.filter(enabled.contains).count
@@ -514,16 +612,27 @@ public final class RotationGalleryView: NSView {
         if entries.isEmpty {
             note.stringValue = "No shaders found."
         } else if enabled.isEmpty {
-            // An empty rotation is a black screensaver, so an empty selection is
-            // saved as all of them. `Config.rotation` is where that is decided;
-            // this is the sentence that says so out loud.
-            note.stringValue = "Nothing selected — saved as all \(entries.count) looks."
+            // Only reachable by hand-editing the defaults: the tiles and the
+            // Deselect All button both refuse to get here. Said plainly rather
+            // than papered over, because the thing this used to say — that an
+            // empty selection is saved as all of them — was the sentence that
+            // made deselecting a look unreliable.
+            note.stringValue = "No looks selected. The screensaver has nothing to show."
         } else {
             note.stringValue = "\(enabled.count) of \(entries.count) looks, "
                 + "across \(shaderCount) of \(shaders.count) shaders."
         }
         if !filter.isEmpty {
             note.stringValue += "  Filter “\(filter)”: \(visibleEntries().count) shown."
+        }
+        // Why the last tile will not budge, said before it is pressed rather
+        // than only after. A control that refuses is only fair if the reason is
+        // already on screen — the tooltip is not enough, because a tile that
+        // does not respond reads as broken long before anyone hovers it.
+        if let refusal {
+            note.stringValue += "  " + refusal
+        } else if enabled.count == 1 {
+            note.stringValue += "  " + Self.floorNote
         }
     }
 

@@ -228,19 +228,36 @@ public enum LerpRotation {
     /// against a state that was never stored.
     static func stored(_ defaults: UserDefaults,
                        discovered: [LerpRotationEntry]) -> LerpRotationState {
-        if let dictionary = defaults.dictionary(forKey: stateKey),
-           let version = dictionary["version"] as? Int, version >= 2,
-           // …unless somebody has written the v1 keys since. See `legacyDigest`.
-           legacyDigest(defaults).map({ $0 == dictionary["legacy"] as? String }) ?? true {
+        let record = defaults.dictionary(forKey: stateKey)
+        let version = record?["version"] as? Int ?? 0
+        // Whether the v1 keys still say what this record left them saying. If
+        // they do not, somebody wrote them afterwards — an older build, or a
+        // hand `defaults write` — and their reading of the rotation is the
+        // newer one. See `legacyDigest`.
+        let recordIsCurrent = version >= 2
+            && legacyDigest(defaults).map({ $0 == record?["legacy"] as? String }) ?? true
+
+        if let record, recordIsCurrent {
             return LerpRotationState(
                 stored: true,
                 version: version,
-                revision: dictionary["revision"] as? Int ?? 0,
-                updatedAt: Date(timeIntervalSince1970: dictionary["updatedAt"] as? Double ?? 0),
-                writer: dictionary["writer"] as? String ?? "",
-                disabled: Set((dictionary["disabled"] as? [String] ?? []).map(LerpRotationEntry.init(key:))),
-                roster: dictionary["roster"] as? [String: [String]] ?? [:])
+                revision: record["revision"] as? Int ?? 0,
+                updatedAt: Date(timeIntervalSince1970: record["updatedAt"] as? Double ?? 0),
+                writer: record["writer"] as? String ?? "",
+                disabled: Set((record["disabled"] as? [String] ?? []).map(LerpRotationEntry.init(key:))),
+                roster: record["roster"] as? [String: [String]] ?? [:])
         }
+
+        /// Denials this record already held. Kept even when the v1 keys have
+        /// overtaken it, because of the rule the whole schema turns on: **an
+        /// explicit no is revoked only by an explicit yes.**
+        ///
+        /// The v1 format cannot express "I have never heard of this look" — it
+        /// only has a roster, and absence from a roster used to be read as *put
+        /// it in*. So a writer that has not seen a look says nothing about it,
+        /// and nothing is not consent. What that writer did say, about looks it
+        /// listed, still wins.
+        let carried = Set((record?["disabled"] as? [String] ?? []).map(LerpRotationEntry.init(key:)))
 
         // v1 — `enabledEntries` names what is in, `knownEntries` the roster it
         // was chosen from. Everything in the roster and not in the selection was
@@ -251,11 +268,11 @@ public enum LerpRotation {
             // off. That is what the v1 reader did, and reproducing it exactly is
             // the point of migrating rather than starting over.
             let known = defaults.stringArray(forKey: knownEntriesKey) ?? discovered.map(\.key)
-            let enabled = Set(saved)
-            let disabled = known.filter { !enabled.contains($0) }.map(LerpRotationEntry.init(key:))
-            return LerpRotationState(stored: true, revision: 0,
+            let enabled = Set(saved.map(LerpRotationEntry.init(key:)))
+            let disabled = Set(known.map(LerpRotationEntry.init(key:))).subtracting(enabled)
+            return LerpRotationState(stored: true, revision: record?["revision"] as? Int ?? 0,
                                      writer: "migrated-v1",
-                                     disabled: Set(disabled),
+                                     disabled: disabled.union(carried.subtracting(enabled)),
                                      roster: roster(of: known.map(LerpRotationEntry.init(key:))))
         }
 
@@ -267,12 +284,30 @@ public enum LerpRotation {
             let known = Set(defaults.stringArray(forKey: knownShadersKey)
                             ?? discovered.map(\.shader))
             let off = known.subtracting(enabled)
-            let disabled = discovered.filter { off.contains($0.shader) }
+            let disabled = Set(discovered.filter { off.contains($0.shader) })
             let seen = discovered.filter { known.contains($0.shader) }
-            return LerpRotationState(stored: true, revision: 0,
+            return LerpRotationState(stored: true, revision: record?["revision"] as? Int ?? 0,
                                      writer: "migrated-v0",
-                                     disabled: Set(disabled),
+                                     // Same rule: a shader this format put in is
+                                     // an explicit yes and clears the denials on
+                                     // its looks; one it never mentions is not.
+                                     disabled: disabled.union(
+                                        carried.filter { !enabled.contains($0.shader) }),
                                      roster: roster(of: seen))
+        }
+
+        // Nothing in the legacy keys at all. If there is a v2 record here it is
+        // the only thing anybody has said, whatever its digest claims — the keys
+        // it was measured against are gone rather than rewritten.
+        if let record {
+            return LerpRotationState(
+                stored: true,
+                version: max(version, LerpRotationState.currentVersion),
+                revision: record["revision"] as? Int ?? 0,
+                updatedAt: Date(timeIntervalSince1970: record["updatedAt"] as? Double ?? 0),
+                writer: record["writer"] as? String ?? "",
+                disabled: carried,
+                roster: record["roster"] as? [String: [String]] ?? [:])
         }
 
         return .empty
@@ -287,21 +322,19 @@ public enum LerpRotation {
     static func reconcile(_ state: LerpRotationState,
                           with discovered: [LerpRotationEntry]) -> LerpRotationState {
         let now = roster(of: discovered)
-        var disabled: Set<LerpRotationEntry> = []
+        // Every denial whose look is still on disk, carried across unchanged.
+        // This does not consult the roster, and that is the point: a look the
+        // user switched off stays off even if the roster has lost the shader it
+        // belongs to. The roster's job is to *find renames*, not to decide
+        // whether a decision counts.
+        var disabled = state.disabled.intersection(discovered)
 
         for (shader, presets) in now {
-            // A shader nobody has seen before is new in all its looks. Not being
-            // in the disabled set is what puts it in the rotation.
+            // Rename detection needs something to align against. A shader with
+            // no roster entry is one nobody has catalogued, so its looks are new
+            // — except for any the line above already carried, which were named
+            // explicitly and are not new to anyone.
             guard let before = state.roster[shader] else { continue }
-
-            let defaults = LerpRotationEntry(shader: shader)
-            if state.disabled.contains(defaults) { disabled.insert(defaults) }
-
-            let kept = Set(before).intersection(presets)
-            for preset in presets where kept.contains(preset) {
-                let entry = LerpRotationEntry(shader: shader, preset: preset)
-                if state.disabled.contains(entry) { disabled.insert(entry) }
-            }
             for pair in renamePairs(from: before, to: presets) {
                 guard state.disabled.contains(LerpRotationEntry(shader: shader, preset: pair.old))
                 else { continue }
@@ -320,17 +353,30 @@ public enum LerpRotation {
 
     /// The looks the shuffle may play, or nil for "every one of them".
     ///
-    /// nil rather than a full set only where the old reader answered nil, so
-    /// that `LerpMetalView.Config.rotation` sees exactly what it always saw:
-    /// no readable defaults at all, and a selection that has gone entirely
-    /// stale. Both mean the full rotation; neither may mean an empty one.
+    /// nil means exactly one thing: **nobody has ever chosen**. No readable
+    /// defaults, or a domain with no rotation in it — a fresh install, or an
+    /// upgrade from a build that predates the setting. `Config.rotation` reads
+    /// that as the full library, which is the right default and the only
+    /// remaining path to one.
+    ///
+    /// It does *not* mean "the answer came out awkward". A stored selection is
+    /// returned as it stands, including an empty one. That case is unreachable
+    /// through the gallery, which will not let the last look be switched off,
+    /// and a hand-edited domain that manages it gets what it asked for rather
+    /// than the entire library it did not.
     public static func enabled(discovered: [LerpRotationEntry],
                                in defaults: UserDefaults?) -> Set<LerpRotationEntry>? {
-        guard defaults != nil else { return nil }
-        let state = read(defaults, discovered: discovered)
+        guard let defaults else { return nil }
+        return enabled(discovered: discovered, in: read(defaults, discovered: discovered))
+    }
+
+    /// The same, from a state the caller has already read — so a host that
+    /// wants both the rotation *and* the state it came from (to write back
+    /// against later) does not go through `UserDefaults` twice.
+    public static func enabled(discovered: [LerpRotationEntry],
+                               in state: LerpRotationState) -> Set<LerpRotationEntry>? {
         guard state.stored else { return nil }
-        let enabled = Set(discovered).subtracting(state.disabled)
-        return enabled.isEmpty ? nil : enabled
+        return Set(discovered).subtracting(state.disabled)
     }
 
     // MARK: - Writing
@@ -365,10 +411,13 @@ public enum LerpRotation {
         guard let defaults, !discovered.isEmpty else { return base ?? .empty }
 
         let all = Set(discovered)
-        // An empty selection is stored as an empty *disabled* set, because
-        // `Config.rotation` reads "nothing chosen" as "all of them" and the
-        // sheet says so out loud. Storing it as "everything off" would be a
-        // rotation that renders all of them while claiming none.
+        // Stored as given. A nil selection is "nobody has chosen" and disables
+        // nothing; an empty one is "everything is off" and is written as such.
+        // This used to convert the second into the first, which meant a saved
+        // rotation could say the opposite of the sheet that saved it. Making an
+        // empty selection unreachable is the gallery's job, not this one's, and
+        // a store that quietly rewrites what it is handed is how a setting
+        // stops being believed.
         let picked = Set(LerpMetalView.Config.rotation(of: enabled, from: discovered))
         let wanted = all.subtracting(picked)
 
