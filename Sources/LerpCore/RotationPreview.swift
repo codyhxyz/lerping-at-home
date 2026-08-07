@@ -118,14 +118,14 @@ public final class RotationPreviewPlayer {
         // Pinned, so the shuffle in `tick` can never step this view off the look
         // the pointer is on.
         view.config.shaderName = shader.name
-        guard view.setShader(shader) else { return }
-        // `setShader` has just reset the values to the shader's declared
-        // defaults, which is the `nil` preset — a look in its own right. Anything
-        // else is that same reset plus the preset's own values, which is exactly
-        // what the still was rendered with.
-        if let name = tile.entry.preset, let preset = shader.preset(named: name) {
-            for (key, value) in preset.values { view.setParameter(key, value) }
-        }
+        // The whole look in one step — the same `(shader, parameters)` the
+        // still was baked from, which is what makes the swap invisible. This
+        // used to be `setShader` followed by the preset's values set one at a
+        // time, a second hand-written copy of "defaults, then the preset" that
+        // was only correct because of the reset `setShader` happened to do
+        // first, repacked the uniform block once per parameter, and left
+        // `currentEntry` naming the defaults look while a preset was on screen.
+        guard view.show(tile.entry, of: shader) else { return }
         view.seed = recipe.seed
         view.time = CFTimeInterval(recipe.time)
 

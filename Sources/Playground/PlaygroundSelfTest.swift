@@ -2048,9 +2048,7 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
                                             view: LerpMetalView) -> Bool {
         guard let shader = controller.metalView.shaderLibrary.shader(named: entry.shader)
         else { return false }
-        var expected = shader.defaultParameterValues()
-        if let name = entry.preset, let preset = shader.preset(named: name) { expected.apply(preset) }
-        return view.parameterValues?.packedTail == expected.packedTail
+        return view.parameterValues?.packedTail == shader.parameterValues(for: entry).packedTail
     }
 
     /// …and the same thing again as a picture, because "no visual jump" is a

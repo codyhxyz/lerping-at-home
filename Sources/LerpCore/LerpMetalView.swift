@@ -89,8 +89,9 @@ public final class LerpMetalView: NSView {
 
     public private(set) var currentShaderName: String = ""
     /// The rotation entry on screen: the shader plus the preset it is wearing,
-    /// or nil before anything has been loaded. `setShader` resets it to that
-    /// shader's defaults entry, because that is what `setShader` renders.
+    /// or nil before anything has been loaded. Written only by `show`, beside
+    /// the parameters that make it true, so it cannot name a look the view is
+    /// not rendering.
     public private(set) var currentEntry: LerpRotationEntry?
     public var onCompileError: ((String, String) -> Void)?
 
@@ -98,9 +99,10 @@ public final class LerpMetalView: NSView {
     private let library: ShaderLibrary
     private var pipeline: MTLRenderPipelineState?
     private var dataProvider: LerpDataProvider?
-    /// Values for the current shader's `// lerp-param:` declarations. Reset to
-    /// the shader's declared defaults on every `setShader`, so with no host UI
-    /// driving it every shader renders exactly at its defaults.
+    /// Values for the current shader's `// lerp-param:` declarations — the
+    /// shader's declared defaults, wearing `currentEntry`'s preset. Written
+    /// whole by `show`, never patched afterwards, so with no host UI driving it
+    /// the view renders exactly the look `currentEntry` names.
     public private(set) var parameterValues: LerpParameterValues?
     private var displayLink: CADisplayLink?
     private var shuffleOrder: [LerpRotationEntry] = []
@@ -471,27 +473,51 @@ public final class LerpMetalView: NSView {
         guard let shader = available.named(entry.shader) else { return false }
         let preset = entry.preset.flatMap { shader.preset(named: $0) }
         if entry.preset != nil, preset == nil, !allowingDefaultsFallback { return false }
-        guard setShader(shader) else { return false }
-        if let preset {
-            parameterValues?.apply(preset)
-            currentEntry = entry
-        }
-        return true
+        // The look as this file can still render it. A preset name the shader
+        // no longer declares has by now been either refused (shuffling) or
+        // forgiven (pinned), and forgiving it means the defaults look — so hand
+        // `show` the defaults look, rather than one that names a preset which
+        // will not be on screen.
+        return show(LerpRotationEntry(shader: shader.name, preset: preset?.name), of: shader)
     }
 
+    /// Puts one complete look on screen.
+    ///
+    /// The only place `pipeline`, `dataProvider`, `parameterValues`,
+    /// `currentShaderName` and `currentEntry` are assigned. They are five facts
+    /// about one look, and writing them anywhere else is what let half a look
+    /// exist: this used to be `setShader`, which reset the parameters to the
+    /// shader's defaults and set `currentEntry` to the defaults entry, leaving
+    /// every caller to put the preset back afterwards. Of the four callers, two
+    /// did it differently and one did not do it at all — and because the reset
+    /// is silent, a caller that forgot showed a look nothing in the logs
+    /// disagreed with. There is nothing left to forget.
+    ///
+    /// `entry` must name a preset this shader actually declares, or none;
+    /// `setEntry` is where that is decided, because what an unknown preset name
+    /// means depends on whether the shader was pinned or shuffled to.
     @discardableResult
-    public func setShader(_ shader: LerpShader) -> Bool {
+    public func show(_ entry: LerpRotationEntry, of shader: LerpShader) -> Bool {
         do {
             pipeline = try library.pipeline(for: shader)
             dataProvider = try library.dataProvider(for: shader)
-            parameterValues = shader.defaultParameterValues()
+            parameterValues = shader.parameterValues(for: entry)
             currentShaderName = shader.name
-            currentEntry = LerpRotationEntry(shader: shader.name)
+            currentEntry = entry
             return true
         } catch {
             onCompileError?(shader.name, String(describing: error))
             return false
         }
+    }
+
+    /// The shader at its declared defaults — which is a look in its own right,
+    /// and the one `show` renders for an entry with no preset. Kept because the
+    /// playground's hot reload and the preview app step over *shaders*, not
+    /// looks, and neither has a rotation entry to hand.
+    @discardableResult
+    public func setShader(_ shader: LerpShader) -> Bool {
+        show(LerpRotationEntry(shader: shader.name), of: shader)
     }
 
     /// Overrides one declared parameter of the current shader. No-op if the
