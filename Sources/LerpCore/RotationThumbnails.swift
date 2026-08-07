@@ -433,10 +433,7 @@ public final class RotationThumbnails {
                 guard isCurrent(run) else { return }
                 for job in groups[order[index]] ?? [] {
                     guard isCurrent(run) else { return }
-                    var values = job.shader.defaultParameterValues()
-                    if let name = job.entry.preset, let preset = job.shader.preset(named: name) {
-                        values.apply(preset)
-                    }
+                    let values = job.shader.parameterValues(for: job.entry)
                     let url = url(entry: job.entry, source: job.shader.source)
                     let result = LerpSnapshot.render(shader: job.shader, library: library,
                                                      renderer: renderer,

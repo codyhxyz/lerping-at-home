@@ -43,6 +43,30 @@ public struct LerpShader: Sendable {
         presets.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
+    /// What one of this shader's looks renders with: the declared defaults,
+    /// with the entry's preset applied on top when it names one this file still
+    /// declares.
+    ///
+    /// The single answer to that question. It used to be transcribed five
+    /// times — the live view, the hover preview, the thumbnail baker, the
+    /// wallpaper handoff and the self-test each spelled out "start from the
+    /// defaults, then apply the preset" — and they did not all spell it the
+    /// same way: the hover preview set the preset's values one at a time
+    /// without the reset in front of them, which is only equivalent because of
+    /// what the line above it happened to have just done. A still and the live
+    /// frame it is supposed to continue are the *same* function of the same
+    /// look, so there is one function.
+    ///
+    /// A preset name the file no longer declares yields the defaults. Callers
+    /// for whom that is a lie — the shuffle, where a shader's defaults are a
+    /// look in their own right and may be one the user switched off — must
+    /// resolve the name themselves first; see `LerpMetalView.setEntry`.
+    public func parameterValues(for entry: LerpRotationEntry) -> LerpParameterValues {
+        var values = defaultParameterValues()
+        if let name = entry.preset, let preset = preset(named: name) { values.apply(preset) }
+        return values
+    }
+
     /// Name of the `LerpDataProvider` this shader asks for, declared as a
     /// comment among its first lines:
     ///

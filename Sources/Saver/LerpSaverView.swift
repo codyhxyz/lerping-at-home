@@ -518,10 +518,7 @@ public final class LerpSaverView: ScreenSaverView {
             }
             // Same (shader, time, seed, params) the view was rendering, so the
             // still is the frame the saver stopped on and not a different look.
-            var values = shader.defaultParameterValues()
-            if let name = entry.preset, let preset = shader.preset(named: name) {
-                values.apply(preset)
-            }
+            let values = shader.parameterValues(for: entry)
 
             var written: [(NSScreen, URL)] = []
             for (index, target) in targets.enumerated() {
@@ -797,9 +794,15 @@ public final class LerpSaverView: ScreenSaverView {
         let displayed = metalView?.lastDisplayedFrameTime ?? 0
         let since = displayed > 0
             ? String(format: "%.2fs", CACurrentMediaTime() - displayed) : "never"
+        // The *look*, not the shader. This said `shader=` for as long as the
+        // rotation has had presets in it, which made the one fact a harness in
+        // another process can read the one fact that cannot tell `aurora` from
+        // `aurora/Ember` — so "the shuffle never plays presets" was a claim
+        // nothing outside this process could check, and it went unchecked
+        // through three rounds of being called fixed.
         return "rendering=\(rendering ? 1 : 0) parked=\(parkedReason ?? "no") "
             + String(format: "fps=%.1f ", metalView?.measuredFPS ?? 0)
-            + "lastDisplayedFrame=\(since) shader=\(metalView?.currentShaderName ?? "")"
+            + "lastDisplayedFrame=\(since) look=\(metalView?.currentEntry?.key ?? "")"
     }
 
     @objc public var rotationStillsSummary: String {
