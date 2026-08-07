@@ -103,7 +103,7 @@ A preset is also a stop in the screensaver's shuffle: the rotation is a list of
 (shader, preset) pairs, where the shader's declared defaults are one of the
 pairs. Adding a preset to a file therefore adds a look to the rotation with no
 other change, and a file that declares none still takes its turn at its
-defaults. The snapshot suite renders every shader at its defaults and nothing
+defaults. `--snapshot` renders every shader at its defaults and nothing
 else, so a preset can never move a snapshot.
 
 **Rules of thumb when porting.** Use the upstream prop names and ranges
@@ -171,7 +171,7 @@ in `LerpDataProviders`, and give the shader a matching `// lerp-data:` line.
   data from `uniforms` alone. A frame in this project is a pure function of
   (shader, time, seed): `--snapshot --time 60` has to produce the same image
   whether or not t = 0…59 were rendered first. That property is what the
-  snapshot suite, the playground's time scrubber and thumbnail generation all
+  `--snapshot`, the playground's time scrubber and thumbnail generation all
   rest on. Regenerating from scratch is cheap — `pipes` replays a ~1000-step
   lattice walk every frame in about 70 µs. Caching is only allowed when the
   cache key *is* the whole input: `heatmap`'s pre-pass reads (seed, drawable

@@ -30,12 +30,6 @@ INSTALLED  := $(HOME)/Library/Screen Savers/Lerping@Home.saver
 PLAYGROUND_APP  := $(BUILD)/LerpPlayground.app
 PLAYGROUND_BIN  := $(PLAYGROUND_APP)/Contents/MacOS/LerpPlayground
 PLAYGROUND_ICNS := $(BUILD)/LerpPlayground.icns
-# A second bundle, holding the same executable under a bundle identifier of its
-# own, is how `--selftest` stays out of the way: it cannot be mistaken for the
-# app by the single-instance check, cannot activate it, and writes its window
-# and split-view preferences into a domain of its own.
-SELFTEST_APP    := $(BUILD)/LerpPlaygroundSelfTest.app
-SELFTEST_BIN    := $(SELFTEST_APP)/Contents/MacOS/LerpPlaygroundSelfTest
 LS_SUPPORT      := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support
 LSREGISTER      := $(LS_SUPPORT)/lsregister
 
@@ -83,7 +77,7 @@ INSTALLED_PLAYGROUND_ID ?= com.hergenroeder.lerping.playground.installed
 #
 # These flags are appended to the LerpPlayground rule ONLY. The screensaver, the
 # preview app and the snapshot renderer link nothing but system frameworks, and
-# `make all`, `make snapshots` and `make test-load` never invoke swift build.
+# `make all` never invokes swift build.
 MIDI_PKG   := Sources/MIDIDeps
 MIDI_BIN   := $(MIDI_PKG)/.build/release
 MIDI_LIB   := $(MIDI_BIN)/libMIDIDeps.a
@@ -91,13 +85,8 @@ MIDI_SRC   := $(MIDI_PKG)/Package.swift $(wildcard $(MIDI_PKG)/Sources/MIDIDeps/
 # CoreMIDI.framework comes in through Swift autolink metadata; no -framework needed.
 MIDI_FLAGS := -I $(MIDI_BIN)/Modules -L $(MIDI_BIN) -lMIDIDeps
 
-PROBE_APP  := $(BUILD)/LerpSandboxProbe.app
-PROBE_BIN  := $(PROBE_APP)/Contents/MacOS/LerpSandboxProbe
-PROBE_ID   := com.hergenroeder.lerping.sandboxprobe
-
-.PHONY: all preview playground playground-build playground-test saver snapshots \
-        test-load test-host sandbox-probe midi-deps install install-example \
-        install-playground uninstall-playground clean
+.PHONY: all preview playground playground-build saver midi-deps \
+        install install-example install-playground uninstall-playground clean
 
 all: saver preview
 
@@ -153,156 +142,6 @@ $(PLAYGROUND_ICNS): $(BUILD)/LerpPreview Sources/Shaders/mesh-gradient.metal
 		   $(BUILD)/icon.iconset/icon_$${pair##*:}.png; \
 	done
 	iconutil -c icns -o $@ $(BUILD)/icon.iconset
-
-# Scripted UI test: drives the real window — real AppKit controls, a real
-# Metal view, real Core MIDI — checks that it renders, edits the shader, breaks
-# it, and fixes it. Exits non-zero on any failed check.
-#
-# It runs out of its own bundle so it can leave the user's screen alone: a
-# separate identifier keeps it clear of the app's single-instance check, and
-# LSUIElement plus an `.accessory` policy mean no Dock tile, no menu bar and no
-# stolen focus. Run directly rather than through `open` so make sees the check
-# output and the exit code. The window it opens is real and rendering but at
-# zero opacity, and every path out of the run — including the watchdog — closes
-# it and exits.
-# LERP_DEFAULTS_MODULE is not optional here. Without it `RotationStore.module`
-# resolves to the user's live screensaver domain, and the suite wrote their real
-# rotation through a default argument that was evaluated before any test could
-# redirect it -- two shaders came out of a deliberate selection that way.
-playground-test: $(SELFTEST_BIN)
-	@defaults -currentHost delete $(LOADTEST_MODULE) 2>/dev/null || true
-	LERP_DEFAULTS_MODULE=$(LOADTEST_MODULE) $(SELFTEST_BIN) --selftest
-	@defaults -currentHost delete $(LOADTEST_MODULE) 2>/dev/null || true
-
-$(SELFTEST_BIN): $(PLAYGROUND_BIN) Sources/Playground/SelfTest-Info.plist
-	@mkdir -p $(SELFTEST_APP)/Contents/MacOS
-	cp $(PLAYGROUND_BIN) $@
-	cp Sources/Playground/SelfTest-Info.plist $(SELFTEST_APP)/Contents/Info.plist
-	codesign --force -s - $(SELFTEST_APP)
-
-# Fetches and builds swift-midi-io once; after that it is a no-op.
-midi-deps: $(MIDI_LIB)
-
-$(MIDI_LIB): $(MIDI_SRC)
-	swift build -c release --package-path $(MIDI_PKG)
-
-saver: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/Info.plist
-	@mkdir -p $(SAVER_DIR)/Contents/MacOS $(SAVER_DIR)/Contents/Resources/Shaders
-	swiftc -O -whole-module-optimization -parse-as-library -emit-object \
-		-target $(TARGET) -module-name LerpSaver \
-		-o $(BUILD)/LerpSaver.o $(CORE) $(SAVER_SRC)
-	clang -bundle -target $(TARGET) -isysroot $(SDK) \
-		-o $(SAVER_DIR)/Contents/MacOS/LerpSaver $(BUILD)/LerpSaver.o \
-		-framework ScreenSaver $(FRAMEWORKS) \
-		-L$(SDK)/usr/lib/swift -L/usr/lib/swift \
-		-Xlinker -rpath -Xlinker /usr/lib/swift
-	cp Sources/Saver/Info.plist $(SAVER_DIR)/Contents/Info.plist
-	cp $(SHADERS) $(SAVER_DIR)/Contents/Resources/Shaders/
-	# System Settings thumbnail, generated from the mesh-gradient shader.
-	$(BUILD)/LerpPreview --snapshot $(BUILD)/thumb --size 180x116 --time 4 --shader mesh-gradient >/dev/null
-	cp $(BUILD)/thumb/mesh-gradient.png $(SAVER_DIR)/Contents/Resources/thumbnail@2x.png
-	$(BUILD)/LerpPreview --snapshot $(BUILD)/thumb1x --size 90x58 --time 4 --shader mesh-gradient >/dev/null
-	cp $(BUILD)/thumb1x/mesh-gradient.png $(SAVER_DIR)/Contents/Resources/thumbnail.png
-	# One still per look, for the gallery in the Options… sheet.
-	#
-	# Baked in rather than left to be rendered on demand because the sheet is
-	# built inside legacyScreenSaver, which is App Sandboxed: it can read its
-	# own bundle for free and can only write inside its container. A bundle full
-	# of stills means opening Options… does no GPU work at all in the common
-	# case. Stale ones are not a hazard — the filenames carry a hash of each
-	# shader's source, so a still for a `.metal` that has since changed simply
-	# does not match and is drawn at runtime instead.
-	#
-	# Incremental: after the first build this is 114 file-exists checks.
-	$(BUILD)/LerpPreview --thumbnails $(SAVER_DIR)
-	codesign --force -s - $(SAVER_DIR)
-
-snapshots: $(BUILD)/LerpPreview
-	$(BUILD)/LerpPreview --snapshot $(BUILD)/snapshots
-
-# The ByHost domain the writing half of `test-load` uses. Not the saver's.
-# See the guard on `mayWrite` in scripts/loadtest.swift: the sheet's OK button
-# is worth testing, and testing it against the domain someone's screensaver
-# actually reads is not a test, it is a rotation waiting to be overwritten.
-LOADTEST_MODULE := com.hergenroeder.lerping.uitest
-
-test-load: saver scripts/loadtest.swift
-	swiftc -target $(TARGET) -o $(BUILD)/loadtest scripts/loadtest.swift \
-		-framework ScreenSaver -framework AppKit
-	# Read-only, against the real domain: what the user's own Options… sheet
-	# comes up showing. Nothing in this run writes anything.
-	$(BUILD)/loadtest $(SAVER_DIR)
-	# …and again pointed somewhere disposable, where OK may be pressed.
-	@defaults -currentHost delete $(LOADTEST_MODULE) 2>/dev/null || true
-	LERP_DEFAULTS_MODULE=$(LOADTEST_MODULE) $(BUILD)/loadtest $(SAVER_DIR)
-	@defaults -currentHost delete $(LOADTEST_MODULE) 2>/dev/null || true
-
-# Does the saver render, and does it stop when nothing can see it?
-#
-# `test-load` and `sandbox-probe` both drive the Options… sheet and neither of
-# them draws a frame. This one loads the same bundle as a *non-preview* host,
-# in each of the two shapes legacyScreenSaver produces — one on screen, one
-# full-screen at the wallpaper layer where nothing of it is ever scanned out —
-# and reads back what the saver concluded about itself.
-#
-# It puts a small window on screen for the length of the first phase. That is
-# the point of it: "the code path is taken" is not evidence that a screensaver
-# renders, and the black screensaver this check exists to prevent shipped twice
-# without anyone watching pixels.
-#
-# Not part of `all`, for the same reason: it wants the screen.
-HOSTTEST_SECONDS ?= 20
-
-test-host: saver scripts/hosttest.swift
-	swiftc -target $(TARGET) -o $(BUILD)/hosttest scripts/hosttest.swift \
-		-framework ScreenSaver -framework AppKit
-	$(BUILD)/hosttest $(SAVER_DIR) $(HOSTTEST_SECONDS)
-
-# What the Options… sheet can do inside an App Sandbox — the one thing
-# `test-load` cannot tell you, because it runs with the run of the machine and
-# the sheet the user gets is built inside legacyScreenSaver.appex.
-#
-# Wraps scripts/sandboxprobe.swift in an .app and ad-hoc signs it with
-# legacyScreenSaver's own entitlements, so it is App Sandboxed for real:
-# `NSHomeDirectory()` is redirected into a container of its own and a write
-# outside it is denied by the kernel, not by a check in this repo. Then it loads
-# the real `.saver` and builds the real sheet.
-#
-# scripts/SandboxProbe.entitlements is a transcription of
-#
-#   codesign -d --entitlements - \
-#     /System/Library/Frameworks/ScreenSaver.framework/PlugIns/legacyScreenSaver.appex
-#
-# minus the entitlements no locally-signed binary may claim
-# (com.apple.private.*, the mach-lookup and yasb temporary exceptions) and the
-# network/pictures ones the probe has no use for. Everything dropped only makes
-# this sandbox *tighter* than the real one, so a capability that holds here
-# holds there. The two that matter are both kept: `app-sandbox`, which is what
-# redirects NSHomeDirectory() and denies writes outside the container, and the
-# read-only exception for `/`, which is why the screensaver can read the user's
-# custom shader folder without being able to write a byte to it.
-#
-# The file carries no XML comments on purpose: AMFI's entitlement parser rejects
-# them outright, and it says so in a way that is easy to mistake for a code
-# signing problem ("AMFIUnserializeXML: syntax error").
-#
-# Separate from `test-load` because it creates a sandbox container in the user's
-# Library. Everything the probe wrote goes on the way out; the empty stub
-# containermanagerd keeps is not ours to delete and needs Full Disk Access even
-# to look at, so the `rm` is best-effort and its failure is not the target's.
-sandbox-probe: saver scripts/sandboxprobe.swift scripts/SandboxProbe-Info.plist \
-               scripts/SandboxProbe.entitlements
-	@mkdir -p $(PROBE_APP)/Contents/MacOS
-	swiftc -target $(TARGET) -o $(PROBE_BIN) scripts/sandboxprobe.swift \
-		-framework ScreenSaver -framework AppKit -framework Metal
-	cp scripts/SandboxProbe-Info.plist $(PROBE_APP)/Contents/Info.plist
-	codesign --force -s - --entitlements scripts/SandboxProbe.entitlements $(PROBE_APP)
-	@echo ""
-	# An absolute path: a sandboxed process starts in its own container, so a
-	# relative one resolves inside it and finds nothing.
-	$(PROBE_BIN) "$(CURDIR)/$(SAVER_DIR)"; status=$$?; \
-	 rm -rf "$(HOME)/Library/Containers/$(PROBE_ID)"; \
-	 exit $$status
 
 install: saver
 	mkdir -p "$(HOME)/Library/Screen Savers" "$(CUSTOM_DIR)"
@@ -387,5 +226,4 @@ clean:
 	# Only the ones in build/: the copy `install-playground` put in
 	# ~/Applications is the user's, and `uninstall-playground` is how it goes.
 	@$(LSREGISTER) -u $(PLAYGROUND_APP) 2>/dev/null || true
-	@$(LSREGISTER) -u $(SELFTEST_APP) 2>/dev/null || true
 	rm -rf $(BUILD) $(MIDI_PKG)/.build

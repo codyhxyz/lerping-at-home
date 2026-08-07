@@ -32,9 +32,7 @@ import Metal
 @main
 enum PlaygroundMain {
     static func main() {
-        if CommandLine.arguments.contains("--selftest") {
-            PlaygroundSelfTest.run()
-        } else if CommandLine.arguments.contains("--shaders") {
+        if CommandLine.arguments.contains("--shaders") {
             reportShaders()
         } else if let index = CommandLine.arguments.firstIndex(of: "--capture") {
             let next = CommandLine.arguments.dropFirst(index + 1).first

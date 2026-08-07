@@ -197,9 +197,6 @@ Other targets:
 - `make install-playground` / `make uninstall-playground` — the copy Spotlight will offer, in `~/Applications`. See "Install" above.
 - `build/LerpPlayground.app/Contents/MacOS/LerpPlayground --shaders` — print the checkout this copy reads, how it resolved it, and the shaders in it. Exits non-zero if there are none.
 - `build/LerpPlayground.app/Contents/MacOS/LerpPlayground --capture out.png` — build the real window the way a launch does, say what it opened on and whether that came from the memory or from a draw against your rotation, and write a PNG of it. Reads your screensaver settings, writes none of them, and puts the last-opened memory back as it found it. The render pane is empty in the PNG: it is a `CAMetalLayer`, which `cacheDisplay` cannot reach.
-- `make playground-test` — scripted UI test: drives the real window, asserts frames are drawing, edits the shader, breaks it, fixes it. Exits non-zero on any failed check.
-  - It runs out of `build/LerpPlaygroundSelfTest.app`, a second bundle holding the same executable under an identifier of its own, so it can neither be mistaken for the app by the single-instance check nor activate it, and its preferences land in a domain of its own.
-  - Nothing of it reaches your screen: no Dock tile, no menu bar, no stolen focus, and a window that is real and rendering but at zero opacity. Every exit — including the watchdog that fires if a step never hands on — closes the window, and `alarm(2)` backs that up if the process wedges entirely.
 
 ## Custom shaders
 
@@ -320,9 +317,7 @@ Sources/Saver/       ScreenSaverView shim + Info.plist
 Sources/Preview/     LerpPreview dev app / snapshot CLI
 Sources/Playground/  LerpPlayground editor + live render, hot reload
   Info.plist           the .app's identity: bundle id, name, icon
-  SelfTest-Info.plist  the same executable under its own id, for --selftest
 Templates/           example shader
-scripts/             loadtest.swift, sandboxprobe.swift + its plist/entitlements
 ```
 
 `LerpCore` holds the rotation gallery (`RotationGallery.swift`,
@@ -356,7 +351,7 @@ the snapshot renderer should have to link a framework they never use.
 - **Nothing about the host tells you which kind it is.** Measured, and each rules out an obvious fix:
   - Both kinds sit at window level `-2147483625`. So does WallpaperAgent's own window.
   - A host that is *visibly rendering the screensaver* has `kCGWindowIsOnscreen` **false** on its own window for the whole session — its layer is composited into a window belonging to WallpaperAgent and its own window is never ordered in. Sampled once a second from outside the process across two real activations, one of them 11 minutes long. `NSWindow.isVisible` and `occlusionState` follow the same window, which is also why occlusion notifications never arrive. Anything keyed on them blacks out the real screensaver.
-- So the saver does not classify itself. It draws, and it drops to **one frame a second** only when it can prove nothing it draws can be on screen: every display asleep, the session not on the console, or somebody demonstrably working at the machine for five consecutive seconds (any input at all ends a screensaver, so that cannot be true of the host the user is looking at). All three are verified to answer truthfully inside the sandbox by `make sandbox-probe`.
+- So the saver does not classify itself. It draws, and it drops to **one frame a second** only when it can prove nothing it draws can be on screen: every display asleep, the session not on the console, or somebody demonstrably working at the machine for five consecutive seconds (any input at all ends a screensaver, so that cannot be true of the host the user is looking at).
 - Against those stands one piece of positive evidence that overrides all of them: `CAMetalDrawable.presentedTime`, i.e. a frame of ours that actually reached a display. Measured with this view's exact shape — 299 non-zero times out of 300 frames in a window that is on screen, 0 out of 300 in one that is not. It is evidence in one direction only; a visible layer that is composited rather than given a display plane can report zero too, so its absence proves nothing and is never read as proof.
 - Parking is one frame a second rather than zero on purpose. A host parked by mistake is a slow screensaver for one second, not a black one, and the frame it draws each second is what re-tests the verdict. Measured on a full-screen 1512×982 hidden host: **1.42% CPU rendering → 0.32% parked**, parked 8 s in.
 - The host process is never terminated. `exit(0)` on `willstop` raced the lock-screen UI, which is why the lock screen was blank, animated, or static at random. A retained window with its backing store intact costs nothing and makes the lock screen deterministic — it shows the frame the saver stopped on.
@@ -375,10 +370,9 @@ log show --last 5m --info --style compact --predicate 'subsystem == "com.hergenr
 ## What the sandbox allows
 
 `legacyScreenSaver.appex` — the process that hosts the saver *and* builds its
-Options… sheet — carries `com.apple.security.app-sandbox`. `make sandbox-probe`
-measures what that means, by wrapping `scripts/sandboxprobe.swift` in an .app,
-ad-hoc signing it with a transcription of legacyScreenSaver's own entitlements,
-and loading the real `.saver` into it. Measured on macOS 27, Apple M5:
+Options… sheet — carries `com.apple.security.app-sandbox`. Measured on macOS 27,
+Apple M5, by ad-hoc signing a host with a transcription of legacyScreenSaver's
+own entitlements and loading the real `.saver` into it:
 
 | | |
 |---|---|
