@@ -1662,9 +1662,11 @@ final class SelfTestDelegate: NSObject, NSApplicationDelegate {
         controller.rotationDefaults = RotationStore.saverDefaults(module: Self.testModule)
         check("the gallery writes a ByHost screensaver domain, not the app's own preferences",
               controller.rotationDefaults.map { $0 is ScreenSaverDefaults } == true
-                  && RotationStore.module == "com.hergenroeder.lerping"
-                  && RotationStore.module != Bundle.main.bundleIdentifier
-                  && !RotationStore.isLiveModule(Self.testModule),
+                  && RotationStore.productionModule == "com.hergenroeder.lerping"
+                  && RotationStore.productionModule != Bundle.main.bundleIdentifier
+                  && !RotationStore.isLiveModule(Self.testModule)
+                  // The run itself must not be pointed at the live domain.
+                  && !RotationStore.isLiveModule(RotationStore.module),
               controller.rotationDefaults.map { String(describing: type(of: $0)) } ?? "nil"
                   + " for " + Self.testModule)
 

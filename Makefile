@@ -165,8 +165,14 @@ $(PLAYGROUND_ICNS): $(BUILD)/LerpPreview Sources/Shaders/mesh-gradient.metal
 # output and the exit code. The window it opens is real and rendering but at
 # zero opacity, and every path out of the run — including the watchdog — closes
 # it and exits.
+# LERP_DEFAULTS_MODULE is not optional here. Without it `RotationStore.module`
+# resolves to the user's live screensaver domain, and the suite wrote their real
+# rotation through a default argument that was evaluated before any test could
+# redirect it -- two shaders came out of a deliberate selection that way.
 playground-test: $(SELFTEST_BIN)
-	$(SELFTEST_BIN) --selftest
+	@defaults -currentHost delete $(LOADTEST_MODULE) 2>/dev/null || true
+	LERP_DEFAULTS_MODULE=$(LOADTEST_MODULE) $(SELFTEST_BIN) --selftest
+	@defaults -currentHost delete $(LOADTEST_MODULE) 2>/dev/null || true
 
 $(SELFTEST_BIN): $(PLAYGROUND_BIN) Sources/Playground/SelfTest-Info.plist
 	@mkdir -p $(SELFTEST_APP)/Contents/MacOS
