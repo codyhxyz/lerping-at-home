@@ -202,7 +202,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                          action: #selector(showShaderPicker))
         shaderButton.alignment = .left
         // The title carries a shader name *and* a preset name, either of which
-        // can be long, so it gives way rather than pushing Rotation… off the bar.
+        // can be long, so it gives way rather than pushing New…, Save and Revert
+        // off the bar.
         shaderButton.cell?.lineBreakMode = .byTruncatingTail
         shaderButton.setContentHuggingPriority(.init(1), for: .horizontal)
         shaderButton.setContentCompressionResistancePriority(.init(2), for: .horizontal)
@@ -214,9 +215,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         let newButton = Chrome.button("New…", target: self, action: #selector(newShader))
         Chrome.configure(saveButton, title: "Save", target: self, action: #selector(saveShader))
         Chrome.configure(revertButton, title: "Revert", target: self, action: #selector(revertShader))
-        let rotationButton = Chrome.button("Rotation…", target: self,
-                                           action: #selector(showRotationGallery))
-        rotationButton.toolTip = "Pick which looks the screensaver shuffles through, by picture"
 
         status.isBordered = false
         status.target = self
@@ -243,7 +241,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         editor.setContentHuggingPriority(.init(1), for: .vertical)
 
         return Chrome.pane([Chrome.bar([shaderButton, newButton, saveButton, revertButton,
-                                        Chrome.flexible(), rotationButton]),
+                                        Chrome.flexible()]),
                             editor,
                             Chrome.bar([status, Chrome.flexible()], height: 22),
                             consoleScroll])
@@ -1003,6 +1001,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         return made
     }
 
+    /// Shader → Screensaver Rotation… (⌥⌘R), forwarded by the app delegate when
+    /// the gallery itself is key. The only entry point: the picker popover's
+    /// corner badges toggle the rotation, so the toolbar carries no button for
+    /// it, but Select All / Deselect All and the wider grid live only here.
     @objc func showRotationGallery(_ sender: Any?) {
         let gallery = rotationGallery()
         gallery.load(shaders: metalView.shaderLibrary.discover())
