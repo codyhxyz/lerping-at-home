@@ -173,6 +173,9 @@ make playground
   - Pointing at a tile plays it, as in the gallery — it is the same tile.
   - Both grids mark the look the editor has open and share one cache of stills,
     so opening the popover after the gallery renders nothing new.
+- The rotation gallery window opens from **Shader → Screensaver Rotation…**
+  (`⌥⌘R`). The toolbar has no button for it. It holds Select All, Deselect All,
+  and a wider grid than the popover.
 - An externally modified open file reloads if there are no unsaved edits.
 - Time scrubber, render scale (100/75/50/25%), and fps readout map onto `LerpUniforms` and `LerpMetalView.Config`.
 - Editor is a plain `NSTextView` with soft tabs, auto-indent, undo, and find. No syntax highlighting and no line-number gutter.
@@ -185,6 +188,7 @@ Keys:
 - `⌘R` — recompile.
 - `⌘\` — play/pause.
 - `⇧⌘R` — re-roll seed.
+- `⌥⌘R` — open the screensaver rotation gallery window.
 - `⇧⌘[` / `⇧⌘]` — previous/next shader.
 
 Other targets:
