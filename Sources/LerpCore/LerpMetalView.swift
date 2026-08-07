@@ -433,7 +433,19 @@ public final class LerpMetalView: NSView {
                                                      offset: attempt == 0 ? offset : step)
             else { return false }
             anchor = candidate
-            if setEntry(candidate, from: available) { return true }
+            if setEntry(candidate, from: available) {
+                // The one fact that settles "why is that look on my screen?".
+                // Everything else about the rotation is inspectable at rest --
+                // the defaults on disk, the tests, `rotationNow` -- but which
+                // entry actually went up, in the real host, was not recorded
+                // anywhere, so three separate "this is fixed" claims rested on
+                // a harness rather than on the screensaver that ran.
+                Self.log.info("""
+                    playing \(candidate.key, privacy: .public) \
+                    (\(self.shuffleOrder.count) in rotation of \(available.rotationEntries().count) discovered)
+                    """)
+                return true
+            }
         }
         return false
     }
