@@ -442,7 +442,15 @@ public final class LerpMetalView: NSView {
                 // entry actually went up, in the real host, was not recorded
                 // anywhere, so three separate "this is fixed" claims rested on
                 // a harness rather than on the screensaver that ran.
-                Self.log.info("""
+                //
+                // `.notice`, not `.info`, and that distinction is the whole
+                // point: os_log's info level is memory-only. It never reaches
+                // the on-disk store, so it ages out of the ring buffer within
+                // minutes and `log show` returns nothing for it afterwards.
+                // A screensaver is watched at the exact moments nobody is at a
+                // terminal, so a diagnostic that only survives a few minutes is
+                // no diagnostic at all -- it read as "the saver never ran".
+                Self.log.notice("""
                     playing \(candidate.key, privacy: .public) \
                     (\(self.shuffleOrder.count) in rotation of \(available.rotationEntries().count) discovered)
                     """)

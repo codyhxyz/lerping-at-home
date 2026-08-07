@@ -133,7 +133,7 @@ public final class LerpSaverView: ScreenSaverView {
         wantsLayer = true
         setUpMetalView()
         observeScreenSaverLifecycle()
-        Self.log.info("init frame=\(Int(frame.width))x\(Int(frame.height)) isPreview=\(isPreview) effectiveIsPreview=\(self.effectiveIsPreview)")
+        Self.log.notice("init frame=\(Int(frame.width))x\(Int(frame.height)) isPreview=\(isPreview) effectiveIsPreview=\(self.effectiveIsPreview)")
     }
 
     required init?(coder: NSCoder) { nil }
@@ -152,7 +152,21 @@ public final class LerpSaverView: ScreenSaverView {
     }
 
     private func currentConfig() -> LerpMetalView.Config {
-        Settings.load(from: Self.defaults(), discovered: discoveredShaders().rotationEntries()).config
+        let all = discoveredShaders().rotationEntries()
+        let config = Settings.load(from: Self.defaults(), discovered: all).config
+        // What this host believes it is allowed to play, recorded from inside
+        // the real host rather than inferred from the file a harness read.
+        // `enabledEntries == nil` is the widest possible answer -- every look --
+        // and is worth seeing spelled out, because a settings read that quietly
+        // failed and a user who has genuinely chosen nothing look identical
+        // from outside and are not the same thing at all.
+        let chosen = config.enabledEntries
+        Self.log.notice("""
+            rotation resolved: \(chosen.map { "\($0.count)" } ?? "nil (all)", privacy: .public) \
+            of \(all.count) discovered, module=\(Self.defaultsModule, privacy: .public), \
+            pinned=\(config.shaderName ?? "no", privacy: .public)
+            """)
+        return config
     }
 
     private func setUpMetalView() {
@@ -181,7 +195,7 @@ public final class LerpSaverView: ScreenSaverView {
             let token = center.addObserver(forName: Notification.Name(name),
                                            object: nil, queue: .main) { [weak self] _ in
                 guard let self else { return }
-                Self.log.info("notification \(name, privacy: .public)")
+                Self.log.notice("notification \(name, privacy: .public)")
                 handler(self, name)
             }
             lifecycleObservers.append(token)
@@ -206,7 +220,7 @@ public final class LerpSaverView: ScreenSaverView {
         presenceSamples = 0
         guard !rendering else { return }
         rendering = true
-        Self.log.info("[\(self.instanceID)] start rendering (\(reason, privacy: .public))")
+        Self.log.notice("[\(self.instanceID)] start rendering (\(reason, privacy: .public))")
         metalView?.config = currentConfig()
         metalView?.start()
         if !effectiveIsPreview { startHostWatch() }
@@ -225,7 +239,7 @@ public final class LerpSaverView: ScreenSaverView {
         // Read the exact frame the view is on *before* stopping it.
         let frame = capturedFrame()
         metalView?.stop()
-        Self.log.info("[\(self.instanceID)] session end (\(reason, privacy: .public)) — display link torn down, window retained")
+        Self.log.notice("[\(self.instanceID)] session end (\(reason, privacy: .public)) — display link torn down, window retained")
         if let frame { publishWallpaper(frame) }
     }
 
@@ -339,7 +353,7 @@ public final class LerpSaverView: ScreenSaverView {
         guard parkedReason == nil else { return }
         parkedReason = reason
         metalView?.park()
-        Self.log.info("[\(self.instanceID)] parked at 1 fps — \(reason, privacy: .public)")
+        Self.log.notice("[\(self.instanceID)] parked at 1 fps — \(reason, privacy: .public)")
     }
 
     private func unpark(_ reason: String) {
@@ -349,7 +363,7 @@ public final class LerpSaverView: ScreenSaverView {
         guard let parked = parkedReason else { return }
         parkedReason = nil
         metalView?.unpark()
-        Self.log.info("[\(self.instanceID)] resumed — \(reason, privacy: .public) (was parked: \(parked, privacy: .public))")
+        Self.log.notice("[\(self.instanceID)] resumed — \(reason, privacy: .public) (was parked: \(parked, privacy: .public))")
     }
 
     /// Seconds since the last input event of any kind in this session.
@@ -386,7 +400,7 @@ public final class LerpSaverView: ScreenSaverView {
 
     public override func startAnimation() {
         super.startAnimation()
-        Self.log.info("[\(self.instanceID)] startAnimation preview=\(self.effectiveIsPreview) sessionActive=\(Self.sessionActive) window=\(self.window != nil) level=\(self.window?.level.rawValue ?? 0) size=\(Int(self.bounds.width))x\(Int(self.bounds.height))")
+        Self.log.notice("[\(self.instanceID)] startAnimation preview=\(self.effectiveIsPreview) sessionActive=\(Self.sessionActive) window=\(self.window != nil) level=\(self.window?.level.rawValue ?? 0) size=\(Int(self.bounds.width))x\(Int(self.bounds.height))")
         // The System Settings thumbnail is driven entirely by this call.
         if effectiveIsPreview {
             startRendering("startAnimation/preview")
@@ -410,7 +424,7 @@ public final class LerpSaverView: ScreenSaverView {
 
     public override func stopAnimation() {
         super.stopAnimation()
-        Self.log.info("[\(self.instanceID)] stopAnimation preview=\(self.effectiveIsPreview) parked=\(self.parkedReason ?? "no", privacy: .public)")
+        Self.log.notice("[\(self.instanceID)] stopAnimation preview=\(self.effectiveIsPreview) parked=\(self.parkedReason ?? "no", privacy: .public)")
         if effectiveIsPreview {
             rendering = false
             metalView?.stop()
@@ -444,7 +458,7 @@ public final class LerpSaverView: ScreenSaverView {
         // has never drawn a pixel, so it must not publish anything.
         guard enabled, window != nil, let view = metalView, let entry = view.currentEntry,
               !entry.shader.isEmpty else {
-            Self.log.info("[\(self.instanceID)] wallpaper skipped: enabled=\(enabled) window=\(self.window != nil) shader='\(self.metalView?.currentShaderName ?? "", privacy: .public)'")
+            Self.log.notice("[\(self.instanceID)] wallpaper skipped: enabled=\(enabled) window=\(self.window != nil) shader='\(self.metalView?.currentShaderName ?? "", privacy: .public)'")
             return nil
         }
         return CapturedFrame(entry: entry, time: Float(view.time), seed: view.seed)
@@ -530,7 +544,7 @@ public final class LerpSaverView: ScreenSaverView {
                 if let error = result.error {
                     Self.log.error("wallpaper: render failed: \(error, privacy: .public)")
                 } else {
-                    Self.log.info("wallpaper: wrote \(url.path, privacy: .public) \(Int(target.pixels.width))x\(Int(target.pixels.height)) luma=\(result.meanLuminance)")
+                    Self.log.notice("wallpaper: wrote \(url.path, privacy: .public) \(Int(target.pixels.width))x\(Int(target.pixels.height)) luma=\(result.meanLuminance)")
                     written.append((target.screen, url))
                 }
             }
@@ -542,7 +556,7 @@ public final class LerpSaverView: ScreenSaverView {
                     do {
                         try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: [:])
                         applied.insert(url.lastPathComponent)
-                        Self.log.info("wallpaper: set on \(screen.localizedName, privacy: .public)")
+                        Self.log.notice("wallpaper: set on \(screen.localizedName, privacy: .public)")
                     } catch {
                         Self.log.error("wallpaper: setDesktopImageURL failed: \(error.localizedDescription, privacy: .public)")
                     }
@@ -727,7 +741,7 @@ public final class LerpSaverView: ScreenSaverView {
             height: content.fittingSize.height + Self.sheetGalleryHeight - Self.sheetGalleryFloor))
         panel.minSize = NSSize(width: 620, height: 460)
         startRotationStills(shaders)
-        Self.log.info("options: sheet built in \(Int((CFAbsoluteTimeGetCurrent() - sheetStarted) * 1000)) ms, \(entries.count) looks, \(self.rotationEnabled.count) in rotation")
+        Self.log.notice("options: sheet built in \(Int((CFAbsoluteTimeGetCurrent() - sheetStarted) * 1000)) ms, \(entries.count) looks, \(self.rotationEnabled.count) in rotation")
         return panel
     }
 
@@ -764,7 +778,7 @@ public final class LerpSaverView: ScreenSaverView {
                          onFinished: { [weak self] in
                              guard let self else { return }
                              let seconds = CFAbsoluteTimeGetCurrent() - started
-                             Self.log.info("""
+                             Self.log.notice("""
                              options: \(jobs.count) stills in \(String(format: "%.2f", seconds)) s \
                              — \(self.thumbnails.memoryHits) memory, \
                              \(self.thumbnails.bundledHits) bundle, \
@@ -984,7 +998,7 @@ private struct Settings {
         defaults.set(freezeMinutes, forKey: Self.freezeMinutesKey)
         defaults.set(setsWallpaper, forKey: Self.wallpaperKey)
         defaults.synchronize()
-        LerpSaverView.log.info("options: saved rotation \(state.summary, privacy: .public)")
+        LerpSaverView.log.notice("options: saved rotation \(state.summary, privacy: .public)")
     }
 
     /// What these settings ask the view to render.
