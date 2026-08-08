@@ -1,5 +1,7 @@
 # Lerping@Home
 
+![Aurora, liquid metal, and halftone shaders rendered by Lerping@Home](docs/images/shader-showcase.jpg)
+
 - Screensaver for macOS that renders procedural shaders with Metal.
 - Shaders are single `.metal` files compiled at runtime via `MTLDevice.makeLibrary(source:)`.
 - 30 built-in shaders: aurora, color-panels, dithering, dot-grid, dot-orbit, fluted-glass, gem-smoke, god-rays, grain-gradient, halftone-cmyk, halftone-dots, heatmap, liquid-metal, mesh-gradient, metaballs, neuro-noise, paper-texture, perlin-noise, pipes, pulsing-border, simplex-noise, smoke-ring, spiral, static-mesh-gradient, static-radial-gradient, swirl, voronoi, warp, water, waves.
@@ -21,6 +23,8 @@ make install-playground    # optional: copies LerpPlayground.app to ~/Applicatio
 ```
 
 ### Screen saver
+
+![Visual gallery for choosing the shader looks included in the screen saver rotation](docs/images/rotation-gallery.png)
 
 - Select **Lerping@Home** in System Settings → Screen Saver.
 - First activation can show black briefly while Gatekeeper verifies the bundle.
@@ -127,6 +131,8 @@ make preview && ./build/LerpPreview
 ```sh
 make playground
 ```
+
+![LerpPlayground with Metal source, a live shader render, and parameter controls](docs/images/playground.png)
 
 - Builds `build/LerpPlayground.app` and opens it. It is a real app bundle
   (`com.hergenroeder.lerping.playground`), not a bare executable, so it has a
