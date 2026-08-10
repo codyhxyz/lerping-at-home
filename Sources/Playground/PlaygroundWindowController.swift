@@ -39,12 +39,15 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         LerpRotationEntry(shader: current.name, preset: currentPreset)
     }
     private var isDirty: Bool { editor.text != current.source }
+    /// Closing the last window asks first; the automatic app termination that
+    /// follows must not ask a second time.
+    private var terminationApproved = false
     /// The shader as it was at the last successful compile — i.e. what is on the
     /// GPU, and therefore what the inspector is showing controls for.
     private(set) var compiled: LerpShader?
 
     private let split = NSSplitViewController()
-    /// Opens the shader picker. Where a plain `NSPopUpButton` listing 114 look
+    /// Opens the shader picker. Where a plain `NSPopUpButton` listing 123 look
     /// *names* used to be — see `ShaderPicker` for why a grid of stills replaced
     /// it, and for what the dropdown did better and had to be kept.
     private let shaderButton = NSButton()
@@ -72,6 +75,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private(set) var parameterState: [String: LerpParamValue] = [:]
     /// What the inspector currently has controls for.
     private var shownParameters: [LerpParam] = []
+    /// What the inspector's preset popup currently lists. Tracked beside the
+    /// parameters because the popup is rebuilt from the same call and goes stale
+    /// the same way: a shader that gains a preset — by an edit here, by Save
+    /// Look as Preset…, or by a `git pull` the disk poll picks up — has to gain
+    /// the popup entry, and until this was compared the panel only noticed
+    /// changes to `// lerp-param:` lines.
+    private var shownPresets: [LerpPreset] = []
     private var shownShaderName: String?
 
     let midi = MIDIController()
@@ -212,6 +222,20 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         shaderButton.toolTip = "Pick a look to edit, by picture"
         shaderButton.identifier = NSUserInterfaceItemIdentifier("shader-picker-button")
 
+        // The picker's list, one step at a time, without opening the picker —
+        // the same ⇧⌘[ / ⇧⌘] the Shader menu carries, so an arrow loads a look by
+        // exactly the path a click in the popover takes. For walking neighbours;
+        // the grid is still how you get to a look you can picture.
+        //
+        // The list is the picker's, which means *looks* and not shaders: a
+        // shader's presets are the looks worth comparing side by side, and
+        // stepping over shader names skipped every one of them. Walking all 123
+        // in the order the grid shows them is the whole point of a next button.
+        let previousButton = Chrome.button("‹", target: self, action: #selector(previousLook))
+        let nextButton = Chrome.button("›", target: self, action: #selector(nextLook))
+        previousButton.toolTip = "Previous look (⇧⌘[)"
+        nextButton.toolTip = "Next look (⇧⌘])"
+
         let newButton = Chrome.button("New…", target: self, action: #selector(newShader))
         Chrome.configure(saveButton, title: "Save", target: self, action: #selector(saveShader))
         Chrome.configure(revertButton, title: "Revert", target: self, action: #selector(revertShader))
@@ -240,7 +264,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         editor.onEdit = { [weak self] in self?.scheduleCompile() }
         editor.setContentHuggingPriority(.init(1), for: .vertical)
 
-        return Chrome.pane([Chrome.bar([shaderButton, newButton, saveButton, revertButton,
+        return Chrome.pane([Chrome.bar([shaderButton, previousButton, nextButton,
+                                        newButton, saveButton, revertButton,
                                         Chrome.flexible()]),
                             editor,
                             Chrome.bar([status, Chrome.flexible()], height: 22),
@@ -502,7 +527,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Both grids mark the look the editor has open, so "where am I in these
-    /// 114 pictures" is answerable without reading captions.
+    /// 123 pictures" is answerable without reading captions.
     private func showCurrentEverywhere() {
         rotation?.showCurrent(currentEntry)
         picker?.gallery.showCurrent(currentEntry)
@@ -609,12 +634,18 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// `setShader` has already reset the view to the shader's declared defaults,
     /// so anything the user moved is pushed back in here.
     private func syncParameters(_ shader: LerpShader) {
-        if shader.name != shownShaderName || shader.parameters != shownParameters {
+        if shader.name != shownShaderName || shader.parameters != shownParameters
+            || shader.presets != shownPresets {
             shownShaderName = shader.name
             shownParameters = shader.parameters
+            shownPresets = shader.presets
             let declared = Set(shader.parameters.map(\.name))
             parameterState = parameterState.filter { declared.contains($0.key) }
             inspector.rebuild(shader: shader)
+            // A rebuild leaves the popup on "Defaults"; the look on screen has
+            // not changed, so put the label back on it rather than letting the
+            // one control that names the look be the one that lies about it.
+            inspector.showPreset(currentPreset)
             inspector.showsMIDIControls = midi.isAvailable
             refreshBindingLabels()
         }
@@ -637,22 +668,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             updateShaderButton()
             showCurrentEverywhere()
         }
-        currentPreset = name.flatMap { compiled?.preset(named: $0)?.name }
-        guard let name else {
-            for param in shownParameters { metalView.setParameter(param.name, param.defaultValue) }
-            adoptViewValues()
-            return
-        }
-        // `LerpMetalView.applyPreset` reads the shader off disk, which is only
-        // the same thing as the editor buffer while there are no unsaved edits.
-        // While editing, apply the preset the buffer itself declares.
-        if !isDirty, metalView.applyPreset(named: name) {
-            adoptViewValues()
-        } else if let preset = compiled?.preset(named: name) {
-            for param in shownParameters { metalView.setParameter(param.name, param.defaultValue) }
-            for (key, value) in preset.values { metalView.setParameter(key, value) }
-            adoptViewValues()
-        }
+        guard let shader = compiled else { return }
+        let preset = name.flatMap { shader.preset(named: $0) }
+        let entry = LerpRotationEntry(shader: shader.name, preset: preset?.name)
+        guard metalView.show(entry, of: shader) else { return }
+        currentPreset = preset?.name
+        adoptViewValues()
     }
 
     /// Takes whatever the view now holds as the user's chosen state.
@@ -955,7 +976,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Screensaver rotation
 
     /// The gallery window, once it has been asked for. Built lazily: it renders
-    /// 114 stills, and an app that never opens it should never pay for them.
+    /// 123 stills, and an app that never opens it should never pay for them.
     private(set) var rotation: RotationWindowController?
 
     /// The screensaver's rotation, as this window sees it. Written by the
@@ -972,13 +993,20 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     var rotationDefaults: UserDefaults?
 
     /// The toolbar's picker popover, once it has been asked for. Same reason as
-    /// the gallery window: 114 stills is not a bill an app that never opens it
+    /// the gallery window: 123 stills is not a bill an app that never opens it
     /// should pay.
     private(set) var picker: ShaderPicker?
 
-    /// One cache of stills for both grids. They show the same 114 looks, and
+    /// The saved rotation as the popover last read it. A badge click writes
+    /// against this rather than against nothing, so it cannot undo an Options…
+    /// sheet pressed in the meantime — the same protection the gallery window
+    /// has had, which this surface was missing. Set on every load of the
+    /// popover, on every write from it, and whenever the gallery writes.
+    private var rotationBase: LerpRotationState?
+
+    /// One cache of stills for both grids. They show the same 123 looks, and
     /// `RotationThumbnails.start` supersedes the run in flight — two instances
-    /// would mean two copies of 114 decoded images, and one instance driven by
+    /// would mean two copies of 123 decoded images, and one instance driven by
     /// two hosts would mean whichever asked second silently stopping the first
     /// one's deliveries. So there is one instance, and each host hands the
     /// images it receives to the other; whichever run is live feeds both.
@@ -994,7 +1022,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                             defaults: rotationDefaults, hidden: hidden,
                                             thumbnails: thumbnails)
         made.onOpen = { [weak self] entry in self?.openEntry(entry) }
-        made.onChange = { [weak self] enabled in self?.picker?.showEnabled(enabled) }
+        made.onChange = { [weak self] enabled, base in
+            self?.rotationBase = base
+            self?.picker?.showEnabled(enabled)
+        }
         made.onImage = { [weak self] entry, image in self?.picker?.showImage(image, for: entry) }
         made.showCurrent(currentEntry)
         rotation = made
@@ -1044,9 +1075,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     private func loadPicker(_ picker: ShaderPicker, shaders: [LerpShader]) {
         let entries = shaders.rotationEntries()
-        picker.prepare(shaders: shaders,
-                       enabled: RotationWindowController.enabled(for: entries, in: rotationDefaults),
-                       current: currentEntry)
+        let saved = RotationWindowController.enabled(for: entries, in: rotationDefaults)
+        rotationBase = saved.base
+        picker.prepare(shaders: shaders, enabled: saved.looks, current: currentEntry)
     }
 
     /// A badge in the picker was clicked. Writes the screensaver's rotation the
@@ -1055,8 +1086,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// the grid up to date if it happens to be open.
     private func persistRotation(_ enabled: Set<LerpRotationEntry>) {
         let entries = metalView.shaderLibrary.discover().rotationEntries()
-        RotationStore.save(enabled, entries: entries, to: rotationDefaults)
-        rotation?.showEnabled(enabled)
+        let written = RotationStore.save(enabled, entries: entries,
+                                         base: rotationBase, to: rotationDefaults)
+        rotationBase = written
+        rotation?.showEnabled(enabled, base: written)
     }
 
     /// A shader was saved, or changed on disk. Both grids key their stills on
@@ -1098,6 +1131,103 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Shader → Save Look as Preset… (⇧⌘S): the values on screen, written back
+    /// into the shader file as a new named `// lerp-preset:` block.
+    ///
+    /// ## Why it writes the file, edits and all
+    ///
+    /// The values on screen belong to the parameters the *editor buffer*
+    /// declares, not to the ones the file on disk does. Add a
+    /// `// lerp-param: swirl …` line, drag the new slider, and a preset written
+    /// into the file alone would say `swirl=0.4` about a parameter that file has
+    /// never heard of — which is not a bad preset, it is a `parameterErrors`
+    /// entry, and `pipeline(for:)` refuses to compile a shader that has one. The
+    /// preset and the edits that justify it are one change, so this splices the
+    /// block into the buffer and then goes through `saveShader`, the same and
+    /// only path that puts a buffer on disk. The prompt says so when there are
+    /// unsaved edits; it is not done quietly.
+    ///
+    /// For the same reason a buffer that does not compile is refused. What is on
+    /// screen then is the last pipeline that *did*, so its values are not a
+    /// description of what the editor now says, and saving them would write a
+    /// preset about a shader nobody has seen render.
+    ///
+    /// ## Why the name is refused rather than overwritten
+    ///
+    /// Both of this app's other naming flows refuse a collision — `newShader`
+    /// ("pick a different name or edit the existing shader") and `claimBankName`
+    /// ("names have to differ by more than capitalisation") — and the second one
+    /// is the case here too, because `LerpShader.preset(named:)` matches
+    /// case-insensitively. There is also something to lose: a preset in the tree
+    /// is somebody's hand-tuned block with a comment above it, and "overwrite"
+    /// is a button that trades it for whatever the sliders happen to be at. The
+    /// error names the line the existing block is on, because editing it is the
+    /// deliberate act that replacing it should be.
+    @objc func savePreset(_ sender: Any?) {
+        // Whatever the 300 ms debounce is still holding, compiled now. The
+        // values about to be written are values *of* `compiled`'s parameters,
+        // and this is what makes those the buffer's parameters too.
+        compileWork?.cancel()
+        compileNow()
+        if case .failed = compileState {
+            return presentError("\(current.name).metal does not compile",
+                                "What is on screen is the last version that did, so its values are "
+                                    + "not a description of what the editor now says. Fix the errors "
+                                    + "in the console first — ⌘E jumps to the first one.")
+        }
+        guard let compiled, compiled.name == current.name, compiled.source == editor.text,
+              let values = metalView.parameterValues else { return NSSound.beep() }
+
+        // Both of these would come back from the parser as `preset … sets
+        // nothing`, so they are refused here, where the reason can be said in
+        // words rather than as a compile error on a line the user never typed.
+        let overrides = LerpPresetWriter.overrides(in: values)
+        guard !overrides.isEmpty else {
+            return presentError("Nothing to save as a preset", compiled.parameters.isEmpty
+                ? "\(current.name) declares no `// lerp-param:` parameters, so there is nothing a "
+                    + "preset could set. Add one to the file and the inspector grows a control for it."
+                : "Every control is at \(current.name)'s declared default, and a preset records only "
+                    + "what differs from them. Move something first — the defaults are already a look "
+                    + "in their own right.")
+        }
+
+        let detail = "The values on screen become a new `// lerp-preset:` block in "
+            + "\(current.name).metal, and a new look in the picker and the rotation."
+            + (isDirty ? "\n\nYour unsaved edits are saved with it: a preset can only name parameters "
+                            + "the file itself declares." : "")
+        guard let name = prompt("Save look as preset", detail, "", placeholder: "Lagoon") else { return }
+        if let problem = LerpPresetWriter.problem(withName: name) {
+            return presentError("“\(name)” cannot be a preset name", problem)
+        }
+        if let clash = compiled.preset(named: name) {
+            return presentError("\(current.name) already has a preset called “\(clash.name)”",
+                                "Preset names are matched without regard to case, so two that differ "
+                                    + "only in capitalisation would be two looks rendering the same "
+                                    + "picture. Pick another name, or edit the block on line "
+                                    + "\(clash.line) by hand.")
+        }
+
+        // Reported as an edit rather than pushed in silently: this is exactly
+        // the block you would have typed, ⌘Z still undoes it, and the file that
+        // gets written is the buffer you can see.
+        editor.replaceTextAsEdit(
+            PresetScaffold.inserting(LerpPresetWriter.declaration(name: name, overrides: overrides),
+                                     into: editor.text))
+        saveShader(nil)
+        // `saveShader` has already re-read the directory and handed the fresh
+        // list to both grids, so the new look has a tile by the time we get
+        // here. Wearing it goes through the inspector's popup like every other
+        // preset change — that is what makes `currentPreset`, the toolbar
+        // button, the remembered look and both grids' current marks agree — and
+        // it is also the round trip proving itself in public: `applyPreset`
+        // re-reads the preset *off disk*, so if what was written did not parse
+        // back to what was on screen, the sliders would move.
+        inspector.choosePreset(name)
+        setStatus("✓  saved preset “\(name)” — \(overrides.count) of \(compiled.parameters.count)"
+                    + " parameter\(compiled.parameters.count == 1 ? "" : "s")",
+                  tint: EditorTheme.text)
+    }
+
     @objc func revertShader(_ sender: Any?) {
         guard let url = current.url, let text = try? String(contentsOf: url, encoding: .utf8) else { return }
         current = LerpShader(name: current.name, source: text, isBuiltIn: current.isBuiltIn, url: url)
@@ -1134,19 +1264,30 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         window?.makeFirstResponder(editor.textView)
     }
 
-    @objc func nextShader(_ sender: Any?) { step(1) }
-    @objc func previousShader(_ sender: Any?) { step(-1) }
+    @objc func nextLook(_ sender: Any?) { step(1) }
+    @objc func previousLook(_ sender: Any?) { step(-1) }
 
+    /// Steps through *looks* — every (shader, preset) pair — in the order the
+    /// picker grid lists them, not through shader names. A shader's presets are
+    /// exactly the things worth flipping between to compare, and a walk over
+    /// names jumped past all of them: on a shader with six presets, five of its
+    /// seven looks were unreachable from the arrows.
+    ///
     /// Deliberately not `metalView.showNextShader` — that only swaps the
     /// pipeline, and the playground additionally has to prompt about unsaved
     /// edits and load the new file's source into the editor. It shares the
     /// wrap-around, which is the part that was worth having once.
+    ///
+    /// Straight through `openEntry`, so this is the popover's click and nothing
+    /// beside it: it already refuses to re-open the look on screen — which is
+    /// what a one-look list wraps onto, and re-opening would throw away every
+    /// slider moved off it to arrive back where it started — and it already asks
+    /// about unsaved edits only when it is really going to discard them.
     private func step(_ direction: Int) {
-        guard confirmDiscardIfDirty(),
-              let next = ShaderLibrary.name(in: knownShaderNames, after: current.name,
-                                            offset: direction),
-              let shader = metalView.shaderLibrary.shader(named: next) else { return }
-        open(shader)
+        let looks = metalView.shaderLibrary.discover().rotationEntries()
+        guard let next = ShaderLibrary.step(in: looks, after: currentEntry,
+                                            offset: direction) else { return }
+        openEntry(next)
     }
 
     @objc func togglePlayPause(_ sender: Any?) {
@@ -1210,9 +1351,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// the checkout it is sitting in and there is only ever one answer, so its
     /// title is exactly what it always was.
     ///
-    /// This is how you tell two running copies apart: same name in ⌘-Tab, but the
-    /// one that says `· lerping-at-home` is the installed copy and is editing
-    /// that checkout's files.
+    /// The suffix confirms which checkout the canonical installed copy edits.
+    /// Staging is never launched by a normal target, so this is no longer a way
+    /// to distinguish two intentionally running copies.
     private static let repoSuffix: String =
         RepoLocation.isBuildTree ? "" : (RepoLocation.root.map { "  ·  \($0.lastPathComponent)" } ?? "")
 
@@ -1302,7 +1443,16 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidBecomeKey(_ notification: Notification) { pollDisk() }
 
-    func windowShouldClose(_ sender: NSWindow) -> Bool { confirmDiscardIfDirty() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        terminationApproved = confirmDiscardIfDirty()
+        return terminationApproved
+    }
+
+    func approveTermination() -> Bool {
+        if terminationApproved { return true }
+        terminationApproved = confirmDiscardIfDirty()
+        return terminationApproved
+    }
 
     /// Brings the running playground back to the front — what a second launch
     /// does instead of opening a second window, and what a Dock click does.

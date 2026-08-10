@@ -6,10 +6,10 @@ import AppKit
 /// edits.
 ///
 /// The playground is a repo tool: Save writes the real source file, and the
-/// bundle deliberately ships no `Resources/Shaders` of its own. The in-repo
-/// build — `make playground`, `build/LerpPlayground.app` — finds the checkout by
-/// walking up from its own executable, which is what `ShaderLocations` in
-/// LerpCore has always done and still does.
+/// bundle deliberately ships no `Resources/Shaders` of its own. The staging
+/// build — explicit `make playground-build`, never the normal launch target —
+/// finds the checkout by walking up from its own executable, which is what
+/// `ShaderLocations` in LerpCore has always done and still does.
 ///
 /// A copy installed into `~/Applications` cannot: nothing above it is a
 /// checkout. And it has to live there, because Spotlight only *offers* apps
@@ -230,8 +230,8 @@ enum RepoLocation {
         return nil
     }
 
-    /// True for the in-repo build — the one `make playground` opens. The title
-    /// bar uses this: a copy that had to be *told* where the repo is says which
+    /// True for the compile-only in-repo staging build. The title bar uses this:
+    /// a copy that had to be *told* where the repo is says which
     /// one it found, and the build sitting in the repo says nothing new.
     static var isBuildTree: Bool {
         if case let .found(_, _, origin) = settled() { return origin == .buildTree }

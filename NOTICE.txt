@@ -20,7 +20,7 @@ This project includes shaders ported from Paper Shaders
 licensed under the Apache License, Version 2.0
 (http://www.apache.org/licenses/LICENSE-2.0).
 
-Ported shaders (Sources/Shaders/), 28 of the 30 shipped:
+Ported shaders (Sources/Shaders/), 28 of the 31 shipped:
 
   Color Panels, Dithering, Dot Grid, Dot Orbit, Fluted Glass,
   Gem Smoke, God Rays, Grain Gradient, Halftone CMYK, Halftone Dots,
@@ -57,6 +57,17 @@ have to be an invented source image, so it belongs as parameters on Dithering
 rather than as a shader of its own.
 
 Aurora (Sources/Shaders/aurora.metal) is original work, not a port.
+
+Game of Life (Sources/Shaders/game-of-life.metal,
+Sources/LerpCore/LifeData.swift) is original work, not a port: upstream has no
+cellular automaton. It implements Conway's B3/S23 rule (John Conway, 1970), the
+Gosper glider gun (Bill Gosper), the R-pentomino, HighLife B36/S23 and its
+12-cell replicator (Nathan Thompson), Maze B3/S12345, Day & Night
+B3678/S34678, Seeds B2/S, and Life Without Death B3/S012345678. These rules and
+cell coordinates are mathematical facts and not themselves copyrightable. The
+continuous organism field, membrane lighting, bloom, fitted cameras, bounded
+story epochs, sparse finite boards, trails, and solidity ramps are this
+project's own.
 
 Pipes (Sources/Shaders/pipes.metal, Sources/LerpCore/PipesData.swift) is
 original work: a raymarched signed-distance-field rendering, sharing no code

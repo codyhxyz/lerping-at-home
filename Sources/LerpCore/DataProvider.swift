@@ -29,6 +29,26 @@ public protocol LerpDataProvider: AnyObject {
     /// at index 0. Compute this frame's data from `uniforms` and bind it at
     /// fragment buffer/texture indices 1 and up.
     func bind(to encoder: MTLRenderCommandEncoder, uniforms: LerpUniforms)
+
+    /// As above, plus the values of whatever the shader declared with
+    /// `// lerp-param:` — for a provider whose data depends on them, the way
+    /// `life`'s board is sized by `size` and stepped at `speed`. Parameters are
+    /// part of the same purity contract, so this changes nothing about the rule
+    /// above: derive from `(uniforms, params)`, never accumulate.
+    ///
+    /// Defaulted to the two-argument form, so a provider that ignores parameters
+    /// implements only that one and is called exactly as it always was.
+    func bind(to encoder: MTLRenderCommandEncoder,
+              uniforms: LerpUniforms,
+              params: LerpParameterValues?)
+}
+
+public extension LerpDataProvider {
+    func bind(to encoder: MTLRenderCommandEncoder,
+              uniforms: LerpUniforms,
+              params: LerpParameterValues?) {
+        bind(to: encoder, uniforms: uniforms)
+    }
 }
 
 /// Name → provider registry. Built-ins are registered here; a host can add more
@@ -38,6 +58,7 @@ public enum LerpDataProviders {
 
     nonisolated(unsafe) private static var factories: [String: Factory] = [
         "heatmap": { HeatmapData(device: $0) },
+        "life": { LifeData(device: $0) },
         "pipes": { PipesData(device: $0) },
     ]
     private static let lock = NSLock()

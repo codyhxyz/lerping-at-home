@@ -8,10 +8,9 @@
 	<string>LerpPlayground</string>
 	<key>CFBundleIconFile</key>
 	<string>LerpPlayground</string>
-	<!-- The whole point of the bundle. macOS deduplicates launches, resolves
-	     `open -a`, files preferences and hands out a Dock tile by this string;
-	     with no bundle there was no identifier, and so every launch was another
-	     app with another window. Same domain as the saver's. -->
+	<!-- The base identifier. The Makefile gives staging a `.build` identifier and
+	     the canonical ~/Applications copy an `.installed` identifier, then launches
+	     only the latter. A bundle identifier is what lets macOS deduplicate runs. -->
 	<key>CFBundleIdentifier</key>
 	<string>com.hergenroeder.lerping.playground</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -27,6 +26,11 @@
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<!-- Deployment may ask this app to quit because the delegate protects dirty
+	     editor text with Save / Discard / Cancel. Older builds lack that hook and
+	     are refused until the user closes them once. -->
+	<key>LerpSafeDeploymentQuit</key>
+	<true/>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSHighResolutionCapable</key>

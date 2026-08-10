@@ -94,6 +94,17 @@ public enum LerpPrelude {
         return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
     }
 
+    static inline float3 lerpGrainOverlay(float3 color, float2 grainUV, float amount) {
+        float overlay = valueNoise(rotate(grainUV, 1.0) + 3.0);
+        overlay = mix(overlay, valueNoise(rotate(grainUV, 2.0) - 1.0), 0.5);
+        overlay = pow(overlay, 1.3);
+
+        float value = overlay * 2.0 - 1.0;
+        float3 overlayColor = float3(step(0.0, value));
+        float strength = pow(amount * abs(value), 0.8);
+        return mix(color, overlayColor, 0.35 * strength);
+    }
+
     // 2D simplex noise (Ashima/paper-design port), returns roughly [-1, 1].
     static inline float3 lerpPermute(float3 x) { return glmod3(((x * 34.0) + 1.0) * x, 289.0); }
     static inline float snoise(float2 v) {

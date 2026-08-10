@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import OSLog
 import ScreenSaver
 
@@ -144,7 +145,54 @@ public final class LerpSaverView: ScreenSaverView {
     }
 
     private static func defaults() -> ScreenSaverDefaults? {
-        ScreenSaverDefaults(forModuleWithName: defaultsModule)
+        guard let defaults = ScreenSaverDefaults(forModuleWithName: defaultsModule) else { return nil }
+        guard let shared = sharedDefaults() else { return defaults }
+
+        // legacyScreenSaver is sandboxed under Apple's bundle identifier, so
+        // ScreenSaverDefaults sees its container instead of the user's ByHost
+        // file. Read that file through the host's read-only `/` exception and
+        // use it as the fallback domain. A newer container write from Options…
+        // still wins; a later playground write replaces it.
+        if let sharedRecord = shared[LerpRotation.stateKey] as? [String: Any] {
+            let localRecord = defaults.dictionary(forKey: LerpRotation.stateKey)
+            let hasLocalRotation = LerpRotation.allKeys.contains {
+                defaults.object(forKey: $0) != nil
+            }
+            if hasLocalRotation,
+               rotationRecord(sharedRecord, isNewerThan: localRecord) {
+                LerpRotation.allKeys.forEach(defaults.removeObject(forKey:))
+                defaults.synchronize()
+            }
+        }
+        defaults.register(defaults: shared)
+        return defaults
+    }
+
+    /// The unsandboxed ByHost domain written by the playground. App Sandbox
+    /// blocks CFPreferences from seeing it but the host explicitly permits
+    /// read-only file access, so read the plist itself.
+    private static func sharedDefaults() -> [String: Any]? {
+        guard let home = LerpFileLocations.realHomeDirectory,
+              home.path != NSHomeDirectory() else { return nil }
+        var host = UUID().uuid
+        var timeout = timespec(tv_sec: 1, tv_nsec: 0)
+        guard gethostuuid(&host, &timeout) == 0 else { return nil }
+        let url = home.appendingPathComponent("Library/Preferences/ByHost")
+            .appendingPathComponent("\(defaultsModule).\(UUID(uuid: host).uuidString).plist")
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
+        else { return nil }
+        return plist as? [String: Any]
+    }
+
+    private static func rotationRecord(_ candidate: [String: Any],
+                                       isNewerThan current: [String: Any]?) -> Bool {
+        guard let current else { return true }
+        let revision = candidate["revision"] as? Int ?? 0
+        let currentRevision = current["revision"] as? Int ?? 0
+        if revision != currentRevision { return revision > currentRevision }
+        return (candidate["updatedAt"] as? Double ?? 0)
+            > (current["updatedAt"] as? Double ?? 0)
     }
 
     private func discoveredShaders() -> [LerpShader] {
@@ -475,33 +523,14 @@ public final class LerpSaverView: ScreenSaverView {
     /// `/var/db/Wallpapers/<uuid>/Wallpaper.png` for the login window.
     ///
     /// The real home is kept as a second candidate so an unsandboxed host of this
-    /// code lands somewhere sensible.
-    static func wallpaperDirectoryCandidates() -> [URL] {
-        let suffix = "Library/Application Support/Lerping/wallpaper"
-        var dirs = [URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(suffix)]
-        if let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir {
-            dirs.append(URL(fileURLWithPath: String(cString: home)).appendingPathComponent(suffix))
-        }
-        var seen = Set<String>()
-        return dirs.filter { seen.insert($0.path).inserted }
-    }
-
-    /// First candidate we can actually create and write into. Returns nil (and
-    /// logs) when the sandbox denies every one of them.
+    /// code lands somewhere sensible. Returns nil (and logs) when the sandbox
+    /// denies every candidate.
     static func writableWallpaperDirectory() -> URL? {
-        let manager = FileManager.default
-        for dir in wallpaperDirectoryCandidates() {
-            do {
-                try manager.createDirectory(at: dir, withIntermediateDirectories: true)
-                let probe = dir.appendingPathComponent(".writable")
-                try Data().write(to: probe)
-                try? manager.removeItem(at: probe)
-                return dir
-            } catch {
-                log.error("wallpaper dir unusable \(dir.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            }
+        LerpFileLocations.writableHomeDirectory(
+            appending: "Library/Application Support/Lerping/wallpaper"
+        ) { dir, error in
+            log.error("wallpaper dir unusable \(dir.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
-        return nil
     }
 
     /// Renders the frame the saver ended on at each screen's native resolution,
@@ -621,7 +650,7 @@ public final class LerpSaverView: ScreenSaverView {
         shaderPopup.target = self
         shaderPopup.action = #selector(shaderModeChanged)
 
-        // Pinning is (shader, preset) too, so a pin can reach any of the 114
+        // Pinning is (shader, preset) too, so a pin can reach any of the 123
         // looks and not just the 31 sets of defaults.
         let presetPopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
@@ -748,7 +777,7 @@ public final class LerpSaverView: ScreenSaverView {
     // MARK: - Rotation stills
 
     /// Starts filling the gallery in. Returns immediately, always: opening
-    /// Options… must not wait on 114 pictures, and inside legacyScreenSaver it
+    /// Options… must not wait on 123 pictures, and inside legacyScreenSaver it
     /// must not wait on a GPU either.
     ///
     /// Where the pictures come from, cheapest first:
@@ -767,27 +796,19 @@ public final class LerpSaverView: ScreenSaverView {
         guard let gallery = rotationGallery else { return }
         let jobs = RotationThumbnails.jobs(for: shaders)
         let started = CFAbsoluteTimeGetCurrent()
-        gallery.showProgress(done: 0, total: jobs.count)
-        thumbnails.start(jobs,
-                         onImage: { [weak self] entry, image in
-                             self?.rotationGallery?.show(image: image, for: entry)
-                         },
-                         onProgress: { [weak self] done, total in
-                             self?.rotationGallery?.showProgress(done: done, total: total)
-                         },
-                         onFinished: { [weak self] in
-                             guard let self else { return }
-                             let seconds = CFAbsoluteTimeGetCurrent() - started
-                             Self.log.notice("""
-                             options: \(jobs.count) stills in \(String(format: "%.2f", seconds)) s \
-                             — \(self.thumbnails.memoryHits) memory, \
-                             \(self.thumbnails.bundledHits) bundle, \
-                             \(self.thumbnails.diskHits - self.thumbnails.bundledHits) cache, \
-                             \(self.thumbnails.rendered) rendered, \
-                             \(self.thumbnails.failed.count) failed \
-                             (cache: \(self.thumbnails.cacheDirectory.path, privacy: .public))
-                             """)
-                         })
+        gallery.populate(using: thumbnails, jobs: jobs, onFinished: { [weak self] in
+            guard let self else { return }
+            let seconds = CFAbsoluteTimeGetCurrent() - started
+            Self.log.notice("""
+            options: \(jobs.count) stills in \(String(format: "%.2f", seconds)) s \
+            — \(self.thumbnails.memoryHits) memory, \
+            \(self.thumbnails.bundledHits) bundle, \
+            \(self.thumbnails.diskHits - self.thumbnails.bundledHits) cache, \
+            \(self.thumbnails.rendered) rendered, \
+            \(self.thumbnails.failed.count) failed \
+            (cache: \(self.thumbnails.cacheDirectory.path, privacy: .public))
+            """)
+        })
     }
 
     /// Where the Options… gallery's stills came from, as one line.

@@ -86,8 +86,6 @@ final class MIDIPanel: NSView {
         return next
     }
 
-    var selectedMapping: String? { mappings.titleOfSelectedItem }
-
     private final class ActionBox {
         let action: Action
         init(_ action: Action) { self.action = action }

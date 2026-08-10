@@ -536,17 +536,6 @@ public final class LerpMetalView: NSView {
         parameterValues?.set(name, value) ?? false
     }
 
-    /// Switches the current shader to one of its declared `// lerp-preset:`
-    /// blocks. Parameters the preset does not mention return to their defaults.
-    @discardableResult
-    public func applyPreset(named name: String) -> Bool {
-        guard let shader = library.shader(named: currentShaderName),
-              let preset = shader.preset(named: name) else { return false }
-        parameterValues?.apply(preset)
-        currentEntry = LerpRotationEntry(shader: currentShaderName, preset: preset.name)
-        return true
-    }
-
     /// Steps to the next (or, for a negative `direction`, previous) discovered
     /// shader, skipping any that fail to compile. Shader-level on purpose: this
     /// is the ←/→ keys, which walk the shader list at its defaults rather than

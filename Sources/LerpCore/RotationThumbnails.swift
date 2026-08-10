@@ -7,7 +7,7 @@ import Metal
 ///
 /// ## Why this is not just a loop
 ///
-/// A 240×360 still costs ~65 ms, and there are 114 of them. Rendering them
+/// A 240×360 still costs ~65 ms, and there are 123 of them. Rendering them
 /// serially on the main thread would take ~7 s with the window frozen, which is
 /// not a thing a window is allowed to do. So:
 ///
@@ -148,25 +148,7 @@ public final class RotationThumbnails {
     /// Each candidate is probed by writing a file, because "the sandbox will let
     /// me write here" is not something to assume.
     public static func writableCacheDirectory(named name: String) -> URL? {
-        let suffix = "Library/Caches/" + name
-        var candidates = [URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(suffix)]
-        if let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir {
-            candidates.append(URL(fileURLWithPath: String(cString: home))
-                .appendingPathComponent(suffix))
-        }
-        var seen = Set<String>()
-        for dir in candidates where seen.insert(dir.path).inserted {
-            do {
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let probe = dir.appendingPathComponent(".writable")
-                try Data().write(to: probe)
-                try? FileManager.default.removeItem(at: probe)
-                return dir
-            } catch {
-                continue
-            }
-        }
-        return nil
+        LerpFileLocations.writableHomeDirectory(appending: "Library/Caches/" + name)
     }
 
     /// Where a host bundle keeps the stills that were rendered into it at build
@@ -190,7 +172,6 @@ public final class RotationThumbnails {
     public static let bundledFolder = "Thumbnails"
 
     public var cacheDirectory: URL { directory }
-    public var bundledCacheDirectories: [URL] { readOnlyDirectories }
 
     /// Deterministic 64-bit FNV-1a. `String.hashValue` is seeded per process, so
     /// using it here would mean a cold cache on every single launch.

@@ -121,79 +121,52 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // set runs per frame, chosen by reverseTime.
     int set = reverseTime ? 1 : 0;
 
-    // Forward-rotating panels
-    for (int i = 0; i < CP_PANELS; i++) {
-        int idx = CP_PANELS - 1 - i;
+    // Forward, then backward: pass order is part of the alpha composition.
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < CP_PANELS; i++) {
+            int idx = CP_PANELS - 1 - i;
 
-        float offset = float(idx) / fPanelsNumber;
-        if (set == 1) {
-            offset += 0.5;
+            float offset = float(idx) / fPanelsNumber;
+            if (set == 1 - pass) {
+                offset += 0.5;
+            }
+
+            float densityFract = CP_DENSITY_NORM
+                * fract((pass == 0 ? t : -t) + offset);
+            float angleNorm = pass == 0
+                ? densityFract / u.density : -densityFract / u.density;
+            if (densityFract >= 0.5
+                || (pass == 0 ? angleNorm >= 0.3 : angleNorm < -0.3)) continue;
+
+            float smoothDensity = clamp((0.5 - densityFract) / 0.1, 0.0, 1.0)
+                * clamp(densityFract / 0.01, 0.0, 1.0);
+            float smoothAngle = pass == 0
+                ? clamp((0.3 - angleNorm) / 0.05, 0.0, 1.0)
+                : clamp((angleNorm + 0.3) / 0.05, 0.0, 1.0);
+            if (smoothDensity * smoothAngle < 0.001) continue;
+
+            float2 panel = cpGetPanel(angleNorm * TWO_PI + PI, uv, invLength, aa, u);
+            float panelMask = panel.x * smoothDensity * smoothAngle;
+            // Preserve the original passes' slightly different early-out:
+            // forward tested the panel, backward tested the smoothed mask.
+            if ((pass == 0 ? panel.x : panelMask) <= 0.001) continue;
+            float panelMap = panel.y;
+
+            int slot = idx % CP_COLOR_COUNT;
+            int colorIdx = pass == 0 ? slot : (CP_COLOR_COUNT - slot) % CP_COLOR_COUNT;
+            int nextColorIdx = (colorIdx + 1) % CP_COLOR_COUNT;
+
+            float4 colorA = colors[colorIdx];
+            float4 colorB = colors[nextColorIdx];
+            colorA.rgb *= colorA.a;
+            colorB.rgb *= colorB.a;
+
+            colorA = mix(colorA, colorB,
+                         max(0.0, smoothstep(0.0, 0.45, panelMap) - panelGrad));
+            float4 blended = cpBlendColor(colorA, panelMask, panelMap, u);
+            color = blended.rgb + color * (1.0 - blended.a);
+            opacity = blended.a + opacity * (1.0 - blended.a);
         }
-
-        float densityFract = CP_DENSITY_NORM * fract(t + offset);
-        float angleNorm = densityFract / u.density;
-        if (densityFract >= 0.5 || angleNorm >= 0.3) continue;
-
-        float smoothDensity = clamp((0.5 - densityFract) / 0.1, 0.0, 1.0) * clamp(densityFract / 0.01, 0.0, 1.0);
-        float smoothAngle = clamp((0.3 - angleNorm) / 0.05, 0.0, 1.0);
-        if (smoothDensity * smoothAngle < 0.001) continue;
-
-        if (angleNorm > 0.5) {
-            angleNorm = 0.5;
-        }
-        float2 panel = cpGetPanel(angleNorm * TWO_PI + PI, uv, invLength, aa, u);
-        if (panel.x <= 0.001) continue;
-        float panelMask = panel.x * smoothDensity * smoothAngle;
-        float panelMap = panel.y;
-
-        int colorIdx = idx % CP_COLOR_COUNT;
-        int nextColorIdx = (idx + 1) % CP_COLOR_COUNT;
-
-        float4 colorA = colors[colorIdx];
-        float4 colorB = colors[nextColorIdx];
-        colorA.rgb *= colorA.a;
-        colorB.rgb *= colorB.a;
-
-        colorA = mix(colorA, colorB, max(0.0, smoothstep(0.0, 0.45, panelMap) - panelGrad));
-        float4 blended = cpBlendColor(colorA, panelMask, panelMap, u);
-        color = blended.rgb + color * (1.0 - blended.a);
-        opacity = blended.a + opacity * (1.0 - blended.a);
-    }
-
-    // Backward-rotating panels
-    for (int i = 0; i < CP_PANELS; i++) {
-        int idx = CP_PANELS - 1 - i;
-
-        float offset = float(idx) / fPanelsNumber;
-        if (set == 0) {
-            offset += 0.5;
-        }
-
-        float densityFract = CP_DENSITY_NORM * fract(-t + offset);
-        float angleNorm = -densityFract / u.density;
-        if (densityFract >= 0.5 || angleNorm < -0.3) continue;
-
-        float smoothDensity = clamp((0.5 - densityFract) / 0.1, 0.0, 1.0) * clamp(densityFract / 0.01, 0.0, 1.0);
-        float smoothAngle = clamp((angleNorm + 0.3) / 0.05, 0.0, 1.0);
-        if (smoothDensity * smoothAngle < 0.001) continue;
-
-        float2 panel = cpGetPanel(angleNorm * TWO_PI + PI, uv, invLength, aa, u);
-        float panelMask = panel.x * smoothDensity * smoothAngle;
-        if (panelMask <= 0.001) continue;
-        float panelMap = panel.y;
-
-        int colorIdx = (CP_COLOR_COUNT - (idx % CP_COLOR_COUNT)) % CP_COLOR_COUNT;
-        int nextColorIdx = (colorIdx + 1) % CP_COLOR_COUNT;
-
-        float4 colorA = colors[colorIdx];
-        float4 colorB = colors[nextColorIdx];
-        colorA.rgb *= colorA.a;
-        colorB.rgb *= colorB.a;
-
-        colorA = mix(colorA, colorB, max(0.0, smoothstep(0.0, 0.45, panelMap) - panelGrad));
-        float4 blended = cpBlendColor(colorA, panelMask, panelMap, u);
-        color = blended.rgb + color * (1.0 - blended.a);
-        opacity = blended.a + opacity * (1.0 - blended.a);
     }
 
     color = color + u.colorBack.rgb * (1.0 - opacity);

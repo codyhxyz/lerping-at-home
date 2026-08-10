@@ -4,7 +4,7 @@
 
 - Screensaver for macOS that renders procedural shaders with Metal.
 - Shaders are single `.metal` files compiled at runtime via `MTLDevice.makeLibrary(source:)`.
-- 30 built-in shaders: aurora, color-panels, dithering, dot-grid, dot-orbit, fluted-glass, gem-smoke, god-rays, grain-gradient, halftone-cmyk, halftone-dots, heatmap, liquid-metal, mesh-gradient, metaballs, neuro-noise, paper-texture, perlin-noise, pipes, pulsing-border, simplex-noise, smoke-ring, spiral, static-mesh-gradient, static-radial-gradient, swirl, voronoi, warp, water, waves.
+- 31 built-in shaders: aurora, color-panels, dithering, dot-grid, dot-orbit, fluted-glass, game-of-life, gem-smoke, god-rays, grain-gradient, halftone-cmyk, halftone-dots, heatmap, liquid-metal, mesh-gradient, metaballs, neuro-noise, paper-texture, perlin-noise, pipes, pulsing-border, simplex-noise, smoke-ring, spiral, static-mesh-gradient, static-radial-gradient, swirl, voronoi, warp, water, waves.
 - Custom `.metal` files are supported without rebuilding the engine.
 - No Xcode project. Builds with `swiftc` through a Makefile.
 - No build-time Metal toolchain and no precompiled shader archive.
@@ -18,9 +18,13 @@
 ## Install
 
 ```sh
-make install               # builds and copies Lerping@Home.saver to ~/Library/Screen Savers
-make install-playground    # optional: copies LerpPlayground.app to ~/Applications
+make saver                 # build, install, verify, and stop stale saver hosts
+make playground            # build, install, restart, and open the canonical editor
 ```
+
+Normal targets deploy what the machine will actually run. Compile-only staging
+is explicit: `make saver-build` and `make playground-build`. `make install` and
+`make install-playground` remain deployment aliases.
 
 ### Screen saver
 
@@ -32,10 +36,11 @@ make install-playground    # optional: copies LerpPlayground.app to ~/Applicatio
   button. Pinning a shader also lets you pin one of its presets.
 - Options… also has an **In rotation** gallery: pick which *looks* Shuffle draws
   from, by looking at them. Shuffle rotates over (shader, preset) pairs, not just
-  shaders — each shader contributes its declared defaults plus one entry per
-  `// lerp-preset:` it declares, which is 114 looks across the 31 shaders rather
-  than 31. Every look is a portrait still of itself; click a tile to put it in or
-  take it out. They are grouped under a shader heading whose checkbox turns the
+  shaders — defaults plus each distinct `// lerp-preset:` look, with a useful
+  preset name replacing an identical “Defaults” tile. That is 123 looks across
+  the 31 shaders rather than 31. Every look is a portrait still of itself; click
+  a tile to put it in or take it out. They are grouped under a shader heading
+  whose checkbox turns the
   whole group on or off and carries an *n/m* count, and there is a search field,
   Select All / Deselect All (which act on what the search is showing), and a
   status line. New shaders and newly added presets join the rotation
@@ -70,7 +75,7 @@ make install-playground    # optional: copies LerpPlayground.app to ~/Applicatio
 Optional, and only for the shader editor described under "Shader playground"
 below — the saver does not need it.
 
-- `make install-playground` copies `build/LerpPlayground.app` to
+- `make install-playground` copies `build/LerpPlayground.staging.app` to
   `~/Applications/LerpPlayground.app`, signs it again and registers it, so typing
   "lerp" into Spotlight offers it. `/Applications`, `/System/Applications` and
   `~/Applications` are the only places Spotlight's Applications category draws
@@ -104,12 +109,15 @@ make install-playground PLAYGROUND_REPO=/path/to/lerping-at-home
   there, and what it found, and exits non-zero if it found nothing.
   `make install-playground` runs it against the copy it just installed, so the
   target fails if the install cannot see your shaders.
-- The installed copy has a bundle identifier of its own
-  (`com.hergenroeder.lerping.playground.installed`), so it and the in-repo build
-  are two apps and not two copies of one: `make playground` always opens the one
-  in `build/`, and neither ever raises the other. They look alike in ⌘-Tab, so
-  the installed copy's window title also names the checkout it is editing.
-- `make uninstall-playground` removes it. `make clean` does not.
+- `build/LerpPlayground.staging.app` is staging only and is never registered or opened
+  by a normal target. `make playground` always runs the canonical copy in
+  `~/Applications`.
+- Deployment asks the running canonical app to quit through its normal Save /
+  Discard / Cancel path and waits for a real exit before replacing it. Cancel
+  aborts deployment. A pre-migration build is refused until it is closed once,
+  because it cannot prove that unsaved editor text is protected.
+- `make uninstall-playground` removes the canonical copy. `make clean` removes
+  staging only.
 
 ## Live shader development
 
@@ -134,19 +142,15 @@ make playground
 
 ![LerpPlayground with Metal source, a live shader render, and parameter controls](docs/images/playground.png)
 
-- Builds `build/LerpPlayground.app` and opens it. It is a real app bundle
-  (`com.hergenroeder.lerping.playground`), not a bare executable, so it has a
-  Dock tile, a ⌘-Tab entry and an app menu, and `open -a LerpPlayground` finds
-  it from anywhere once it has been built.
-- **One instance.** Running `make playground` (or `open -a`, or the Dock icon)
-  while it is already open raises the window you have instead of starting a
-  second copy. Launching the executable inside the bundle by hand does the same
-  thing: it hands off to the running instance and exits.
-- Closing the window quits the app.
-- Shaders still come from the repo the bundle sits in, so `open`'s working
-  directory does not matter. (`make install-playground` puts a copy in
-  `~/Applications` where Spotlight will offer it; that one is told which
-  checkout to edit, because it has none above it. See "Install" above.)
+- Builds a staging bundle, deploys it to `~/Applications/LerpPlayground.app`,
+  gracefully replaces any running older copy, and opens that canonical app.
+  The installed bundle has a Dock tile, a ⌘-Tab entry and an app menu, and
+  `open -a LerpPlayground` resolves to it.
+- **One installed app, one process.** Running `make playground`, `open -a`, or
+  using the Dock raises the canonical copy instead of launching staging.
+- Closing the window quits the app; unsaved edits get Save / Discard / Cancel.
+- The installed app edits the checkout recorded during deployment, so `open`'s
+  working directory does not matter. See "Install" above.
 - Split window: `.metal` source on the left, live render on the right.
 - **What it opens on.** The look you last had open, if it is still on disk and
   still compiles — closing the window mid-shader and coming back to a different
@@ -156,9 +160,10 @@ make playground
   something you actually chose rather than on whatever sorts first. It reads that
   rotation and never writes it; the last-opened look is remembered in the app's
   own preferences, not the screensaver's.
-  - A rotation with nothing enabled means all of them — the same one policy
-    function the saver uses — so no setting can make the playground open onto
-    nothing, and a look that will not compile is stepped past rather than opened.
+  - The rotation is taken literally, an empty one included; what stops the
+    playground opening onto nothing is its own fallback to the first look on
+    disk, not a widening of the rotation. A look that will not compile is
+    stepped past rather than opened.
 - Uses the same LerpCore compile path as the screensaver.
 - Editing recompiles 300 ms after the last keystroke and swaps the pipeline in place.
 - On a compile error the last successful pipeline keeps rendering; the view does not blank and the process does not exit.
@@ -167,7 +172,7 @@ make playground
 - The shader picker is a popover of tiles, not a text dropdown. Opened from the
   toolbar button, `⌘O`, or **Shader → Open Look…**, built from the same tile as
   the rotation gallery, over `Sources/Shaders/` plus the custom shader
-  directory, refreshed when files change on disk. It lists all 114 looks; the
+  directory, refreshed when files change on disk. It lists all 123 looks; the
   previous text dropdown listed 31 shader names.
   - The two surfaces invert each other. In the gallery, a click toggles the look
     in or out of the rotation and a double-click opens it. In the popover, a
@@ -179,9 +184,40 @@ make playground
   - Pointing at a tile plays it, as in the gallery — it is the same tile.
   - Both grids mark the look the editor has open and share one cache of stills,
     so opening the popover after the gallery renders nothing new.
+  - `‹` and `›` sit beside the button: one **look** back or forward through the
+    same list the popover shows — all 123, presets included, in the same order —
+    wrapping at both ends and loaded the way a click in the popover loads it.
+    They are `⇧⌘[` / `⇧⌘]` as buttons (**Shader → Next Look** / **Previous
+    Look**). Stepping over a shader's presets rather than over shader names is
+    the point: the presets of one shader are what you want to flip between to
+    compare, and they are the entries a walk over names skips. Landing on the
+    look already open does nothing rather than re-opening it.
 - The rotation gallery window opens from **Shader → Screensaver Rotation…**
   (`⌥⌘R`). The toolbar has no button for it. It holds Select All, Deselect All,
   and a wider grid than the popover.
+- **Shader → Save Look as Preset…** (`⇧⌘S`) writes the values on screen back into
+  the shader as a new named `// lerp-preset:` block. The new look gets a tile in
+  the picker and the gallery straight away, joins the screensaver's rotation, and
+  the editor ends up wearing it. The toolbar has no button for it either.
+  - Only parameters that differ from the shader's declared defaults are written,
+    because a preset is an overlay and a line restating a default freezes today's
+    value into a file whose author may move it tomorrow.
+  - The block is appended after the file's existing presets. That keeps every
+    other preset at the index the saved rotation recorded it at, which is what
+    tells a *renamed* preset from a new one.
+  - Values are spelled so that re-parsing the file yields the same uniform block
+    the GPU was being handed: hex for colours that sit on an 8-bit step, and
+    otherwise the shortest decimal that survives a `float` round trip. Dragging a
+    slider and saving gives back the picture you were looking at, not one six
+    significant digits away from it.
+  - It saves the file, unsaved edits included, and says so in the prompt before
+    it does: a preset can only name parameters the file itself declares, so the
+    block and the edits that justify it are one change. A buffer that does not
+    compile is refused — what is on screen then is the last version that did.
+  - A name already used by a preset on that shader is refused rather than
+    overwritten (names are matched without regard to case), as are an empty one,
+    one containing a double quote or a tab, and `Defaults`, which is what every
+    shader's un-preset look is already called.
 - An externally modified open file reloads if there are no unsaved edits.
 - Time scrubber, render scale (100/75/50/25%), and fps readout map onto `LerpUniforms` and `LerpMetalView.Config`.
 - Editor is a plain `NSTextView` with soft tabs, auto-indent, undo, and find. No syntax highlighting and no line-number gutter.
@@ -191,6 +227,7 @@ Keys:
 - `⌘O` — open the shader picker; type to filter, ⏎ opens the first match.
 - `⌘N` — scaffold a new starter shader into `Sources/Shaders/`.
 - `⌘S` — write the buffer back to the `.metal` file.
+- `⇧⌘S` — save the values on screen as a new named preset of the open shader.
 - `⌘R` — recompile.
 - `⌘\` — play/pause.
 - `⇧⌘R` — re-roll seed.
@@ -199,24 +236,27 @@ Keys:
 
 Other targets:
 
-- `make playground-build` — build only, to `build/LerpPlayground.app`. The app icon is rendered from the `mesh-gradient` shader by `build/LerpPreview`, the same way the saver's System Settings thumbnail is; nothing binary is checked in.
-- `make install-playground` / `make uninstall-playground` — the copy Spotlight will offer, in `~/Applications`. See "Install" above.
-- `build/LerpPlayground.app/Contents/MacOS/LerpPlayground --shaders` — print the checkout this copy reads, how it resolved it, and the shaders in it. Exits non-zero if there are none.
-- `build/LerpPlayground.app/Contents/MacOS/LerpPlayground --capture out.png` — build the real window the way a launch does, say what it opened on and whether that came from the memory or from a draw against your rotation, and write a PNG of it. Reads your screensaver settings, writes none of them, and puts the last-opened memory back as it found it. The render pane is empty in the PNG: it is a `CAMetalLayer`, which `cacheDisplay` cannot reach.
+- `make playground-build` — compile-only staging at
+  `build/LerpPlayground.staging.app`; it is not registered or launched.
+- `make saver-build` — compile-only staging at `build/Lerping@Home.saver`.
+- `make install-playground` deploys the canonical Spotlight copy without opening
+  it; `make uninstall-playground` gracefully stops and removes it.
+- `build/LerpPlayground.staging.app/Contents/MacOS/LerpPlayground --shaders` — print the checkout this copy reads, how it resolved it, and the shaders in it. Exits non-zero if there are none.
+- `build/LerpPlayground.staging.app/Contents/MacOS/LerpPlayground --capture out.png` — build the real window the way a launch does, say what it opened on and whether that came from the memory or from a draw against your rotation, and write a PNG of it. Reads your screensaver settings, writes none of them, and puts the last-opened memory back as it found it. The render pane is empty in the PNG: it is a `CAMetalLayer`, which `cacheDisplay` cannot reach.
 
 ## Custom shaders
 
 - Custom shader directory: `~/Library/Application Support/Lerping/Shaders/`.
 - `LerpPreview` reads that directory at runtime; edit a file and press `r` to recompile.
 - The installed screensaver cannot read that directory: `legacyScreenSaver` runs sandboxed and is denied access to Application Support.
-- `make install` copies the contents of that directory into the `.saver` bundle, which the sandbox can read.
+- `make saver` copies the contents of that directory into the installed `.saver` bundle, which the sandbox can read.
 - `make install-example` copies the plasma template into the custom shader directory.
 - A custom shader whose filename stem matches a built-in replaces that built-in.
 
 ```sh
 cp myshader.metal ~/Library/Application\ Support/Lerping/Shaders/
 ./build/LerpPreview          # iterate without reinstalling
-make install                 # copy into the screensaver bundle
+make saver                   # build, deploy, and retire stale saver hosts
 ```
 
 ### Shader contract
@@ -261,9 +301,14 @@ its parameters and presets wherever the file goes.
   the buffer bindings are unchanged, and a shader with no parameters compiles
   and renders exactly as before.
 - `// lerp-preset: NAME  key=value, …` names a set of overrides; quote names
-  with spaces, and repeat the name on later lines to split a long preset.
+  with spaces, and repeat the name on later lines to split a long preset. A
+  preset is an *overlay*: anything it does not name keeps the declared default,
+  and follows it if the default later changes.
+- The playground writes this form for you — **Shader → Save Look as Preset…**
+  turns the values on screen into a new named block in the file. See "Shader
+  playground".
 - A malformed declaration is a compile error naming the line.
-- 28 of the 30 built-in shaders declare parameters mirroring the upstream
+- 28 of the 31 built-in shaders declare parameters mirroring the upstream
   paper-design props, with defaults set to this project's current look and the
   upstream looks available as presets.
 - Inspect and drive them from the CLI:
@@ -290,10 +335,25 @@ its parameters and presets wherever the file goes.
   accumulate across frames — a rendered frame is a pure function of
   (shader, time, seed, parameters), which is what makes `--snapshot --time T`
   reproducible.
-- Only `pipes` uses one. Every other shader keeps the plain
+- A provider that also needs the shader's `// lerp-param:` values — `life` is
+  sized by `size` and stepped at `speed` — implements the `params` overload of
+  `bind`. It defaults to the two-argument form, so providers that ignore
+  parameters are unaffected.
+- **Iterative simulations** are the one thing that cannot be derived in closed
+  form, and `life` is the pattern for them: bound the history instead of
+  abandoning purity. Each of its ten cellular-automaton stories has an epoch
+  sized to its own arc, so reaching *any* t costs at most that one story. Dense
+  full-screen soups use toroidal arrays; canonical patterns use sparse,
+  dead-edged boards, letting the R-pentomino complete all 1,103 generations
+  cheaply. Its shader interpolates the binary board into a continuous organism
+  field with membrane lighting, birth pulses, and death glow; the underlying
+  automaton remains exact. The cached board's key is its whole input, so
+  stepping it forward lands on the bytes a cold rebuild would produce.
+- `heatmap`, `life` and `pipes` use one. Every other shader keeps the plain
   `fragment half4 lerpMain(float4, constant LerpUniforms&)` signature.
-- Protocol and registry: `Sources/LerpCore/DataProvider.swift`. Worked example:
-  `Sources/LerpCore/PipesData.swift`. Details in `PORTING.md`.
+- Protocol and registry: `Sources/LerpCore/DataProvider.swift`. Worked examples:
+  `Sources/LerpCore/PipesData.swift` (derive every frame),
+  `Sources/LerpCore/LifeData.swift` (bounded history). Details in `PORTING.md`.
 
 ### GLSL → Metal mapping
 
@@ -389,8 +449,8 @@ own entitlements and loading the real `.saver` into it:
 | write `~/Library/Caches/…` | **denied** — "You don't have permission to save the file" |
 | read `~/Library/Application Support/Lerping/Shaders` | yes — the appex holds a read-only exception for `/` |
 | read its own `Contents/Resources/Thumbnails` | yes |
-| build the real Options… sheet | 121 ms, 114 tiles |
-| fill it | 0.16 s — 113 stills off the bundle, 1 rendered |
+| build the real Options… sheet | 121 ms, 124 tiles (123 built-in + 1 custom) |
+| fill it | 0.16 s — 123 stills off the bundle, 1 rendered |
 | reopen it | 90 ms, entirely from memory |
 
 So the sandbox can render, but it cannot cache anywhere the rest of the machine
@@ -399,7 +459,7 @@ rather than shared with the playground's `~/Library/Caches` copy, and why
 whatever the bundle is missing is cached in the container instead. The read-only
 exception for `/` is also why a custom shader in
 `~/Library/Application Support/Lerping/Shaders` shows up in the sheet's gallery
-even before `make install` bakes it into the bundle.
+even before `make saver` bakes it into the bundle.
 
 ## Desktop picture handoff
 

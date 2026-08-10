@@ -4,8 +4,8 @@ import AppKit
 ///
 /// ## Why one view and not one per tile
 ///
-/// There are 114 looks. A `LerpMetalView` owns a `CAMetalLayer`, a display link
-/// and a `ShaderLibrary`, so 114 of them is 114 drawables and 114 display links
+/// There are 123 looks. A `LerpMetalView` owns a `CAMetalLayer`, a display link
+/// and a `ShaderLibrary`, so 123 of them is 123 drawables and 123 display links
 /// for a grid in which at most one tile is ever under the pointer. So there is
 /// exactly one, and it is *reparented* into the hovered tile: added as a subview
 /// of the tile, sized to the tile's picture, and taken away again when the

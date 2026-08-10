@@ -62,7 +62,7 @@ public final class LerpRenderer {
             var u = uniforms
             encoder.setFragmentBytes(&u, length: MemoryLayout<LerpUniforms>.stride, index: 0)
         }
-        data?.bind(to: encoder, uniforms: uniforms)
+        data?.bind(to: encoder, uniforms: uniforms, params: params)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
         return commandBuffer

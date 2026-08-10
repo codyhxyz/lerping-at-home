@@ -14,13 +14,12 @@ import AppKit
 /// Two things leave through callbacks rather than being done here, because both
 /// belong to the editor window and not to this one: `onOpen`, a double-click
 /// asking to go and edit a look, and `onChange`, so the toolbar popover showing
-/// the same 114 tiles can be kept in step with what was just clicked.
+/// the same 123 tiles can be kept in step with what was just clicked.
 final class RotationWindowController: NSWindowController, NSWindowDelegate {
 
     let gallery = RotationGalleryView(frame: NSRect(x: 0, y: 0, width: 1120, height: 760))
     private let thumbnails: RotationThumbnails
     private let defaults: UserDefaults?
-    private let searchURLs: [URL]
     /// What the gallery was last built from, so an edit somewhere else in the
     /// app can be recognised as one shader changing rather than a reload.
     private var sourceFingerprint = ""
@@ -33,8 +32,9 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
 
     /// A look was double-clicked: go and open it in the editor.
     var onOpen: ((LerpRotationEntry) -> Void)?
-    /// The rotation changed here. The editor's popover shows the same set.
-    var onChange: ((Set<LerpRotationEntry>) -> Void)?
+    /// The rotation changed here. The editor's popover shows the same set, and
+    /// takes the state written with it so its own writes stay unstale too.
+    var onChange: ((Set<LerpRotationEntry>, LerpRotationState?) -> Void)?
     /// A still landed. Handed on so the popover's copy of the grid can show it
     /// too — the two share one `RotationThumbnails`, and a `start` supersedes
     /// the run in flight, so whichever run is live has to feed both.
@@ -46,20 +46,29 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
         (thumbnails.memoryHits, thumbnails.diskHits, thumbnails.rendered, thumbnails.failed)
     }
 
-    /// What the screensaver's saved rotation comes to for these looks — the one
-    /// spelling of it the playground uses, so the gallery window and the toolbar
-    /// popover cannot come up disagreeing about what is in.
+    /// What the screensaver's saved rotation comes to for these looks, and the
+    /// state it was read from — the one spelling of it the playground uses, so
+    /// the gallery window and the toolbar popover cannot come up disagreeing
+    /// about what is in.
+    ///
+    /// The state comes back alongside because both surfaces write, and a writer
+    /// that does not know what it read cannot merge against a newer one. Every
+    /// caller of this is a window with a checkbox in it, so every caller needs
+    /// it; handing back only the set is what let the popover write blind.
     static func enabled(for entries: [LerpRotationEntry],
-                        in defaults: UserDefaults?) -> Set<LerpRotationEntry> {
-        Set(LerpMetalView.Config.rotation(of: RotationStore.load(discovered: entries, from: defaults),
-                                          from: entries))
+                        in defaults: UserDefaults?)
+        -> (looks: Set<LerpRotationEntry>, base: LerpRotationState) {
+        let state = RotationStore.state(discovered: entries, from: defaults)
+        return (Set(LerpMetalView.Config.rotation(
+                        of: LerpRotation.enabled(discovered: entries, in: state),
+                        from: entries)),
+                state)
     }
 
     /// `defaults` is injected so `--selftest` can point the whole thing at a
     /// throwaway ByHost domain instead of the user's screensaver settings.
     init(searchURLs: [URL], defaults: UserDefaults?, hidden: Bool,
          thumbnails: RotationThumbnails? = nil) {
-        self.searchURLs = searchURLs
         self.defaults = defaults
         self.thumbnails = thumbnails ?? RotationThumbnails(searchURLs: searchURLs)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760),
@@ -84,7 +93,7 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
 
         gallery.onChange = { [weak self] enabled in
             self?.persist(enabled)
-            self?.onChange?(enabled)
+            self?.onChange?(enabled, self?.base)
         }
         gallery.onOpen = { [weak self] entry in self?.onOpen?(entry) }
         gallery.onRegenerate = { [weak self] in
@@ -106,27 +115,19 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
         sourceFingerprint = fingerprint
 
         let entries = shaders.rotationEntries()
-        let state = RotationStore.state(discovered: entries, from: defaults)
-        base = state
-        gallery.show(shaders: shaders,
-                     enabled: Set(LerpMetalView.Config.rotation(
-                        of: LerpRotation.enabled(discovered: entries, in: state),
-                        from: entries)))
+        let saved = Self.enabled(for: entries, in: defaults)
+        base = saved.base
+        gallery.show(shaders: shaders, enabled: saved.looks)
 
         let started = CFAbsoluteTimeGetCurrent()
-        gallery.showProgress(done: 0, total: entries.count)
-        thumbnails.start(RotationThumbnails.jobs(for: shaders),
-                         onImage: { [weak self] entry, image in
-                             self?.gallery.show(image: image, for: entry)
-                             self?.onImage?(entry, image)
-                         },
-                         onProgress: { [weak self] done, total in
-                             self?.gallery.showProgress(done: done, total: total)
-                         },
-                         onFinished: { [weak self] in
-                             self?.lastLoadSeconds = CFAbsoluteTimeGetCurrent() - started
-                             self?.onLoaded?()
-                         })
+        gallery.populate(
+            using: thumbnails,
+            jobs: RotationThumbnails.jobs(for: shaders),
+            onImage: { [weak self] entry, image in self?.onImage?(entry, image) },
+            onFinished: { [weak self] in
+                self?.lastLoadSeconds = CFAbsoluteTimeGetCurrent() - started
+                self?.onLoaded?()
+            })
     }
 
     /// Fired when every still for the current run has landed. `--selftest` waits
@@ -148,7 +149,14 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     /// Someone else changed the rotation — the toolbar popover shows the same
     /// looks. Straight into the tiles, without going back out through
     /// `onChange`, because whoever changed it has already saved it.
-    func showEnabled(_ enabled: Set<LerpRotationEntry>) {
+    ///
+    /// `base` is the state they wrote, adopted as this window's own. Without it
+    /// this window would go on writing against the revision it read at load, so
+    /// every later click here would take the stale-writer branch — correct, but
+    /// only by way of the merge, for the rest of the session. Adopted before the
+    /// guard: a gallery that has not loaded its tiles yet still has a base.
+    func showEnabled(_ enabled: Set<LerpRotationEntry>, base: LerpRotationState?) {
+        if let base { self.base = base }
         guard !gallery.entries.isEmpty else { return }
         gallery.show(shaders: gallery.shaders, enabled: enabled)
     }

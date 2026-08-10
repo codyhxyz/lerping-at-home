@@ -59,13 +59,70 @@ public enum LerpParamValue: Sendable, Equatable {
     }
 
     /// How the value is written back out in a `lerp-param:`/`lerp-preset:` line.
+    ///
+    /// Every spelling this produces re-parses to a value that **packs to the
+    /// same bytes**. `LerpParamLayout` stores floats and colour components as
+    /// `Float`, and that block is literally what the fragment shader is handed,
+    /// so two spellings that agree there are the same look and nothing
+    /// downstream can tell them apart.
+    ///
+    /// That guarantee is not decoration. This used to be plain `%g` — six
+    /// significant digits against a `Float`'s seven-and-a-bit — which is fine
+    /// for the error messages that were its only caller and not fine at all now
+    /// that something writes a *file* with it: the playground saves the values
+    /// on screen as a `// lerp-preset:` block through here (see
+    /// `LerpPresetWriter`). Checked by writing every one of the tree's 122 parameterized looks
+    /// back out with a colour well's worth of precision on it — six digits loses
+    /// the last bit of the mantissa often enough to change the colour on the
+    /// screen, and the tuple form needs up to nine.
+    ///
+    /// The short spelling is still tried first, so a value that arrived as
+    /// `#ff7a1a` or as a typed `0.35` is written the way a human wrote it and
+    /// the `.metal` files stay readable. Only a value that cannot survive that
+    /// pays for the long form.
     public var literal: String {
         switch self {
         case .scalar(let v):
-            return v == v.rounded() && abs(v) < 1e9 ? String(Int(v)) : String(format: "%g", v)
+            return Self.shortest(v)
         case .color(let c):
-            return String(format: "(%g, %g, %g, %g)", c.x, c.y, c.z, c.w)
+            // Hex whenever every component lands exactly on an 8-bit step,
+            // which is what a colour that came from `#rrggbb` — or from a
+            // colour well the user picked a web colour in — does. That is the
+            // form every shader in the tree uses, and it survives the round
+            // trip by construction.
+            if let hex = Self.hex(c) { return hex }
+            return "(" + [c.x, c.y, c.z, c.w].map { Self.shortest(Double($0)) }
+                                             .joined(separator: ", ") + ")"
         }
+    }
+
+    /// The shortest text that parses back to the same `Float`: a whole number
+    /// as itself, then `%g`, then `Float`'s own description — which is by
+    /// definition the shortest decimal that round-trips, and nine digits at
+    /// worst.
+    private static func shortest(_ value: Double) -> String {
+        if value == value.rounded(), abs(value) < 1e9 { return String(Int(value)) }
+        let short = String(format: "%g", value)
+        if let parsed = Double(short), Float(parsed) == Float(value) { return short }
+        return String(Float(value))
+    }
+
+    /// `#rrggbb`, or `#rrggbbaa` when the colour is not opaque — nil when any
+    /// component sits between two 8-bit steps and hex would round it.
+    private static func hex(_ c: SIMD4<Float>) -> String? {
+        guard let red = Self.byte(c.x), let green = Self.byte(c.y),
+              let blue = Self.byte(c.z), let alpha = Self.byte(c.w) else { return nil }
+        return String(format: "#%02x%02x%02x", red, green, blue)
+            + (alpha == 255 ? "" : String(format: "%02x", alpha))
+    }
+
+    /// The 8-bit step this component sits exactly on, or nil if it is between
+    /// two. "Exactly" is measured the way `LerpParamParser.parseColor` will read
+    /// it back — `Float(byte) / 255` — rather than by rounding and hoping.
+    private static func byte(_ component: Float) -> UInt8? {
+        guard component >= 0, component <= 1 else { return nil }
+        let byte = UInt8((component * 255).rounded())
+        return Float(byte) / 255 == component ? byte : nil
     }
 }
 
@@ -274,8 +331,26 @@ public enum LerpParamParser {
         public var errors: [LerpParamError] = []
     }
 
-    static let paramDirective = "lerp-param:"
-    static let presetDirective = "lerp-preset:"
+    public static let paramDirective = "lerp-param:"
+    public static let presetDirective = "lerp-preset:"
+
+    /// The text after `// <directive>` on this line, or nil when the line does
+    /// not carry that directive.
+    ///
+    /// The one statement of what a directive line looks like — leading
+    /// whitespace, `//`, optional whitespace, the directive case-insensitively,
+    /// and the rest. `parse` reads lines through it, and so does the
+    /// playground's preset writer when it looks for where a file's existing
+    /// declarations end (`PresetScaffold.inserting`). A file is therefore
+    /// scanned for directives by exactly the rule that will later parse them,
+    /// rather than by a second almost-identical one that drifts.
+    public static func directiveBody(_ raw: some StringProtocol, _ directive: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("//") else { return nil }
+        let body = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
+        guard body.lowercased().hasPrefix(directive) else { return nil }
+        return String(body.dropFirst(directive.count)).trimmingCharacters(in: .whitespaces)
+    }
 
     /// Scans the whole file (not just the header) for parameter and preset
     /// directives. Anything that is not a `// lerp-…:` comment is ignored, so
@@ -288,13 +363,8 @@ public enum LerpParamParser {
 
         for (index, raw) in source.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             let line = index + 1
-            let trimmed = raw.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("//") else { continue }
-            let body = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
-            let lower = body.lowercased()
 
-            if lower.hasPrefix(paramDirective) {
-                let text = String(body.dropFirst(paramDirective.count)).trimmingCharacters(in: .whitespaces)
+            if let text = directiveBody(raw, paramDirective) {
                 do {
                     let param = try parseParam(text, line: line)
                     if param.name == "resolution" || param.name == "time" || param.name == "seed" {
@@ -309,8 +379,7 @@ public enum LerpParamParser {
                 } catch {
                     out.errors.append(LerpParamError(line: line, message: "\(error)", text: text))
                 }
-            } else if lower.hasPrefix(presetDirective) {
-                let text = String(body.dropFirst(presetDirective.count)).trimmingCharacters(in: .whitespaces)
+            } else if let text = directiveBody(raw, presetDirective) {
                 do {
                     let (name, values) = try parsePreset(text, line: line)
                     if presetValues[name] == nil {
@@ -556,5 +625,131 @@ public enum LerpParamParser {
             out.append(index == 0 ? Character(character.uppercased()) : character)
         }
         return out
+    }
+}
+
+// MARK: - Writer
+
+/// The other direction: live parameter values back out as the `// lerp-preset:`
+/// lines the parser above reads. What the playground's "Save Look as Preset…"
+/// writes into a `.metal` file.
+///
+/// It lives in this file, directly under the parser, because the two are one
+/// contract read from two ends. A writer kept next to the UI that calls it is a
+/// second, quieter definition of the syntax, and the two only have to disagree
+/// once — about a quote, about a rounding — for a shader to stop compiling with
+/// an error that points at a line nobody typed.
+///
+/// The round trip is exact in the sense that renders. Write a preset from what
+/// is on screen, parse the file back, and `LerpShader.parameterValues(for:)`
+/// returns a `LerpParameterValues` whose `packedTail` is byte-for-byte the one
+/// the fragment shader was being handed — that is what
+/// `LerpParamValue.literal`'s spelling rule buys, and it is the same "differing
+/// packed bytes" test `--capture` already uses to prove a preset is really on.
+public enum LerpPresetWriter {
+
+    /// Why `name` cannot be used, or nil when it can.
+    ///
+    /// Three of these are limits of the declaration syntax and one is a limit of
+    /// the UI, which is worth saying out loud:
+    ///
+    /// - Empty is `preset name is empty` from the parser, and a name that is
+    ///   only spaces is the same thing after trimming.
+    /// - A double quote cannot be written at all. `parsePreset` reads a quoted
+    ///   name up to the *next* quote, so `Sea "Deep"` would either truncate or
+    ///   fail to terminate depending on where the quote fell.
+    /// - Tabs and newlines cannot survive a line-oriented comment directive.
+    /// - "Defaults" is refused because it is already taken by the look every
+    ///   shader has: `LerpRotationEntry.displayName` calls the no-preset entry
+    ///   "Defaults", and the inspector's popup puts it at index 0 and reads
+    ///   index 0 as "no preset". A preset actually called that would draw two
+    ///   identically captioned tiles in both grids and be unselectable in the
+    ///   popup, because picking it would select the item above it.
+    ///
+    /// Case is not compared here — that is the *shader's* question, since
+    /// `LerpShader.preset(named:)` matches case-insensitively — except against
+    /// "Defaults", which is reserved whatever its capitalisation for the same
+    /// reason.
+    public static func problem(withName name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            return "A preset needs a name — the picker and the rotation gallery caption every look with it."
+        }
+        if trimmed.contains("\"") {
+            return "A preset name cannot contain a double quote: the declaration wraps names in quotes, "
+                + "so there is no way to write one that survives being read back."
+        }
+        if trimmed.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+            return "A preset name cannot contain tabs or line breaks — a declaration is one comment line."
+        }
+        if trimmed.caseInsensitiveCompare("Defaults") == .orderedSame {
+            return "“Defaults” is the name every shader's *un*-preset look already goes by, "
+                + "so a preset called that would be two looks with one caption. Pick another."
+        }
+        return nil
+    }
+
+    /// The parameters whose live value is not the declared default, in
+    /// declaration order.
+    ///
+    /// A preset is an **overlay**, not a snapshot. `LerpParameterValues.apply`
+    /// starts from the declared defaults and then sets only what the preset
+    /// names, so a parameter written at its own default is a line that says
+    /// nothing — and worse than nothing, because it freezes today's default into
+    /// a file whose author may move it tomorrow, at which point the preset
+    /// quietly stops following. The shaders in the tree are written this way by
+    /// hand (`aurora`'s Quiet names four of eleven parameters); this is the same
+    /// thing done from the sliders.
+    public static func overrides(in values: LerpParameterValues)
+        -> [(param: LerpParam, value: LerpParamValue)] {
+        values.parameters.compactMap { param in
+            guard let value = values[param.name], value != param.defaultValue else { return nil }
+            return (param, value)
+        }
+    }
+
+    /// The `// lerp-preset:` lines that declare `name` as these overrides.
+    ///
+    /// Wrapped across several lines rather than run out to any width, because a
+    /// repeated name merges into one preset (`parsePreset`'s doc says so, and
+    /// every multi-line preset in `Sources/Shaders` relies on it) and because a
+    /// 300-column comment in a file people read in a 700-point editor pane is
+    /// not a saving. `columns` is the budget for the whole line, prefix
+    /// included; one assignment always goes on a line even if it blows it, since
+    /// the alternative is a line with nothing on it.
+    public static func declaration(name: String,
+                                   overrides: [(param: LerpParam, value: LerpParamValue)],
+                                   wrappingAt columns: Int = 92) -> [String] {
+        let prefix = "// " + LerpParamParser.presetDirective + " " + quoted(name) + "  "
+        var lines: [String] = []
+        var current: [String] = []
+        for (param, value) in overrides {
+            let assignment = param.name + "=" + literal(value, as: param.type)
+            if !current.isEmpty,
+               prefix.count + (current + [assignment]).joined(separator: ", ").count > columns {
+                lines.append(prefix + current.joined(separator: ", "))
+                current = []
+            }
+            current.append(assignment)
+        }
+        if !current.isEmpty { lines.append(prefix + current.joined(separator: ", ")) }
+        return lines
+    }
+
+    /// Quoted only when it has to be, so `Ember` is written `Ember` and
+    /// `Sine Wave` is written `"Sine Wave"` — which is how the files already
+    /// read. Anything else that would need quoting has been refused by
+    /// `problem(withName:)`.
+    static func quoted(_ name: String) -> String {
+        name.contains(where: \.isWhitespace) ? "\"\(name)\"" : name
+    }
+
+    /// `LerpParamValue.literal`, except that a `bool` is written `true`/`false`
+    /// rather than as the `1`/`0` it is stored as. The parser takes either; a
+    /// file that declares `// lerp-param: mirrored bool = false` and then sets
+    /// `mirrored=1` two lines down reads like two different settings.
+    static func literal(_ value: LerpParamValue, as type: LerpParamType) -> String {
+        guard type == .bool, let number = value.scalarValue else { return value.literal }
+        return number != 0 ? "true" : "false"
     }
 }

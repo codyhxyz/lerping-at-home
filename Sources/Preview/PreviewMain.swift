@@ -22,6 +22,18 @@ enum PreviewMain {
         // the preview works without installing anything.
         let extraSearch = ShaderLocations.repoSearchURLs()
 
+        if args.contains("--life-selftest") {
+            guard LifeData.selfTest() else { fail("Game of Life rule self-test failed") }
+            guard let renderer = LerpRenderer() else { fail("no Metal device") }
+            let library = ShaderLibrary(device: renderer.device, extraSearchURLs: extraSearch)
+            guard let shader = library.shader(named: "game-of-life"),
+                  [shader].rotationEntries().count == 10,
+                  (try? library.pipeline(for: shader)) != nil
+            else { fail("Game of Life must compile and expose exactly ten distinct stories") }
+            print("OK    Game of Life rules, canonical patterns, and 10-story rotation")
+            return
+        }
+
         if args.contains("--list") {
             guard let renderer = LerpRenderer() else { fail("no Metal device") }
             let library = ShaderLibrary(device: renderer.device, extraSearchURLs: extraSearch)

@@ -1,7 +1,7 @@
 // Metaballs — ported from paper-design/shaders (Apache-2.0)
 // https://github.com/paper-design/shaders
 // The original reads ball trajectories from a noise texture; this port
-// drives them with the prelude's procedural hash21 instead.
+// drives them with the prelude's procedural value noise instead.
 
 // Parameters mirror the upstream <Metaballs> props. Upstream takes a
 // variable-length `colors` array (max 8); this port fixes five tunable slots,
@@ -28,19 +28,6 @@
 
 constant int   MB_MAX_BALLS   = 20;
 constant int   MB_COLOR_COUNT = 5;
-
-// Stand-in for the original's noise-texture randomizer.
-static float mbRandom(float2 p) {
-    return hash21(floor(p));
-}
-
-// 1D value noise driving each ball's wandering path.
-static float mbNoise(float x) {
-    float i = floor(x);
-    float f = fract(x);
-    float w = f * f * (3.0 - 2.0 * f);
-    return mix(mbRandom(float2(i, 0.0)), mbRandom(float2(i + 1.0, 0.0)), w);
-}
 
 static float mbBallShape(float2 uv, float2 c, float p) {
     float s = 0.5 * length(uv - c);
@@ -70,8 +57,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         float angle = TWO_PI * idxFract;
 
         float speed = 1.0 - 0.2 * idxFract;
-        float noiseX = mbNoise(angle * 10.0 + float(i) + t * speed);
-        float noiseY = mbNoise(angle * 20.0 + float(i) - t * speed);
+        float noiseX = valueNoise(float2(angle * 10.0 + float(i) + t * speed, 0.0));
+        float noiseY = valueNoise(float2(angle * 20.0 + float(i) - t * speed, 0.0));
 
         float2 c = float2(0.5) + 1e-4 + spread * (float2(noiseX, noiseY) - 0.5);
 

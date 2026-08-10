@@ -76,11 +76,7 @@ public struct LerpShader: Sendable {
     /// default and the path all the built-in shaders take.
     public var dataProviderName: String? {
         for raw in source.split(separator: "\n", omittingEmptySubsequences: false).prefix(40) {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            guard line.hasPrefix("//") else { continue }
-            let body = line.dropFirst(2).trimmingCharacters(in: .whitespaces)
-            guard body.lowercased().hasPrefix("lerp-data:") else { continue }
-            let value = body.dropFirst("lerp-data:".count).trimmingCharacters(in: .whitespaces)
+            guard let value = LerpParamParser.directiveBody(raw, "lerp-data:") else { continue }
             return value.isEmpty ? nil : value
         }
         return nil
@@ -90,14 +86,10 @@ public struct LerpShader: Sendable {
 /// One stop in the shuffle rotation: a shader, optionally wearing one of its
 /// declared `// lerp-preset:` looks.
 ///
-/// A `nil` preset means the shader's *declared defaults*, and that is a look in
-/// its own right rather than a stand-in for "the first preset". The porting rule
-/// is that a shader's defaults reproduce what it rendered before it had
-/// parameters, and upstream's own settings go into a preset instead — so the
-/// defaults are visually distinct from every preset the file declares, and a
-/// shader with N presets contributes N+1 entries. (Checked: of the 83 presets in
-/// the tree, not one packs to the same uniform block as its shader's defaults,
-/// including the three literally named "Default".)
+/// A `nil` preset means the shader's *declared defaults*, not “the first
+/// preset”. Defaults normally appear as a look in their own right. The one
+/// exception is a named preset with the identical packed values: rotation keeps
+/// the useful name and drops the indistinguishable “Defaults” tile.
 public struct LerpRotationEntry: Hashable, Sendable {
     public let shader: String
     /// Preset name, or nil for the shader's declared defaults.
@@ -128,21 +120,58 @@ public struct LerpRotationEntry: Hashable, Sendable {
     public var displayName: String { preset ?? "Defaults" }
 }
 
+/// Filesystem policy shared by the saver's sandbox and the ordinary app hosts.
+/// The sandbox home comes first; the passwd home follows when it differs.
+public enum LerpFileLocations {
+    public static var realHomeDirectory: URL? {
+        guard let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir else { return nil }
+        return URL(fileURLWithPath: String(cString: home))
+    }
+
+    public static func homeDirectories(appending relativePath: String) -> [URL] {
+        var directories = [URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(relativePath)]
+        if let realHomeDirectory {
+            directories.append(realHomeDirectory.appendingPathComponent(relativePath))
+        }
+        var seen = Set<String>()
+        return directories.filter { seen.insert($0.path).inserted }
+    }
+
+    /// The first candidate that can be created and passes an actual write probe.
+    public static func firstWritableDirectory(
+        in candidates: [URL], onFailure: ((URL, Error) -> Void)? = nil
+    ) -> URL? {
+        let manager = FileManager.default
+        for directory in candidates {
+            do {
+                try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+                let probe = directory.appendingPathComponent(".writable")
+                try Data().write(to: probe)
+                try? manager.removeItem(at: probe)
+                return directory
+            } catch {
+                onFailure?(directory, error)
+            }
+        }
+        return nil
+    }
+
+    public static func writableHomeDirectory(
+        appending relativePath: String, onFailure: ((URL, Error) -> Void)? = nil
+    ) -> URL? {
+        firstWritableDirectory(in: homeDirectories(appending: relativePath), onFailure: onFailure)
+    }
+}
+
 public enum ShaderLocations {
     /// Directories scanned for user-supplied .metal shader files, in priority order.
     /// `NSHomeDirectory()` resolves to the sandbox container inside legacyScreenSaver
     /// and to the real home directory in the preview app; we also try the real home
     /// explicitly so both hosts can share a folder when the sandbox permits it.
     public static func customShaderDirectories() -> [URL] {
-        var dirs: [URL] = []
-        let suffix = "Library/Application Support/Lerping/Shaders"
-        dirs.append(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(suffix))
-        if let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir {
-            let realHome = URL(fileURLWithPath: String(cString: home))
-            dirs.append(realHome.appendingPathComponent(suffix))
-        }
-        var seen = Set<String>()
-        return dirs.filter { seen.insert($0.path).inserted }
+        LerpFileLocations.homeDirectories(
+            appending: "Library/Application Support/Lerping/Shaders")
     }
 
     /// The repo's `Sources/Shaders` directory, when a development host is running
@@ -177,15 +206,18 @@ public extension Collection where Element == LerpShader {
         first { $0.name == name }
     }
 
-    /// Every rotation entry these shaders offer, in list order: each shader's
-    /// defaults first, then one entry per declared preset in declaration order.
-    ///
-    /// Every shader contributes at least its defaults entry, so a file that
-    /// declares no presets at all (`pipes`) still takes its turn.
+    /// Every distinct rotation entry these shaders offer, in list order:
+    /// defaults first, then declared presets. If a named preset intentionally
+    /// reproduces the defaults, its useful name replaces the indistinguishable
+    /// “Defaults” tile; a shader with no presets still contributes its defaults.
     func rotationEntries() -> [LerpRotationEntry] {
         flatMap { shader in
-            [LerpRotationEntry(shader: shader.name)]
-                + shader.presets.map { LerpRotationEntry(shader: shader.name, preset: $0.name) }
+            let named = shader.presets.map { LerpRotationEntry(shader: shader.name, preset: $0.name) }
+            let defaults = shader.defaultParameterValues().packedTail
+            let namedDefault = named.contains {
+                shader.parameterValues(for: $0).packedTail == defaults
+            }
+            return (namedDefault ? [] : [LerpRotationEntry(shader: shader.name)]) + named
         }
     }
 }
@@ -270,11 +302,6 @@ public final class ShaderLibrary {
         guard !items.isEmpty else { return nil }
         let index = current.flatMap { items.firstIndex(of: $0) } ?? 0
         return items[(((index + offset) % items.count) + items.count) % items.count]
-    }
-
-    /// `step(in:after:offset:)` under the name the shader-name callers use.
-    public static func name(in names: [String], after current: String, offset: Int) -> String? {
-        step(in: names, after: current, offset: offset)
     }
 
     /// Records `message` as this shader's compile error and throws it. Every

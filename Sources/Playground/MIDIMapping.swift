@@ -134,12 +134,6 @@ struct MIDIBinding: Codable, Hashable {
         copy.range = Swift.min(a, b) ... Swift.max(a, b)
         return copy
     }
-
-    func withComponent(_ component: ColorComponent) -> MIDIBinding {
-        var copy = self
-        copy.component = component
-        return copy
-    }
 }
 
 /// One switchable bank of mappings, normally one per controller.
@@ -149,13 +143,6 @@ struct MappingPreset: Codable {
     /// Empty matches any device. Used to auto-select on connect.
     var deviceID: String
     var bindings: [MIDIBinding] = []
-
-    /// The binding a row shows in its title. For a colour with several axes
-    /// driven at once this is the first of them; `bindings(for:)` is the full
-    /// picture.
-    func binding(for paramID: String) -> MIDIBinding? {
-        bindings(for: paramID).first
-    }
 
     /// Every CC pointed at this parameter, in component order so a colour's
     /// H/C/L/α always read the same way round.

@@ -89,6 +89,60 @@ enum ShaderScaffold {
     }
 }
 
+// MARK: - Preset authoring
+
+/// Where a new `// lerp-preset:` block goes in a file that already exists.
+///
+/// Deliberately separate from `LerpPresetWriter`, which decides what the block
+/// *says*: that is a question about values and belongs beside the parser that
+/// reads them back, while this is a question about somebody's source file and
+/// belongs next to the only other code in the project that writes one.
+enum PresetScaffold {
+
+    /// `source` with `lines` spliced in as a new preset declaration.
+    ///
+    /// Immediately after the last `// lerp-preset:` line the file already has,
+    /// so a new preset is **appended** to the declaration order rather than
+    /// inserted into it.
+    ///
+    /// That placement is load-bearing, not tidiness. The saved rotation stores a
+    /// roster of each shader's presets in declaration order, and
+    /// `LerpRotation.renamePairs` decides whether a name it has not seen before
+    /// is a new look (joins the rotation) or an old one under a new name (keeps
+    /// whatever the user decided about it) by lining those two orders up index
+    /// by index. Adding a preset is safe wherever it lands — pairing needs a
+    /// name that *vanished*, and adding one vanishes nothing — but the roster
+    /// written today is what a rename tomorrow gets aligned against, and
+    /// appending is the one edit that leaves every existing index where it was.
+    ///
+    /// With no presets yet it goes after the last `// lerp-param:` line with a
+    /// `//` spacer between, which is the shape every shader in the tree has:
+    /// the parameters, a blank comment, then the presets. With neither — a file
+    /// declaring nothing, which cannot have produced any values worth saving —
+    /// it goes at the end rather than nowhere, keeping whatever trailing
+    /// newline the file had.
+    ///
+    /// Lines are found through `LerpParamParser.directiveBody`, so "this is a
+    /// declaration" means here exactly what it will mean when the file is parsed
+    /// back a moment later.
+    static func inserting(_ lines: [String], into source: String) -> String {
+        var text = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        func lastLine(carrying directive: String) -> Int? {
+            text.lastIndex { LerpParamParser.directiveBody($0, directive) != nil }
+        }
+
+        if let index = lastLine(carrying: LerpParamParser.presetDirective) {
+            text.insert(contentsOf: lines, at: index + 1)
+        } else if let index = lastLine(carrying: LerpParamParser.paramDirective) {
+            text.insert(contentsOf: ["//"] + lines, at: index + 1)
+        } else {
+            let end = text.last?.isEmpty == true ? text.count - 1 : text.count
+            text.insert(contentsOf: [""] + lines, at: end)
+        }
+        return text.joined(separator: "\n")
+    }
+}
+
 // MARK: - Compiler diagnostics
 
 struct ShaderDiagnostic {

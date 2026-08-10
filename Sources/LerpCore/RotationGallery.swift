@@ -2,10 +2,10 @@ import AppKit
 
 /// The rotation gallery: every look the screensaver can shuffle through, as a
 /// picture you click to put it in or take it out — and, since it is the only
-/// place in the project where all 114 looks are visible at once, also the way to
+/// place in the project where all 123 looks are visible at once, also the way to
 /// *find* a look and go and edit it.
 ///
-/// A list of 114 checkboxes tells you their names and nothing else — there is no
+/// A list of 123 checkboxes tells you their names and nothing else — there is no
 /// way to find out what `voronoi/Molten` is except to wait for it to come round.
 /// Here each look is a portrait still of itself, grouped under its shader, the
 /// on/off state is the difference between a lit tile with an accent frame and a
@@ -759,6 +759,28 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
             : "rendering \(done) of \(total)…"
     }
 
+    /// Starts one thumbnail run and wires its images and progress into this
+    /// gallery. Host-specific forwarding and completion work stay in callbacks.
+    public func populate(
+        using thumbnails: RotationThumbnails,
+        jobs: [RotationThumbnails.Job],
+        onImage: ((LerpRotationEntry, NSImage) -> Void)? = nil,
+        onFinished: @escaping () -> Void = {}
+    ) {
+        showProgress(done: 0, total: jobs.count)
+        thumbnails.start(
+            jobs,
+            onImage: { [weak self] entry, image in
+                guard let self else { return }
+                self.show(image: image, for: entry)
+                onImage?(entry, image)
+            },
+            onProgress: { [weak self] done, total in
+                self?.showProgress(done: done, total: total)
+            },
+            onFinished: onFinished)
+    }
+
     /// Greys the whole gallery out — what the Options… sheet does when a shader
     /// is pinned and the rotation therefore does not apply. `inactive` replaces
     /// the status line while it is off.
@@ -1019,7 +1041,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// has more than five looks.
     ///
     /// Hand-rolled because that is not a shape any stock container makes
-    /// cheaply, and because 114 tiles want a flat view tree.
+    /// cheaply, and because 123 tiles want a flat view tree.
     @discardableResult
     private func reflow(width: CGFloat) -> CGFloat {
         let tile = tileSize

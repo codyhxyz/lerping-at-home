@@ -155,10 +155,10 @@ enum RotationStore {
     ///
     /// `entries` is the full rotation in display order; an empty one leaves the
     /// saved rotation alone, so a host that discovered nothing cannot wipe it.
-    /// An empty *selection* is persisted as the full rotation, because
-    /// `Config.rotation` says an empty rotation means all of them — the saver
-    /// does exactly this, and it is why a deselect-all can never black the
-    /// screensaver out.
+    /// An empty *selection*, though, is written as an empty rotation and means
+    /// it: `Config.rotation` takes the set literally, and it no longer widens an
+    /// empty one back to everything. What stops a deselect-all blacking the
+    /// screensaver out is the gallery refusing the last look, not this.
     ///
     /// `base` is the state the caller last read. Pass the real one from any
     /// window with a checkbox in it: it is what stops a gallery that has been

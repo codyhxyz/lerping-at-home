@@ -5,7 +5,7 @@ import AppKit
 ///
 /// ## Why not keep the dropdown
 ///
-/// The dropdown listed 114 looks as 114 lines of text. Names are not what a look
+/// The dropdown listed 123 looks as 123 lines of text. Names are not what a look
 /// is — `voronoi/Molten` tells you nothing — and the gallery had already solved
 /// that problem next door with a picture per look. Two lists of the same thing,
 /// one of which you can actually read, is one too many.
@@ -31,7 +31,7 @@ import AppKit
 /// not, so the popover opens with the caret already in the filter field and ⏎
 /// opens the first look still showing. That is `RotationGalleryView`'s doing —
 /// see `control(_:textView:doCommandBy:)` — and it is the reason the popover
-/// beats the carousel that was the other idea on the table: 114 items is too
+/// beats the carousel that was the other idea on the table: 123 items is too
 /// many to walk past one at a time, and a carousel has nowhere to type.
 final class ShaderPicker: NSObject, NSPopoverDelegate {
 
@@ -92,17 +92,10 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
             .joined(separator: ",")
         guard fingerprint != loadedFingerprint else { return }
         loadedFingerprint = fingerprint
-        let jobs = RotationThumbnails.jobs(for: shaders)
-        gallery.showProgress(done: 0, total: jobs.count)
-        thumbnails.start(jobs,
-                         onImage: { [weak self] entry, image in
-                             self?.gallery.show(image: image, for: entry)
-                             self?.onImage?(entry, image)
-                         },
-                         onProgress: { [weak self] done, total in
-                             self?.gallery.showProgress(done: done, total: total)
-                         },
-                         onFinished: {})
+        gallery.populate(
+            using: thumbnails,
+            jobs: RotationThumbnails.jobs(for: shaders),
+            onImage: { [weak self] entry, image in self?.onImage?(entry, image) })
     }
 
     /// Someone else changed the rotation. Straight into the tiles; nothing goes

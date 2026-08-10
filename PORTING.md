@@ -99,6 +99,11 @@ into one preset, which is how you keep long presets readable. A preset applies
 on top of the *defaults*, so anything it doesn't mention returns to its
 declared default. Setting a parameter the file doesn't declare is an error.
 
+You don't have to type one. Get the look you want on the playground's sliders
+and **Shader → Save Look as Preset…** (`⇧⌘S`) writes exactly this form back into
+the file — only the parameters you moved off their defaults, appended after any
+presets already there.
+
 A preset is also a stop in the screensaver's shuffle: the rotation is a list of
 (shader, preset) pairs, where the shader's declared defaults are one of the
 pairs. Adding a preset to a file therefore adds a look to the rotation with no
@@ -179,6 +184,25 @@ in `LerpDataProviders`, and give the shader a matching `// lerp-data:` line.
   it every frame would produce identical bytes.
 - **Do not write a buffer the GPU may still be reading.** Use `LerpBufferRing`,
   which hands out one of three buffers in rotation.
+
+- **If it genuinely cannot be derived, bound it.** A cellular automaton or any
+  other iterative simulation has no closed form: generation N is only defined
+  through N−1. Do not reach for a feedback texture and give up on purity — the
+  cost is not just `--snapshot`, it is the rotation gallery resuming at a still's
+  own time and the desktop handoff re-rendering, at native size, whatever
+  (time, seed) the saver stopped on after hours of running. Instead reseed on a
+  fixed period from `(seed, epoch)`, which caps the work to reach any t at one
+  epoch's worth of steps. `life` sizes each epoch to the story it tells and uses
+  a sparse board for canonical finite patterns, so even the R-pentomino's full
+  1,103 generations stay bounded. Stepping a cached board forward is then legal
+  under the caching rule above, because its key is the whole input. See
+  `Sources/LerpCore/LifeData.swift`.
+
+- **Parameters.** `bind(to:uniforms:)` does not receive the shader's
+  `// lerp-param:` values. A provider that needs them — `life` takes its cell
+  size and generation rate from `size` and `speed` — implements the `params`
+  overload instead; it defaults to the two-argument form, so providers that
+  ignore parameters need no change.
 
 A shader with no `// lerp-data:` line gets no provider, is bound exactly as it
 always was, and needs no changes.

@@ -3,9 +3,9 @@ import Metal
 
 /// LerpPlayground — live shader scratchpad for Lerping@Home.
 ///
-///   make playground             build the .app and open it
-///   make playground-test        build and run the scripted UI self-test
-///   make install-playground     copy it to ~/Applications, where Spotlight looks
+///   make playground             build, install, restart, and open the canonical app
+///   make playground-build       compile only; never launch this staging bundle
+///   make install-playground     install and stop any older running copy
 ///   open -a LerpPlayground      launch it, or raise the copy already running
 ///   LerpPlayground --shaders    print which checkout this copy reads, and what
 ///                               it found there
@@ -18,21 +18,27 @@ import Metal
 /// stop typing; a shader that fails to compile leaves the last good pipeline
 /// on screen and reports the diagnostics in the console below the editor.
 ///
-/// It ships as `build/LerpPlayground.app`, not as a bare executable, because
-/// everything an app is expected to do needs a bundle identifier: macOS
-/// deduplicates launches by it, `open -a` resolves by it, and the Dock, ⌘-Tab
-/// and preferences all key on it. Without one, every launch was another
-/// process with another window and no way to raise the one already open.
+/// It ships as a bundled app because macOS deduplicates launches by its bundle
+/// identifier and the Dock, ⌘-Tab and preferences all key on it. The build-tree
+/// bundle is staging only; normal commands install and run the single canonical
+/// copy in ~/Applications, so a successful build cannot leave an older app
+/// serving the user.
 ///
-/// The shader list still comes from a checkout — the in-repo build walks up from
-/// its own executable to find the one it sits in, and the copy in ~/Applications
-/// reads the one `make install-playground` recorded in its Info.plist. See
+/// The shader list still comes from a checkout — the staging build can walk up
+/// from its executable, while the copy in ~/Applications reads the checkout
+/// `make install-playground` recorded in its Info.plist. See
 /// `RepoLocation`, which is also what puts a named error and a folder picker on
 /// screen when that checkout has moved.
 @main
 enum PlaygroundMain {
     static func main() {
-        if CommandLine.arguments.contains("--shaders") {
+        if let index = CommandLine.arguments.firstIndex(of: "--quit-bundle-id"),
+           let identifier = CommandLine.arguments.dropFirst(index + 1).first {
+            quitRunningInstance(identifier)
+        } else if let index = CommandLine.arguments.firstIndex(of: "--fail-if-running-bundle-id"),
+                  let identifier = CommandLine.arguments.dropFirst(index + 1).first {
+            failIfRunning(identifier)
+        } else if CommandLine.arguments.contains("--shaders") {
             reportShaders()
         } else if let index = CommandLine.arguments.firstIndex(of: "--capture") {
             let next = CommandLine.arguments.dropFirst(index + 1).first
@@ -42,6 +48,51 @@ enum PlaygroundMain {
             handOffToRunningInstance()
             boot(PlaygroundAppDelegate())
         }
+    }
+
+    /// Asks a running copy to terminate, then waits until it really has. The
+    /// target's app delegate protects unsaved editor text; cancelling that prompt
+    /// makes deployment fail instead of replacing the bundle under an old process.
+    private static func quitRunningInstance(_ identifier: String) -> Never {
+        let me = ProcessInfo.processInfo.processIdentifier
+        guard let running = NSRunningApplication
+            .runningApplications(withBundleIdentifier: identifier)
+            .first(where: { $0.processIdentifier != me }) else { exit(0) }
+        guard let url = running.bundleURL,
+              Bundle(url: url)?.object(forInfoDictionaryKey: "LerpSafeDeploymentQuit") as? Bool == true
+        else {
+            running.activate(options: [.activateAllWindows])
+            FileHandle.standardError.write(Data(
+                "\(identifier) is an older running build; close it once before deployment\n".utf8))
+            exit(1)
+        }
+        guard running.terminate() else {
+            FileHandle.standardError.write(Data("could not ask \(identifier) to quit\n".utf8))
+            exit(1)
+        }
+        let deadline = Date().addingTimeInterval(60)
+        while !running.isTerminated, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        guard running.isTerminated else {
+            FileHandle.standardError.write(Data(
+                "\(identifier) is still running; deployment stopped to protect unsaved edits\n".utf8))
+            exit(1)
+        }
+        exit(0)
+    }
+
+    /// Staging bundles should never run. Refuse deployment rather than guessing
+    /// whether a historical build can protect unsaved editor text on termination.
+    private static func failIfRunning(_ identifier: String) -> Never {
+        let me = ProcessInfo.processInfo.processIdentifier
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+            .contains { $0.processIdentifier != me }
+        if running {
+            FileHandle.standardError.write(Data(
+                "staging playground \(identifier) is running; close it before deployment\n".utf8))
+        }
+        exit(running ? 1 : 0)
     }
 
     /// `--shaders`: which checkout this copy resolved, how, and what is in it.
@@ -144,6 +195,13 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
     /// live process with nothing on screen, which is the state that made the
     /// old build feel like it was multiplying.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// Deployments request a normal app termination, never kill the editor. The
+    /// controller uses the same Save / Discard / Cancel prompt as closing its
+    /// window, so Cancel leaves the process and installed bundle untouched.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        controller?.approveTermination() == false ? .terminateCancel : .terminateNow
+    }
 
     /// A Dock click, or the re-open LaunchServices sends instead of launching a
     /// second copy. Either way the answer is the window that already exists.
@@ -308,13 +366,20 @@ enum MainMenu {
 
         main.addItem(submenu("Shader", [
             item("Open Look…", #selector(PlaygroundWindowController.showShaderPicker(_:)), "o"),
+            // Beside Open Look… because it is the same noun: one picks a look to
+            // edit, the other makes the edit into a look. ⇧⌘S is Save As
+            // everywhere on the platform and is what this is — the buffer's Save
+            // is ⌘S in the File menu, and this saves it *plus* a name for the
+            // values the file cannot otherwise remember.
+            item("Save Look as Preset…", #selector(PlaygroundWindowController.savePreset(_:)), "s",
+                 [.command, .shift]),
             .separator(),
             item("Recompile", Selector(("recompile:")), "r"),
             item("Play / Pause", Selector(("togglePlayPause:")), "\\"),
             item("Re-roll Seed", Selector(("rerollSeed:")), "r", [.command, .shift]),
             .separator(),
-            item("Next Shader", Selector(("nextShader:")), "]", [.command, .shift]),
-            item("Previous Shader", Selector(("previousShader:")), "[", [.command, .shift]),
+            item("Next Look", Selector(("nextLook:")), "]", [.command, .shift]),
+            item("Previous Look", Selector(("previousLook:")), "[", [.command, .shift]),
             .separator(),
             item("Jump to First Error", Selector(("jumpToFirstError")), "e"),
             .separator(),

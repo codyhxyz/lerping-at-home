@@ -235,6 +235,21 @@ final class ParameterPanel: NSView {
         }
     }
 
+    /// Puts the popup on `name` without applying anything — the display half of
+    /// `choosePreset`, for when the values are already right and only the label
+    /// is behind.
+    ///
+    /// `rebuild` throws the popup away and leaves it on "Defaults", so without
+    /// this every recompile that changes a declaration would leave the control
+    /// claiming the shader is at its defaults while the render, the toolbar
+    /// button and both grids say it is wearing a preset. A name the rebuilt
+    /// popup no longer lists falls back to "Defaults", which by then is the
+    /// truth: a preset the file stopped declaring is not being rendered either.
+    func showPreset(_ name: String?) {
+        let index = name.map { presetPopUp.indexOfItem(withTitle: $0) } ?? 0
+        presetPopUp.selectItem(at: index >= 0 ? index : 0)
+    }
+
     private func format(_ value: Double, _ param: LerpParam) -> String {
         param.type == .int ? String(Int(value.rounded())) : String(format: "%.3g", value)
     }

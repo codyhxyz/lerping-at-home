@@ -90,14 +90,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     }
     color /= max(1e-4, totalWeight);
 
-    float grainOverlay = valueNoise(rotate(grainUV, 1.0) + 3.0);
-    grainOverlay = mix(grainOverlay, valueNoise(rotate(grainUV, 2.0) - 1.0), 0.5);
-    grainOverlay = pow(grainOverlay, 1.3);
-
-    float grainOverlayV = grainOverlay * 2.0 - 1.0;
-    float3 grainOverlayColor = float3(step(0.0, grainOverlayV));
-    float grainOverlayStrength = pow(u.grainOverlay * abs(grainOverlayV), 0.8);
-    color = mix(color, grainOverlayColor, 0.35 * grainOverlayStrength);
+    color = lerpGrainOverlay(color, grainUV, u.grainOverlay);
 
     color = lerpDither(color, pos);
     return half4(half3(color), 1.0h);
