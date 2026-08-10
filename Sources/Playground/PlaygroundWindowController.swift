@@ -61,7 +61,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private let windowLabel = NSTextField(labelWithString: "")
     private let pager = NSSegmentedControl()
     private let scalePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let spanPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private let fpsLabel = NSTextField(labelWithString: "— fps")
 
     let inspector = ParameterPanel(frame: NSRect(x: 0, y: 0, width: 320, height: 700))
@@ -296,12 +295,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
         pager.target = self
         pager.action = #selector(pageWindow)
-        pager.toolTip = "Jump back or forward one window"
+        pager.toolTip = "Jump back or forward one minute"
 
         timeSlider.controlSize = .small
         timeSlider.isContinuous = true
         timeSlider.target = self
         timeSlider.action = #selector(timeSliderChanged)
+        timeSlider.toolTip = "Scrub this minute; type the clock to jump anywhere"
         // No width constraint: the scrubber is what absorbs the pane's slack,
         // so it spans the render however wide the render is.
         timeSlider.setContentHuggingPriority(.init(1), for: .horizontal)
@@ -318,23 +318,17 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         windowLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         windowLabel.textColor = EditorTheme.dim
         windowLabel.alignment = .right
-        windowLabel.toolTip = "The stretch of the timeline the scrubber covers"
+        windowLabel.toolTip = "The minute shown by the scrubber"
         // First thing to give way when the pane gets narrow: it is an
         // annotation, and the field beside it carries the number that matters.
         windowLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
-        for (popUp, titles, action) in [(scalePopUp, Self.renderScales.map(\.title), #selector(scaleChanged)),
-                                        (spanPopUp, Self.timeSpans.map(\.title), #selector(spanChanged))] {
-            popUp.controlSize = .small
-            popUp.font = .systemFont(ofSize: 11)
-            popUp.target = self
-            popUp.action = action
-            popUp.addItems(withTitles: titles)
-        }
+        scalePopUp.controlSize = .small
+        scalePopUp.font = .systemFont(ofSize: 11)
+        scalePopUp.target = self
+        scalePopUp.action = #selector(scaleChanged)
+        scalePopUp.addItems(withTitles: Self.renderScales.map(\.title))
         scalePopUp.widthAnchor.constraint(equalToConstant: 78).isActive = true
-        spanPopUp.widthAnchor.constraint(equalToConstant: 88).isActive = true
-        spanPopUp.selectItem(at: Self.timeSpans.firstIndex { $0.seconds == windowSpan } ?? 0)
-        spanPopUp.toolTip = "How much time the scrubber spans, and so how fine a drag is"
 
         fpsLabel.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
         fpsLabel.textColor = EditorTheme.dim
@@ -349,7 +343,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         metalView.setContentHuggingPriority(.init(1), for: .vertical)
 
         syncTransport()
-        return Chrome.pane([Chrome.bar([seedButton, scalePopUp, spanPopUp,
+        return Chrome.pane([Chrome.bar([seedButton, scalePopUp,
                                         Chrome.flexible(), fpsLabel]),
                             metalView,
                             Chrome.bar([playButton, pager, timeField, timeSlider, windowLabel],
@@ -358,39 +352,28 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Transport
 
-    /// The scrubber covers a fixed span of the timeline rather than [0, some
-    /// number someone picked]. Shaders here are fbm/noise driven with time
-    /// feeding unbounded coordinates — they never repeat, so there is no
-    /// natural end to scale to, and the old `maxValue = 180` meant that past
-    /// three minutes the thumb sat pinned at the right edge reporting 180 while
-    /// the shader was at 400.
-    ///
-    /// A fixed span also keeps drag precision constant: one pixel is always the
-    /// same number of seconds, whether you are at t=12 or t=9000.
-    private static let timeSpans: [(title: String, seconds: Double)] =
-        [("Span 30s", 30), ("Span 1m", 60), ("Span 3m", 180), ("Span 10m", 600), ("Span 30m", 1800)]
-
-    /// Three minutes over a scrubber that is usually 400–800 px wide is roughly
-    /// a quarter-second per pixel: fine enough to land on a moment, long enough
-    /// that watching a shader does not page constantly. The popup is there for
-    /// when it is the wrong answer.
-    private(set) var windowSpan: Double = 180
+    /// Time here is endless: the shaders do not loop, so a slider from zero to
+    /// “the end” either lies or loses precision as the app runs. The scrubber is
+    /// therefore a one-minute local ruler; its editable clock is the unbounded
+    /// navigation. Users choose a moment, not a unit conversion.
+    private static let timelineWindow = 60.0
 
     /// Derived, never stored: the window is always the one containing the
     /// clock. That is what keeps the thumb, the readout and the window from
     /// ever disagreeing — there is no second source of truth to drift.
     var windowStart: Double {
-        max(0, ((metalView.time - 1e-9) / windowSpan).rounded(.down) * windowSpan)
+        max(0, ((metalView.time - 1e-9) / Self.timelineWindow).rounded(.down)
+            * Self.timelineWindow)
     }
 
     /// Brings the scrubber, its window and the clock readout in step with
     /// `metalView.time`. Cheap enough to call from the 0.2 s poll.
     private func syncTransport() {
         let start = windowStart
-        if timeSlider.minValue != start || timeSlider.maxValue != start + windowSpan {
+        if timeSlider.minValue != start || timeSlider.maxValue != start + Self.timelineWindow {
             timeSlider.minValue = start
-            timeSlider.maxValue = start + windowSpan
-            windowLabel.stringValue = "\(Self.clock(start))–\(Self.clock(start + windowSpan))"
+            timeSlider.maxValue = start + Self.timelineWindow
+            windowLabel.stringValue = "\(Self.clock(start))–\(Self.clock(start + Self.timelineWindow))"
         }
         // Leave the thumb alone briefly after a drag so it doesn't fight the
         // user, and pin it right once the clock runs on past the scrubber.
@@ -1313,11 +1296,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if isPaused { metalView.renderOnce() }
     }
 
-    /// One window back or forward. Because the window is derived from the
+    /// One minute back or forward. Because the window is derived from the
     /// clock, paging *is* seeking — there is no separate "where the scrubber is
     /// looking" that could disagree with where the shader is.
     @objc private func pageWindow(_ sender: NSSegmentedControl) {
-        seek(to: metalView.time + (sender.selectedSegment == 0 ? -windowSpan : windowSpan))
+        seek(to: metalView.time
+             + (sender.selectedSegment == 0 ? -Self.timelineWindow : Self.timelineWindow))
     }
 
     @objc private func timeFieldChanged(_ sender: NSTextField) {
@@ -1326,13 +1310,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
         window?.makeFirstResponder(nil)
         seek(to: seconds)
-    }
-
-    @objc private func spanChanged() {
-        let index = min(max(spanPopUp.indexOfSelectedItem, 0), Self.timeSpans.count - 1)
-        windowSpan = Self.timeSpans[index].seconds
-        lastScrub = 0
-        syncTransport()
     }
 
     private static let renderScales: [(title: String, value: Double)] =
