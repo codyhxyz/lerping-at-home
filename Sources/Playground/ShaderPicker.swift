@@ -88,8 +88,7 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
                  current: LerpRotationEntry?) {
         gallery.show(shaders: shaders, enabled: enabled)
         gallery.showCurrent(current)
-        let fingerprint = shaders.map { $0.name + ":" + RotationThumbnails.hash($0.source) }
-            .joined(separator: ",")
+        let fingerprint = RotationThumbnails.fingerprint(for: shaders)
         guard fingerprint != loadedFingerprint else { return }
         loadedFingerprint = fingerprint
         gallery.populate(

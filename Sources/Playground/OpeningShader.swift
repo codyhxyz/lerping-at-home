@@ -59,8 +59,7 @@ enum OpeningShader {
     ///   them.
     /// - `rotation`: the screensaver's defaults, read-only. nil — no ByHost
     ///   domain, no `ScreenSaverDefaults`, nothing readable — is not an error:
-    ///   `RotationStore.load` answers nil for it and `Config.rotation` turns
-    ///   that into every entry.
+    ///   `RotationStore.rotation` turns that into every entry.
     /// - `remembered`: the last look this app opened, if any. Wins outright when
     ///   its shader is still on disk and still compiles.
     /// - `opens`: whether an entry can actually be put on screen — the shader
@@ -99,10 +98,9 @@ enum OpeningShader {
             return wanted
         }
 
-        // Read exactly the way the saver reads it — same call, same policy, so
-        // the playground cannot come to a different view of which looks are in.
-        let enabled = LerpMetalView.Config.rotation(
-            of: RotationStore.load(discovered: all, from: rotation), from: all)
+        // Ask RotationStore for the effective rotation rather than duplicating
+        // its load-plus-filter policy here.
+        let enabled = RotationStore.rotation(discovered: all, from: rotation)
 
         if let opening = firstThatOpens(in: enabled, randomIndex: randomIndex, opens: opens) {
             return opening

@@ -42,15 +42,7 @@ enum RotationStore {
     /// deliberate selection through `PlaygroundWindowController`'s
     /// `rotationDefaults` default argument, which resolved through here before
     /// the test could redirect it, and switched two shaders off for real.
-    static let module = ProcessInfo.processInfo.environment["LERP_DEFAULTS_MODULE"]
-        ?? productionModule
-
-    /// What `module` resolves to when nothing redirects it: the real
-    /// screensaver's ByHost domain. Kept separate so the redirect cannot be
-    /// mistaken for the live domain, and so `testModule` and `isLiveModule`
-    /// stay anchored to the thing that must be protected rather than to
-    /// whatever this process happens to be pointed at.
-    static let productionModule = "com.hergenroeder.lerping"
+    static let module = LerpDefaults.module
 
     /// A ByHost domain of the same shape, and no user's.
     ///
@@ -63,13 +55,15 @@ enum RotationStore {
     /// settings get thrown away. A domain nobody's screensaver reads costs the
     /// test nothing — it is the same class, the same call and the same keys —
     /// and it cannot destroy anything.
-    static let testModule = productionModule + ".uitest"
+    static let testModule = LerpDefaults.productionModule + ".uitest"
 
     /// Whether the module a run is pointed at is the user's live one. Nothing in
-    /// the test suite may answer true. Compares against `productionModule`, not
-    /// `module`: a redirected run must still recognise the live domain as the
-    /// one thing it may not write.
-    static func isLiveModule(_ name: String) -> Bool { name == productionModule }
+    /// the test suite may answer true. Compares against the production module,
+    /// not `module`: a redirected run must still recognise the live domain as
+    /// the one thing it may not write.
+    static func isLiveModule(_ name: String) -> Bool {
+        name == LerpDefaults.productionModule
+    }
 
     /// The versioned rotation state — the schema, the migrations and the
     /// stale-writer merge all live in `LerpRotation`.

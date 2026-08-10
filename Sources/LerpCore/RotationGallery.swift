@@ -406,7 +406,7 @@ public final class RotationTile: NSView {
             NSBezierPath(ovalIn: dot.insetBy(dx: 3.5, dy: 3.5)).fill()
         }
 
-        drawBadge(in: frame)
+        drawBadge()
         if isLocked { drawLock(in: frame) }
         // `drawCaption` is deliberately not called here: it sits below the
         // picture rather than over it, so `draw` calls it for both states.
@@ -425,9 +425,8 @@ public final class RotationTile: NSView {
     /// Filled tick when in, empty ring when out. The redundant signal, for
     /// anyone who cannot rely on the frame colour — and, in the picker, the
     /// control itself.
-    private func drawBadge(in frame: NSRect) {
-        let side: CGFloat = 20
-        let box = NSRect(x: frame.maxX - side - 6, y: frame.minY + 6, width: side, height: side)
+    private func drawBadge() {
+        let box = badgeRect
         let circle = NSBezierPath(ovalIn: box)
         if isOn {
             Self.accent.setFill()

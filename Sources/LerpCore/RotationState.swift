@@ -238,14 +238,11 @@ public enum LerpRotation {
             && legacyDigest(defaults).map({ $0 == record?["legacy"] as? String }) ?? true
 
         if let record, recordIsCurrent {
-            return LerpRotationState(
-                stored: true,
+            return decodeRecord(
+                record,
                 version: version,
-                revision: record["revision"] as? Int ?? 0,
-                updatedAt: Date(timeIntervalSince1970: record["updatedAt"] as? Double ?? 0),
-                writer: record["writer"] as? String ?? "",
-                disabled: Set((record["disabled"] as? [String] ?? []).map(LerpRotationEntry.init(key:))),
-                roster: record["roster"] as? [String: [String]] ?? [:])
+                disabled: Set((record["disabled"] as? [String] ?? [])
+                    .map(LerpRotationEntry.init(key:))))
         }
 
         /// Denials this record already held. Kept even when the v1 keys have
@@ -300,17 +297,26 @@ public enum LerpRotation {
         // the only thing anybody has said, whatever its digest claims — the keys
         // it was measured against are gone rather than rewritten.
         if let record {
-            return LerpRotationState(
-                stored: true,
+            return decodeRecord(
+                record,
                 version: max(version, LerpRotationState.currentVersion),
-                revision: record["revision"] as? Int ?? 0,
-                updatedAt: Date(timeIntervalSince1970: record["updatedAt"] as? Double ?? 0),
-                writer: record["writer"] as? String ?? "",
-                disabled: carried,
-                roster: record["roster"] as? [String: [String]] ?? [:])
+                disabled: carried)
         }
 
         return .empty
+    }
+
+    private static func decodeRecord(_ record: [String: Any],
+                                     version: Int,
+                                     disabled: Set<LerpRotationEntry>) -> LerpRotationState {
+        LerpRotationState(
+            stored: true,
+            version: version,
+            revision: record["revision"] as? Int ?? 0,
+            updatedAt: Date(timeIntervalSince1970: record["updatedAt"] as? Double ?? 0),
+            writer: record["writer"] as? String ?? "",
+            disabled: disabled,
+            roster: record["roster"] as? [String: [String]] ?? [:])
     }
 
     /// A saved state re-expressed in today's keys: renames carried across,

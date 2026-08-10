@@ -86,11 +86,19 @@ public final class PipesData: LerpDataProvider {
     // spec they both implement.
 
     private static let colorShift: UInt32 = 6
-    private static let occupiedBit: UInt32 = 1 << 10
+    private static let connectionMask = (UInt32(1) << colorShift) - 1
+    private static let occupiedShift: UInt32 = 10
+    private static let colorMask = (UInt32(1) << (occupiedShift - colorShift)) - 1
+    private static let occupiedBit = UInt32(1) << occupiedShift
     private static let partialDirShift: UInt32 = 11
-    private static let partialBit: UInt32 = 1 << 14
-    private static let inwardBit: UInt32 = 1 << 15
+    private static let partialShift: UInt32 = 14
+    private static let partialDirMask = (UInt32(1) << (partialShift - partialDirShift)) - 1
+    private static let partialBit = UInt32(1) << partialShift
+    private static let inwardShift: UInt32 = 15
+    private static let inwardBit = UInt32(1) << inwardShift
     private static let partialLenShift: UInt32 = 16
+    private static let partialLenMax = UInt32.max >> partialLenShift
+    private static let partialMaxLength: Float = 0.5
 
     /// A freshly-occupied node in `color`, with no connections yet.
     @inline(__always) private static func nodeRecord(color: UInt32) -> UInt32 {
@@ -253,7 +261,8 @@ public final class PipesData: LerpDataProvider {
             guard free(x, y, z) else { continue }
             // 15-of-16 draw offset off the last material, so consecutive pipes
             // never come up the same colour.
-            let color = (previousColor &+ UInt32(1 + rng.below(15))) & 15
+            let color = (previousColor &+ UInt32(1 + rng.below(Int(PipesData.colorMask))))
+                & PipesData.colorMask
             let pipe = Pipe(x: x, y: y, z: z, dir: rng.below(6), color: color)
             // Start facing somewhere it can actually go.
             if chooseDirection(pipe, &rng) == nil { continue }
@@ -315,9 +324,11 @@ public final class PipesData: LerpDataProvider {
     /// node's geometry still fits inside its own cell.
     private func writePartial(pipe: Pipe, dir: Int, frac: Float) {
         let quantise: (Float) -> UInt32 = { len in
-            UInt32(max(0, min(65535, (len / 0.5) * 65535)).rounded()) << PipesData.partialLenShift
+            let scale = Float(PipesData.partialLenMax)
+            return UInt32(max(0, min(scale, (len / PipesData.partialMaxLength) * scale)).rounded())
+                << PipesData.partialLenShift
         }
-        if frac <= 0.5 {
+        if frac <= PipesData.partialMaxLength {
             // Stub grows outward from the head node's centre.
             nodes[index(pipe.x, pipe.y, pipe.z)] |=
                 UInt32(dir) << PipesData.partialDirShift | PipesData.partialBit | quantise(frac)
@@ -331,7 +342,7 @@ public final class PipesData: LerpDataProvider {
             nodes[index(nx, ny, nz)] = PipesData.nodeRecord(color: pipe.color)
                 | UInt32(dir ^ 1) << PipesData.partialDirShift
                 | PipesData.partialBit | PipesData.inwardBit
-                | quantise(frac - 0.5)
+                | quantise(frac - PipesData.partialMaxLength)
         }
     }
 
@@ -369,13 +380,13 @@ public final class PipesData: LerpDataProvider {
     // masks below must match the constants under its "Bit layout" heading.
     static inline LerpPipesNode lerpPipesDecode(uint rec) {
         LerpPipesNode n;
-        n.mask       = rec & 63u;
-        n.color      = (rec >> 6) & 15u;
-        n.occupied   = (rec & (1u << 10)) != 0u;
-        n.partialDir = (rec >> 11) & 7u;
-        n.hasPartial = (rec & (1u << 14)) != 0u;
-        n.inward     = (rec & (1u << 15)) != 0u;
-        n.partialLen = float(rec >> 16) * (0.5 / 65535.0);
+        n.mask       = rec & \(connectionMask)u;
+        n.color      = (rec >> \(colorShift)) & \(colorMask)u;
+        n.occupied   = (rec & (1u << \(occupiedShift))) != 0u;
+        n.partialDir = (rec >> \(partialDirShift)) & \(partialDirMask)u;
+        n.hasPartial = (rec & (1u << \(partialShift))) != 0u;
+        n.inward     = (rec & (1u << \(inwardShift))) != 0u;
+        n.partialLen = float(rec >> \(partialLenShift)) * (\(partialMaxLength) / \(partialLenMax).0);
         return n;
     }
     """

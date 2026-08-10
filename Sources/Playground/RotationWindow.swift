@@ -109,8 +109,7 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     /// Builds the gallery from `shaders` and starts filling the stills in.
     /// A no-op when nothing about the shaders has changed since the last call.
     func load(shaders: [LerpShader], force: Bool = false) {
-        let fingerprint = shaders.map { $0.name + ":" + RotationThumbnails.hash($0.source) }
-            .joined(separator: ",")
+        let fingerprint = RotationThumbnails.fingerprint(for: shaders)
         guard force || fingerprint != sourceFingerprint else { return }
         sourceFingerprint = fingerprint
 

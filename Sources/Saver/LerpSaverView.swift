@@ -43,9 +43,8 @@ public final class LerpSaverView: ScreenSaverView {
     /// rotation is not a test, it is a bug waiting for a badly-timed kill. The
     /// screensaver itself is never launched with this set, so the default is
     /// what every real host uses.
-    static let defaultsModule =
-        ProcessInfo.processInfo.environment["LERP_DEFAULTS_MODULE"] ?? "com.hergenroeder.lerping"
-    static let log = Logger(subsystem: "com.hergenroeder.lerping", category: "saver")
+    static let defaultsModule = LerpDefaults.module
+    static let log = Logger(subsystem: LerpDefaults.productionModule, category: "saver")
 
     private var metalView: LerpMetalView?
     private var effectiveIsPreview = false
@@ -101,7 +100,8 @@ public final class LerpSaverView: ScreenSaverView {
     /// Under `Library/Caches` — of the sandbox container inside
     /// legacyScreenSaver, of the real home anywhere else. See
     /// `RotationThumbnails.writableCacheDirectory`.
-    private static let thumbnailCacheName = "com.hergenroeder.lerping/RotationThumbnails"
+    private static let thumbnailCacheName =
+        LerpDefaults.productionModule + "/RotationThumbnails"
 
     /// A popup's menu, in menu order: the titles it shows and the value each one
     /// stores. Titles, value → index and index → value all come out of the one

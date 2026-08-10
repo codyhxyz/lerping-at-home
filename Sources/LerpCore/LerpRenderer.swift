@@ -51,16 +51,19 @@ public final class LerpRenderer {
 
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
         encoder.setRenderPipelineState(pipeline)
+        let headerSize = LerpParamLayout.headerSize
         if let tail = params?.packedTail, !tail.isEmpty {
-            var block = [UInt8](repeating: 0, count: LerpParamLayout.headerSize + tail.count)
-            withUnsafeBytes(of: uniforms) {
-                block.replaceSubrange(0..<LerpParamLayout.headerSize, with: $0)
+            var block = [UInt8](repeating: 0, count: headerSize + tail.count)
+            withUnsafeBytes(of: uniforms) { header in
+                precondition(header.count == headerSize,
+                             "LerpUniforms value bytes must exactly fill its ABI header")
+                block.replaceSubrange(0..<headerSize, with: header)
             }
-            block.replaceSubrange(LerpParamLayout.headerSize..<block.count, with: tail)
+            block.replaceSubrange(headerSize..<block.count, with: tail)
             encoder.setFragmentBytes(block, length: block.count, index: 0)
         } else {
             var u = uniforms
-            encoder.setFragmentBytes(&u, length: MemoryLayout<LerpUniforms>.stride, index: 0)
+            encoder.setFragmentBytes(&u, length: headerSize, index: 0)
         }
         data?.bind(to: encoder, uniforms: uniforms, params: params)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)

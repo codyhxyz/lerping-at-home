@@ -204,7 +204,11 @@ public struct LerpParamError: Error, Sendable, Equatable, CustomStringConvertibl
 /// way makes the offsets computable with two multiplications and keeps the
 /// Swift packer and the generated MSL struct trivially in step.
 public enum LerpParamLayout {
-    public static let headerSize = 16
+    public static let headerSize: Int = {
+        let stride = MemoryLayout<LerpUniforms>.stride
+        precondition(stride == 16, "Swift LerpUniforms must match Metal's 16-byte fixed header")
+        return stride
+    }()
 
     /// Declaration order rearranged into memory order.
     public static func fieldOrder(_ params: [LerpParam]) -> [LerpParam] {

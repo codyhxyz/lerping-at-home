@@ -184,6 +184,11 @@ public final class RotationThumbnails {
         return String(format: "%016llx", value)
     }
 
+    /// Ordered shader identity used to decide whether a gallery needs reloading.
+    public static func fingerprint(for shaders: [LerpShader]) -> String {
+        shaders.map { $0.name + ":" + hash($0.source) }.joined(separator: ",")
+    }
+
     /// The cache key for a look: what it is, what its shader's source says, and
     /// how the still is made. Any of the three changing is a different picture.
     public func key(entry: LerpRotationEntry, source: String) -> String {
