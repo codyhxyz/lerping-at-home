@@ -103,8 +103,7 @@ enum Oklch {
     ///
     /// The projection deliberately does *not* clamp to this (see
     /// `ColorProjection`); it is the reference the near-grey floor is measured
-    /// against, and the number the self-test quotes when it reports what the
-    /// alternative would have cost.
+    /// against.
     ///
     /// Memoised, because a hue sweep asks for the same lightness 128 times in a
     /// row and the answer is a pure function of one number.

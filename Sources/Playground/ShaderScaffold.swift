@@ -16,6 +16,16 @@ enum ShaderPaths {
         try? FileManager.default.createDirectory(at: customDirectory, withIntermediateDirectories: true)
         return customDirectory
     }
+
+    /// Development copies save back into their checkout. The signed standalone
+    /// app cannot modify its own bundle, so its first save of a built-in shader
+    /// creates the same user-owned override the screensaver already reads.
+    static func saveURL(for shader: LerpShader) -> URL {
+        if RepoLocation.isStandalone && shader.isBuiltIn {
+            return customDirectory.appendingPathComponent(shader.name + ".metal")
+        }
+        return shader.url ?? newShaderDirectory.appendingPathComponent(shader.name + ".metal")
+    }
 }
 
 // MARK: - New shader scaffolding

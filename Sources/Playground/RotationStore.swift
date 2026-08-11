@@ -17,68 +17,18 @@ import ScreenSaver
 /// many, and they had already begun to matter separately. Both now call
 /// `LerpRotation` in LerpCore, which is the single statement of the policy;
 /// what is left here is the part that is genuinely the playground's — which
-/// domain to open, and the guard that keeps the tests out of the live one.
+/// domain to open.
 ///
 /// The write path stays narrow on purpose: the rotation keys and nothing else,
 /// so the playground can never clobber the frame rate, the pinned shader or the
 /// wallpaper opt-in.
-///
-/// `--selftest` asserts every invariant this has to keep (empty means all,
-/// entirely-stale means all, entries discovered since the last save join
-/// automatically, a renamed preset does *not* count as discovered-since, a
-/// pre-preset `enabledShaders` list still migrates, a stale writer cannot undo
-/// a newer click) and then checks the result against the real `.saver` bundle's
-/// own Options sheet.
 enum RotationStore {
 
     /// The screensaver's defaults module — the string `LerpSaverView` passes to
     /// `ScreenSaverDefaults(forModuleWithName:)`. Not the playground's bundle
     /// identifier, on purpose.
     ///
-    /// Honours `LERP_DEFAULTS_MODULE` exactly as `LerpSaverView` does. It used
-    /// to hardcode the live domain while the saver read the environment, so the
-    /// one switch that was supposed to keep a test off the user's real rotation
-    /// only ever covered half the code. `--selftest` then wrote the user's
-    /// deliberate selection through `PlaygroundWindowController`'s
-    /// `rotationDefaults` default argument, which resolved through here before
-    /// the test could redirect it, and switched two shaders off for real.
     static let module = LerpDefaults.module
-
-    /// A ByHost domain of the same shape, and no user's.
-    ///
-    /// `--selftest` clicks tiles and then reads the result back out of cfprefsd
-    /// to prove the click landed where the screensaver reads it. It used to do
-    /// that in `module` itself — the user's live rotation — backing it up first
-    /// and restoring it in `finish()`. That is a landmine: a run killed between
-    /// the first click and the restore leaves the user's deliberate selection
-    /// rewritten, and a "restore" from a stale backup is how genuinely chosen
-    /// settings get thrown away. A domain nobody's screensaver reads costs the
-    /// test nothing — it is the same class, the same call and the same keys —
-    /// and it cannot destroy anything.
-    static let testModule = LerpDefaults.productionModule + ".uitest"
-
-    /// Whether the module a run is pointed at is the user's live one. Nothing in
-    /// the test suite may answer true. Compares against the production module,
-    /// not `module`: a redirected run must still recognise the live domain as
-    /// the one thing it may not write.
-    static func isLiveModule(_ name: String) -> Bool {
-        name == LerpDefaults.productionModule
-    }
-
-    /// The versioned rotation state — the schema, the migrations and the
-    /// stale-writer merge all live in `LerpRotation`.
-    static let stateKey = LerpRotation.stateKey
-    /// `LerpRotationEntry.key`s the user wants in the shuffle rotation. Legacy,
-    /// still written so an older build finds a sane rotation.
-    static let enabledEntriesKey = LerpRotation.enabledEntriesKey
-    /// Every entry that existed when the rotation was last saved.
-    static let knownEntriesKey = LerpRotation.knownEntriesKey
-    /// The pre-preset shape of the same two keys — sets of shader *names*.
-    static let enabledShadersKey = LerpRotation.enabledShadersKey
-    static let knownShadersKey = LerpRotation.knownShadersKey
-
-    /// Every key this file will ever touch.
-    static let allKeys = LerpRotation.allKeys
 
     /// Which host this is, in the saved state's `writer` field.
     static let writerName = "playground"
@@ -87,23 +37,8 @@ enum RotationStore {
     /// `~/Library/Preferences/ByHost/com.hergenroeder.lerping.<hardware UUID>.plist`,
     /// which is the file the saver and its Options sheet both read.
     ///
-    /// `module` is a parameter so a test can be handed `testModule` and reach
-    /// the same class through the same call without going anywhere near the
-    /// user's settings.
-    static func saverDefaults(module: String = module) -> UserDefaults? {
+    static func saverDefaults() -> UserDefaults? {
         ScreenSaverDefaults(forModuleWithName: module)
-    }
-
-    /// Removes a whole ByHost domain. Only ever called on `testModule`; the
-    /// guard is there so a future edit cannot point it at the live one.
-    static func deleteDomain(_ name: String) {
-        guard !isLiveModule(name) else { return }
-        allKeys.forEach {
-            CFPreferencesSetValue($0 as CFString, nil, name as CFString,
-                                  kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
-        }
-        CFPreferencesSynchronize(name as CFString, kCFPreferencesCurrentUser,
-                                 kCFPreferencesCurrentHost)
     }
 
     // MARK: - Reading

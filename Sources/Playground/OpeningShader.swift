@@ -35,7 +35,7 @@ enum OpeningShader {
     // MARK: - Remembering where you were
 
     /// The playground's own preference key. Deliberately not one of
-    /// `RotationStore.allKeys` and deliberately not in the saver's domain: this
+    /// `LerpRotation.allKeys` and deliberately not in the saver's domain: this
     /// is a fact about this app, not about the rotation.
     static let lastOpenedKey = "LerpLastOpenedEntry"
 
@@ -65,9 +65,6 @@ enum OpeningShader {
     /// - `opens`: whether an entry can actually be put on screen — the shader
     ///   exists and its source compiles. Called at most once per shader by the
     ///   caller's memo.
-    /// - `randomIndex`: where in the rotation to start. Injected so the tests can
-    ///   pin it; nothing else ever passes it.
-    ///
     /// The fallbacks, in the order they fire, none of which may end in nothing:
     ///
     /// 1. A remembered look that still exists and compiles.
@@ -89,8 +86,7 @@ enum OpeningShader {
     static func choose(discovered: [LerpShader],
                        rotation: UserDefaults?,
                        remembered: LerpRotationEntry?,
-                       opens: (LerpRotationEntry) -> Bool,
-                       randomIndex: (Int) -> Int = { Int.random(in: 0..<$0) }) -> LerpRotationEntry? {
+                       opens: (LerpRotationEntry) -> Bool) -> LerpRotationEntry? {
         let all = discovered.rotationEntries()
         guard let fallback = all.first else { return nil }
 
@@ -102,14 +98,10 @@ enum OpeningShader {
         // its load-plus-filter policy here.
         let enabled = RotationStore.rotation(discovered: all, from: rotation)
 
-        if let opening = firstThatOpens(in: enabled, randomIndex: randomIndex, opens: opens) {
-            return opening
-        }
+        if let opening = firstThatOpens(in: enabled, opens: opens) { return opening }
         // Nothing enabled compiles. Open on an enabled look anyway rather than
         // on a working one that is out of the rotation.
-        if !enabled.isEmpty {
-            return enabled[min(max(randomIndex(enabled.count), 0), enabled.count - 1)]
-        }
+        if let enabled = enabled.randomElement() { return enabled }
         return fallback
     }
 
@@ -132,10 +124,9 @@ enum OpeningShader {
     /// this project lives — the ←/→ keys, the shuffle and this — rather than a
     /// fourth spelling of `(i + d + n) % n`.
     private static func firstThatOpens(in order: [LerpRotationEntry],
-                                       randomIndex: (Int) -> Int,
                                        opens: (LerpRotationEntry) -> Bool) -> LerpRotationEntry? {
         guard !order.isEmpty else { return nil }
-        let start = min(max(randomIndex(order.count), 0), order.count - 1)
+        let start = Int.random(in: order.indices)
         var anchor: LerpRotationEntry?
         for attempt in 0..<order.count {
             guard let candidate = ShaderLibrary.step(in: order, after: anchor,

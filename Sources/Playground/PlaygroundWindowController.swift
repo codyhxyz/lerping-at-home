@@ -11,8 +11,7 @@ import QuartzCore
 /// owns the display link. This class is only the shell around them.
 final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
-    /// Outcome of the most recent compile. Drives the status bar, and is what
-    /// `--selftest` asserts on.
+    /// Outcome of the most recent compile. Drives the status bar and Save Look.
     enum CompileState {
         case pending
         case ok(milliseconds: Double)
@@ -21,17 +20,16 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     let editor = ShaderEditorView(frame: NSRect(x: 0, y: 0, width: 700, height: 700))
     private(set) var metalView: LerpMetalView!
-    private(set) var compileState: CompileState = .pending
-    private(set) var knownShaderNames: [String] = []
+    private var compileState: CompileState = .pending
+    private var knownShaderNames: [String] = []
 
     /// The open shader *as it is on disk*. `editor.text` is the working copy, so
     /// the two differing is exactly what "unsaved changes" means.
     private var current = LerpShader(name: "", source: "", isBuiltIn: false, url: nil)
-    var currentName: String { current.name }
     /// The preset the open shader is wearing, or nil for its declared defaults.
     /// Set by `applyPreset` — which is where every preset change goes, whatever
     /// asked for it — and cleared by opening a shader.
-    private(set) var currentPreset: String?
+    private var currentPreset: String?
     /// The open shader *and* the look it is in: a rotation entry, the same pair
     /// the screensaver shuffles over. What the window opened on, and what it
     /// will be remembered as.
@@ -44,7 +42,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private var terminationApproved = false
     /// The shader as it was at the last successful compile — i.e. what is on the
     /// GPU, and therefore what the inspector is showing controls for.
-    private(set) var compiled: LerpShader?
+    private var compiled: LerpShader?
 
     private let split = NSSplitViewController()
     /// Opens the shader picker. Where a plain `NSPopUpButton` listing 123 look
@@ -71,7 +69,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Held here rather than only in the view because every recompile calls
     /// `setShader`, which resets the view's copy — without this, typing one
     /// character in the editor would snap every slider back.
-    private(set) var parameterState: [String: LerpParamValue] = [:]
+    private var parameterState: [String: LerpParamValue] = [:]
     /// What the inspector currently has controls for.
     private var shownParameters: [LerpParam] = []
     /// What the inspector's preset popup currently lists. Tracked beside the
@@ -85,12 +83,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     let midi = MIDIController()
     private let router = MIDIRouter()
-    private(set) var mappings: [MappingPreset] = []
-    private(set) var activeMapping: MappingPreset?
+    private var mappings: [MappingPreset] = []
+    private var activeMapping: MappingPreset?
     /// The whole of MIDI learn: when this is set, the next inbound CC binds
     /// itself to that parameter instead of being routed. The component is the
     /// axis to bind on a colour, and nil on everything else.
-    var learnTarget: (param: String, component: ColorComponent?)?
+    private var learnTarget: (param: String, component: ColorComponent?)?
 
     /// The view owns the play/pause state; keeping a copy here is how the two
     /// drift apart.
@@ -108,25 +106,16 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Init
 
-    /// True for the `--selftest` window: a real, laid-out, rendering window
-    /// that is not on the user's screen, not in their way and not in their
-    /// saved layout. See `hide()`.
+    /// Capture mode builds a real laid-out window without showing or saving it.
     private let hidden: Bool
 
     /// Returns nil when there is no Metal device to render with.
-    ///
-    /// `rotationDefaults` is injected rather than reached for, because the
-    /// window now consults the screensaver's rotation *while it is being built*
-    /// — see `openingEntry` — and a test that could only swap the domain
-    /// afterwards would be a test of the user's own rotation.
-    static func make(hidden: Bool = false,
-                     rotationDefaults: UserDefaults? = RotationStore.saverDefaults())
-    -> PlaygroundWindowController? {
+    static func make(hidden: Bool = false) -> PlaygroundWindowController? {
         guard let view = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 760, height: 760),
                                        extraSearchURLs: RepoLocation.searchURLs)
         else { return nil }
         return PlaygroundWindowController(metalView: view, hidden: hidden,
-                                          rotationDefaults: rotationDefaults)
+                                          rotationDefaults: RotationStore.saverDefaults())
     }
 
     private init(metalView view: LerpMetalView, hidden: Bool, rotationDefaults: UserDefaults?) {
@@ -186,8 +175,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func buildUI() {
         split.splitView.isVertical = true
         split.splitView.dividerStyle = .thin
-        // The self-test gets the built-in layout every time rather than one it
-        // saved on a previous run, so what it lays out is what it asserts on.
         split.splitView.autosaveName = hidden ? nil : Self.splitAutosave
 
         for (view, minimum) in [(editorPane(), 340.0), (renderPane(), 280.0), (inspectorPane(), 296.0)] {
@@ -388,8 +375,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         timeField.stringValue = Self.clock(metalView.time, decimals: 1)
     }
 
-    /// Moves the clock, and with it the window. Every deliberate jump goes
-    /// through here: the pager, the typed field, and `--selftest`.
+    /// Moves the clock and its visible one-minute window.
     func seek(to seconds: Double) {
         metalView.time = max(0, seconds)
         lastScrub = 0            // an explicit jump wants the thumb to follow now
@@ -534,13 +520,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func rememberCurrent() {
         guard !current.name.isEmpty else { return }
         OpeningShader.remember(currentEntry)
-    }
-
-    /// Opens a shader by name, discarding nothing — the caller is responsible
-    /// for the unsaved-changes prompt. Used by the menu-free paths (`--selftest`).
-    func openShader(named name: String) {
-        guard let shader = metalView.shaderLibrary.shader(named: name) else { return }
-        open(shader)
     }
 
     // MARK: - Compilation / hot reload
@@ -734,15 +713,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Test hook: the same "save it and make it live" path the menus take.
-    func applyMapping(_ preset: MappingPreset) { commit(preset) }
-
-    /// Test hooks: what the scrubber is actually showing, read off the real
-    /// `NSSlider` rather than recomputed.
-    var scrubberBounds: ClosedRange<Double> { timeSlider.minValue ... timeSlider.maxValue }
-    var scrubberPosition: Double { timeSlider.doubleValue }
-    var clockText: String { timeField.stringValue }
-
     /// Saves `preset`, makes it live and redraws everything that shows it.
     private func commit(_ preset: MappingPreset) {
         if let index = mappings.firstIndex(where: { $0.name == preset.name }) {
@@ -917,16 +887,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Test hook: what a CC does to a plain 0…1 float through `router`, so the
-    /// range scoping the new min/max editor writes can be asserted against the
-    /// real `resolve`, not a copy of it.
-    func scopedValue(cc: UInt7, value: UInt8, on router: MIDIRouter) -> Double? {
-        guard let routed = router.route(channel: 0, cc: cc, value: value) else { return nil }
-        let param = LerpParam(name: routed.binding.paramID, type: .float, min: 0, max: 1,
-                              defaultValue: .scalar(0), label: routed.binding.paramID)
-        return resolve(routed.update, for: param, binding: routed.binding)?.scalarValue
-    }
-
     private func mappingCommand(_ action: MIDIPanel.Action) {
         switch action {
         case .select(let name):
@@ -966,13 +926,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// gallery — the entire point of that feature — and *read* by `openingEntry`
     /// on launch, which is the one place this app looks at the rotation without
     /// being asked to.
-    ///
-    /// Injected through `make(hidden:rotationDefaults:)` (and settable
-    /// afterwards) so `--selftest` runs against a scratch ByHost domain and
-    /// cannot touch the user's screensaver settings by accident. No default
-    /// here on purpose: every initialiser supplies one, and a default would mean
-    /// opening the live domain on the way past even when the caller named
-    /// another.
     var rotationDefaults: UserDefaults?
 
     /// The toolbar's picker popover, once it has been asked for. Same reason as
@@ -995,9 +948,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// images it receives to the other; whichever run is live feeds both.
     private lazy var thumbnails = RotationThumbnails(searchURLs: RepoLocation.searchURLs)
 
-    /// The gallery window, built on first use. Deliberately does *not* load —
-    /// the caller decides when the stills start arriving, so a test can arrange
-    /// a cold cache and hook `onLoaded` before anything is in flight.
+    /// The gallery window, built on first use. Deliberately does not load until
+    /// it is shown.
     @discardableResult
     func rotationGallery() -> RotationWindowController {
         if let rotation { return rotation }
@@ -1045,10 +997,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         preparePicker().present(from: shaderButton)
     }
 
-    /// Everything `showShaderPicker` does short of putting a popover on screen.
-    /// Split out for `--selftest`, which runs with no window on the user's
-    /// display and an `NSPopover` is a real one — the content, its tiles and
-    /// their handlers are what is under test, and this builds all of it.
+    /// Prepares the picker before putting its popover on screen.
     @discardableResult
     func preparePicker() -> ShaderPicker {
         let picker = shaderPicker()
@@ -1100,7 +1049,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func saveShader(_ sender: Any?) {
-        let url = current.url ?? ShaderPaths.newShaderDirectory.appendingPathComponent(current.name + ".metal")
+        let url = ShaderPaths.saveURL(for: current)
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
@@ -1108,7 +1057,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             current = LerpShader(name: current.name, source: editor.text, isBuiltIn: false, url: url)
             updateChrome()
             compileNow(force: true)
-            refreshRotation(metalView.shaderLibrary.discover())
+            let shaders = refreshList(metalView.shaderLibrary.discover())
+            refreshRotation(shaders)
         } catch {
             presentError("Could not save \(url.lastPathComponent)", error.localizedDescription)
         }

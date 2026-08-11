@@ -286,12 +286,8 @@ public final class RotationTile: NSView {
     // MARK: Accessibility
 
     /// A tile is a checkbox that happens to be a picture — or, in the picker, a
-    /// button that happens to be a picture — and it says so. That is what makes
-    /// the gallery usable without sight of it, and it is also the handle
-    /// `make test-load` presses the sheet's tiles through, because the loadtest
-    /// links AppKit and ScreenSaver and nothing else and so cannot see this type
-    /// at all. A test that drives the UI the way an assistive client does is
-    /// testing the thing users get.
+    /// button that happens to be a picture — and exposes both actions to
+    /// assistive clients.
     public override func isAccessibilityElement() -> Bool { true }
     public override func accessibilityRole() -> NSAccessibility.Role? {
         mode == .picker ? .button : .checkBox
@@ -469,36 +465,6 @@ public final class RotationTile: NSView {
         ]).draw(in: box.offsetBy(dx: 0, dy: 15))
     }
 
-    // MARK: Test hooks
-
-    /// Drives the pointer the way AppKit does — a real enter/exit event through
-    /// the tile's own handler, so a tile whose tracking is not wired up fails.
-    public func synthesizeHover(_ inside: Bool) {
-        guard let event = NSEvent.enterExitEvent(
-            with: inside ? .mouseEntered : .mouseExited,
-            location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: window?.windowNumber ?? 0, context: nil,
-            eventNumber: 0, trackingNumber: 0, userData: nil) else { return }
-        if inside { mouseEntered(with: event) } else { mouseExited(with: event) }
-    }
-
-    /// A real click, at a real point, with a real click count — so the badge/body
-    /// split and the single/double split are both exercised rather than assumed.
-    @discardableResult
-    public func synthesizeClick(at point: NSPoint, clickCount: Int) -> Bool {
-        guard let event = NSEvent.mouseEvent(
-            with: .leftMouseDown, location: convert(point, to: nil), modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: window?.windowNumber ?? 0, context: nil,
-            eventNumber: 0, clickCount: clickCount, pressure: 1) else { return false }
-        mouseDown(with: event)
-        return true
-    }
-
-    /// The middle of the picture — a point that is the tile's body in either
-    /// mode, never the badge.
-    public var bodyPoint: NSPoint { NSPoint(x: pictureFrame.midX, y: pictureFrame.midY) }
-    public var badgePoint: NSPoint { NSPoint(x: badgeRect.midX, y: badgeRect.midY) }
 }
 
 // MARK: - The gallery
@@ -710,8 +676,6 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
                 canvas.addSubview(box)
                 headers[shader.name] = box
 
-                // Tagged so `make test-load` can check the n/m beside a heading
-                // says the same thing the heading's own tri-state does.
                 let count = Chrome.label("", size: 10.5)
                 count.identifier = NSUserInterfaceItemIdentifier("count:" + shader.name)
                 canvas.addSubview(count)
@@ -1096,83 +1060,9 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         canvas.needsLayout = true
     }
 
-    // MARK: Test hooks
-
-    /// The tiles, in rotation order — what `--selftest` counts against
-    /// `rotationEntries()`.
-    public var tileEntries: [LerpRotationEntry] { entries.filter { tiles[$0] != nil } }
-    public func tile(for entry: LerpRotationEntry) -> RotationTile? { tiles[entry] }
-    public func header(for shader: String) -> NSButton? { headers[shader] }
-    public var noteText: String { note.stringValue }
-    public var visibleTileCount: Int { tiles.values.filter { !$0.isHidden }.count }
-    public var filterText: String { search.stringValue }
-
-    /// `make test-load` links AppKit and the ScreenSaver framework and nothing
-    /// else, so it cannot name a single type in this file. These two are
-    /// reachable by KVC from a process holding only an `NSView`, which is how it
-    /// checks that the sheet's stills actually arrived.
-    @objc public var stillsShown: Int { tiles.values.filter { $0.image != nil }.count }
-    @objc public var stillsMissing: Int { tiles.values.filter { $0.image == nil }.count }
-
-    /// Clicks a tile the way a mouse would — through the tile's own handler, so
-    /// a tile that is not wired up fails the test.
-    public func click(_ entry: LerpRotationEntry) {
-        guard let tile = tiles[entry] else { return }
-        tile.synthesizeClick(at: tile.bodyPoint, clickCount: 1)
-    }
-
-    /// The second click of a double-click on the picture: what "go to this look"
-    /// is in the gallery.
-    public func doubleClick(_ entry: LerpRotationEntry) {
-        guard let tile = tiles[entry] else { return }
-        tile.synthesizeClick(at: tile.bodyPoint, clickCount: 1)
-        tile.synthesizeClick(at: tile.bodyPoint, clickCount: 2)
-    }
-
-    /// A click on the corner badge: what "in or out of the rotation" is in the
-    /// picker.
-    public func clickBadge(_ entry: LerpRotationEntry) {
-        guard let tile = tiles[entry] else { return }
-        tile.synthesizeClick(at: tile.badgePoint, clickCount: 1)
-    }
-
-    public func hoverEnter(_ entry: LerpRotationEntry) { tiles[entry]?.synthesizeHover(true) }
-    public func hoverExit(_ entry: LerpRotationEntry) { tiles[entry]?.synthesizeHover(false) }
-
-    /// Scrolls the grid the way a scroller does — through the clip view, so the
-    /// bounds notification the hover handling listens for is the real one.
-    /// False when the grid had nowhere to go, which a test has to know about
-    /// rather than read as a pass.
-    @discardableResult
-    public func scrollBy(_ delta: CGFloat) -> Bool {
-        let clip = scroll.contentView
-        let before = clip.bounds.origin
-        // Clamped here rather than left to the clip view: `scroll(to:)` takes a
-        // point at its word, and a large negative one leaves the grid off the
-        // top of its own scroller.
-        let limit = max(0, canvas.frame.height - clip.bounds.height)
-        clip.scroll(to: NSPoint(x: before.x, y: min(max(0, before.y + delta), limit)))
-        scroll.reflectScrolledClipView(clip)
-        return clip.bounds.origin != before
-    }
-
-    /// Fires a shader heading through its own target/action.
-    public func clickHeader(_ shader: String) {
-        guard let box = headers[shader] else { return }
-        _ = box.target?.perform(box.action, with: box)
-    }
-
+    /// Clears the popover's transient search when it closes.
     public func setFilter(_ text: String) {
         search.stringValue = text
         searchChanged()
     }
-
-    /// ⏎ in the filter field, through the very delegate callback AppKit calls.
-    @discardableResult
-    public func pressReturnInSearch() -> Bool {
-        control(search, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:)))
-    }
-
-    public func clickSelectAll() { selectAllLooks() }
-    public func clickDeselectAll() { deselectAllLooks() }
 }

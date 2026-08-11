@@ -86,8 +86,27 @@ MIDI_SRC   := $(MIDI_PKG)/Package.swift $(wildcard $(MIDI_PKG)/Sources/MIDIDeps/
 # CoreMIDI.framework comes in through Swift autolink metadata; no -framework needed.
 MIDI_FLAGS := -I $(MIDI_BIN)/Modules -L $(MIDI_BIN) -lMIDIDeps
 
+# Public installer. The PKG supplies Installer's optional Playground checkbox;
+# the DMG is the downloadable release container. `release` signs and notarizes
+# both so the nested installer also works when its ticket must be checked offline.
+RELEASE_VERSION            ?= 0.1.0
+RELEASE_BUILD              ?= $(shell git rev-list --count HEAD)
+APP_SIGN_IDENTITY          ?= -
+INSTALLER_SIGN_IDENTITY    ?=
+NOTARY_PROFILE             ?=
+RELEASE_DIR                 = $(BUILD)/release
+RELEASE_PACKAGE             = $(RELEASE_DIR)/LerpingAtHome-$(RELEASE_VERSION)-arm64.pkg
+RELEASE_DMG                 = $(RELEASE_DIR)/LerpingAtHome-$(RELEASE_VERSION)-arm64.dmg
+RELEASE_DMG_ROOT            = $(RELEASE_DIR)/dmg-root
+RELEASE_SAVER_ROOT          = $(RELEASE_DIR)/saver-root
+RELEASE_PLAYGROUND_ROOT     = $(RELEASE_DIR)/playground-root
+RELEASE_SAVER               = $(RELEASE_SAVER_ROOT)/Library/Screen Savers/Lerping@Home.saver
+RELEASE_PLAYGROUND          = $(RELEASE_PLAYGROUND_ROOT)/Applications/LerpPlayground.app
+RELEASE_COMPONENTS          = $(RELEASE_DIR)/components
+RELEASE_RESOURCES           = $(RELEASE_DIR)/resources
+
 .PHONY: all preview playground playground-build saver saver-build midi-deps \
-        install install-example install-playground uninstall-playground clean
+        install install-example install-playground uninstall-playground package dmg release clean
 
 # Normal targets deploy. The explicitly named *-build targets are the only
 # compile-only escape hatch, so "it built" cannot be mistaken for "it runs".
@@ -109,7 +128,7 @@ playground: install-playground
 
 playground-build: $(PLAYGROUND_BIN)
 
-$(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/Playground/Info.plist
+$(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/Playground/Info.plist LICENSE NOTICE.txt
 	@$(LSREGISTER) -u $(LEGACY_PLAYGROUND_APP) 2>/dev/null || true
 	rm -rf $(LEGACY_PLAYGROUND_APP)
 	@mkdir -p $(PLAYGROUND_APP)/Contents/MacOS $(PLAYGROUND_APP)/Contents/Resources
@@ -120,6 +139,7 @@ $(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/
 	plutil -replace CFBundleName -string LerpPlaygroundStaging $(PLAYGROUND_APP)/Contents/Info.plist
 	plutil -replace CFBundleVersion -string $(BUNDLE_VERSION) $(PLAYGROUND_APP)/Contents/Info.plist
 	cp $(PLAYGROUND_ICNS) $(PLAYGROUND_APP)/Contents/Resources/LerpPlayground.icns
+	cp LICENSE NOTICE.txt $(PLAYGROUND_APP)/Contents/Resources/
 	codesign --force -s - $(PLAYGROUND_APP)
 
 # The app icon, rendered from the same mesh-gradient shader that makes the
@@ -145,7 +165,7 @@ $(PLAYGROUND_ICNS): $(BUILD)/LerpPreview Sources/Shaders/mesh-gradient.metal
 # when a staging bundle is explicitly wanted.
 saver: install
 
-saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/Info.plist
+saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/Info.plist LICENSE NOTICE.txt
 	@mkdir -p $(SAVER_DIR)/Contents/MacOS $(SAVER_DIR)/Contents/Resources/Shaders
 	swiftc -O -whole-module-optimization -parse-as-library -emit-object \
 		-target $(TARGET) -module-name LerpSaver \
@@ -158,6 +178,7 @@ saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/
 	cp Sources/Saver/Info.plist $(SAVER_DIR)/Contents/Info.plist
 	plutil -replace CFBundleVersion -string $(BUNDLE_VERSION) $(SAVER_DIR)/Contents/Info.plist
 	cp $(SHADERS) $(SAVER_DIR)/Contents/Resources/Shaders/
+	cp LICENSE NOTICE.txt $(SAVER_DIR)/Contents/Resources/
 	$(BUILD)/LerpPreview --snapshot $(BUILD)/thumb --size 180x116 --time 4 \
 		--shader mesh-gradient >/dev/null
 	cp $(BUILD)/thumb/mesh-gradient.png $(SAVER_DIR)/Contents/Resources/thumbnail@2x.png
@@ -174,10 +195,9 @@ install: saver-build
 	@pkill -9 -x legacyScreenSaver 2>/dev/null || true
 	rm -rf "$(INSTALLED)"
 	cp -R $(SAVER_DIR) "$(INSTALLED)"
-	# Bake custom shaders into the bundle. The screensaver host runs sandboxed
-	# and cannot read ~/Library/Application Support at runtime, so the bundle
-	# is the only location it can reliably load from. Re-run `make saver`
-	# after adding or editing a custom shader.
+	# Bake custom shaders into the local bundle too. The host can read the
+	# Application Support folder, but bundling gives each custom look a prepared
+	# gallery still and makes this installed copy self-contained.
 	@sh -c 'ls "$(CUSTOM_DIR)"/*.metal >/dev/null 2>&1 && cp "$(CUSTOM_DIR)"/*.metal "$(INSTALLED)/Contents/Resources/Shaders/" && echo "Baked in: $$(ls "$(CUSTOM_DIR)" | tr "\\n" " ")" || true'
 	# …and now the Options… gallery's stills, over the installed bundle rather
 	# than over build/, so a custom shader that was just baked in gets a tile
@@ -194,7 +214,7 @@ install: saver-build
 	@echo "Installed. Select 'Lerping@Home' in System Settings > Screen Saver."
 	@echo "Custom shaders: put .metal files in"
 	@echo "  $(CUSTOM_DIR)"
-	@echo "then re-run 'make saver' to bake them into the saver."
+	@echo "The saver reads that folder. Re-run 'make saver' to bake in gallery stills."
 
 # Puts the playground where Spotlight will offer it. A copy, not a symlink:
 # Spotlight resolves symlinks and indexes the app at its real path, so a link in
@@ -259,6 +279,132 @@ midi-deps: $(MIDI_LIB)
 
 $(MIDI_LIB): $(MIDI_SRC)
 	swift build -c release --package-path $(MIDI_PKG)
+
+# Builds the native Installer package without touching /Applications or
+# /Library. The screen saver is required; the standalone Playground is selected
+# by default and can be unchecked on Installer's Customize screen.
+package: saver-build playground-build Packaging/Distribution.xml Packaging/InstallerReadMe.txt \
+         Packaging/saver-scripts/preinstall Packaging/saver-scripts/postinstall \
+         Packaging/playground-scripts/preinstall LICENSE NOTICE.txt
+	@printf '%s' '$(RELEASE_VERSION)' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$$' || { \
+		echo "package: RELEASE_VERSION must look like 1.2.3"; exit 1; }
+	rm -rf "$(RELEASE_DIR)"
+	mkdir -p "$(RELEASE_SAVER_ROOT)/Library/Screen Savers" \
+		"$(RELEASE_PLAYGROUND_ROOT)/Applications" \
+		"$(RELEASE_COMPONENTS)" "$(RELEASE_RESOURCES)"
+	cp -R "$(SAVER_DIR)" "$(RELEASE_SAVER)"
+	cp -R "$(PLAYGROUND_APP)" "$(RELEASE_PLAYGROUND)"
+	plutil -replace CFBundleShortVersionString -string "$(RELEASE_VERSION)" \
+		"$(RELEASE_SAVER)/Contents/Info.plist"
+	plutil -replace CFBundleVersion -string "$(RELEASE_BUILD)" \
+		"$(RELEASE_SAVER)/Contents/Info.plist"
+	plutil -replace CFBundleIdentifier -string com.hergenroeder.lerping.playground \
+		"$(RELEASE_PLAYGROUND)/Contents/Info.plist"
+	plutil -replace CFBundleName -string LerpPlayground \
+		"$(RELEASE_PLAYGROUND)/Contents/Info.plist"
+	plutil -replace CFBundleShortVersionString -string "$(RELEASE_VERSION)" \
+		"$(RELEASE_PLAYGROUND)/Contents/Info.plist"
+	plutil -replace CFBundleVersion -string "$(RELEASE_BUILD)" \
+		"$(RELEASE_PLAYGROUND)/Contents/Info.plist"
+	@plutil -remove LerpRepoRoot "$(RELEASE_PLAYGROUND)/Contents/Info.plist" 2>/dev/null || true
+	plutil -replace LerpStandalone -bool YES "$(RELEASE_PLAYGROUND)/Contents/Info.plist" 2>/dev/null || \
+		plutil -insert LerpStandalone -bool YES "$(RELEASE_PLAYGROUND)/Contents/Info.plist"
+	mkdir -p "$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders" \
+		"$(RELEASE_PLAYGROUND)/Contents/Resources/Thumbnails"
+	cp $(SHADERS) "$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders/"
+	cp "$(RELEASE_SAVER)/Contents/Resources/Thumbnails/"*.png \
+		"$(RELEASE_PLAYGROUND)/Contents/Resources/Thumbnails/"
+	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_SAVER)/Contents/Resources/"
+	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_PLAYGROUND)/Contents/Resources/"
+	@if [ "$(APP_SIGN_IDENTITY)" = "-" ]; then \
+		codesign --force -s - "$(RELEASE_SAVER)"; \
+		codesign --force -s - "$(RELEASE_PLAYGROUND)"; \
+	else \
+		codesign --force --options runtime --timestamp -s "$(APP_SIGN_IDENTITY)" "$(RELEASE_SAVER)"; \
+		codesign --force --options runtime --timestamp -s "$(APP_SIGN_IDENTITY)" "$(RELEASE_PLAYGROUND)"; \
+	fi
+	codesign --verify --deep --strict "$(RELEASE_SAVER)"
+	codesign --verify --deep --strict "$(RELEASE_PLAYGROUND)"
+	@src_count="$$(find "$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders" -name '*.metal' | wc -l | tr -d ' ')"; \
+		test "$$src_count" = "$$(find Sources/Shaders -name '*.metal' | wc -l | tr -d ' ')"
+	"$(RELEASE_PLAYGROUND)/Contents/MacOS/LerpPlayground" --shaders
+	pkgbuild --analyze --root "$(RELEASE_SAVER_ROOT)" "$(RELEASE_DIR)/saver-components.plist"
+	plutil -replace 0.BundleIsRelocatable -bool NO "$(RELEASE_DIR)/saver-components.plist"
+	pkgbuild --root "$(RELEASE_SAVER_ROOT)" \
+		--component-plist "$(RELEASE_DIR)/saver-components.plist" \
+		--scripts Packaging/saver-scripts \
+		--identifier com.hergenroeder.lerping.installer.saver \
+		--version "$(RELEASE_VERSION)" --install-location / \
+		"$(RELEASE_COMPONENTS)/LerpingAtHomeSaver.pkg"
+	pkgbuild --analyze --root "$(RELEASE_PLAYGROUND_ROOT)" "$(RELEASE_DIR)/playground-components.plist"
+	plutil -replace 0.BundleIsRelocatable -bool NO "$(RELEASE_DIR)/playground-components.plist"
+	pkgbuild --root "$(RELEASE_PLAYGROUND_ROOT)" \
+		--component-plist "$(RELEASE_DIR)/playground-components.plist" \
+		--scripts Packaging/playground-scripts \
+		--identifier com.hergenroeder.lerping.installer.playground \
+		--version "$(RELEASE_VERSION)" --install-location / \
+		"$(RELEASE_COMPONENTS)/LerpPlayground.pkg"
+	cp LICENSE Packaging/InstallerReadMe.txt "$(RELEASE_RESOURCES)/"
+	@if [ -n "$(INSTALLER_SIGN_IDENTITY)" ]; then \
+		productbuild --distribution Packaging/Distribution.xml \
+			--package-path "$(RELEASE_COMPONENTS)" --resources "$(RELEASE_RESOURCES)" \
+			--identifier com.hergenroeder.lerping.installer --version "$(RELEASE_VERSION)" \
+			--sign "$(INSTALLER_SIGN_IDENTITY)" "$(RELEASE_PACKAGE)"; \
+	else \
+		productbuild --distribution Packaging/Distribution.xml \
+			--package-path "$(RELEASE_COMPONENTS)" --resources "$(RELEASE_RESOURCES)" \
+			--identifier com.hergenroeder.lerping.installer --version "$(RELEASE_VERSION)" \
+			"$(RELEASE_PACKAGE)"; \
+	fi
+	installer -showChoicesXML -pkg "$(RELEASE_PACKAGE)" -target / > "$(RELEASE_DIR)/choices.plist"
+	@test "$$(plutil -extract 0.childItems.0.choiceIdentifier raw "$(RELEASE_DIR)/choices.plist")" = screensaver
+	@test "$$(plutil -extract 0.childItems.0.choiceIsEnabled raw "$(RELEASE_DIR)/choices.plist")" = false
+	@test "$$(plutil -extract 0.childItems.1.choiceIdentifier raw "$(RELEASE_DIR)/choices.plist")" = playground
+	@test "$$(plutil -extract 0.childItems.1.choiceIsSelected raw "$(RELEASE_DIR)/choices.plist")" = 1
+	@test "$$(plutil -extract 0.childItems.1.choiceIsEnabled raw "$(RELEASE_DIR)/choices.plist")" = true
+	@echo "Built $(RELEASE_PACKAGE)"
+
+# The release download is a DMG; the PKG inside it retains Installer's Customize
+# screen, where the Playground can be unchecked.
+dmg: package
+	rm -rf "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
+	mkdir -p "$(RELEASE_DMG_ROOT)"
+	cp "$(RELEASE_PACKAGE)" "$(RELEASE_DMG_ROOT)/Install Lerping@Home.pkg"
+	hdiutil create -quiet -ov -format UDZO -volname "Lerping@Home $(RELEASE_VERSION)" \
+		-srcfolder "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
+	hdiutil verify "$(RELEASE_DMG)"
+	@echo "Built $(RELEASE_DMG)"
+
+# Requires credentials created once with:
+#   xcrun notarytool store-credentials PROFILE --apple-id ... --team-id ...
+#                                                --password ...
+release:
+	@test "$(APP_SIGN_IDENTITY)" != "-" || { echo "release: set APP_SIGN_IDENTITY to a Developer ID Application certificate"; exit 1; }
+	@test -n "$(INSTALLER_SIGN_IDENTITY)" || { echo "release: set INSTALLER_SIGN_IDENTITY to a Developer ID Installer certificate"; exit 1; }
+	@test -n "$(NOTARY_PROFILE)" || { echo "release: set NOTARY_PROFILE to a notarytool keychain profile"; exit 1; }
+	$(MAKE) package RELEASE_VERSION="$(RELEASE_VERSION)" RELEASE_BUILD="$(RELEASE_BUILD)" \
+		APP_SIGN_IDENTITY="$(APP_SIGN_IDENTITY)" \
+		INSTALLER_SIGN_IDENTITY="$(INSTALLER_SIGN_IDENTITY)"
+	xcrun notarytool submit "$(RELEASE_PACKAGE)" --keychain-profile "$(NOTARY_PROFILE)" --wait
+	xcrun stapler staple "$(RELEASE_PACKAGE)"
+	xcrun stapler validate "$(RELEASE_PACKAGE)"
+	pkgutil --check-signature "$(RELEASE_PACKAGE)"
+	spctl --assess --verbose=2 --type install "$(RELEASE_PACKAGE)"
+	rm -rf "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
+	mkdir -p "$(RELEASE_DMG_ROOT)"
+	cp "$(RELEASE_PACKAGE)" "$(RELEASE_DMG_ROOT)/Install Lerping@Home.pkg"
+	hdiutil create -quiet -ov -format UDZO -volname "Lerping@Home $(RELEASE_VERSION)" \
+		-srcfolder "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
+	codesign --force --timestamp --sign "$(APP_SIGN_IDENTITY)" "$(RELEASE_DMG)"
+	xcrun notarytool submit "$(RELEASE_DMG)" --keychain-profile "$(NOTARY_PROFILE)" --wait
+	xcrun stapler staple "$(RELEASE_DMG)"
+	xcrun stapler validate "$(RELEASE_DMG)"
+	codesign --verify --verbose=2 "$(RELEASE_DMG)"
+	spctl --assess --verbose=2 --type open --context context:primary-signature "$(RELEASE_DMG)"
+	hdiutil verify "$(RELEASE_DMG)"
+	shasum -a 256 "$(RELEASE_DMG)" > "$(RELEASE_DMG).sha256"
+	@echo "Release image: $(RELEASE_DMG)"
+	@echo "Checksum:      $(RELEASE_DMG).sha256"
 
 install-example:
 	mkdir -p "$(CUSTOM_DIR)"

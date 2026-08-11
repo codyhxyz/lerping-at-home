@@ -428,47 +428,10 @@ final class ParameterPanel: NSView {
         onMIDICommand?(box.name, box.component, box.command)
     }
 
-    // MARK: - Test hooks
-
-    /// The live control for a parameter, so `--selftest` can move it exactly the
-    /// way a mouse would rather than calling through a side door.
-    func control(named name: String) -> NSControl? { rows[name]?.control }
-    func fieldText(named name: String) -> String? { rows[name]?.field?.stringValue }
-    func bindingLabel(named name: String) -> String? { rows[name]?.midi?.itemTitle(at: 0) }
-    var rowNames: [String] { parameters.map(\.name) }
-    var presetTitles: [String] { presetPopUp.itemTitles }
-    var isEmptyStateVisible: Bool { empty.superview != nil }
-
-    /// Drives a control the way AppKit does on a real interaction.
-    func act(on control: NSControl) {
-        control.sendAction(control.action, to: control.target)
-    }
-
+    /// Selects a preset after Save Look has written and re-read it.
     func choosePreset(_ title: String) {
         presetPopUp.selectItem(withTitle: title)
         presetChanged()
-    }
-
-    /// Titles of the axis submenu for a colour row, so `--selftest` can assert
-    /// the component sub-choice is offered and says what it is doing.
-    func midiMenuTitles(named name: String, component: ColorComponent? = nil) -> [String] {
-        guard let row = rows[name], let menu = row.midi?.menu else { return [] }
-        guard let component else { return menu.items.map(\.title) }
-        return menu.items.first { $0.title.hasPrefix(component.label) }?
-            .submenu?.items.map(\.title) ?? []
-    }
-
-    /// Fires the menu item AppKit would have fired, so the test drives the same
-    /// path a click does.
-    func chooseMIDIMenuItem(named name: String, component: ColorComponent?, title: String) -> Bool {
-        guard let row = rows[name], let menu = row.midi?.menu else { return false }
-        let container = component.flatMap { c in
-            menu.items.first { $0.title.hasPrefix(c.label) }?.submenu
-        } ?? menu
-        guard let item = container.items.first(where: { $0.title == title }), item.isEnabled,
-              let action = item.action else { return false }
-        _ = perform(action, with: item)
-        return true
     }
 }
 

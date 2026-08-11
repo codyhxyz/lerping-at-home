@@ -95,15 +95,25 @@ enum PlaygroundMain {
         exit(running ? 1 : 0)
     }
 
-    /// `--shaders`: which checkout this copy resolved, how, and what is in it.
-    ///
-    /// `make install-playground` runs it on the copy it just installed, because
-    /// "the app opened" is not the claim worth checking — "the app found the 30
-    /// shaders in your repo" is. It is also the first thing to run when an
-    /// installed copy comes up wrong, and it exits non-zero when it does.
+    /// `--shaders`: where this copy gets its shaders and what it found there.
+    /// `make install-playground` uses it to verify a development install, and
+    /// `make package` uses it to verify the standalone release app.
     private static func reportShaders() -> Never {
         let outcome = RepoLocation.settled()
-        guard case let .found(shaders, _, origin) = outcome else {
+        let searchURLs: [URL]
+        let path: String
+        let origin: String
+        switch outcome {
+        case let .found(shaders, _, foundOrigin):
+            searchURLs = [shaders]
+            path = shaders.path
+            origin = foundOrigin.tag
+        case .standalone:
+            searchURLs = []
+            path = Bundle.main.resourceURL?.appendingPathComponent("Shaders").path
+                ?? Bundle.main.bundleURL.path
+            origin = "bundled shaders plus personal overrides"
+        case .missing, .unset:
             let problem = RepoLocation.problem(outcome)!
             FileHandle.standardError.write(Data("\(problem.title)\n\(problem.detail)\n".utf8))
             exit(1)
@@ -112,9 +122,9 @@ enum PlaygroundMain {
             FileHandle.standardError.write(Data("no Metal device\n".utf8))
             exit(1)
         }
-        let names = ShaderLibrary(device: device, extraSearchURLs: [shaders]).discover().map(\.name)
-        print("shaders: \(shaders.path)")
-        print("via:     \(origin.tag)")
+        let names = ShaderLibrary(device: device, extraSearchURLs: searchURLs).discover().map(\.name)
+        print("shaders: \(path)")
+        print("via:     \(origin)")
         print("count:   \(names.count)")
         print(names.joined(separator: " "))
         exit(names.isEmpty ? 1 : 0)
@@ -151,10 +161,6 @@ enum PlaygroundMain {
     private nonisolated(unsafe) static var appDelegate: NSApplicationDelegate?
 
     /// Starts AppKit with the playground's appearance and hands over to `delegate`.
-    ///
-    /// The app is `.regular` — Dock tile, menu bar, ⌘-Tab. `--selftest` passes
-    /// `.accessory` so a test run has none of those and cannot take the
-    /// foreground away from whatever the user is doing.
     static func boot(_ delegate: NSApplicationDelegate,
                      policy: NSApplication.ActivationPolicy = .regular) -> Never {
         appDelegate = delegate
@@ -173,10 +179,8 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build()
 
-        // Before any window: a copy whose checkout has moved says so and offers
-        // the picker, rather than opening onto an empty shader list. Quitting is
-        // the user's other option, and it is a real one — there is nothing this
-        // app can do without a checkout.
+        // Before any window: a development copy whose checkout has moved says
+        // so and offers the picker. A packaged copy uses its bundled shaders.
         guard ShaderFolderPrompt.settle() else { exit(0) }
 
         guard let controller = PlaygroundWindowController.make() else {

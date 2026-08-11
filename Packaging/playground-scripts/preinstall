@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if /usr/bin/pgrep -x LerpPlayground >/dev/null 2>&1; then
+    echo "LerpPlayground is running. Close it, saving or discarding any edits, then run the installer again." >&2
+    exit 1
+fi
+
+exit 0

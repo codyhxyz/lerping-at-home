@@ -88,7 +88,7 @@ final class ShaderEditorView: NSScrollView, NSTextViewDelegate {
     }
 
     /// Replaces the buffer and reports it as an edit — the same path a keystroke
-    /// takes. Used by `--selftest` to exercise hot reload.
+    /// takes. Save Look uses it so the inserted preset remains undoable.
     func replaceTextAsEdit(_ value: String) {
         textView.string = value
         onEdit?()

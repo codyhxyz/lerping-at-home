@@ -81,9 +81,7 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
 
     // MARK: - Content
 
-    /// Fills the grid in and starts the stills. Separate from `present` so the
-    /// content can be built, driven and looked at without a popover on anyone's
-    /// screen — which is exactly what `--selftest` does.
+    /// Fills the grid and starts its stills before presentation.
     func prepare(shaders: [LerpShader], enabled: Set<LerpRotationEntry>,
                  current: LerpRotationEntry?) {
         gallery.show(shaders: shaders, enabled: enabled)
@@ -111,14 +109,6 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
     // MARK: - Presentation
 
     var isShown: Bool { popover.isShown }
-
-    /// Test hook: what the popover would put on screen, without putting it
-    /// there. `--selftest` cannot present one — an `NSPopover` is a real window
-    /// and that run is deliberately invisible — so this is how a popover wired
-    /// to the wrong view, or left modal, is still caught.
-    var popoverWiring: (content: NSView?, behavior: NSPopover.Behavior, size: NSSize) {
-        (popover.contentViewController?.view, popover.behavior, popover.contentSize)
-    }
 
     func present(from view: NSView) {
         guard !popover.isShown else { return close() }

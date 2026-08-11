@@ -45,15 +45,13 @@ public final class RotationPreviewPlayer {
     /// The still's recipe. Only `time` and `seed` are read; they are the two
     /// numbers that decide whether the first live frame matches the picture it
     /// replaces.
-    public var recipe: RotationThumbnails.Recipe
+    public let recipe: RotationThumbnails.Recipe
 
     /// How long the pointer has to rest on a tile before it starts playing.
-    /// Settable so `--selftest` can drive the same code path without waiting.
-    public var delay: TimeInterval = 0.11
+    private let delay: TimeInterval = 0.11
 
-    /// A thumbnail-sized preview does not need 60 Hz, and a gallery is not what
-    /// anyone opened this app to watch.
-    public var framesPerSecond = 30
+    /// A thumbnail-sized preview does not need 60 Hz.
+    private let framesPerSecond = 30
 
     private var view: LerpMetalView?
     private var madeView = false
@@ -64,15 +62,6 @@ public final class RotationPreviewPlayer {
     public init(recipe: RotationThumbnails.Recipe = RotationThumbnails.Recipe()) {
         self.recipe = recipe
     }
-
-    // MARK: - What is playing
-
-    public var isPlaying: Bool { current != nil }
-    public var playingEntry: LerpRotationEntry? { current?.entry }
-    public var playingTile: RotationTile? { current }
-    /// The live view, once one has been made. nil before the first hover, and on
-    /// a machine with no Metal device.
-    public var liveView: LerpMetalView? { view }
 
     // MARK: - Driving it
 

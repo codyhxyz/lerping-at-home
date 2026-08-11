@@ -48,10 +48,10 @@ public struct LerpShader: Sendable {
     /// declares.
     ///
     /// The single answer to that question. It used to be transcribed five
-    /// times — the live view, the hover preview, the thumbnail baker, the
-    /// wallpaper handoff and the self-test each spelled out "start from the
-    /// defaults, then apply the preset" — and they did not all spell it the
-    /// same way: the hover preview set the preset's values one at a time
+    /// times — the live view, the hover preview, the thumbnail baker and the
+    /// wallpaper handoff each spelled out "start from the defaults, then apply
+    /// the preset." They did not all spell it the same way: the hover preview
+    /// set the preset's values one at a time
     /// without the reset in front of them, which is only equivalent because of
     /// what the line above it happened to have just done. A still and the live
     /// frame it is supposed to continue are the *same* function of the same

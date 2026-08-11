@@ -36,6 +36,6 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Lerping@Home. GPL-3.0-or-later — see LICENSE.</string>
+	<string>Lerping@Home. AGPL-3.0-or-later — see LICENSE.</string>
 </dict>
 </plist>

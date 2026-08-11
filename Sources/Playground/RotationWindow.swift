@@ -40,12 +40,6 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     /// the run in flight, so whichever run is live has to feed both.
     var onImage: ((LerpRotationEntry, NSImage) -> Void)?
 
-    /// Timings for the report and for `--selftest`.
-    private(set) var lastLoadSeconds: Double = 0
-    var thumbnailStats: (memory: Int, disk: Int, rendered: Int, failed: [String]) {
-        (thumbnails.memoryHits, thumbnails.diskHits, thumbnails.rendered, thumbnails.failed)
-    }
-
     /// What the screensaver's saved rotation comes to for these looks, and the
     /// state it was read from — the one spelling of it the playground uses, so
     /// the gallery window and the toolbar popover cannot come up disagreeing
@@ -65,8 +59,8 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
                 state)
     }
 
-    /// `defaults` is injected so `--selftest` can point the whole thing at a
-    /// throwaway ByHost domain instead of the user's screensaver settings.
+    /// `defaults` is injected because this window edits the screensaver's
+    /// ByHost domain rather than the playground's own preferences.
     init(searchURLs: [URL], defaults: UserDefaults?, hidden: Bool,
          thumbnails: RotationThumbnails? = nil) {
         self.defaults = defaults
@@ -80,9 +74,8 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
         window.contentView = gallery
         if hidden {
-            // Same trick as the playground's own self-test window: real, laid
-            // out and drawing, but not on the user's screen. See
-            // `PlaygroundWindowController.hide`.
+            // Capture mode builds real, laid-out views without showing them.
+            // See `PlaygroundWindowController.hide`.
             window.alphaValue = 0
             window.ignoresMouseEvents = true
             window.isExcludedFromWindowsMenu = true
@@ -118,32 +111,11 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
         base = saved.base
         gallery.show(shaders: shaders, enabled: saved.looks)
 
-        let started = CFAbsoluteTimeGetCurrent()
         gallery.populate(
             using: thumbnails,
             jobs: RotationThumbnails.jobs(for: shaders),
-            onImage: { [weak self] entry, image in self?.onImage?(entry, image) },
-            onFinished: { [weak self] in
-                self?.lastLoadSeconds = CFAbsoluteTimeGetCurrent() - started
-                self?.onLoaded?()
-            })
+            onImage: { [weak self] entry, image in self?.onImage?(entry, image) })
     }
-
-    /// Fired when every still for the current run has landed. `--selftest` waits
-    /// on it; nothing else does.
-    var onLoaded: (() -> Void)?
-
-    /// Rebuilds every still whether or not anything changed — the Regenerate
-    /// button, and what `--selftest` uses to get a genuinely cold run.
-    func reload(shaders: [LerpShader]) { load(shaders: shaders, force: true) }
-
-    /// Throws the whole cache away, on disk and in memory.
-    func evictThumbnails() {
-        thumbnails.evictAll()
-        gallery.clearImages()
-    }
-
-    var cacheDirectory: URL { thumbnails.cacheDirectory }
 
     /// Someone else changed the rotation — the toolbar popover shows the same
     /// looks. Straight into the tiles, without going back out through

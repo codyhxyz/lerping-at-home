@@ -20,6 +20,8 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Lerping@Home. AGPL-3.0-or-later — see LICENSE.</string>
 	<key>NSPrincipalClass</key>
 	<string>LerpSaverView</string>
 </dict>

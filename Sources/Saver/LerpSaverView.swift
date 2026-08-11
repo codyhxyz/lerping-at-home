@@ -34,17 +34,9 @@ import ScreenSaver
 @objc(LerpSaverView)
 public final class LerpSaverView: ScreenSaverView {
 
-    /// The ByHost preferences module the saver reads and the Options… sheet
-    /// writes.
-    ///
-    /// Overridable by environment variable *only* so a test host can be pointed
-    /// at a throwaway domain of the same shape — `make test-load` presses OK on
-    /// the real sheet, and pressing OK on a real sheet against the user's live
-    /// rotation is not a test, it is a bug waiting for a badly-timed kill. The
-    /// screensaver itself is never launched with this set, so the default is
-    /// what every real host uses.
+    /// The ByHost preferences module the saver reads and the Options… sheet writes.
     static let defaultsModule = LerpDefaults.module
-    static let log = Logger(subsystem: LerpDefaults.productionModule, category: "saver")
+    static let log = Logger(subsystem: LerpDefaults.module, category: "saver")
 
     private var metalView: LerpMetalView?
     private var effectiveIsPreview = false
@@ -101,7 +93,7 @@ public final class LerpSaverView: ScreenSaverView {
     /// legacyScreenSaver, of the real home anywhere else. See
     /// `RotationThumbnails.writableCacheDirectory`.
     private static let thumbnailCacheName =
-        LerpDefaults.productionModule + "/RotationThumbnails"
+        LerpDefaults.module + "/RotationThumbnails"
 
     /// A popup's menu, in menu order: the titles it shows and the value each one
     /// stores. Titles, value → index and index → value all come out of the one
@@ -414,9 +406,8 @@ public final class LerpSaverView: ScreenSaverView {
         Self.log.notice("[\(self.instanceID)] resumed — \(reason, privacy: .public) (was parked: \(parked, privacy: .public))")
     }
 
-    /// Seconds since the last input event of any kind in this session.
-    /// Verified to work, and to advance, inside legacyScreenSaver's sandbox —
-    /// see the `hid-idle-seconds` check in `make sandbox-probe`.
+    /// Seconds since the last input event of any kind in this session. Verified
+    /// to work and advance inside legacyScreenSaver's sandbox.
     private static func secondsSinceLastInput() -> TimeInterval {
         CGEventSource.secondsSinceLastEventType(.combinedSessionState,
                                                 eventType: CGEventType(rawValue: ~0)!)
@@ -435,8 +426,7 @@ public final class LerpSaverView: ScreenSaverView {
     ///
     /// The key really does carry the extra S; `kCGSessionOnConsoleKey` is a
     /// CFSTR macro for `"kCGSSessionOnConsoleKey"` and macros do not reach
-    /// Swift. Confirmed against a live dictionary, and by the
-    /// `session-dictionary` check in `make sandbox-probe`.
+    /// Swift. Confirmed against a live dictionary.
     private static func sessionIsOnConsole() -> Bool {
         guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
               let onConsole = session["kCGSSessionOnConsoleKey"] as? NSNumber
@@ -809,42 +799,6 @@ public final class LerpSaverView: ScreenSaverView {
             (cache: \(self.thumbnails.cacheDirectory.path, privacy: .public))
             """)
         })
-    }
-
-    /// Where the Options… gallery's stills came from, as one line.
-    ///
-    /// `@objc` because it is read by KVC from two processes that cannot see a
-    /// single type this bundle defines: `make test-load`, and the sandboxed
-    /// probe app that establishes what legacyScreenSaver's sandbox actually
-    /// permits. "The bundle covered all of it and the GPU did nothing" is the
-    /// claim the whole design rests on, so it has to be observable from outside.
-    /// What this host is doing right now, as one line.
-    ///
-    /// `@objc` for the same reason as `rotationStillsSummary`: the claims this
-    /// file makes — that a host always draws, that one nothing can see drops to
-    /// a frame a second, that a host being shown never does — are only worth
-    /// anything if a harness in another process, which cannot see a single type
-    /// this bundle defines, can read them back.
-    @objc public var renderStateSummary: String {
-        let displayed = metalView?.lastDisplayedFrameTime ?? 0
-        let since = displayed > 0
-            ? String(format: "%.2fs", CACurrentMediaTime() - displayed) : "never"
-        // The *look*, not the shader. This said `shader=` for as long as the
-        // rotation has had presets in it, which made the one fact a harness in
-        // another process can read the one fact that cannot tell `aurora` from
-        // `aurora/Ember` — so "the shuffle never plays presets" was a claim
-        // nothing outside this process could check, and it went unchecked
-        // through three rounds of being called fixed.
-        return "rendering=\(rendering ? 1 : 0) parked=\(parkedReason ?? "no") "
-            + String(format: "fps=%.1f ", metalView?.measuredFPS ?? 0)
-            + "lastDisplayedFrame=\(since) look=\(metalView?.currentEntry?.key ?? "")"
-    }
-
-    @objc public var rotationStillsSummary: String {
-        "memory=\(thumbnails.memoryHits) bundle=\(thumbnails.bundledHits) "
-            + "cache=\(thumbnails.diskHits - thumbnails.bundledHits) "
-            + "rendered=\(thumbnails.rendered) failed=\(thumbnails.failed.count) "
-            + "cache-dir=\(thumbnails.cacheDirectory.path)"
     }
 
     // MARK: - Rotation list

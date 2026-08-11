@@ -11,20 +11,35 @@
 
 ## Requirements
 
-- macOS 14 or later.
-- Apple Silicon.
-- Xcode command-line tools (`swiftc`).
+- Installation: macOS 14 or later on Apple Silicon.
+- Building from source: Xcode command-line tools (`swiftc`).
 
 ## Install
 
-```sh
-make saver                 # build, install, verify, and stop stale saver hosts
-make playground            # build, install, restart, and open the canonical editor
+Download and open the release DMG, then double-click **Install Lerping@Home**.
+The standard macOS Installer opens. The screen saver is required. The Shader
+Playground is selected by default, and you can clear its checkbox. Installer
+puts the components in these locations:
+
+```text
+/Library/Screen Savers/Lerping@Home.saver
+/Applications/LerpPlayground.app                 # optional
 ```
 
-Normal targets deploy what the machine will actually run. Compile-only staging
-is explicit: `make saver-build` and `make playground-build`. `make install` and
-`make install-playground` remain deployment aliases.
+The packaged playground includes the built-in shader sources. It does not need
+a source checkout. When you save a built-in shader, the app writes a personal
+override to `~/Library/Application Support/Lerping/Shaders`.
+
+To build and install from a checkout, use these commands:
+
+```sh
+make saver                 # build, install, verify, and stop stale saver hosts
+make playground            # build, install, restart, and open the checkout editor
+```
+
+These commands deploy what this Mac runs. Use `make saver-build` or
+`make playground-build` for a compile-only build. `make install` and
+`make install-playground` are deployment aliases.
 
 ### Screen saver
 
@@ -75,6 +90,8 @@ is explicit: `make saver-build` and `make playground-build`. `make install` and
 Optional, and only for the shader editor described under "Shader playground"
 below — the saver does not need it.
 
+The following details apply to a playground built from a source checkout:
+
 - `make install-playground` copies `build/LerpPlayground.staging.app` to
   `~/Applications/LerpPlayground.app`, signs it again and registers it, so typing
   "lerp" into Spotlight offers it. `/Applications`, `/System/Applications` and
@@ -119,6 +136,30 @@ make install-playground PLAYGROUND_REPO=/path/to/lerping-at-home
 - `make uninstall-playground` removes the canonical copy. `make clean` removes
   staging only.
 
+### Build a release image
+
+`make dmg RELEASE_VERSION=0.1.0` creates an unsigned DMG for local inspection.
+It does not install either component. The DMG contains the component installer,
+which keeps the optional Playground checkbox. The output is
+`build/release/LerpingAtHome-0.1.0-arm64.dmg`.
+
+`make package RELEASE_VERSION=0.1.0` builds only the inner PKG when you need to
+inspect Installer choices.
+
+A public DMG needs Developer ID Application and Developer ID Installer
+certificates, plus a `notarytool` keychain profile. Build and notarize it with:
+
+```sh
+make release RELEASE_VERSION=0.1.0 \
+  APP_SIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)" \
+  INSTALLER_SIGN_IDENTITY="Developer ID Installer: YOUR NAME (TEAMID)" \
+  NOTARY_PROFILE=lerping-notary
+```
+
+The target signs both bundles and the inner PKG, notarizes and staples the PKG,
+then signs, notarizes, staples, and checks the final DMG. It writes a SHA-256
+file beside the DMG. Publish the DMG and checksum in a tagged GitHub Release.
+
 ## Live shader development
 
 ```sh
@@ -132,7 +173,7 @@ make preview && ./build/LerpPreview
 - `./build/LerpPreview --list` — print discovered shaders.
 - `./build/LerpPreview --snapshot out/` — render every shader to PNG.
   - Flags: `--size WxH`, `--time T`, `--seed S`, `--shader name`.
-  - Exits non-zero on compile errors; used as the test suite.
+  - Exits non-zero if a shader does not compile.
 
 ## Shader playground
 
@@ -232,10 +273,13 @@ Keys:
 - `⌘\` — play/pause.
 - `⇧⌘R` — re-roll seed.
 - `⌥⌘R` — open the screensaver rotation gallery window.
-- `⇧⌘[` / `⇧⌘]` — previous/next shader.
+- `⇧⌘[` / `⇧⌘]` — previous/next look.
 
 Other targets:
 
+- `make package RELEASE_VERSION=…` — build the inner Installer package for inspection.
+- `make dmg RELEASE_VERSION=…` — wrap that installer in the unsigned release DMG.
+- `make release RELEASE_VERSION=…` — sign, notarize, staple, and check the public DMG.
 - `make playground-build` — compile-only staging at
   `build/LerpPlayground.staging.app`; it is not registered or launched.
 - `make saver-build` — compile-only staging at `build/Lerping@Home.saver`.
@@ -248,10 +292,10 @@ Other targets:
 
 - Custom shader directory: `~/Library/Application Support/Lerping/Shaders/`.
 - `LerpPreview` reads that directory at runtime; edit a file and press `r` to recompile.
-- The installed screensaver cannot read that directory: `legacyScreenSaver` runs sandboxed and is denied access to Application Support.
-- `make saver` copies the contents of that directory into the installed `.saver` bundle, which the sandbox can read.
+- The installed screen saver reads this directory at runtime. A custom shader can replace a built-in shader with the same filename stem.
+- The packaged playground saves built-in edits here because it cannot modify its signed app bundle.
+- `make saver` also copies this directory into a locally built `.saver`. This gives every custom look a bundled gallery still and stops stale saver hosts.
 - `make install-example` copies the plasma template into the custom shader directory.
-- A custom shader whose filename stem matches a built-in replaces that built-in.
 
 ```sh
 cp myshader.metal ~/Library/Application\ Support/Lerping/Shaders/
@@ -319,8 +363,10 @@ its parameters and presets wherever the file goes.
 ./build/LerpPreview --snapshot build/x --shader swirl --param twist=0.6
 ```
 
-- There is no settings UI for parameters yet; every host renders at the
-  declared defaults. Details and porting guidance: `PORTING.md`.
+- The playground shows controls for all declared parameters. The screen saver
+  can select named presets, but it does not store arbitrary control values.
+  Use **Shader → Save Look as Preset…** to make a tuned look available to it.
+  Details and porting guidance: `PORTING.md`.
 
 ### Shaders with CPU-computed data
 
@@ -383,7 +429,8 @@ Sources/Saver/       ScreenSaverView shim + Info.plist
 Sources/Preview/     LerpPreview dev app / snapshot CLI
 Sources/Playground/  LerpPlayground editor + live render, hot reload
   Info.plist           the .app's identity: bundle id, name, icon
-Templates/           example shader
+Packaging/          Installer choices, copy, and safe-update script
+Templates/          example shader
 ```
 
 `LerpCore` holds the rotation gallery (`RotationGallery.swift`,

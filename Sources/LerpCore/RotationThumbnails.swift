@@ -95,8 +95,8 @@ public final class RotationThumbnails {
     /// generation is dropped rather than painted over the new one.
     private var generation = 0
 
-    /// Counted for the self-test and the status line: how many stills came off
-    /// disk versus how many the GPU had to draw. A warm gallery is all hits.
+    /// Reported in the host log: how many stills came off disk versus how many
+    /// the GPU had to draw. A warm gallery is all hits.
     private(set) public var diskHits = 0
     /// The part of `diskHits` that came out of the host bundle rather than out
     /// of the writable cache — inside the screensaver's sandbox that is the
@@ -105,10 +105,6 @@ public final class RotationThumbnails {
     private(set) public var memoryHits = 0
     private(set) public var rendered = 0
     private(set) public var failed: [String] = []
-    /// Wall-clock seconds from `start` to the last delivery of the most recent
-    /// run — the number the report calls "cold" or "warm".
-    private(set) public var lastRunSeconds: Double = 0
-
     private let queue = DispatchQueue(label: "lerping.rotation.thumbnails", qos: .userInitiated)
     private let lock = NSLock()
 
@@ -123,10 +119,8 @@ public final class RotationThumbnails {
 
     // MARK: - Where the cache lives
 
-    /// `~/Library/Caches/<bundle id>/RotationThumbnails`. The app-appropriate
-    /// place for something regenerable, outside the repo, and per-bundle — so
-    /// `--selftest` (a bundle identifier of its own) cannot evict the stills the
-    /// user's gallery is showing, and vice versa.
+    /// `~/Library/Caches/<bundle id>/RotationThumbnails`: regenerable data,
+    /// outside the repo and scoped to its host app.
     public static var defaultDirectory: URL {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
@@ -142,8 +136,8 @@ public final class RotationThumbnails {
     /// container, and the container is the only place it may write — the real
     /// `~/Library` is denied, exactly as it is for the wallpaper handoff (see
     /// `LerpSaverView.writableWallpaperDirectory`). The real home is kept as a
-    /// second candidate so an unsandboxed host of the same code — the loadtest,
-    /// the preview app — lands somewhere sensible instead of nowhere.
+    /// second candidate so an unsandboxed host such as the preview app lands
+    /// somewhere sensible instead of nowhere.
     ///
     /// Each candidate is probed by writing a file, because "the sandbox will let
     /// me write here" is not something to assume.
@@ -264,14 +258,11 @@ public final class RotationThumbnails {
 
         let total = jobs.count
         var done = warm.count
-        let started = CFAbsoluteTimeGetCurrent()
         DispatchQueue.main.async {
             guard self.isCurrent(run) else { return }
             warm.forEach { onImage($0.0, $0.1) }
             onProgress(done, total)
-            if pending.isEmpty {
-                self.finish(run: run, started: started, onFinished: onFinished)
-            }
+            if pending.isEmpty { self.finish(run: run, onFinished: onFinished) }
         }
         guard !pending.isEmpty else { return }
 
@@ -313,7 +304,7 @@ public final class RotationThumbnails {
                 self.fileName(entry: $0.entry, source: $0.shader.source)
             }))
             DispatchQueue.main.async {
-                self.finish(run: run, started: started, onFinished: onFinished)
+                self.finish(run: run, onFinished: onFinished)
             }
         }
     }
@@ -389,9 +380,8 @@ public final class RotationThumbnails {
 
     private func countRender() { lock.lock(); rendered += 1; lock.unlock() }
 
-    private func finish(run: Int, started: CFAbsoluteTime, onFinished: () -> Void) {
+    private func finish(run: Int, onFinished: () -> Void) {
         guard isCurrent(run) else { return }
-        lastRunSeconds = CFAbsoluteTimeGetCurrent() - started
         onFinished()
     }
 

@@ -20,9 +20,8 @@ import AppKit
 ///
 /// The order, and why:
 ///
-/// 1. `LERP_REPO_ROOT` in the environment — an explicit answer for one launch.
-///    Used by the self-test below, and by anyone pointing a copy at a second
-///    checkout for an afternoon.
+/// 1. `LERP_REPO_ROOT` in the environment — an explicit answer for one launch,
+///    such as pointing a copy at a second checkout for an afternoon.
 /// 2. `LerpRepoRoot` in the bundle's `Info.plist`, written by
 ///    `make install-playground`. Deliberately above the user's own pick:
 ///    re-running the install target is how an installed copy gets re-pointed,
@@ -32,9 +31,13 @@ import AppKit
 /// 4. `LerpRepoRoot` in `UserDefaults` — the folder the user chose the last time
 ///    the recorded one had gone missing.
 ///
+/// The release package is the exception: it marks its playground as standalone
+/// and ships the shaders inside the app. Saving one creates a user-owned override
+/// in Application Support rather than modifying the signed app bundle.
+///
 /// A record that does not resolve is *reported*, never silently skipped. The
-/// failure this type exists to prevent is an installed copy coming up with an
-/// empty shader picker and no explanation.
+/// failure this type exists to prevent is an installed development copy coming
+/// up with an empty shader picker and no explanation.
 enum RepoLocation {
 
     /// The key, in the bundle's Info.plist and in UserDefaults. One string, so
@@ -42,6 +45,13 @@ enum RepoLocation {
     /// thing.
     static let key = "LerpRepoRoot"
     static let environmentKey = "LERP_REPO_ROOT"
+    static let standaloneKey = "LerpStandalone"
+
+    /// True only for the playground shipped by the public installer. Development
+    /// installs keep editing their recorded checkout.
+    static var isStandalone: Bool {
+        Bundle.main.object(forInfoDictionaryKey: standaloneKey) as? Bool == true
+    }
 
     /// Which of the four answers we took, in the words the UI uses.
     enum Origin: String {
@@ -75,6 +85,8 @@ enum RepoLocation {
         /// `shaders` is the directory to hand `ShaderLibrary`; `root` is the
         /// checkout it sits in, which is what the title bar names.
         case found(shaders: URL, root: URL, origin: Origin)
+        /// The release app uses its bundled shaders and needs no checkout.
+        case standalone
         /// Something told us where the repo was, and it is not there.
         case missing(recorded: URL, origin: Origin)
         /// Nothing told us, and we are not inside a checkout either.
@@ -112,9 +124,7 @@ enum RepoLocation {
             : shaders
     }
 
-    /// The whole decision, as a function of its four inputs — so the self-test
-    /// can drive every branch of it against real directories it made itself,
-    /// including the ones that fail.
+    /// The whole checkout-resolution decision as a function of its four inputs.
     ///
     /// In one breath: `LERP_REPO_ROOT` decides everything; failing that a
     /// recorded install decides, and if that folder is gone only the user's own
@@ -197,10 +207,15 @@ enum RepoLocation {
     @discardableResult
     static func settled() -> Outcome {
         if let cached { return cached }
-        let outcome = resolve(environment: ProcessInfo.processInfo.environment[environmentKey],
+        let outcome: Outcome
+        if isStandalone {
+            outcome = .standalone
+        } else {
+            outcome = resolve(environment: ProcessInfo.processInfo.environment[environmentKey],
                               installRecord: installRecord,
                               userChoice: userChoice,
                               buildTree: ShaderLocations.repoShaderDirectory())
+        }
         cached = outcome
         return outcome
     }
@@ -216,9 +231,8 @@ enum RepoLocation {
         return true
     }
 
-    /// What to hand `ShaderLibrary(extraSearchURLs:)`. Empty when unresolved,
-    /// which only the self-test and `--shaders` can now reach: the app asks the
-    /// user before it builds a window.
+    /// What to hand `ShaderLibrary(extraSearchURLs:)`. Empty in standalone mode,
+    /// where `ShaderLibrary` discovers the app's bundled resources itself.
     static var searchURLs: [URL] {
         if case let .found(shaders, _, _) = settled() { return [shaders] }
         return []
@@ -245,7 +259,7 @@ enum RepoLocation {
     /// line cannot describe the same problem differently.
     static func problem(_ outcome: Outcome) -> (title: String, detail: String)? {
         switch outcome {
-        case .found:
+        case .found, .standalone:
             return nil
         case let .missing(recorded, origin):
             return ("Shader folder not found",

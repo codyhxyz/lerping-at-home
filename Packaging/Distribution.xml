@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Lerping@Home</title>
+    <options customize="always" require-scripts="false" hostArchitectures="arm64"/>
+    <allowed-os-versions>
+        <os-version min="14.0"/>
+    </allowed-os-versions>
+    <license file="LICENSE"/>
+    <readme file="InstallerReadMe.txt"/>
+    <choices-outline>
+        <line choice="screensaver"/>
+        <line choice="playground"/>
+    </choices-outline>
+    <choice id="screensaver"
+            title="Lerping@Home Screen Saver"
+            description="The screen saver and its built-in shaders."
+            selected="true"
+            enabled="false">
+        <pkg-ref id="com.hergenroeder.lerping.installer.saver"/>
+    </choice>
+    <choice id="playground"
+            title="Shader Playground"
+            description="Optional editor for previewing and customizing shaders."
+            selected="true">
+        <pkg-ref id="com.hergenroeder.lerping.installer.playground"/>
+    </choice>
+    <pkg-ref id="com.hergenroeder.lerping.installer.saver" onConclusion="none">LerpingAtHomeSaver.pkg</pkg-ref>
+    <pkg-ref id="com.hergenroeder.lerping.installer.playground" onConclusion="none">LerpPlayground.pkg</pkg-ref>
+</installer-gui-script>
