@@ -18,8 +18,9 @@ import AppKit
 /// (`ShaderPicker`), which replaced a plain text dropdown with the same tiles;
 /// and the screensaver's own Options… sheet in `Sources/Saver`, which collects
 /// the same set and writes it on OK. It owns no policy of its own — every toggle
-/// goes out through `onChange`, every "open this one" through `onOpen`, and what
-/// is on comes back in through `show(shaders:enabled:)`.
+/// goes out through `onChange`, every "open this one" through `onOpen`, the one
+/// card that is not a look through `onNew`, and what is on comes back in through
+/// `show(shaders:enabled:)`.
 
 // MARK: - One look
 
@@ -55,6 +56,13 @@ public final class RotationTile: NSView {
     /// Caption block under the picture: two lines plus the padding around them.
     private static let captionHeight: CGFloat = 41
     private static let accent = NSColor(srgbRed: 0.36, green: 0.69, blue: 1.0, alpha: 1)
+
+    /// The picture's rounded corner, and the dark it sits on until a still
+    /// arrives. Not private because `NewLookCard` — the one card in the grid
+    /// that is not a look — has to be cut from exactly these, or it reads as a
+    /// tile that failed to line up rather than as a different kind of thing.
+    static let cornerRadius: CGFloat = 7
+    static let pictureBacking = NSColor(srgbRed: 0.06, green: 0.07, blue: 0.09, alpha: 1)
 
     /// A tile `width` points across, tall enough for a 2:3 still and the two
     /// caption lines. Derived rather than tabulated, so a narrower gallery
@@ -93,8 +101,8 @@ public final class RotationTile: NSView {
         didSet {
             guard isLocked != oldValue else { return }
             toolTip = isLocked
-                ? label + " — the rotation must keep at least one look, and this is the last one"
-                : label
+                ? lookLabel + " — the rotation must keep at least one look, and this is the last one"
+                : lookLabel
             redraw()
         }
     }
@@ -102,7 +110,7 @@ public final class RotationTile: NSView {
     /// look being turned *off*; it never stops it being opened or pointed at,
     /// so hovering and `onOpen` deliberately test `isLive` instead.
     public var isToggleable: Bool { isLive && !isLocked }
-    private var label: String { entry.shader + (entry.preset.map { " · " + $0 } ?? " · defaults") }
+    private var lookLabel: String { entry.shader + (entry.preset.map { " · " + $0 } ?? " · defaults") }
     /// The look the editor currently has open, in the picker. Marked so the
     /// popover answers "where am I?" as well as "what is there?".
     public var isCurrent = false { didSet { if isCurrent != oldValue { redraw() } } }
@@ -156,8 +164,7 @@ public final class RotationTile: NSView {
     }
 
     private func updateToolTip() {
-        let look = entry.shader + (entry.preset.map { " · " + $0 } ?? " · defaults")
-        toolTip = look + (mode == .picker
+        toolTip = lookLabel + (mode == .picker
             ? " — click to open it; the badge puts it in or out of the rotation"
             : " — click to put it in or out of the rotation; double-click to open it")
     }
@@ -221,9 +228,14 @@ public final class RotationTile: NSView {
 
     /// Where the shared live view goes, and where the still is drawn — the same
     /// rectangle, so one replaces the other exactly.
-    public var pictureFrame: NSRect {
+    public var pictureFrame: NSRect { Self.pictureFrame(in: bounds) }
+
+    /// The same rectangle for anything the grid lays out at a tile's size —
+    /// which is `NewLookCard` and nothing else. It has no still to draw and
+    /// still has to draw it in the same place.
+    static func pictureFrame(in bounds: NSRect) -> NSRect {
         let width = bounds.width - 8
-        return NSRect(x: 4, y: 4, width: width, height: (width * Self.imageAspect).rounded())
+        return NSRect(x: 4, y: 4, width: width, height: (width * imageAspect).rounded())
     }
 
     /// The hover halo is drawn 2.5 points *outside* the picture, so the overlay
@@ -330,11 +342,12 @@ public final class RotationTile: NSView {
 
     public override func draw(_ dirtyRect: NSRect) {
         let frame = pictureFrame
-        let path = NSBezierPath(roundedRect: frame, xRadius: 7, yRadius: 7)
+        let path = NSBezierPath(roundedRect: frame, xRadius: Self.cornerRadius,
+                                yRadius: Self.cornerRadius)
 
         // The picture. Stills are rendered at exactly the tile's 2:3, so this
         // neither crops nor squashes them.
-        NSColor(srgbRed: 0.06, green: 0.07, blue: 0.09, alpha: 1).setFill()
+        Self.pictureBacking.setFill()
         path.fill()
         if let image {
             NSGraphicsContext.saveGraphicsState()
@@ -360,7 +373,8 @@ public final class RotationTile: NSView {
     /// The scrim, the frame, the hover halo, the current-look mark and the badge
     /// — everything that belongs over the picture, wherever the picture came from.
     private func drawChrome(in frame: NSRect) {
-        let path = NSBezierPath(roundedRect: frame, xRadius: 7, yRadius: 7)
+        let path = NSBezierPath(roundedRect: frame, xRadius: Self.cornerRadius,
+                                yRadius: Self.cornerRadius)
 
         // Off looks off: a scrim over the picture, not a tint of it. Lifted while
         // a preview is playing — you pointed at it to see it, and the grey frame
@@ -383,13 +397,7 @@ public final class RotationTile: NSView {
             path.lineWidth = 1
         }
         path.stroke()
-        if isHot {
-            NSColor(white: 1, alpha: 0.16).setStroke()
-            let halo = NSBezierPath(roundedRect: frame.insetBy(dx: -2.5, dy: -2.5),
-                                    xRadius: 9, yRadius: 9)
-            halo.lineWidth = 2
-            halo.stroke()
-        }
+        if isHot { Self.drawHalo(around: frame) }
 
         // The look the editor has open, in the corner the badge does not use. A
         // dark disc under an accent core, so it reads over a pale still as well
@@ -446,25 +454,165 @@ public final class RotationTile: NSView {
     }
 
     private func drawCaption(below frame: NSRect) {
-        let title = entry.displayName
         var strong: NSColor = isOn ? EditorTheme.text : NSColor(srgbRed: 0.44, green: 0.47, blue: 0.53, alpha: 1)
         let weak: NSColor = isOn ? EditorTheme.dim : NSColor(srgbRed: 0.31, green: 0.34, blue: 0.39, alpha: 1)
         if isCurrent { strong = Self.accent }
+        Self.drawCaption(entry.displayName, over: shaderTitle, below: frame,
+                         width: bounds.width, strong: strong, weak: weak,
+                         emphasised: isCurrent)
+    }
+
+    /// The caption block, for anything the grid lays out at a tile's size. The
+    /// `NewLookCard` has one line where a look has two and would otherwise be
+    /// carrying its own copy of these baselines — captions a point out of step
+    /// across a row are the sort of thing nobody can name and everybody sees.
+    /// An empty `subtitle` simply leaves the second line blank.
+    static func drawCaption(_ title: String, over subtitle: String, below picture: NSRect,
+                            width: CGFloat, strong: NSColor, weak: NSColor,
+                            emphasised: Bool) {
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byTruncatingTail
         style.alignment = .center
 
-        let box = NSRect(x: 4, y: frame.maxY + 6, width: bounds.width - 8, height: 15)
+        let box = NSRect(x: 4, y: picture.maxY + 6, width: width - 8, height: 15)
         NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 11.5, weight: isCurrent ? .semibold : .medium),
+            .font: NSFont.systemFont(ofSize: 11.5, weight: emphasised ? .semibold : .medium),
             .foregroundColor: strong, .paragraphStyle: style,
         ]).draw(in: box)
-        NSAttributedString(string: shaderTitle, attributes: [
+        NSAttributedString(string: subtitle, attributes: [
             .font: NSFont.systemFont(ofSize: 10),
             .foregroundColor: weak, .paragraphStyle: style,
         ]).draw(in: box.offsetBy(dx: 0, dy: 15))
     }
 
+    /// The pointer-is-here halo, outside the picture rather than on it. Static
+    /// alongside the rest of the shared card drawing: the "+" card lights up
+    /// under the pointer the way its neighbours do, and one halo drawn twice is
+    /// one halo that drifts.
+    static func drawHalo(around frame: NSRect) {
+        NSColor(white: 1, alpha: 0.16).setStroke()
+        let halo = NSBezierPath(roundedRect: frame.insetBy(dx: -2.5, dy: -2.5),
+                                xRadius: cornerRadius + 2, yRadius: cornerRadius + 2)
+        halo.lineWidth = 2
+        halo.stroke()
+    }
+
+}
+
+// MARK: - The one card that is not a look
+
+/// The "+" card at the head of the grid: make a shader that does not exist yet.
+///
+/// This is where New… went, and the grid is where it belongs. Wanting a new
+/// shader is what happens at the end of looking through the ones there are and
+/// not finding it, so the affordance wants to be under the pointer at that
+/// moment — in the grid you are already reading — rather than on a toolbar you
+/// stopped looking at when you opened the picker.
+///
+/// It borrows `RotationTile`'s metrics and nothing else. Sharing the geometry is
+/// what makes it sit *in* the grid rather than beside it; sharing the tile would
+/// have meant giving it an entry, an on/off state, a badge and a place in every
+/// count — and it is not a look. It is never in the rotation, never one of the
+/// "N of M looks", never what the arrows step onto, never the last look the
+/// rotation cannot let go of. Keeping all of that impossible is worth a second
+/// small view.
+public final class NewLookCard: NSView {
+
+    /// The card was clicked. What that means is entirely the host's: this view
+    /// knows there is such a thing as making a shader and nothing whatever
+    /// about how.
+    public var onPress: (() -> Void)?
+
+    private var isHot = false { didSet { if isHot != oldValue { needsDisplay = true } } }
+
+    public init(size: NSSize) {
+        super.init(frame: NSRect(origin: .zero, size: size))
+        toolTip = "Make a new shader — asks for a name, writes the file, and opens it"
+    }
+
+    public required init?(coder: NSCoder) { nil }
+
+    public override var isFlipped: Bool { true }
+
+    // MARK: Pointer
+
+    /// The same tracking as a tile, and for the same reason: `.inVisibleRect`
+    /// keeps the rect in step with the scroll view, so a card that scrolls out
+    /// from under a stationary pointer stops thinking it is hovered.
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseEnteredAndExited, .activeInKeyWindow,
+                                                 .inVisibleRect],
+                                       owner: self))
+    }
+
+    public override func mouseEntered(with event: NSEvent) { isHot = true }
+    public override func mouseExited(with event: NSEvent) { isHot = false }
+
+    /// First click only. The host answers this by putting up a modal prompt for
+    /// the name, which swallows the second click of a double — but if it ever
+    /// arrived first it would ask for two shaders, and the second question would
+    /// be unexplainable.
+    public override func mouseDown(with event: NSEvent) {
+        guard event.clickCount == 1 else { return }
+        onPress?()
+    }
+
+    // MARK: Accessibility
+
+    public override func isAccessibilityElement() -> Bool { true }
+    public override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    public override func accessibilityLabel() -> String? { "New shader" }
+    public override func accessibilityPerformPress() -> Bool {
+        onPress?()
+        return true
+    }
+
+    // MARK: Drawing
+
+    public override func draw(_ dirtyRect: NSRect) {
+        let frame = RotationTile.pictureFrame(in: bounds)
+        let path = NSBezierPath(roundedRect: frame, xRadius: RotationTile.cornerRadius,
+                                yRadius: RotationTile.cornerRadius)
+        RotationTile.pictureBacking.setFill()
+        path.fill()
+
+        // A dashed edge where every neighbour has a solid one. The tiles use
+        // their frame to say in or out of the rotation, so this card cannot use
+        // a solid frame of either weight without joining that conversation — and
+        // an outline that is not quite drawn is the plainest way to say there is
+        // no picture here because there is no shader yet.
+        let ink = isHot ? EditorTheme.text : EditorTheme.dim
+        path.setLineDash([5, 4], count: 2, phase: 0)
+        path.lineWidth = 1.5
+        ink.setStroke()
+        path.stroke()
+
+        // The plus, at the size a still's subject would be: two bars, so it is a
+        // mark on the card rather than a glyph in a font that would sit on the
+        // caption's baseline grid and read as a third line of text.
+        let arm: CGFloat = min(frame.width, frame.height) * 0.22
+        let thickness: CGFloat = 3
+        ink.setFill()
+        NSBezierPath(roundedRect: NSRect(x: frame.midX - arm, y: frame.midY - thickness / 2,
+                                         width: arm * 2, height: thickness),
+                     xRadius: thickness / 2, yRadius: thickness / 2).fill()
+        NSBezierPath(roundedRect: NSRect(x: frame.midX - thickness / 2, y: frame.midY - arm,
+                                         width: thickness, height: arm * 2),
+                     xRadius: thickness / 2, yRadius: thickness / 2).fill()
+
+        if isHot { RotationTile.drawHalo(around: frame) }
+
+        // One line, where a look has a name over its shader's. There is no
+        // second thing to say and inventing one would only make the card look
+        // like a look.
+        RotationTile.drawCaption("New Shader…", over: "", below: frame,
+                                 width: bounds.width,
+                                 strong: isHot ? EditorTheme.text : EditorTheme.dim,
+                                 weak: EditorTheme.dim, emphasised: false)
+    }
 }
 
 // MARK: - The gallery
@@ -481,6 +629,31 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     public var onOpen: ((LerpRotationEntry) -> Void)?
     /// The Regenerate button, when the host asked for one.
     public var onRegenerate: (() -> Void)?
+    /// The user asked for a shader that does not exist yet, from the "+" card at
+    /// the head of the grid.
+    ///
+    /// Setting this is what puts the card there, the way `onOpen` is what makes
+    /// tiles openable: a host that cannot scaffold and open a `.metal` file must
+    /// not offer a card that says it can, and two of the three hosts cannot. The
+    /// screensaver's Options… sheet has no editor at all, and the gallery window
+    /// asks a different question of the same looks — which of these does the
+    /// screensaver shuffle through — where a card that is not a look and cannot
+    /// be checked would be the one thing in the grid that answers something
+    /// else. The toolbar popover, whose whole job is choosing what to edit, is
+    /// where it belongs and where the New… button used to point.
+    public var onNew: (() -> Void)? {
+        didSet {
+            guard onNew != nil, newCard == nil else { return }
+            let card = NewLookCard(size: tileSize)
+            // Through `self` rather than capturing the closure, so a host that
+            // sets `onNew` twice does not leave the card calling the first one.
+            card.onPress = { [weak self] in self?.onNew?() }
+            card.identifier = NSUserInterfaceItemIdentifier("new-look-card")
+            canvas.addSubview(card)
+            newCard = card
+            canvas.needsLayout = true
+        }
+    }
 
     public private(set) var shaders: [LerpShader] = []
     public private(set) var entries: [LerpRotationEntry] = []
@@ -511,6 +684,9 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     private var deselectAllButton: NSButton?
 
     private var tiles: [LerpRotationEntry: RotationTile] = [:]
+    /// Present only where the host offered `onNew`. Deliberately not in `tiles`
+    /// — everything that iterates those is about looks.
+    private var newCard: NewLookCard?
     private var headers: [String: NSButton] = [:]
     private var headerCounts: [String: NSTextField] = [:]
     /// Laid out in shader order, so the grid and the model cannot disagree.
@@ -936,6 +1112,12 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
             tile.isLocked = entry == lastOne
             tile.isHidden = !matches(entry)
         }
+        // The "+" card sits out the filter: it is not a look, so there is
+        // nothing about it to match, and a card that disappeared as you typed
+        // would be gone at exactly the moment a search came up empty and making
+        // one was the answer. It does go when the whole gallery goes — a greyed
+        // out grid with one live control left in it reads as broken.
+        newCard?.isHidden = !isActive
         // Deselect All goes with them: a button that would clear the rotation is
         // off, not silently ignored.
         deselectAllButton?.isEnabled = isActive && !wouldEmpty(visibleEntries())
@@ -1014,6 +1196,19 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         var x = Self.pad
         var bandTop = Self.pad
         var bandHeight: CGFloat = 0
+
+        // The "+" card leads, on the first band rather than on one of its own:
+        // it is a single card, and a band to itself would push all 123 looks
+        // down a whole tile for it. It starts a heading's height down, so it
+        // lines up with the looks beside it and not with their headings — it
+        // heads no group, and a card floating level with the shader names would
+        // read as one.
+        if let newCard, !newCard.isHidden {
+            newCard.setFrameSize(tile)
+            newCard.setFrameOrigin(NSPoint(x: x, y: bandTop + Self.headerHeight))
+            bandHeight = Self.headerHeight + tile.height
+            x += tile.width + Self.groupGapX
+        }
 
         for name in order {
             let group = entries.filter { $0.shader == name && matches($0) }

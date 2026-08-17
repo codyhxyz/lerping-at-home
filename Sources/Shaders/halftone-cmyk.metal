@@ -34,10 +34,9 @@
 // lerp-param: speed        float 0 2    = 0.35 "Source speed"
 //
 // Upstream presets, restricted to the props this port implements.
-// lerp-preset: Drops     colorBack=#eeefd7, colorC=#00b2ff, colorM=#fc4f4f
-// lerp-preset: Drops     colorY=#ffd900, colorK=#231f20, size=0.88, contrast=1.15
-// lerp-preset: Drops     softness=0, grainSize=0.01, grainMixer=0.05, grainOverlay=0.25
-// lerp-preset: Drops     gridNoise=0.5
+// lerp-preset: Drops  colorBack=#eeefd7, colorC=#00b2ff, colorM=#fc4f4f, colorY=#ffd900
+// lerp-preset: Drops  colorK=#231f20, size=0.88, contrast=1.15, softness=0, gridNoise=0.5
+// lerp-preset: Drops  grainMixer=0.05, grainOverlay=0.25, grainSize=0.01, speed=1.8153522
 // lerp-preset: Newspaper colorBack=#f2f1e8, colorC=#7a7a75, colorM=#7a7a75
 // lerp-preset: Newspaper colorY=#7a7a75, colorK=#231f20, size=0.01, contrast=2
 // lerp-preset: Newspaper softness=0.2, grainSize=0, grainMixer=0, grainOverlay=0.2

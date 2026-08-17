@@ -37,6 +37,26 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         LerpRotationEntry(shader: current.name, preset: currentPreset)
     }
     private var isDirty: Bool { editor.text != current.source }
+    /// The other half of "unsaved": the inspector against what the buffer says
+    /// this look *is* — its declared defaults with the worn preset over them.
+    ///
+    /// A moved slider is an edit to the same file the text is in, because that
+    /// is where a look's values live: the `// lerp-preset:` block this look is
+    /// wearing. Only `isDirty` existed for a long time, so the one control that
+    /// says "there is something to save" was answering a question about the
+    /// text while the user was changing the values — Save sat disabled with a
+    /// preset visibly modified on screen.
+    ///
+    /// Measured against `compiled` rather than `current`, because the values on
+    /// screen are values *of* the parameters the buffer declares; a slider the
+    /// file on disk has never heard of is still a slider that has moved.
+    private var parametersMoved: Bool {
+        guard let compiled, let live = metalView.parameterValues else { return false }
+        return live.values != compiled.parameterValues(for: currentEntry).values
+    }
+    /// What Save writes, and therefore what the Save button and ⌘S report. One
+    /// predicate so an enabled control and a working command cannot disagree.
+    private var hasUnsavedChanges: Bool { isDirty || parametersMoved }
     /// Closing the last window asks first; the automatic app termination that
     /// follows must not ask a second time.
     private var terminationApproved = false
@@ -222,8 +242,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         previousButton.toolTip = "Previous look (⇧⌘[)"
         nextButton.toolTip = "Next look (⇧⌘])"
 
-        let newButton = Chrome.button("New…", target: self, action: #selector(newShader))
+        // No New… here any more: making a shader is something you do *among the
+        // looks*, so it is the first card in the picker's grid — where you are
+        // already looking when you want one that does not exist yet. File → New
+        // Shader… (⌘N) is unchanged.
         Chrome.configure(saveButton, title: "Save", target: self, action: #selector(saveShader))
+        saveButton.toolTip = "Save the edits and the look on screen back into the .metal file (⌘S). "
+            + "Save the look under a new name with Shader → Save Look as Preset… (⇧⌘S)."
         Chrome.configure(revertButton, title: "Revert", target: self, action: #selector(revertShader))
 
         status.isBordered = false
@@ -251,7 +276,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         editor.setContentHuggingPriority(.init(1), for: .vertical)
 
         return Chrome.pane([Chrome.bar([shaderButton, previousButton, nextButton,
-                                        newButton, saveButton, revertButton,
+                                        saveButton, revertButton,
                                         Chrome.flexible()]),
                             editor,
                             Chrome.bar([status, Chrome.flexible()], height: 22),
@@ -445,7 +470,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         let name = current.name.isEmpty ? "Shader" : current.name
         let preset = currentPreset.map { " · " + $0 } ?? ""
         let custom = customShaderNames.contains(current.name) ? "  · custom" : ""
-        shaderButton.title = "◱  " + name + preset + custom + "  ▾"
+        let title = "◱  " + name + preset + custom + "  ▾"
+        if shaderButton.title != title { shaderButton.title = title }
     }
 
     /// What this window opens on, and the only place the screensaver's rotation
@@ -620,6 +646,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     func setParameter(_ name: String, _ value: LerpParamValue) {
         parameterState[name] = value
         metalView.setParameter(name, value)
+        // A moved value is an unsaved change to the look, so Save has to light
+        // up on it exactly as it does on a keystroke in the editor.
+        updateChrome()
         if isPaused { metalView.renderOnce() }
     }
 
@@ -627,7 +656,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     func applyPreset(_ name: String?) {
         defer {
             rememberCurrent()
-            updateShaderButton()
+            updateChrome()
             showCurrentEverywhere()
         }
         guard let shader = compiled else { return }
@@ -703,14 +732,18 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         guard let preset = mappings.first(where: { $0.name == name }) else { return }
         activeMapping = preset
         router.load(preset.bindings)     // switching banks is exactly this
-        refreshMappingList()
-        refreshBindingLabels()
+        refreshMappingUI()
     }
 
     private func refreshBindingLabels() {
         for param in shownParameters {
             inspector.setBinding(activeMapping?.bindings(for: param.name) ?? [], for: param.name)
         }
+    }
+
+    private func refreshMappingUI() {
+        refreshMappingList()
+        refreshBindingLabels()
     }
 
     /// Saves `preset`, makes it live and redraws everything that shows it.
@@ -728,8 +761,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             midiPanel.showStatus("Could not save mapping: \(error.localizedDescription)",
                                  tint: EditorTheme.error)
         }
-        refreshMappingList()
-        refreshBindingLabels()
+        refreshMappingUI()
     }
 
     func receive(_ message: MIDIController.Message) {
@@ -738,13 +770,14 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             var preset = activeMapping
                 ?? MappingPreset(name: message.sourceName.isEmpty ? "Default" : message.sourceName,
                                  deviceID: message.sourceID)
+            let component = learnComponent(target)
             // Omni by default: most controllers sit on a channel the user has
             // never chosen, and a binding that only works on one is a trap.
             preset.bind(MIDIBinding(paramID: target.param, channel: nil, cc: message.cc,
-                                    component: learnComponent(target)))
+                                    component: component))
             commit(preset)
             midiPanel.showStatus("Learned CC\(message.cc) → \(target.param)"
-                                    + (learnComponent(target).map { " \($0.label)" } ?? ""),
+                                    + (component.map { " \($0.label)" } ?? ""),
                                  tint: EditorTheme.text)
             return
         }
@@ -911,8 +944,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             mappings.removeAll { $0.name == preset.name }
             activeMapping = mappings.first
             router.load(activeMapping?.bindings ?? [])
-            refreshMappingList()
-            refreshBindingLabels()
+            refreshMappingUI()
         }
     }
 
@@ -984,6 +1016,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if let picker { return picker }
         let made = ShaderPicker(thumbnails: thumbnails)
         made.onOpen = { [weak self] entry in self?.openEntry(entry) }
+        // The "+" card at the head of the grid, which is where the toolbar's
+        // New… button went. Straight into the same action File → New Shader…
+        // (⌘N) sends, unsaved-edits prompt and all: a second way in must not
+        // become a second flow, or one of them will be the one that forgets to
+        // ask.
+        made.onNew = { [weak self] in self?.newShader(nil) }
         made.onChange = { [weak self] enabled in self?.persistRotation(enabled) }
         made.onImage = { [weak self] entry, image in
             self?.rotation?.gallery.show(image: image, for: entry)
@@ -1048,24 +1086,74 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if let line = firstErrorLine { editor.scrollToLine(line) }
     }
 
-    @objc func saveShader(_ sender: Any?) {
+    /// File → Save (⌘S) and the toolbar's Save button: everything the window is
+    /// showing that the file does not yet say.
+    ///
+    /// That is two kinds of change, because the window makes two kinds — the
+    /// text and the values — and they both end up in the same `.metal` file.
+    /// Values that have moved away from a preset are that preset's new values,
+    /// so Save updates the block in place; the edit goes into the buffer where
+    /// it can be read and ⌘Z'd, exactly as Save Look as Preset… does it.
+    ///
+    /// Save never asks anything. The look on screen has somewhere in the file it
+    /// came from and that is where it goes back: a worn preset's block, or —
+    /// with nothing worn — the `// lerp-param:` defaults, which are the Defaults
+    /// look's values in the same way. Naming a *new* look is Save As, and Save
+    /// As is ⇧⌘S.
+    @discardableResult
+    @objc func saveShader(_ sender: Any?) -> Bool {
+        guard parametersMoved else { return writeBuffer() }
+        // `liveValues` compiles first, so the look is written back into the text
+        // that is about to be saved rather than into whatever the debounce was
+        // still holding.
+        switch liveValues() {
+        case .ready(let overrides):
+            guard let worn = currentPreset else { return writeDefaults(overrides) }
+            // A preset the buffer has stopped declaring — its block deleted by
+            // hand while it is on — is written back rather than lost: the window
+            // says that look is open, so Save is what makes the file say it too.
+            return writePreset(named: compiled?.preset(named: worn)?.name ?? worn, overrides,
+                               replacing: compiled?.preset(named: worn))
+        case .unavailable:
+            return writeBuffer()
+        case .cannot:
+            guard writeBuffer() else { return false }
+            guard !compileFailed else { return true }   // the console is already saying it
+            setStatus("✓  saved — “\(currentPreset ?? "Defaults")” is unchanged: every control is at "
+                        + "\(current.name)'s declared default, and a preset records only what differs",
+                      tint: EditorTheme.dim)
+            return true
+        }
+    }
+
+    /// The buffer onto disk, and nothing else. The file half of `saveShader`,
+    /// separate because the preset flows write the buffer *after* splicing into
+    /// it and must not be handed back to the folding above.
+    @discardableResult
+    private func writeBuffer() -> Bool {
         let url = ShaderPaths.saveURL(for: current)
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
             try editor.text.write(to: url, atomically: true, encoding: .utf8)
             current = LerpShader(name: current.name, source: editor.text, isBuiltIn: false, url: url)
-            updateChrome()
             compileNow(force: true)
             let shaders = refreshList(metalView.shaderLibrary.discover())
             refreshRotation(shaders)
+            // Last, not first: "is there anything to save" is asked of the
+            // shader that just compiled, and the button's `· custom` tag of the
+            // list that was just re-read.
+            updateChrome()
+            return true
         } catch {
             presentError("Could not save \(url.lastPathComponent)", error.localizedDescription)
+            return false
         }
     }
 
     /// Shader → Save Look as Preset… (⇧⌘S): the values on screen, written back
-    /// into the shader file as a new named `// lerp-preset:` block.
+    /// into the shader file as a named `// lerp-preset:` block. Reusing a name
+    /// updates that preset in place.
     ///
     /// ## Why it writes the file, edits and all
     ///
@@ -1076,7 +1164,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// never heard of — which is not a bad preset, it is a `parameterErrors`
     /// entry, and `pipeline(for:)` refuses to compile a shader that has one. The
     /// preset and the edits that justify it are one change, so this splices the
-    /// block into the buffer and then goes through `saveShader`, the same and
+    /// block into the buffer and then goes through `writeBuffer`, the same and
     /// only path that puts a buffer on disk. The prompt says so when there are
     /// unsaved edits; it is not done quietly.
     ///
@@ -1085,88 +1173,165 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// description of what the editor now says, and saving them would write a
     /// preset about a shader nobody has seen render.
     ///
-    /// ## Why the name is refused rather than overwritten
-    ///
-    /// Both of this app's other naming flows refuse a collision — `newShader`
-    /// ("pick a different name or edit the existing shader") and `claimBankName`
-    /// ("names have to differ by more than capitalisation") — and the second one
-    /// is the case here too, because `LerpShader.preset(named:)` matches
-    /// case-insensitively. There is also something to lose: a preset in the tree
-    /// is somebody's hand-tuned block with a comment above it, and "overwrite"
-    /// is a button that trades it for whatever the sliders happen to be at. The
-    /// error names the line the existing block is on, because editing it is the
-    /// deliberate act that replacing it should be.
+    /// Reusing a name replaces the existing declaration after confirmation. The
+    /// rotation entry keeps the same key, so its enabled/disabled choice stays
+    /// intact while its values change.
     @objc func savePreset(_ sender: Any?) {
-        // Whatever the 300 ms debounce is still holding, compiled now. The
-        // values about to be written are values *of* `compiled`'s parameters,
-        // and this is what makes those the buffer's parameters too.
+        let overrides: [(param: LerpParam, value: LerpParamValue)]
+        switch liveValues() {
+        case .ready(let values): overrides = values
+        case .unavailable: return NSSound.beep()
+        case .cannot(let title, let detail): return presentError(title, detail)
+        }
+        guard let compiled else { return }
+
+        let detail = "The values on screen become a `// lerp-preset:` block in "
+            + "\(current.name).metal. A new name adds a look; an existing name is "
+            + "replaced after confirmation."
+            + (isDirty ? "\n\nYour unsaved edits are saved with it: a preset can only name parameters "
+                            + "the file itself declares." : "")
+        guard let name = prompt("Save look as preset", detail, currentPreset ?? "",
+                                placeholder: "Lagoon") else { return }
+        if let problem = LerpPresetWriter.problem(withName: name) {
+            return presentError("“\(name)” cannot be a preset name", problem)
+        }
+        let clash = compiled.preset(named: name)
+        if let clash {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Replace preset “\(clash.name)”?"
+            alert.informativeText = "This replaces its saved values and keeps its current rotation setting."
+            alert.addButton(withTitle: "Replace")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        writePreset(named: clash?.name ?? name, overrides, replacing: clash)
+    }
+
+    /// What both save commands ask about the look on screen, and the words for
+    /// the answer when there is nothing writable to say.
+    ///
+    /// They differ only in what a refusal costs them. ⇧⌘S is *about* the values,
+    /// so it stops and shows the reason. ⌘S also has text to write, and an
+    /// editor that will not save your typing because the shader does not compile
+    /// yet is an editor with a bug in it — so it writes the text either way and
+    /// keeps the reason to a status line.
+    private enum LiveValues {
+        case ready([(param: LerpParam, value: LerpParamValue)])
+        /// The compile on screen is not of the text in the editor: a race, not
+        /// a decision anybody made, and nothing worth a sentence.
+        case unavailable
+        case cannot(title: String, detail: String)
+    }
+
+    /// The values on screen as preset assignments, or why they are not a
+    /// description of anything.
+    ///
+    /// The compile in front is what makes the buffer's parameters the ones the
+    /// values belong to: whatever the 300 ms debounce is still holding is
+    /// compiled now, so `compiled` is the text about to be written.
+    private func liveValues() -> LiveValues {
         compileWork?.cancel()
         compileNow()
-        if case .failed = compileState {
-            return presentError("\(current.name).metal does not compile",
-                                "What is on screen is the last version that did, so its values are "
-                                    + "not a description of what the editor now says. Fix the errors "
-                                    + "in the console first — ⌘E jumps to the first one.")
+        if compileFailed {
+            return .cannot(title: "\(current.name).metal does not compile",
+                           detail: "What is on screen is the last version that did, so its values are "
+                               + "not a description of what the editor now says. Fix the errors "
+                               + "in the console first — ⌘E jumps to the first one.")
         }
         guard let compiled, compiled.name == current.name, compiled.source == editor.text,
-              let values = metalView.parameterValues else { return NSSound.beep() }
+              let values = metalView.parameterValues else { return .unavailable }
 
         // Both of these would come back from the parser as `preset … sets
         // nothing`, so they are refused here, where the reason can be said in
         // words rather than as a compile error on a line the user never typed.
         let overrides = LerpPresetWriter.overrides(in: values)
         guard !overrides.isEmpty else {
-            return presentError("Nothing to save as a preset", compiled.parameters.isEmpty
+            return .cannot(title: "Nothing to save as a preset", detail: compiled.parameters.isEmpty
                 ? "\(current.name) declares no `// lerp-param:` parameters, so there is nothing a "
                     + "preset could set. Add one to the file and the inspector grows a control for it."
                 : "Every control is at \(current.name)'s declared default, and a preset records only "
-                    + "what differs from them. Move something first — the defaults are already a look "
-                    + "in their own right.")
+                    + "what differs from them. A look that sets nothing is the Defaults look — pick it "
+                    + "in the inspector and the file is already saying it.")
         }
+        return .ready(overrides)
+    }
 
-        let detail = "The values on screen become a new `// lerp-preset:` block in "
-            + "\(current.name).metal, and a new look in the picker and the rotation."
-            + (isDirty ? "\n\nYour unsaved edits are saved with it: a preset can only name parameters "
-                            + "the file itself declares." : "")
-        guard let name = prompt("Save look as preset", detail, "", placeholder: "Lagoon") else { return }
-        if let problem = LerpPresetWriter.problem(withName: name) {
-            return presentError("“\(name)” cannot be a preset name", problem)
-        }
-        if let clash = compiled.preset(named: name) {
-            return presentError("\(current.name) already has a preset called “\(clash.name)”",
-                                "Preset names are matched without regard to case, so two that differ "
-                                    + "only in capitalisation would be two looks rendering the same "
-                                    + "picture. Pick another name, or edit the block on line "
-                                    + "\(clash.line) by hand.")
-        }
+    private var compileFailed: Bool {
+        if case .failed = compileState { return true }
+        return false
+    }
+
+    /// The Defaults look, saved: the values on screen become the `= DEFAULT` of
+    /// the `// lerp-param:` lines that declare them.
+    ///
+    /// Which is a real edit to every look in the file — a preset only records
+    /// what it *differs* from the defaults in, so moving a default moves every
+    /// preset that stays silent about that parameter. That is the same thing
+    /// editing the declaration by hand does, and it is what saving the Defaults
+    /// look can honestly mean; the status line says how many lines moved, and
+    /// ⌘Z takes the buffer back.
+    @discardableResult
+    private func writeDefaults(_ overrides: [(param: LerpParam, value: LerpParamValue)]) -> Bool {
+        let declared = compiled?.parameters.count ?? overrides.count
+        editor.replaceTextAsEdit(ParamScaffold.settingDefaults(overrides, in: editor.text))
+        guard writeBuffer() else { return false }
+        // The round trip in public, as in `writePreset`: the file has been
+        // re-read and recompiled, and this puts the freshly declared defaults
+        // on screen — so a write that did not take cannot look like one that did.
+        applyPreset(nil)
+        setStatus("✓  saved \(overrides.count) of \(declared)"
+                    + " parameter\(declared == 1 ? "" : "s") as \(current.name)'s defaults",
+                  tint: EditorTheme.text)
+        return true
+    }
+
+    /// Splices `overrides` into the buffer as the preset `name`, saves the file
+    /// and puts the window back on that preset. The tail both preset paths
+    /// share, so ⌘S over a modified preset and ⇧⌘S write the same block by the
+    /// same route and report it in the same words.
+    @discardableResult
+    private func writePreset(named name: String,
+                             _ overrides: [(param: LerpParam, value: LerpParamValue)],
+                             replacing existing: LerpPreset?) -> Bool {
+        let declared = compiled?.parameters.count ?? overrides.count
+        let declaration = LerpPresetWriter.declaration(name: name, overrides: overrides)
 
         // Reported as an edit rather than pushed in silently: this is exactly
         // the block you would have typed, ⌘Z still undoes it, and the file that
         // gets written is the buffer you can see.
-        editor.replaceTextAsEdit(
-            PresetScaffold.inserting(LerpPresetWriter.declaration(name: name, overrides: overrides),
-                                     into: editor.text))
-        saveShader(nil)
-        // `saveShader` has already re-read the directory and handed the fresh
+        let updated = existing.map {
+            PresetScaffold.replacing($0.name, with: declaration, in: editor.text)
+        } ?? PresetScaffold.inserting(declaration, into: editor.text)
+        editor.replaceTextAsEdit(updated)
+        guard writeBuffer() else { return false }
+        // `writeBuffer` has already re-read the directory and handed the fresh
         // list to both grids, so the new look has a tile by the time we get
         // here. Wearing it goes through the inspector's popup like every other
         // preset change — that is what makes `currentPreset`, the toolbar
         // button, the remembered look and both grids' current marks agree — and
-        // it is also the round trip proving itself in public: `applyPreset`
-        // re-reads the preset *off disk*, so if what was written did not parse
-        // back to what was on screen, the sliders would move.
+        // it is also the round trip proving itself in public: `writeBuffer`
+        // recompiled the freshly written source before `applyPreset` reads the
+        // updated preset, so a failed write cannot be reported as success.
         inspector.choosePreset(name)
-        setStatus("✓  saved preset “\(name)” — \(overrides.count) of \(compiled.parameters.count)"
-                    + " parameter\(compiled.parameters.count == 1 ? "" : "s")",
+        setStatus("✓  \(existing == nil ? "saved" : "updated") preset “\(name)” — "
+                    + "\(overrides.count) of \(declared)"
+                    + " parameter\(declared == 1 ? "" : "s")",
                   tint: EditorTheme.text)
+        return true
     }
 
+    /// Puts the whole look back to what the file says, which is both halves of
+    /// it: the text, and then the values, because a preset the sliders have been
+    /// dragged around is as much a departure from the saved file as a typed
+    /// character is — and Revert enables on it, so it has to undo it.
     @objc func revertShader(_ sender: Any?) {
         guard let url = current.url, let text = try? String(contentsOf: url, encoding: .utf8) else { return }
         current = LerpShader(name: current.name, source: text, isBuiltIn: current.isBuiltIn, url: url)
         editor.setText(text)
+        parameterState.removeAll()      // else `syncParameters` pushes the moved values straight back
         compileNow(force: true)
-        updateChrome()
+        applyPreset(currentPreset)      // reloads the look, and updates the chrome on its way out
     }
 
     @objc func newShader(_ sender: Any?) {
@@ -1284,13 +1449,21 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private static let repoSuffix: String =
         RepoLocation.isBuildTree ? "" : (RepoLocation.root.map { "  ·  \($0.lastPathComponent)" } ?? "")
 
+    /// Called from every edit path, including one per moved slider and one per
+    /// inbound MIDI tick, so the two assignments that AppKit would redisplay for
+    /// are made only when the string actually changed.
+    ///
+    /// The title's dot stays the *text's*: it is the file's name that is in the
+    /// title bar, and `isDocumentEdited` is the flag the close prompt reads —
+    /// and that prompt deliberately does not fire over moved sliders, because
+    /// browsing looks with the inspector open would then question every step.
     private func updateChrome() {
-        let dirty = isDirty
-        saveButton.isEnabled = dirty
-        revertButton.isEnabled = dirty && current.url != nil
+        let dirty = isDirty, unsaved = hasUnsavedChanges
+        saveButton.isEnabled = unsaved
+        revertButton.isEnabled = unsaved && current.url != nil
         updateShaderButton()
-        window?.title = "Lerping@Home Playground — \(current.name)\(dirty ? " •" : "")"
-            + Self.repoSuffix
+        let title = "Lerping@Home Playground — \(current.name)\(dirty ? " •" : "")" + Self.repoSuffix
+        if window?.title != title { window?.title = title }
         window?.isDocumentEdited = dirty
     }
 
@@ -1326,6 +1499,14 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Prompts and window lifecycle
 
+    /// Asked about the *text*, and answered by ⌘S.
+    ///
+    /// Moved sliders are deliberately not a reason to ask: switching looks is
+    /// how this window is browsed, and a prompt on every step of it would be
+    /// unusable. But once the question has been raised by an edit to the text,
+    /// Save here means what Save means everywhere else in the window — the whole
+    /// of what is on screen, look included. Nothing it does can ask a second
+    /// question, so a close cannot stall behind one.
     @discardableResult
     private func confirmDiscardIfDirty() -> Bool {
         guard isDirty else { return true }
@@ -1336,7 +1517,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         alert.addButton(withTitle: "Discard")
         alert.addButton(withTitle: "Cancel")
         switch alert.runModal() {
-        case .alertFirstButtonReturn: saveShader(nil); return true
+        case .alertFirstButtonReturn: return saveShader(nil)
         case .alertSecondButtonReturn: return true
         default: return false
         }
@@ -1400,6 +1581,21 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             guard let self, let width = window?.contentView?.bounds.width else { return }
             split.splitView.setPosition(width * 0.40, ofDividerAt: 0)
             split.splitView.setPosition(width - 330, ofDividerAt: 1)
+        }
+    }
+}
+
+/// The File menu asks the same questions the toolbar does, so it asks them of
+/// the same two properties: ⌘S and Revert to Saved are live exactly when their
+/// buttons are. Without this AppKit enables anything this object responds to,
+/// and ⌘S with nothing to save rewrote the file it had just read and reported
+/// the recompile as though something had happened.
+extension PlaygroundWindowController: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(saveShader(_:)): return saveButton.isEnabled
+        case #selector(revertShader(_:)): return revertButton.isEnabled
+        default: return true
         }
     }
 }

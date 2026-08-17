@@ -222,6 +222,19 @@ public extension Collection where Element == LerpShader {
     }
 }
 
+enum LerpBundleResources {
+    static func directories(named folder: String) -> [URL] {
+        var directories: [URL] = []
+        for bundle in [Bundle(for: ShaderLibrary.self), Bundle.main] {
+            guard let url = bundle.resourceURL?.appendingPathComponent(folder),
+                  FileManager.default.fileExists(atPath: url.path),
+                  !directories.contains(url) else { continue }
+            directories.append(url)
+        }
+        return directories
+    }
+}
+
 /// Discovers shader files and compiles them into render pipelines at runtime.
 /// Runtime compilation keeps built-in and custom shaders on one code path and
 /// means no Metal toolchain is needed to build or extend the project.
@@ -242,13 +255,7 @@ public final class ShaderLibrary {
     /// `Bundle(for:)` is the .saver bundle when this code is linked into it;
     /// `Bundle.main` covers the plain executables, where the two differ.
     private func builtInDirectory() -> URL? {
-        for bundle in [Bundle(for: ShaderLibrary.self), Bundle.main] {
-            if let url = bundle.resourceURL?.appendingPathComponent("Shaders"),
-               FileManager.default.fileExists(atPath: url.path) {
-                return url
-            }
-        }
-        return nil
+        LerpBundleResources.directories(named: "Shaders").first
     }
 
     private func metalFiles(in dir: URL) -> [URL] {

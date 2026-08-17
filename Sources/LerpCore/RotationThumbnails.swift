@@ -151,14 +151,7 @@ public final class RotationThumbnails {
     /// the same pair `ShaderLibrary.builtInDirectory` walks, for the same
     /// reason.
     public static func bundledDirectories() -> [URL] {
-        var out: [URL] = []
-        for bundle in [Bundle(for: RotationThumbnails.self), Bundle.main] {
-            guard let url = bundle.resourceURL?.appendingPathComponent(bundledFolder),
-                  FileManager.default.fileExists(atPath: url.path),
-                  !out.contains(url) else { continue }
-            out.append(url)
-        }
-        return out
+        LerpBundleResources.directories(named: bundledFolder)
     }
 
     /// The folder name `make saver` renders into and `bundledDirectories()`
@@ -241,7 +234,7 @@ public final class RotationThumbnails {
         lock.lock()
         generation += 1
         let run = generation
-        diskHits = 0; bundledHits = 0; memoryHits = 0; rendered = 0; failed = []
+        resetStatistics()
         // Deliver what is already decoded before anything touches the disk, so
         // a filter change or a reopen paints instantly.
         var pending: [Job] = []
@@ -318,7 +311,7 @@ public final class RotationThumbnails {
         lock.lock()
         generation += 1
         let run = generation
-        rendered = 0; diskHits = 0; bundledHits = 0; memoryHits = 0; failed = []
+        resetStatistics()
         lock.unlock()
 
         var misses: [Job] = []
@@ -361,6 +354,15 @@ public final class RotationThumbnails {
     }
 
     // MARK: - Internals
+
+    /// Called while `lock` is held by the two synchronous statistic owners.
+    private func resetStatistics() {
+        diskHits = 0
+        bundledHits = 0
+        memoryHits = 0
+        rendered = 0
+        failed = []
+    }
 
     private func isCurrent(_ run: Int) -> Bool {
         lock.lock(); defer { lock.unlock() }

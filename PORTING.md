@@ -101,8 +101,8 @@ declared default. Setting a parameter the file doesn't declare is an error.
 
 You don't have to type one. Get the look you want on the playground's sliders
 and **Shader → Save Look as Preset…** (`⇧⌘S`) writes exactly this form back into
-the file — only the parameters you moved off their defaults, appended after any
-presets already there.
+the file — only the parameters you moved off their defaults. A new name is
+appended after existing presets; reusing a name replaces that preset in place.
 
 A preset is also a stop in the screensaver's shuffle: the rotation is a list of
 (shader, preset) pairs, where the shader's declared defaults are one of the

@@ -33,6 +33,16 @@ import AppKit
 /// see `control(_:textView:doCommandBy:)` — and it is the reason the popover
 /// beats the carousel that was the other idea on the table: 123 items is too
 /// many to walk past one at a time, and a carousel has nowhere to type.
+///
+/// ## Where New… went
+///
+/// The editor toolbar's New… button is the first card in this grid — see
+/// `NewLookCard`. Asking for a shader that does not exist is what you do at the
+/// end of looking through the ones that do, and that search happens in here; a
+/// button on the bar behind the popover is a button you have to dismiss this to
+/// reach, having just proved you needed it. Nothing else changes: the card runs
+/// the same `newShader` the File menu's ⌘N runs, and it is not a look, so it
+/// never joins the rotation, the counts, or the arrows.
 final class ShaderPicker: NSObject, NSPopoverDelegate {
 
     /// Narrower than the gallery window's tile, because this is a popover and
@@ -49,6 +59,8 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
 
     /// Open this look in the editor.
     var onOpen: ((LerpRotationEntry) -> Void)?
+    /// The "+" card was clicked: make a shader there is no look for yet.
+    var onNew: (() -> Void)?
     /// The rotation was changed from here. The host writes it and tells the
     /// gallery window, which is showing the same looks.
     var onChange: ((Set<LerpRotationEntry>) -> Void)?
@@ -77,6 +89,16 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
             self?.onOpen?(entry)
         }
         gallery.onChange = { [weak self] enabled in self?.onChange?(enabled) }
+        gallery.onNew = { [weak self] in
+            self?.close()
+            // Same close a chosen look gets, but the answer to this one is a
+            // modal alert asking for the name. Entering a modal loop in the same
+            // turn strands the popover on screen behind the alert until it is
+            // dismissed, because the close is an animation and the modal loop
+            // does not run it — so the close gets this turn and the question is
+            // asked on the next one.
+            DispatchQueue.main.async { self?.onNew?() }
+        }
     }
 
     // MARK: - Content

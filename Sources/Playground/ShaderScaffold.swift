@@ -99,7 +99,52 @@ enum ShaderScaffold {
     }
 }
 
-// MARK: - Preset authoring
+// MARK: - Declaration authoring
+
+/// Rewriting the `// lerp-param:` lines a file already has.
+///
+/// The Defaults look is a look like any other, and this is where its values
+/// live — so this is what Save writes when nothing else is worn, the way
+/// `PresetScaffold` is what it writes when a preset is. Only the `= DEFAULT`
+/// token moves; the name, type, range, label and the column the label sits in
+/// are left exactly as the author typed them.
+enum ParamScaffold {
+
+    /// `source` with each of `overrides` written back as that parameter's
+    /// declared default. Parameters the file does not declare are ignored, and
+    /// so is a line the parser cannot read — Save must not turn a typo in one
+    /// declaration into an edit to it.
+    static func settingDefaults(_ overrides: [(param: LerpParam, value: LerpParamValue)],
+                                in source: String) -> String {
+        guard !overrides.isEmpty else { return source }
+        let wanted = Dictionary(overrides.map { ($0.param.name, $0) }) { first, _ in first }
+        var text = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        for (index, line) in text.enumerated() {
+            guard let body = LerpParamParser.directiveBody(line, LerpParamParser.paramDirective),
+                  let declared = try? LerpParamParser.parseParam(body, line: 0),
+                  let override = wanted[declared.name],
+                  let rewritten = setting(LerpPresetWriter.literal(override.value, as: declared.type),
+                                          in: line)
+            else { continue }
+            text[index] = rewritten
+        }
+        return text.joined(separator: "\n")
+    }
+
+    /// One declaration line with `literal` in place of whatever followed its
+    /// `=`, keeping the label where it was: a shorter value pads out to the old
+    /// column, and only a longer one pushes it right. `NAME TYPE MIN MAX`
+    /// cannot contain an `=` and the comment prefix has no quotes, so the first
+    /// `=` opens the default and the first `"` after it closes it.
+    private static func setting(_ literal: String, in line: String) -> String? {
+        guard let equals = line.firstIndex(of: "=") else { return nil }
+        let head = String(line[...equals])
+        let rest = line[line.index(after: equals)...]
+        guard let label = rest.firstIndex(of: "\"") else { return head + " " + literal }
+        let padding = max(1, rest[..<label].count - literal.count - 1)
+        return head + " " + literal + String(repeating: " ", count: padding) + String(rest[label...])
+    }
+}
 
 /// Where a new `// lerp-preset:` block goes in a file that already exists.
 ///
@@ -150,6 +195,33 @@ enum PresetScaffold {
             text.insert(contentsOf: [""] + lines, at: end)
         }
         return text.joined(separator: "\n")
+    }
+
+    /// Replaces every declaration line for one preset, preserving its position.
+    /// Presets may repeat across lines, so removing only the first line would
+    /// leave stale assignments that the parser would merge back in.
+    static func replacing(_ name: String, with lines: [String], in source: String) -> String {
+        let text = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var result: [String] = []
+        var inserted = false
+        for line in text {
+            let isMatch: Bool
+            if let body = LerpParamParser.directiveBody(line, LerpParamParser.presetDirective),
+               let parsed = try? LerpParamParser.parsePreset(body, line: 0) {
+                isMatch = parsed.0.caseInsensitiveCompare(name) == .orderedSame
+            } else {
+                isMatch = false
+            }
+            if isMatch {
+                if !inserted {
+                    result.append(contentsOf: lines)
+                    inserted = true
+                }
+            } else {
+                result.append(line)
+            }
+        }
+        return result.joined(separator: "\n")
     }
 }
 

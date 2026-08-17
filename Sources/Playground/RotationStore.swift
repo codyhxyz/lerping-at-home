@@ -68,12 +68,23 @@ enum RotationStore {
         LerpRotation.read(defaults, discovered: discovered)
     }
 
+    /// The enabled looks and the state they were resolved from, for callers
+    /// that both display the selection and later write on top of it.
+    static func resolved(discovered: [LerpRotationEntry],
+                         from defaults: UserDefaults?)
+        -> (looks: Set<LerpRotationEntry>, base: LerpRotationState) {
+        let base = state(discovered: discovered, from: defaults)
+        let looks = Set(LerpMetalView.Config.rotation(
+            of: LerpRotation.enabled(discovered: discovered, in: base), from: discovered))
+        return (looks, base)
+    }
+
     /// What the screensaver will actually shuffle through, given what is saved
     /// and what exists. The "empty means all" policy is `Config.rotation`'s, not
     /// this file's.
     static func rotation(discovered: [LerpRotationEntry],
                          from defaults: UserDefaults?) -> [LerpRotationEntry] {
-        LerpMetalView.Config.rotation(of: load(discovered: discovered, from: defaults),
+        LerpMetalView.Config.rotation(of: resolved(discovered: discovered, from: defaults).looks,
                                       from: discovered)
     }
 

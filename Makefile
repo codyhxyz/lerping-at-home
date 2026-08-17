@@ -105,6 +105,14 @@ RELEASE_PLAYGROUND          = $(RELEASE_PLAYGROUND_ROOT)/Applications/LerpPlaygr
 RELEASE_COMPONENTS          = $(RELEASE_DIR)/components
 RELEASE_RESOURCES           = $(RELEASE_DIR)/resources
 
+define STAGE_DMG
+	rm -rf "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
+	mkdir -p "$(RELEASE_DMG_ROOT)"
+	cp "$(RELEASE_PACKAGE)" "$(RELEASE_DMG_ROOT)/Install Lerping@Home.pkg"
+	hdiutil create -quiet -ov -format UDZO -volname "Lerping@Home $(RELEASE_VERSION)" \
+		-srcfolder "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
+endef
+
 .PHONY: all preview playground playground-build saver saver-build midi-deps \
         install install-example install-playground uninstall-playground package dmg release clean
 
@@ -367,11 +375,7 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 # The release download is a DMG; the PKG inside it retains Installer's Customize
 # screen, where the Playground can be unchecked.
 dmg: package
-	rm -rf "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
-	mkdir -p "$(RELEASE_DMG_ROOT)"
-	cp "$(RELEASE_PACKAGE)" "$(RELEASE_DMG_ROOT)/Install Lerping@Home.pkg"
-	hdiutil create -quiet -ov -format UDZO -volname "Lerping@Home $(RELEASE_VERSION)" \
-		-srcfolder "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
+	$(STAGE_DMG)
 	hdiutil verify "$(RELEASE_DMG)"
 	@echo "Built $(RELEASE_DMG)"
 
@@ -390,11 +394,7 @@ release:
 	xcrun stapler validate "$(RELEASE_PACKAGE)"
 	pkgutil --check-signature "$(RELEASE_PACKAGE)"
 	spctl --assess --verbose=2 --type install "$(RELEASE_PACKAGE)"
-	rm -rf "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
-	mkdir -p "$(RELEASE_DMG_ROOT)"
-	cp "$(RELEASE_PACKAGE)" "$(RELEASE_DMG_ROOT)/Install Lerping@Home.pkg"
-	hdiutil create -quiet -ov -format UDZO -volname "Lerping@Home $(RELEASE_VERSION)" \
-		-srcfolder "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
+	$(STAGE_DMG)
 	codesign --force --timestamp --sign "$(APP_SIGN_IDENTITY)" "$(RELEASE_DMG)"
 	xcrun notarytool submit "$(RELEASE_DMG)" --keychain-profile "$(NOTARY_PROFILE)" --wait
 	xcrun stapler staple "$(RELEASE_DMG)"

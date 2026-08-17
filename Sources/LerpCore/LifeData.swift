@@ -93,6 +93,11 @@ public final class LifeData: LerpDataProvider {
         let birth: Int
         let survival: Int
 
+        struct DensePanel {
+            let columns: Range<Int>
+            let rule: Rule
+        }
+
         func next(wasAlive: Bool, neighbours: Int) -> Bool {
             let mask = wasAlive ? survival : birth
             return mask & (1 << neighbours) != 0
@@ -403,23 +408,34 @@ public final class LifeData: LerpDataProvider {
     }
 
     private func stepDense(cols: Int, rows: Int, rule: Rule) {
+        stepDense(cols: cols, rows: rows,
+                  panels: CollectionOfOne(Rule.DensePanel(columns: 0..<cols, rule: rule)))
+    }
+
+    private func stepDense<Panels: Collection>(cols: Int, rows: Int, panels: Panels)
+    where Panels.Element == Rule.DensePanel {
         alive.withUnsafeBufferPointer { a in
             scratch.withUnsafeMutableBufferPointer { next in
                 age.withUnsafeMutableBufferPointer { ages in
                     trail.withUnsafeMutableBufferPointer { trails in
-                        for y in 0..<rows {
-                            let row = y * cols
-                            let up = ((y + 1) % rows) * cols
-                            let down = ((y + rows - 1) % rows) * cols
-                            for x in 0..<cols {
-                                let right = x + 1 == cols ? 0 : x + 1
-                                let left = x == 0 ? cols - 1 : x - 1
-                                let n = Int(a[down + left]) + Int(a[down + x]) + Int(a[down + right])
-                                      + Int(a[row + left])                      + Int(a[row + right])
-                                      + Int(a[up + left])   + Int(a[up + x])   + Int(a[up + right])
-                                update(index: row + x, live: rule.next(wasAlive: a[row + x] != 0,
-                                                                       neighbours: n),
-                                       previous: a, next: next, ages: ages, trails: trails)
+                        for panel in panels {
+                            let start = panel.columns.lowerBound
+                            let end = panel.columns.upperBound - 1
+                            for y in 0..<rows {
+                                let row = y * cols
+                                let up = ((y + 1) % rows) * cols
+                                let down = ((y + rows - 1) % rows) * cols
+                                for x in panel.columns {
+                                    let right = x == end ? start : x + 1
+                                    let left = x == start ? end : x - 1
+                                    let n = Int(a[down + left]) + Int(a[down + x]) + Int(a[down + right])
+                                          + Int(a[row + left])                      + Int(a[row + right])
+                                          + Int(a[up + left])   + Int(a[up + x])   + Int(a[up + right])
+                                    update(index: row + x,
+                                           live: panel.rule.next(wasAlive: a[row + x] != 0,
+                                                                 neighbours: n),
+                                           previous: a, next: next, ages: ages, trails: trails)
+                                }
                             }
                         }
                     }
@@ -459,35 +475,11 @@ public final class LifeData: LerpDataProvider {
     private func stepComparison(cols: Int, rows: Int) {
         let width = cols / 3
         let rules = [Rule.conway, Rule.highLife, Rule.seeds]
-        alive.withUnsafeBufferPointer { a in
-            scratch.withUnsafeMutableBufferPointer { next in
-                age.withUnsafeMutableBufferPointer { ages in
-                    trail.withUnsafeMutableBufferPointer { trails in
-                        for panel in 0..<3 {
-                            let start = panel * width + 1
-                            let end = (panel + 1) * width - 2
-                            let rule = rules[panel]
-                            for y in 0..<rows {
-                                let row = y * cols
-                                let up = ((y + 1) % rows) * cols
-                                let down = ((y + rows - 1) % rows) * cols
-                                for x in start...end {
-                                    let left = x == start ? end : x - 1
-                                    let right = x == end ? start : x + 1
-                                    let n = Int(a[down + left]) + Int(a[down + x]) + Int(a[down + right])
-                                          + Int(a[row + left])                      + Int(a[row + right])
-                                          + Int(a[up + left])   + Int(a[up + x])   + Int(a[up + right])
-                                    update(index: row + x,
-                                           live: rule.next(wasAlive: a[row + x] != 0, neighbours: n),
-                                           previous: a, next: next, ages: ages, trails: trails)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        let panels = (0..<3).map { panel in
+            Rule.DensePanel(columns: (panel * width + 1)..<((panel + 1) * width - 1),
+                             rule: rules[panel])
         }
-        swap(&alive, &scratch)
+        stepDense(cols: cols, rows: rows, panels: panels)
     }
 
     private func update(index: Int, live: Bool,

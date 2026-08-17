@@ -222,6 +222,12 @@ make playground
     click as any other.
   - The popover opens with the caret in a filter field; typing filters, and ⏎
     opens the first look still showing.
+  - The grid leads with a dashed **+** card, "New Shader…" — the same scaffold
+    `⌘N` runs, in the grid you are already reading when the look you wanted turns
+    out not to exist. It is not a look: it is in no count, no rotation and no
+    filter, and `‹` `›` step straight past it. It appears only in the popover,
+    the one surface that can open what it makes, so the toolbar no longer carries
+    a New… button.
   - Pointing at a tile plays it, as in the gallery — it is the same tile.
   - Both grids mark the look the editor has open and share one cache of stills,
     so opening the popover after the gallery renders nothing new.
@@ -236,16 +242,37 @@ make playground
 - The rotation gallery window opens from **Shader → Screensaver Rotation…**
   (`⌥⌘R`). The toolbar has no button for it. It holds Select All, Deselect All,
   and a wider grid than the popover.
+- **Save** (`⌘S`) overwrites the look that is open, and never asks anything. The
+  window changes two things — the text and the values — and both live in the same
+  `.metal` file, so one command writes both: with a preset on, the values go back
+  into that preset's own `// lerp-preset:` block; with none on, into the
+  `// lerp-param:` lines' `= DEFAULT`, which is where the Defaults look keeps its
+  values. Naming a look that does not exist yet is Save As, and Save As is `⇧⌘S`.
+  - Only the `= DEFAULT` token of a declaration moves. The name, type, range,
+    label and the column the label sits in are left exactly as they were typed.
+  - Saving the defaults moves every preset that stays silent about that
+    parameter, because a preset records only what differs from them. That is what
+    editing the declaration by hand does too, and it is the only thing saving the
+    Defaults look can honestly mean; the status line says how many lines moved,
+    and `⌘Z` takes the buffer back.
+  - A buffer that does not compile still saves its text. An editor that refuses
+    your typing because the shader is mid-edit is an editor with a bug in it —
+    it is the *values* that wait for a compile, and the console says why.
+  - Save and Revert light up for a moved slider exactly as they do for a
+    keystroke, and Revert puts both halves back. Only the text raises the
+    close-the-window prompt: switching looks is how this window is browsed, and a
+    question on every step of it would be unusable.
 - **Shader → Save Look as Preset…** (`⇧⌘S`) writes the values on screen back into
-  the shader as a new named `// lerp-preset:` block. The new look gets a tile in
-  the picker and the gallery straight away, joins the screensaver's rotation, and
+  the shader as a named `// lerp-preset:` block. A new name adds a look;
+  entering an existing name replaces it after confirmation. The look gets a tile
+  in the picker and gallery straight away, joins the screensaver's rotation, and
   the editor ends up wearing it. The toolbar has no button for it either.
   - Only parameters that differ from the shader's declared defaults are written,
     because a preset is an overlay and a line restating a default freezes today's
     value into a file whose author may move it tomorrow.
-  - The block is appended after the file's existing presets. That keeps every
-    other preset at the index the saved rotation recorded it at, which is what
-    tells a *renamed* preset from a new one.
+  - New blocks are appended after the file's existing presets. Replacements stay
+    in their existing position, so the saved rotation keeps the same entry and
+    enabled/disabled choice.
   - Values are spelled so that re-parsing the file yields the same uniform block
     the GPU was being handed: hex for colours that sit on an 8-bit step, and
     otherwise the shortest decimal that survives a `float` round trip. Dragging a
@@ -255,9 +282,8 @@ make playground
     it does: a preset can only name parameters the file itself declares, so the
     block and the edits that justify it are one change. A buffer that does not
     compile is refused — what is on screen then is the last version that did.
-  - A name already used by a preset on that shader is refused rather than
-    overwritten (names are matched without regard to case), as are an empty one,
-    one containing a double quote or a tab, and `Defaults`, which is what every
+  - Preset names are matched without regard to case. Empty names, names with a
+    double quote or tab, and `Defaults` are still refused, because `Defaults` is what every
     shader's un-preset look is already called.
 - An externally modified open file reloads if there are no unsaved edits.
 - Time scrubber, render scale (100/75/50/25%), and fps readout map onto `LerpUniforms` and `LerpMetalView.Config`.
@@ -266,9 +292,12 @@ make playground
 Keys:
 
 - `⌘O` — open the shader picker; type to filter, ⏎ opens the first match.
-- `⌘N` — scaffold a new starter shader into `Sources/Shaders/`.
-- `⌘S` — write the buffer back to the `.metal` file.
-- `⇧⌘S` — save the values on screen as a new named preset of the open shader.
+- `⌘N` — scaffold a new starter shader into `Sources/Shaders/`, as the picker's
+  **+** card does.
+- `⌘S` — save the `.metal` file: the text, and the look on screen back into the
+  preset (or the declared defaults) it came from.
+- `⇧⌘S` — Save As: the look on screen under a name, as a new preset or over an
+  existing one.
 - `⌘R` — recompile.
 - `⌘\` — play/pause.
 - `⇧⌘R` — re-roll seed.

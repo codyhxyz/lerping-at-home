@@ -283,9 +283,13 @@ enum MIDIMappingStore {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    private static func name(inFileAt url: URL) -> String? {
+    private static func decode(_ url: URL) -> MappingPreset? {
         guard let data = try? Data(contentsOf: url) else { return nil }
-        return (try? JSONDecoder().decode(MappingPreset.self, from: data))?.name
+        return try? JSONDecoder().decode(MappingPreset.self, from: data)
+    }
+
+    private static func name(inFileAt url: URL) -> String? {
+        decode(url)?.name
     }
 
     /// The file this bank is already stored in, found by what it says its name
@@ -311,10 +315,7 @@ enum MIDIMappingStore {
     }
 
     static func load() -> [MappingPreset] {
-        jsonURLs().compactMap { url in
-            guard let data = try? Data(contentsOf: url) else { return nil }
-            return try? JSONDecoder().decode(MappingPreset.self, from: data)
-        }
+        jsonURLs().compactMap(decode)
     }
 
     static func save(_ preset: MappingPreset) throws {

@@ -52,11 +52,7 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     static func enabled(for entries: [LerpRotationEntry],
                         in defaults: UserDefaults?)
         -> (looks: Set<LerpRotationEntry>, base: LerpRotationState) {
-        let state = RotationStore.state(discovered: entries, from: defaults)
-        return (Set(LerpMetalView.Config.rotation(
-                        of: LerpRotation.enabled(discovered: entries, in: state),
-                        from: entries)),
-                state)
+        RotationStore.resolved(discovered: entries, from: defaults)
     }
 
     /// `defaults` is injected because this window edits the screensaver's

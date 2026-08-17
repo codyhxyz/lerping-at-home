@@ -16,7 +16,7 @@
 // lerp-param: softness  float 0 1 = 0.5  "Softness"
 // lerp-param: intensity float 0 1 = 0.5  "Intensity"
 // lerp-param: noise     float 0 1 = 0.25 "Noise"
-// lerp-param: speed     float 0 2 = 0.4  "Speed"
+// lerp-param: speed     float 0 2 = 2    "Speed"
 //
 // Palettes from upstream's presets (their shapes are not ported, so only the
 // colour/softness/intensity/noise parts carry over).

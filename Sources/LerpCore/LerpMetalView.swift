@@ -181,8 +181,12 @@ public final class LerpMetalView: NSView {
     /// The shader clock in seconds (`u.time`). Assigning scrubs the animation;
     /// the clock continues from the new value. Combine with `renderOnce()` to
     /// scrub while paused.
+    private func runningTime(at now: CFTimeInterval) -> CFTimeInterval {
+        elapsed + (now - resumeStamp)
+    }
+
     public var time: CFTimeInterval {
-        get { running ? elapsed + (CACurrentMediaTime() - resumeStamp) : elapsed }
+        get { running ? runningTime(at: CACurrentMediaTime()) : elapsed }
         set {
             elapsed = newValue
             resumeStamp = CACurrentMediaTime()
@@ -606,7 +610,7 @@ public final class LerpMetalView: NSView {
     @objc private func tick(_ link: CADisplayLink) {
         guard running, pipeline != nil else { return }
         let now = CACurrentMediaTime()
-        let time = elapsed + (now - resumeStamp)
+        let time = runningTime(at: now)
 
         if config.freezeAfter > 0, time - freezeBaseline > config.freezeAfter {
             frozen = true

@@ -275,12 +275,16 @@ public final class LerpSaverView: ScreenSaverView {
         parkedReason = nil
         presenceSamples = 0
         guard rendering else { return }
-        rendering = false
         // Read the exact frame the view is on *before* stopping it.
         let frame = capturedFrame()
-        metalView?.stop()
+        stopRendering()
         Self.log.notice("[\(self.instanceID)] session end (\(reason, privacy: .public)) — display link torn down, window retained")
         if let frame { publishWallpaper(frame) }
+    }
+
+    private func stopRendering() {
+        rendering = false
+        metalView?.stop()
     }
 
     // MARK: - Hosts that are never shown
@@ -464,8 +468,7 @@ public final class LerpSaverView: ScreenSaverView {
         super.stopAnimation()
         Self.log.notice("[\(self.instanceID)] stopAnimation preview=\(self.effectiveIsPreview) parked=\(self.parkedReason ?? "no", privacy: .public)")
         if effectiveIsPreview {
-            rendering = false
-            metalView?.stop()
+            stopRendering()
         } else {
             // Kept wired up for the macOS versions that do honour it; on 14+ the
             // notification path is what actually fires.
