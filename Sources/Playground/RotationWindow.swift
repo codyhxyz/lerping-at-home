@@ -40,21 +40,6 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     /// the run in flight, so whichever run is live has to feed both.
     var onImage: ((LerpRotationEntry, NSImage) -> Void)?
 
-    /// What the screensaver's saved rotation comes to for these looks, and the
-    /// state it was read from — the one spelling of it the playground uses, so
-    /// the gallery window and the toolbar popover cannot come up disagreeing
-    /// about what is in.
-    ///
-    /// The state comes back alongside because both surfaces write, and a writer
-    /// that does not know what it read cannot merge against a newer one. Every
-    /// caller of this is a window with a checkbox in it, so every caller needs
-    /// it; handing back only the set is what let the popover write blind.
-    static func enabled(for entries: [LerpRotationEntry],
-                        in defaults: UserDefaults?)
-        -> (looks: Set<LerpRotationEntry>, base: LerpRotationState) {
-        RotationStore.resolved(discovered: entries, from: defaults)
-    }
-
     /// `defaults` is injected because this window edits the screensaver's
     /// ByHost domain rather than the playground's own preferences.
     init(searchURLs: [URL], defaults: UserDefaults?, hidden: Bool,
@@ -71,11 +56,7 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = gallery
         if hidden {
             // Capture mode builds real, laid-out views without showing them.
-            // See `PlaygroundWindowController.hide`.
-            window.alphaValue = 0
-            window.ignoresMouseEvents = true
-            window.isExcludedFromWindowsMenu = true
-            window.collectionBehavior = [.stationary, .ignoresCycle, .fullScreenNone]
+            window.hideForCapture()
         } else {
             window.setFrameAutosaveName("LerpRotationWindow")
         }
@@ -103,7 +84,7 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
         sourceFingerprint = fingerprint
 
         let entries = shaders.rotationEntries()
-        let saved = Self.enabled(for: entries, in: defaults)
+        let saved = RotationStore.resolved(discovered: entries, from: defaults)
         base = saved.base
         gallery.show(shaders: shaders, enabled: saved.looks)
 

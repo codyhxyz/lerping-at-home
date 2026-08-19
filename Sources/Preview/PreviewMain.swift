@@ -24,8 +24,7 @@ enum PreviewMain {
 
         if args.contains("--life-selftest") {
             guard LifeData.selfTest() else { fail("Game of Life rule self-test failed") }
-            guard let renderer = LerpRenderer() else { fail("no Metal device") }
-            let library = ShaderLibrary(device: renderer.device, extraSearchURLs: extraSearch)
+            let library = makeLibrary(extraSearch).library
             guard let shader = library.shader(named: "game-of-life"),
                   [shader].rotationEntries().count == 10,
                   (try? library.pipeline(for: shader)) != nil
@@ -35,17 +34,14 @@ enum PreviewMain {
         }
 
         if args.contains("--list") {
-            guard let renderer = LerpRenderer() else { fail("no Metal device") }
-            let library = ShaderLibrary(device: renderer.device, extraSearchURLs: extraSearch)
-            for shader in library.discover() {
+            for shader in makeLibrary(extraSearch).library.discover() {
                 print("\(shader.name)\(shader.isBuiltIn ? "" : "  (custom)")  \(shader.url?.path ?? "")")
             }
             return
         }
 
         if args.contains("--params") {
-            guard let renderer = LerpRenderer() else { fail("no Metal device") }
-            let library = ShaderLibrary(device: renderer.device, extraSearchURLs: extraSearch)
+            let library = makeLibrary(extraSearch).library
             let only = flagValue(args, "--params").flatMap { $0.hasPrefix("--") ? nil : $0 }
             for shader in library.discover() where only == nil || shader.name == only {
                 printParameters(of: shader)
@@ -74,6 +70,14 @@ enum PreviewMain {
     static func fail(_ message: String) -> Never {
         FileHandle.standardError.write(("error: " + message + "\n").data(using: .utf8)!)
         exit(1)
+    }
+
+    /// A renderer and a library over it, or the one error every mode reports the
+    /// same way. Four subcommands opened these two lines; a machine with no GPU
+    /// should not be told four different things about it.
+    static func makeLibrary(_ extraSearch: [URL]) -> (renderer: LerpRenderer, library: ShaderLibrary) {
+        guard let renderer = LerpRenderer() else { fail("no Metal device") }
+        return (renderer, ShaderLibrary(device: renderer.device, extraSearchURLs: extraSearch))
     }
 
     static func flagValue(_ args: [String], _ flag: String) -> String? {
@@ -137,8 +141,8 @@ enum PreviewMain {
                 values.set(param.name, .color(color))
             } else if let number = Double(raw) {
                 values.set(param.name, to: number)
-            } else if let boolean = ["true": 1.0, "false": 0.0][raw.lowercased()] {
-                values.set(param.name, to: boolean)
+            } else if let flag = LerpParamParser.boolean(raw) {
+                values.set(param.name, to: flag)
             } else {
                 fail("'\(raw)' is not a number or bool")
             }
@@ -149,8 +153,7 @@ enum PreviewMain {
     // MARK: - Snapshot mode
 
     static func snapshotAll(outDir: String, args: [String], extraSearch: [URL]) {
-        guard let renderer = LerpRenderer() else { fail("no Metal device") }
-        let library = ShaderLibrary(device: renderer.device, extraSearchURLs: extraSearch)
+        let (renderer, library) = makeLibrary(extraSearch)
 
         var width = 1200, height = 750
         if let size = flagValue(args, "--size") {
@@ -208,15 +211,8 @@ enum PreviewMain {
     static func bakeThumbnails(into bundle: URL) {
         let resources = bundle.appendingPathComponent("Contents/Resources")
         let shaderDir = resources.appendingPathComponent("Shaders")
-        let files = (try? FileManager.default.contentsOfDirectory(at: shaderDir,
-                                                                  includingPropertiesForKeys: nil)) ?? []
-        let shaders = files.filter { $0.pathExtension == "metal" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .compactMap { url -> LerpShader? in
-                guard let source = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-                return LerpShader(name: url.deletingPathExtension().lastPathComponent,
-                                  source: source, isBuiltIn: true, url: url)
-            }
+        let shaders = ShaderLocations.metalFiles(in: shaderDir)
+            .compactMap { LerpShader(contentsOf: $0, isBuiltIn: true) }
         guard !shaders.isEmpty else {
             fail("no .metal files in \(shaderDir.path) — is that a Lerping@Home.saver bundle?")
         }

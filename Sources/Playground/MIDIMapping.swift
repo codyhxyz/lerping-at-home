@@ -223,8 +223,6 @@ final class MIDIRouter {
         }
     }
 
-    var bindingCount: Int { table.count }
-
     func route(channel: UInt4, cc: UInt7, value: UInt8) -> (binding: MIDIBinding, update: Update)? {
         let exact = Self.key(channel, cc), omni = Self.key(nil, cc)
         if let key = table[exact] != nil ? exact : (table[omni] != nil ? omni : nil),

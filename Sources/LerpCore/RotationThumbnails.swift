@@ -161,14 +161,11 @@ public final class RotationThumbnails {
     public var cacheDirectory: URL { directory }
 
     /// Deterministic 64-bit FNV-1a. `String.hashValue` is seeded per process, so
-    /// using it here would mean a cold cache on every single launch.
+    /// using it here would mean a cold cache on every single launch — and a
+    /// bundled still whose name no runtime lookup could ever produce. See
+    /// `LerpHash`.
     public static func hash(_ text: String) -> String {
-        var value: UInt64 = 0xcbf2_9ce4_8422_2325
-        for byte in text.utf8 {
-            value ^= UInt64(byte)
-            value = value &* 0x0000_0100_0000_01B3
-        }
-        return String(format: "%016llx", value)
+        String(format: "%016llx", LerpHash.fnv1a(text))
     }
 
     /// Ordered shader identity used to decide whether a gallery needs reloading.

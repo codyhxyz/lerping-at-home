@@ -43,7 +43,22 @@ enum RotationStore {
 
     // MARK: - Reading
 
-    /// The shuffle rotation implied by saved defaults, or nil for "every entry".
+    /// The persisted state, for a caller that is going to write and therefore
+    /// needs to know what it is writing on top of.
+    static func state(discovered: [LerpRotationEntry],
+                      from defaults: UserDefaults?) -> LerpRotationState {
+        LerpRotation.read(defaults, discovered: discovered)
+    }
+
+    /// What the screensaver's saved rotation comes to for these looks, and the
+    /// state it was read from — the one spelling of it the playground uses, so
+    /// the gallery window and the toolbar popover cannot come up disagreeing
+    /// about what is in.
+    ///
+    /// The state comes back alongside because both surfaces write, and a writer
+    /// that does not know what it read cannot merge against a newer one. Every
+    /// caller of this is a window with a checkbox in it, so every caller needs
+    /// it; handing back only the set is what let the popover write blind.
     ///
     /// `LerpRotation.enabled` is the policy; the cases it has to keep:
     ///
@@ -56,20 +71,6 @@ enum RotationStore {
     ///   whatever the user decided about it under its old name.
     /// - A rotation saved before presets counted holds shader *names*; every
     ///   look of a shader that was in it joins.
-    static func load(discovered: [LerpRotationEntry],
-                     from defaults: UserDefaults?) -> Set<LerpRotationEntry>? {
-        LerpRotation.enabled(discovered: discovered, in: defaults)
-    }
-
-    /// The persisted state behind `load`, for a caller that is going to write
-    /// and therefore needs to know what it is writing on top of.
-    static func state(discovered: [LerpRotationEntry],
-                      from defaults: UserDefaults?) -> LerpRotationState {
-        LerpRotation.read(defaults, discovered: discovered)
-    }
-
-    /// The enabled looks and the state they were resolved from, for callers
-    /// that both display the selection and later write on top of it.
     static func resolved(discovered: [LerpRotationEntry],
                          from defaults: UserDefaults?)
         -> (looks: Set<LerpRotationEntry>, base: LerpRotationState) {

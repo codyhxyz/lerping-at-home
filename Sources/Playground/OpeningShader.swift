@@ -120,21 +120,14 @@ enum OpeningShader {
     /// The first entry that will open, starting at a random place in `order` and
     /// walking forward, wrapping once. nil when none of them will.
     ///
-    /// The wrap-around is `ShaderLibrary.step`, which is where every cycle in
-    /// this project lives — the ←/→ keys, the shuffle and this — rather than a
-    /// fourth spelling of `(i + d + n) % n`.
+    /// The walk is `ShaderLibrary.firstStep`, which is where every cycle in this
+    /// project lives — the ←/→ keys, the shuffle and this — rather than a fourth
+    /// spelling of `(i + d + n) % n` around a fourth copy of "skip the ones that
+    /// will not build".
     private static func firstThatOpens(in order: [LerpRotationEntry],
                                        opens: (LerpRotationEntry) -> Bool) -> LerpRotationEntry? {
         guard !order.isEmpty else { return nil }
-        let start = Int.random(in: order.indices)
-        var anchor: LerpRotationEntry?
-        for attempt in 0..<order.count {
-            guard let candidate = ShaderLibrary.step(in: order, after: anchor,
-                                                     offset: attempt == 0 ? start : 1)
-            else { return nil }
-            anchor = candidate
-            if opens(candidate) { return candidate }
-        }
-        return nil
+        return ShaderLibrary.firstStep(in: order, after: nil,
+                                       offset: Int.random(in: order.indices), where: opens)
     }
 }

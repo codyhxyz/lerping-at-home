@@ -176,7 +176,7 @@ public final class HeatmapData: LerpDataProvider {
     /// seed, so each launch gets a different figure; nothing here reads the clock.
     private static func drawSilhouette(into gray: UnsafeMutablePointer<UInt8>,
                                        width: Int, height: Int, box: Int, seed: Float) {
-        var rng = RNG(seed: seed)
+        var rng = makeRNG(seed: seed)
         let (a, b) = lissajous[rng.below(lissajous.count)]
         let phase = rng.unit() * Double.pi
         let taperFreq = Double(2 + rng.below(2))
@@ -284,24 +284,15 @@ public final class HeatmapData: LerpDataProvider {
 
     // MARK: - Seeded RNG
 
-    private struct RNG {
-        var state: UInt64
-
-        init(seed: Float) {
-            state = UInt64(seed.bitPattern) &* 0x9E37_79B9_7F4A_7C15 ^ 0xD1B5_4A32_D192_ED03
-            _ = next()
-        }
-
-        mutating func next() -> UInt64 {
-            state = state &+ 0x9E37_79B9_7F4A_7C15
-            var z = state
-            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-            return z ^ (z >> 31)
-        }
-
-        mutating func below(_ n: Int) -> Int { Int(next() % UInt64(n)) }
-        mutating func unit() -> Double { Double(next() >> 11) * (1.0 / 9007199254740992.0) }
+    /// `LerpSplitMix64` stirred by this provider's own recipe. Not shared with
+    /// the other providers' stirring, deliberately: two of them handed the same
+    /// `u.seed` must not draw the same numbers, and the existing figures were
+    /// rendered from exactly these constants.
+    private static func makeRNG(seed: Float) -> LerpSplitMix64 {
+        var rng = LerpSplitMix64(
+            state: UInt64(seed.bitPattern) &* LerpSplitMix64.gamma ^ 0xD1B5_4A32_D192_ED03)
+        _ = rng.next()
+        return rng
     }
 
     // MARK: - MSL declarations

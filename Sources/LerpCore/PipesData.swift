@@ -105,10 +105,6 @@ public final class PipesData: LerpDataProvider {
         occupiedBit | (color << colorShift)
     }
 
-    /// splitmix64's increment, the 64-bit golden-ratio constant. It also stirs
-    /// the raw seed bits before they reach the RNG — same constant, same job.
-    private static let goldenGamma: UInt64 = 0x9E37_79B9_7F4A_7C15
-
     private static let delta: [(Int, Int, Int)] = [
         (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1),
     ]
@@ -178,7 +174,7 @@ public final class PipesData: LerpDataProvider {
             : max(0, 1 - (local - wipeStart) / PipesData.fadeSeconds)
 
         // Distinct integer stream per (seed, cycle).
-        let seedBits = UInt64(uniforms.seed.bitPattern) &* PipesData.goldenGamma
+        let seedBits = UInt64(uniforms.seed.bitPattern) &* LerpSplitMix64.gamma
         let rngSeed = seedBits ^ (UInt64(bitPattern: Int64(cycleIndex)) &* 0xD1B5_4A32_D192_ED03)
 
         build(fullSteps: fullSteps, frac: frac, rngSeed: rngSeed)
@@ -197,18 +193,6 @@ public final class PipesData: LerpDataProvider {
     }
 
     // MARK: - Deterministic walk
-
-    private struct RNG {
-        var state: UInt64
-        mutating func next() -> UInt64 {
-            state = state &+ PipesData.goldenGamma
-            var z = state
-            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-            return z ^ (z >> 31)
-        }
-        mutating func below(_ n: Int) -> Int { Int(next() % UInt64(n)) }
-    }
 
     private struct Pipe {
         var x = 0, y = 0, z = 0
@@ -234,7 +218,7 @@ public final class PipesData: LerpDataProvider {
     /// is what lets the caller *peek* the direction for the partially-grown tip
     /// without desynchronising the next frame's regeneration. Allocation-free:
     /// this runs a few thousand times per frame.
-    private func chooseDirection(_ pipe: Pipe, _ rng: inout RNG) -> Int? {
+    private func chooseDirection(_ pipe: Pipe, _ rng: inout LerpSplitMix64) -> Int? {
         var weights = SIMD8<Int32>(repeating: 0)
         var total = 0
         let back = pipe.dir ^ 1
@@ -255,7 +239,7 @@ public final class PipesData: LerpDataProvider {
     }
 
     /// Drops a new pipe head on a free node in a new material.
-    private func spawn(_ rng: inout RNG, avoiding previousColor: UInt32) -> Pipe? {
+    private func spawn(_ rng: inout LerpSplitMix64, avoiding previousColor: UInt32) -> Pipe? {
         for _ in 0..<200 {
             let x = rng.below(dim.x), y = rng.below(dim.y), z = rng.below(dim.z)
             guard free(x, y, z) else { continue }
@@ -276,7 +260,7 @@ public final class PipesData: LerpDataProvider {
         let count = dim.x * dim.y * dim.z
         for i in 0..<count { nodes[i] = 0 }
 
-        var rng = RNG(state: rngSeed &+ 0x1234_5678_9ABC_DEF0)
+        var rng = LerpSplitMix64(state: rngSeed &+ 0x1234_5678_9ABC_DEF0)
         _ = rng.next()
 
         var pipes = [Pipe?](repeating: nil, count: PipesData.concurrentPipes)

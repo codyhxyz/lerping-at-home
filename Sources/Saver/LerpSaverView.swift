@@ -95,30 +95,18 @@ public final class LerpSaverView: ScreenSaverView {
     private static let thumbnailCacheName =
         LerpDefaults.module + "/RotationThumbnails"
 
-    /// A popup's menu, in menu order: the titles it shows and the value each one
-    /// stores. Titles, value → index and index → value all come out of the one
-    /// table, because spelling the same three-row menu out three times is how a
-    /// popup ends up one item off from what it saves.
-    private typealias Choices = [(title: String, value: Double)]
-
-    private static let freezeChoices: Choices = [        // minutes
+    /// The two popups whose items carry a number. See `Chrome.Choices` for why
+    /// index ↔ value goes through one table.
+    private static let freezeChoices: Chrome.Choices = [        // minutes
         ("Never", 0), ("After 5 minutes", 5), ("After 15 minutes", 15), ("After 30 minutes", 30),
     ]
-    private static let renderScales: Choices = [         // fraction of native
+    /// Fraction of native. Stops at 50%: the playground's copy of this menu goes
+    /// down to 25% because a quarter-scale render is a useful thing to *edit*
+    /// against, and a visibly soft screensaver is not a useful thing to leave
+    /// running all night.
+    private static let renderScales: Chrome.Choices = [
         ("100%", 1.0), ("75%", 0.75), ("50%", 0.5),
     ]
-
-    /// Where `value` sits in the menu, or `fallback` for a value the menu does
-    /// not offer (only reachable by hand-editing the defaults).
-    private static func index(of value: Double, in choices: Choices, default fallback: Int) -> Int {
-        choices.firstIndex { $0.value == value } ?? fallback
-    }
-
-    /// The value a popup is sitting on, clamped to the menu.
-    private static func value(of popup: NSPopUpButton?, in choices: Choices, default fallback: Int) -> Double {
-        let index = popup?.indexOfSelectedItem ?? fallback
-        return choices[max(0, min(index, choices.count - 1))].value
-    }
 
     public override init?(frame: NSRect, isPreview: Bool) {
         super.init(frame: frame, isPreview: isPreview)
@@ -677,14 +665,12 @@ public final class LerpSaverView: ScreenSaverView {
         fpsPopup.selectItem(withTitle: String(settings.fps))
 
         let scalePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        scalePopup.addItems(withTitles: Self.renderScales.map(\.title))
-        scalePopup.selectItem(at: Self.index(of: settings.renderScale,
-                                             in: Self.renderScales, default: 0))
+        Chrome.fill(scalePopup, with: Self.renderScales,
+                    selecting: settings.renderScale, default: 0)
 
         let freezePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        freezePopup.addItems(withTitles: Self.freezeChoices.map(\.title))
-        freezePopup.selectItem(at: Self.index(of: settings.freezeMinutes,
-                                              in: Self.freezeChoices, default: 3))
+        Chrome.fill(freezePopup, with: Self.freezeChoices,
+                    selecting: settings.freezeMinutes, default: 3)
 
         // Off unless the user says otherwise: replacing someone's desktop picture
         // behind their back is not a reasonable default.
@@ -815,8 +801,9 @@ public final class LerpSaverView: ScreenSaverView {
     }
 
     /// The preset popup's first item, which means "the shader's declared
-    /// defaults" — the same thing a `nil` preset means everywhere else.
-    private static let defaultsTitle = "Defaults"
+    /// defaults" — the same thing a `nil` preset means everywhere else, under
+    /// the same name every other surface gives it.
+    private static let defaultsTitle = LerpRotationEntry.defaultsName
 
     /// Rebuilds the preset popup for whatever shader is pinned. Greyed out in
     /// shuffle mode, where each rotation entry brings its own preset.
@@ -863,8 +850,8 @@ public final class LerpSaverView: ScreenSaverView {
             settings.enabledEntries = rotationEnabled
             settings.rotationBase = rotationBase
             settings.fps = Int(fpsPopup?.titleOfSelectedItem ?? "30") ?? 30
-            settings.renderScale = Self.value(of: scalePopup, in: Self.renderScales, default: 0)
-            settings.freezeMinutes = Self.value(of: freezePopup, in: Self.freezeChoices, default: 3)
+            settings.renderScale = Chrome.value(of: scalePopup, in: Self.renderScales, default: 0)
+            settings.freezeMinutes = Chrome.value(of: freezePopup, in: Self.freezeChoices, default: 3)
             settings.setsWallpaper = wallpaperCheckbox?.state == .on
             settings.save(to: defaults, entries: rotationEntries)
         }

@@ -3,6 +3,27 @@ import Metal
 import MIDIDeps
 import QuartzCore
 
+extension NSWindow {
+    /// Takes the window off the user's screen without taking it off *a* screen.
+    ///
+    /// Moving it beyond the displays would be simpler, but AppKit stops the
+    /// display link on a window that is on no screen — measured: zero frames —
+    /// and "the live view is drawing frames" is one of the checks `--capture`
+    /// exists to make. So it stays where it is, fully composited and really
+    /// rendering, at zero opacity: invisible, click-through, out of ⌘-Tab and
+    /// Mission Control, and out of the Window menu.
+    ///
+    /// Both of the playground's windows do this in capture mode, and both have
+    /// to do it the same way or the run is not the launch it claims to
+    /// reproduce.
+    func hideForCapture() {
+        alphaValue = 0
+        ignoresMouseEvents = true
+        isExcludedFromWindowsMenu = true
+        collectionBehavior = [.stationary, .ignoresCycle, .fullScreenNone]
+    }
+}
+
 /// The playground window: `.metal` source on the left, a live `LerpMetalView`
 /// on the right, and a debounced recompile in between.
 ///
@@ -148,7 +169,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 900, height: 500)
         super.init(window: window)
         window.delegate = self
-        if hidden { hide(window) }
+        if hidden { window.hideForCapture() }
 
         buildUI()
         startMIDI()
@@ -169,21 +190,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                      height: min(920, visible.height - 40)))
         window.center()
         if !hidden { window.setFrameAutosaveName(Self.windowAutosave) }
-    }
-
-    /// Takes the window off the user's screen without taking it off *a* screen.
-    ///
-    /// Moving it beyond the displays would be simpler, but AppKit stops the
-    /// display link on a window that is on no screen — measured: zero frames —
-    /// and "the live view is drawing frames" is one of the checks this window
-    /// exists to make. So it stays where it is, fully composited and really
-    /// rendering, at zero opacity: invisible, click-through, out of ⌘-Tab and
-    /// Mission Control, and out of the Window menu.
-    private func hide(_ window: NSWindow) {
-        window.alphaValue = 0
-        window.ignoresMouseEvents = true
-        window.isExcludedFromWindowsMenu = true
-        window.collectionBehavior = [.stationary, .ignoresCycle, .fullScreenNone]
     }
 
     required init?(coder: NSCoder) { nil }
@@ -478,11 +484,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// is read. Read-only: nothing on this path writes the saver's domain.
     ///
     /// The compile probe is memoised per shader because a rotation is
-    /// (shader, preset) pairs — `swirl` and `swirl/Candy` are one compile — and
-    /// because the widen-to-everything fallback would otherwise rebuild the same
-    /// broken pipelines a second time. `pipeline(for:)` caches its successes, so
-    /// the winner is compiled once here and once more by `open`, which clears
-    /// the cache first to keep hot reload from growing it.
+    /// (shader, preset) pairs — `swirl` and `swirl/Candy` are one compile, and
+    /// a shader with five presets would otherwise be built five times over on
+    /// the walk. `pipeline(for:)` caches its successes, so the winner is
+    /// compiled once here and once more by `open`, which clears the cache first
+    /// to keep hot reload from growing it.
     private func openingEntry(among shaders: [LerpShader]) -> LerpRotationEntry? {
         var verdicts: [String: Bool] = [:]
         let library = metalView.shaderLibrary
@@ -1045,7 +1051,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     private func loadPicker(_ picker: ShaderPicker, shaders: [LerpShader]) {
         let entries = shaders.rotationEntries()
-        let saved = RotationWindowController.enabled(for: entries, in: rotationDefaults)
+        let saved = RotationStore.resolved(discovered: entries, from: rotationDefaults)
         rotationBase = saved.base
         picker.prepare(shaders: shaders, enabled: saved.looks, current: currentEntry)
     }
@@ -1119,7 +1125,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         case .cannot:
             guard writeBuffer() else { return false }
             guard !compileFailed else { return true }   // the console is already saying it
-            setStatus("✓  saved — “\(currentPreset ?? "Defaults")” is unchanged: every control is at "
+            setStatus("✓  saved — “\(currentPreset ?? LerpRotationEntry.defaultsName)” is unchanged: every control is at "
                         + "\(current.name)'s declared default, and a preset records only what differs",
                       tint: EditorTheme.dim)
             return true
@@ -1427,12 +1433,16 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         seek(to: seconds)
     }
 
-    private static let renderScales: [(title: String, value: Double)] =
+    /// Fraction of native. Goes one step further down than the saver's copy of
+    /// this menu: a quarter-scale render is a useful thing to edit against when
+    /// a shader is expensive, and it is not a thing anybody wants left on their
+    /// screen all night.
+    private static let renderScales: Chrome.Choices =
         [("100%", 1.0), ("75%", 0.75), ("50%", 0.5), ("25%", 0.25)]
 
     @objc private func scaleChanged() {
-        let index = min(max(scalePopUp.indexOfSelectedItem, 0), Self.renderScales.count - 1)
-        metalView.config.renderScale = Self.renderScales[index].value
+        metalView.config.renderScale = Chrome.value(of: scalePopUp, in: Self.renderScales,
+                                                    default: 0)
         if isPaused { metalView.renderOnce() }
     }
 

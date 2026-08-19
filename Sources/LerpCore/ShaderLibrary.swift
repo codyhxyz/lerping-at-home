@@ -30,6 +30,19 @@ public struct LerpShader: Sendable {
         self.parameterErrors = parsed.errors
     }
 
+    /// The shader in a `.metal` file — its stem is the name — or nil when the
+    /// file cannot be read as UTF-8.
+    ///
+    /// The one place a file becomes a shader. `ShaderLibrary.discover` walks the
+    /// search directories with it, and so does `LerpPreview --thumbnails`, which
+    /// deliberately reads a `.saver` bundle's *own* `Resources/Shaders` rather
+    /// than whatever `discover` would find.
+    public init?(contentsOf url: URL, isBuiltIn: Bool) {
+        guard let source = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        self.init(name: url.deletingPathExtension().lastPathComponent,
+                  source: source, isBuiltIn: isBuiltIn, url: url)
+    }
+
     public var displayName: String {
         name.split(separator: "-").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
     }
@@ -116,8 +129,20 @@ public struct LerpRotationEntry: Hashable, Sendable {
         }
     }
 
+    /// What every surface calls a shader's un-preset look, and the one preset
+    /// name that cannot be used for anything else.
+    ///
+    /// Written out five times before this existed: here, in the inspector's
+    /// preset popup, in the Options… sheet's, in the playground's status line,
+    /// and in `LerpPresetWriter.problem`, which refuses it. That last one is why
+    /// the string has to be shared rather than merely consistent — the refusal
+    /// and the thing being reserved are the same fact, and a rename that reached
+    /// four of the five would quietly allow a preset that draws two identically
+    /// captioned tiles and is unselectable in a popup.
+    public static let defaultsName = "Defaults"
+
     /// What the Options list calls this entry underneath its shader heading.
-    public var displayName: String { preset ?? "Defaults" }
+    public var displayName: String { preset ?? Self.defaultsName }
 }
 
 /// Filesystem policy shared by the saver's sandbox and the ordinary app hosts.
@@ -198,6 +223,16 @@ public enum ShaderLocations {
     public static func repoSearchURLs() -> [URL] {
         repoShaderDirectory().map { [$0] } ?? []
     }
+
+    /// The `.metal` files in one directory, in name order — an empty list for a
+    /// directory that is not there, which is the normal answer for a search path
+    /// the user has never created.
+    public static func metalFiles(in directory: URL) -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(at: directory,
+                                                      includingPropertiesForKeys: nil))?
+            .filter { $0.pathExtension == "metal" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+    }
 }
 
 public extension Collection where Element == LerpShader {
@@ -258,12 +293,6 @@ public final class ShaderLibrary {
         LerpBundleResources.directories(named: "Shaders").first
     }
 
-    private func metalFiles(in dir: URL) -> [URL] {
-        (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
-            .filter { $0.pathExtension == "metal" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
-    }
-
     /// Every directory scanned, in *ascending* priority: a file found later
     /// replaces one of the same name found earlier.
     private func searchDirectories() -> [(url: URL, isBuiltIn: Bool)] {
@@ -282,10 +311,9 @@ public final class ShaderLibrary {
     public func discover() -> [LerpShader] {
         var byName: [String: LerpShader] = [:]
         for (dir, isBuiltIn) in searchDirectories() {
-            for url in metalFiles(in: dir) {
-                let name = url.deletingPathExtension().lastPathComponent
-                guard let source = try? String(contentsOf: url, encoding: .utf8) else { continue }
-                byName[name] = LerpShader(name: name, source: source, isBuiltIn: isBuiltIn, url: url)
+            for url in ShaderLocations.metalFiles(in: dir) {
+                guard let shader = LerpShader(contentsOf: url, isBuiltIn: isBuiltIn) else { continue }
+                byName[shader.name] = shader
             }
         }
         return byName.values.sorted { $0.name < $1.name }
@@ -309,6 +337,35 @@ public final class ShaderLibrary {
         guard !items.isEmpty else { return nil }
         let index = current.flatMap { items.firstIndex(of: $0) } ?? 0
         return items[(((index + offset) % items.count) + items.count) % items.count]
+    }
+
+    /// The first item `accept` takes, starting `offset` places from `current`
+    /// and then continuing one step at a time in the same direction, wrapping
+    /// once through `items`. nil when the list is empty or nothing was accepted.
+    ///
+    /// Skipping over a candidate that will not load is the whole point, and it
+    /// is the same rule in both places it is used: the shuffle stepping past a
+    /// shader that will not compile (`LerpMetalView.loadEntry`) and the
+    /// playground picking a look to open on (`OpeningShader`). Stopping at the
+    /// first failure both shows the wrong thing and sticks there — the next step
+    /// would set out from the same place and retry the same broken file.
+    ///
+    /// `accept` is called at most once per item, in walk order, and is expected
+    /// to have the side effect that matters (loading the pipeline); a `true`
+    /// answer means the caller is now on that item.
+    public static func firstStep<T: Equatable>(in items: [T], after current: T?, offset: Int,
+                                               where accept: (T) -> Bool) -> T? {
+        guard !items.isEmpty else { return nil }
+        let direction = offset < 0 ? -1 : 1
+        var anchor = current
+        for attempt in 0..<items.count {
+            guard let candidate = step(in: items, after: anchor,
+                                       offset: attempt == 0 ? offset : direction)
+            else { return nil }
+            anchor = candidate
+            if accept(candidate) { return candidate }
+        }
+        return nil
     }
 
     /// Records `message` as this shader's compile error and throws it. Every

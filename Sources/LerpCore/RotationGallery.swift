@@ -22,6 +22,24 @@ import AppKit
 /// card that is not a look through `onNew`, and what is on comes back in through
 /// `show(shaders:enabled:)`.
 
+// MARK: - Shared card behaviour
+
+extension NSView {
+    /// The pointer tracking every card in the grid uses — a look's tile and the
+    /// "+" card alike, which is why it is here rather than written out in both.
+    ///
+    /// `.inVisibleRect` keeps the tracking rect in step with the scroll view by
+    /// itself, so a card that scrolls out from under a stationary pointer is
+    /// exited rather than left thinking it is still hovered.
+    func installGridTracking() {
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseEnteredAndExited, .activeInKeyWindow,
+                                                 .inVisibleRect],
+                                       owner: self))
+    }
+}
+
 // MARK: - One look
 
 /// A single look. Drawn rather than assembled out of an image view and two
@@ -100,9 +118,7 @@ public final class RotationTile: NSView {
     public var isLocked = false {
         didSet {
             guard isLocked != oldValue else { return }
-            toolTip = isLocked
-                ? lookLabel + " — the rotation must keep at least one look, and this is the last one"
-                : lookLabel
+            updateToolTip()
             redraw()
         }
     }
@@ -110,7 +126,9 @@ public final class RotationTile: NSView {
     /// look being turned *off*; it never stops it being opened or pointed at,
     /// so hovering and `onOpen` deliberately test `isLive` instead.
     public var isToggleable: Bool { isLive && !isLocked }
-    private var lookLabel: String { entry.shader + (entry.preset.map { " · " + $0 } ?? " · defaults") }
+    /// "voronoi · Molten". The same words `accessibilityLabel` says, so a
+    /// pointer and a screen reader name a tile identically.
+    private var lookLabel: String { entry.shader + " · " + entry.displayName }
     /// The look the editor currently has open, in the picker. Marked so the
     /// popover answers "where am I?" as well as "what is there?".
     public var isCurrent = false { didSet { if isCurrent != oldValue { redraw() } } }
@@ -163,24 +181,27 @@ public final class RotationTile: NSView {
         chrome?.needsDisplay = true
     }
 
+    /// The one place the tooltip is written.
+    ///
+    /// It was two, and they disagreed: `mode` set the label plus what a click
+    /// does, and `isLocked` overwrote the whole thing with the label plus why
+    /// this one will not budge — so a tile that was locked and then unlocked
+    /// (which happens whenever the rotation goes back above one look) was left
+    /// with a tooltip that no longer said a click did anything at all.
     private func updateToolTip() {
-        toolTip = lookLabel + (mode == .picker
-            ? " — click to open it; the badge puts it in or out of the rotation"
-            : " — click to put it in or out of the rotation; double-click to open it")
+        let action = mode == .picker
+            ? "click to open it; the badge puts it in or out of the rotation"
+            : "click to put it in or out of the rotation; double-click to open it"
+        toolTip = lookLabel + " — " + action
+            + (isLocked ? ". The rotation must keep at least one look, and this is the last one."
+                        : "")
     }
 
     // MARK: Pointer
 
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
-        // `.inVisibleRect` keeps the tracking rect in step with the scroll view
-        // by itself, so a tile that scrolls out from under a stationary pointer
-        // is exited rather than left thinking it is still hovered.
-        addTrackingArea(NSTrackingArea(rect: .zero,
-                                       options: [.mouseEnteredAndExited, .activeInKeyWindow,
-                                                 .inVisibleRect],
-                                       owner: self))
+        installGridTracking()
     }
 
     /// `isLive`, not `isToggleable`: the last look in the rotation is locked
@@ -305,8 +326,7 @@ public final class RotationTile: NSView {
         mode == .picker ? .button : .checkBox
     }
     public override func accessibilityLabel() -> String? {
-        entry.shader + " · " + entry.displayName
-            + (mode == .picker && !isOn ? " (not in the rotation)" : "")
+        lookLabel + (mode == .picker && !isOn ? " (not in the rotation)" : "")
     }
     public override func accessibilityValue() -> Any? { isOn ? 1 : 0 }
     /// Reflects whether the *primary* action works. In the picker that is
@@ -536,16 +556,9 @@ public final class NewLookCard: NSView {
 
     // MARK: Pointer
 
-    /// The same tracking as a tile, and for the same reason: `.inVisibleRect`
-    /// keeps the rect in step with the scroll view, so a card that scrolls out
-    /// from under a stationary pointer stops thinking it is hovered.
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero,
-                                       options: [.mouseEnteredAndExited, .activeInKeyWindow,
-                                                 .inVisibleRect],
-                                       owner: self))
+        installGridTracking()
     }
 
     public override func mouseEntered(with event: NSEvent) { isHot = true }
@@ -1006,8 +1019,15 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// it here rather than in the tile keeps that a model operation: toggling is
     /// its own inverse, so the rotation is exactly where it was and the host is
     /// told about it either way.
+    ///
+    /// Unless the first click was refused, which is exactly what a locked tile
+    /// does. `RotationTile.mouseDown` guards its toggle on `isToggleable`, so
+    /// this has to guard the undo on the same thing: double-clicking the last
+    /// look in the rotation used to answer a request to *open* it with a beep
+    /// and "the rotation must keep at least one look" — a refusal of a toggle
+    /// nobody had asked for and that had never happened.
     private func open(_ entry: LerpRotationEntry) {
-        if mode == .rotation { toggle(entry) }
+        if mode == .rotation, tiles[entry]?.isToggleable == true { toggle(entry) }
         onOpen?(entry)
     }
 

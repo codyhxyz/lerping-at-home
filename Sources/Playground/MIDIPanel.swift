@@ -75,12 +75,15 @@ final class MIDIPanel: NSView {
 
     /// Steps to the next bank, for the "Next Mapping" menu command. Returns the
     /// newly selected name, or nil when there is nothing to step through.
+    ///
+    /// The wrap is `ShaderLibrary.step`, which is where every cycle in this
+    /// project lives, rather than another `(i + 1) % n` written out here.
     @discardableResult
     func cycleMapping() -> String? {
         let names = mappings.itemArray.prefix { $0.representedObject == nil && $0.isEnabled }.map(\.title)
         guard names.count > 1, let current = mappings.titleOfSelectedItem,
-              let index = names.firstIndex(of: current) else { return nil }
-        let next = names[(index + 1) % names.count]
+              names.contains(current),
+              let next = ShaderLibrary.step(in: names, after: current, offset: 1) else { return nil }
         mappings.selectItem(withTitle: next)
         onAction?(.select(next))
         return next

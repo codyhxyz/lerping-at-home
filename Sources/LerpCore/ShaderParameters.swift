@@ -262,9 +262,15 @@ public struct LerpParameterValues: Sendable {
 
     public init(_ parameters: [LerpParam]) {
         self.parameters = parameters
-        self.values = Dictionary(uniqueKeysWithValues: parameters.map { ($0.name, $0.defaultValue) })
+        self.values = Self.declaredDefaults(parameters)
         self.packedTail = []
         repack()
+    }
+
+    /// Every parameter at the value its declaration gives it — the state this
+    /// starts in, and the state a preset is applied *on top of*.
+    private static func declaredDefaults(_ parameters: [LerpParam]) -> [String: LerpParamValue] {
+        Dictionary(uniqueKeysWithValues: parameters.map { ($0.name, $0.defaultValue) })
     }
 
     public subscript(name: String) -> LerpParamValue? { values[name] }
@@ -290,16 +296,11 @@ public struct LerpParameterValues: Sendable {
     /// not mention go back to their declared default, which is what "switch to
     /// this preset" means everywhere else.
     public mutating func apply(_ preset: LerpPreset) {
-        values = Dictionary(uniqueKeysWithValues: parameters.map { ($0.name, $0.defaultValue) })
+        values = Self.declaredDefaults(parameters)
         for (name, value) in preset.values {
             guard let param = parameter(named: name) else { continue }
             values[name] = param.clamp(value)
         }
-        repack()
-    }
-
-    public mutating func reset() {
-        values = Dictionary(uniqueKeysWithValues: parameters.map { ($0.name, $0.defaultValue) })
         repack()
     }
 
@@ -431,6 +432,21 @@ public enum LerpParamParser {
         LerpParamError(line: line, message: message, text: text)
     }
 
+    /// The spellings a `bool` may be written in, as the 1/0 it is stored as.
+    ///
+    /// One table, because there is one language. A declaration and a preset are
+    /// two directives in the same file talking about the same parameter, and
+    /// they used to read booleans by two different rules: `// lerp-param:
+    /// mirrored bool = on` was accepted and `// lerp-preset: P mirrored=on`
+    /// three lines below it was a parse error that said `on` was not a bool.
+    static func boolean(_ text: String) -> Double? {
+        switch text.lowercased() {
+        case "true", "1", "yes", "on":   return 1
+        case "false", "0", "no", "off":  return 0
+        default:                         return nil
+        }
+    }
+
     /// `NAME TYPE [MIN MAX] = DEFAULT ["Label"]`
     static func parseParam(_ text: String, line: Int) throws -> LerpParam {
         // Peel the optional trailing quoted label first so it can contain
@@ -487,11 +503,10 @@ public enum LerpParamParser {
         case .color:
             value = try parseColor(defaultText, line: line, text: text)
         case .bool:
-            switch defaultText.lowercased() {
-            case "true", "1", "yes", "on":   value = .scalar(1)
-            case "false", "0", "no", "off":  value = .scalar(0)
-            default: throw fail(line, text, "a bool default must be `true` or `false`, got `\(defaultText)`")
+            guard let flag = boolean(defaultText) else {
+                throw fail(line, text, "a bool default must be `true` or `false`, got `\(defaultText)`")
             }
+            value = .scalar(flag)
         case .int:
             guard let number = Double(defaultText), number == number.rounded() else {
                 throw fail(line, text, "an int default must be a whole number, got `\(defaultText)`")
@@ -548,8 +563,8 @@ public enum LerpParamParser {
             guard !raw.isEmpty else { throw fail(line, text, "`\(key)=` has no value") }
             if raw.hasPrefix("#") || raw.hasPrefix("(") {
                 values[key] = try parseColor(raw, line: line, text: text)
-            } else if let boolean = ["true": 1.0, "false": 0.0, "yes": 1.0, "no": 0.0][raw.lowercased()] {
-                values[key] = .scalar(boolean)
+            } else if let flag = boolean(raw) {
+                values[key] = .scalar(flag)
             } else if let number = Double(raw) {
                 values[key] = .scalar(number)
             } else {
@@ -686,8 +701,9 @@ public enum LerpPresetWriter {
         if trimmed.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
             return "A preset name cannot contain tabs or line breaks — a declaration is one comment line."
         }
-        if trimmed.caseInsensitiveCompare("Defaults") == .orderedSame {
-            return "“Defaults” is the name every shader's *un*-preset look already goes by, "
+        let reserved = LerpRotationEntry.defaultsName
+        if trimmed.caseInsensitiveCompare(reserved) == .orderedSame {
+            return "“\(reserved)” is the name every shader's *un*-preset look already goes by, "
                 + "so a preset called that would be two looks with one caption. Pick another."
         }
         return nil

@@ -3,8 +3,8 @@ import Foundation
 /// Everything the shuffle rotation persists, in one place, for every host.
 ///
 /// This used to be written twice: `Settings.savedRotation` in the saver and
-/// `RotationStore.load` in the playground, each a hand transcription of the
-/// other. They agreed the day they were written. This file exists so that the
+/// the playground's own loader in `RotationStore`, each a hand transcription of
+/// the other. They agreed the day they were written. This file exists so that the
 /// question "is this look in the rotation?" has exactly one answer, computed by
 /// exactly one function, wherever it is asked.
 ///
@@ -134,15 +134,14 @@ public enum LerpRotation {
     /// forever and a downgrade-then-upgrade would quietly restore a rotation the
     /// user had changed in between.
     ///
-    /// FNV-1a rather than `hashValue`: Swift seeds its hasher per process, so
-    /// `hashValue` is not the same number twice and would make every read
-    /// distrust every write.
+    /// `LerpHash.fnv1a` rather than `hashValue`: Swift seeds its hasher per
+    /// process, so `hashValue` is not the same number twice and would make every
+    /// read distrust every write. See that file for the other things in this
+    /// project that cannot be salted — and for why this one passes a multiplier
+    /// that is not quite FNV's, which it must keep passing.
     static func digest(_ parts: [String]) -> String {
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-        for byte in parts.joined(separator: "\u{0}").utf8 {
-            hash = (hash ^ UInt64(byte)) &* 0x1000_0000_01b3
-        }
-        return String(hash, radix: 16)
+        String(LerpHash.fnv1a(parts.joined(separator: "\u{0}"),
+                              prime: LerpHash.rotationDigestPrime), radix: 16)
     }
 
     /// The digest of whatever the v1 keys hold right now, or nil when they are

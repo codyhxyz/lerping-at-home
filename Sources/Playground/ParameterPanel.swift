@@ -1,5 +1,28 @@
 import AppKit
 
+/// The two directions a `color` parameter travels between the model and the
+/// colour well that edits it. Written out three times in this file before they
+/// were named — once per reading site and once for the write — and the three
+/// have to agree about the colour space or a colour survives a round trip
+/// through the inspector changed.
+extension NSColor {
+    /// This colour's components as a `color` parameter stores them, or nil when
+    /// it cannot be expressed in sRGB. Callers choose their own fallback,
+    /// because they do not agree on one: a control that is being read wants the
+    /// parameter's declared default, a control that is being *changed* wants
+    /// black rather than to silently reinstate a default the user just left.
+    var lerpComponents: SIMD4<Float>? {
+        guard let srgb = usingColorSpace(.sRGB) else { return nil }
+        return SIMD4<Float>(Float(srgb.redComponent), Float(srgb.greenComponent),
+                            Float(srgb.blueComponent), Float(srgb.alphaComponent))
+    }
+
+    convenience init(lerp c: SIMD4<Float>) {
+        self.init(srgbRed: CGFloat(c.x), green: CGFloat(c.y),
+                  blue: CGFloat(c.z), alpha: CGFloat(c.w))
+    }
+}
+
 /// The inspector: one stock control per `// lerp-param:` the open shader
 /// declares, plus a popup for its `// lerp-preset:` blocks.
 ///
@@ -121,7 +144,7 @@ final class ParameterPanel: NSView {
         rowStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
         presetPopUp.removeAllItems()
-        presetPopUp.addItem(withTitle: "Defaults")
+        presetPopUp.addItem(withTitle: LerpRotationEntry.defaultsName)
         for preset in shader?.presets ?? [] { presetPopUp.addItem(withTitle: preset.name) }
         presetPopUp.selectItem(at: 0)
         presetPopUp.isEnabled = !(shader?.presets.isEmpty ?? true)
@@ -222,8 +245,7 @@ final class ParameterPanel: NSView {
             let value = (values?[name] ?? nil) ?? row.param.defaultValue
             switch (row.param.type, value) {
             case (.color, .color(let c)):
-                (row.control as? NSColorWell)?.color = NSColor(srgbRed: CGFloat(c.x), green: CGFloat(c.y),
-                                                               blue: CGFloat(c.z), alpha: CGFloat(c.w))
+                (row.control as? NSColorWell)?.color = NSColor(lerp: c)
             case (.bool, .scalar(let v)):
                 (row.control as? NSSwitch)?.state = v != 0 ? .on : .off
             case (_, .scalar(let v)):
@@ -363,11 +385,8 @@ final class ParameterPanel: NSView {
     }
 
     private func currentColor(of row: Row) -> SIMD4<Float> {
-        guard let color = (row.control as? NSColorWell)?.color.usingColorSpace(.sRGB) else {
-            return row.param.defaultValue.colorValue ?? SIMD4<Float>(0, 0, 0, 1)
-        }
-        return SIMD4<Float>(Float(color.redComponent), Float(color.greenComponent),
-                            Float(color.blueComponent), Float(color.alphaComponent))
+        (row.control as? NSColorWell)?.color.lerpComponents
+            ?? row.param.defaultValue.colorValue ?? SIMD4<Float>(0, 0, 0, 1)
     }
 
     private func item(_ title: String, _ name: String, _ component: ColorComponent?,
@@ -393,9 +412,7 @@ final class ParameterPanel: NSView {
         let value: LerpParamValue
         switch row.param.type {
         case .color:
-            let color = (sender as? NSColorWell)?.color.usingColorSpace(.sRGB) ?? .black
-            value = .color(SIMD4<Float>(Float(color.redComponent), Float(color.greenComponent),
-                                        Float(color.blueComponent), Float(color.alphaComponent)))
+            value = .color((sender as? NSColorWell)?.color.lerpComponents ?? SIMD4<Float>(0, 0, 0, 1))
         case .bool:
             value = .scalar((sender as? NSSwitch)?.state == .on ? 1 : 0)
         case .float, .int:

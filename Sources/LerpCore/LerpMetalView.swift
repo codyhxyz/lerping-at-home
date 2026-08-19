@@ -297,15 +297,26 @@ public final class LerpMetalView: NSView {
 
     // MARK: - Shader selection
 
+    /// Honours `config`'s pinned (shader, preset), if it names one that is on
+    /// disk. Returns false when nothing is pinned or the pin has gone.
+    ///
+    /// A preset the file no longer declares falls back to the shader's defaults
+    /// rather than to some other shader — the rotation is not involved, so there
+    /// is no selection to contradict. That is the whole difference between a pin
+    /// and a shuffle step, and it is stated once: both the first load and a
+    /// later change to `config` come through here.
+    @discardableResult
+    private func showPinned(from available: [LerpShader]) -> Bool {
+        guard let name = config.shaderName, available.named(name) != nil else { return false }
+        return setEntry(LerpRotationEntry(shader: name, preset: config.presetName),
+                        from: available, allowingDefaultsFallback: true)
+    }
+
     private func selectInitialShader() {
         let available = library.discover()
         guard !available.isEmpty else { return }
         if let name = config.shaderName, available.named(name) != nil {
-            // Pinned. A preset the file no longer declares falls back to the
-            // shader's defaults rather than to some other shader — the rotation
-            // is not involved, so there is no selection to contradict.
-            setEntry(LerpRotationEntry(shader: name, preset: config.presetName),
-                     from: available, allowingDefaultsFallback: true)
+            showPinned(from: available)
         } else {
             refreshShuffleOrder(available)
             lastShuffleSwitch = CACurrentMediaTime()
@@ -404,12 +415,9 @@ public final class LerpMetalView: NSView {
         guard pipeline != nil else { return }
         guard config.shaderName == nil else {
             // Newly pinned: honour it immediately, the same way a fresh start
-            // would have.
-            let available = library.discover()
-            if let name = config.shaderName, available.named(name) != nil {
-                setEntry(LerpRotationEntry(shader: name, preset: config.presetName),
-                         from: available, allowingDefaultsFallback: true)
-            }
+            // would have — and by the same call, so the two cannot disagree
+            // about what a pin means.
+            showPinned(from: library.discover())
             return
         }
         let available = library.discover()
@@ -423,45 +431,35 @@ public final class LerpMetalView: NSView {
     /// `current` and then continuing in the same direction, wrapping once
     /// through `order`. Returns false only when nothing at all could be loaded.
     ///
-    /// Skipping over a shader that will not compile is the whole point: a failed
-    /// `setEntry` leaves the previous pipeline bound and `currentEntry`
-    /// unchanged, so stopping at the first failure both shows the wrong shader
-    /// and sticks there — the next step would set out from the same place and
-    /// retry the same broken file.
+    /// The walk itself is `ShaderLibrary.firstStep`, which is also how the
+    /// playground picks the look it opens on — see there for why a candidate
+    /// that will not build is stepped over rather than stopped at. What is left
+    /// here is what the screensaver does with the answer.
     @discardableResult
     private func loadEntry(after current: LerpRotationEntry?, offset: Int,
                            in order: [LerpRotationEntry], from available: [LerpShader]) -> Bool {
-        guard !order.isEmpty else { return false }
-        let step = offset < 0 ? -1 : 1
-        var anchor = current
-        for attempt in 0..<order.count {
-            guard let candidate = ShaderLibrary.step(in: order, after: anchor,
-                                                     offset: attempt == 0 ? offset : step)
-            else { return false }
-            anchor = candidate
-            if setEntry(candidate, from: available) {
-                // The one fact that settles "why is that look on my screen?".
-                // Everything else about the rotation is inspectable at rest --
-                // the defaults on disk, the tests, `rotationNow` -- but which
-                // entry actually went up, in the real host, was not recorded
-                // anywhere, so three separate "this is fixed" claims rested on
-                // a harness rather than on the screensaver that ran.
-                //
-                // `.notice`, not `.info`, and that distinction is the whole
-                // point: os_log's info level is memory-only. It never reaches
-                // the on-disk store, so it ages out of the ring buffer within
-                // minutes and `log show` returns nothing for it afterwards.
-                // A screensaver is watched at the exact moments nobody is at a
-                // terminal, so a diagnostic that only survives a few minutes is
-                // no diagnostic at all -- it read as "the saver never ran".
-                Self.log.notice("""
-                    playing \(candidate.key, privacy: .public) \
-                    (\(self.shuffleOrder.count) in rotation of \(available.rotationEntries().count) discovered)
-                    """)
-                return true
-            }
-        }
-        return false
+        guard let candidate = ShaderLibrary.firstStep(in: order, after: current, offset: offset,
+                                                      where: { setEntry($0, from: available) })
+        else { return false }
+        // The one fact that settles "why is that look on my screen?".
+        // Everything else about the rotation is inspectable at rest -- the
+        // defaults on disk, the tests, `rotationNow` -- but which entry actually
+        // went up, in the real host, was not recorded anywhere, so three
+        // separate "this is fixed" claims rested on a harness rather than on the
+        // screensaver that ran.
+        //
+        // `.notice`, not `.info`, and that distinction is the whole point:
+        // os_log's info level is memory-only. It never reaches the on-disk
+        // store, so it ages out of the ring buffer within minutes and `log show`
+        // returns nothing for it afterwards. A screensaver is watched at the
+        // exact moments nobody is at a terminal, so a diagnostic that only
+        // survives a few minutes is no diagnostic at all -- it read as "the
+        // saver never ran".
+        Self.log.notice("""
+            playing \(candidate.key, privacy: .public) \
+            (\(self.shuffleOrder.count) in rotation of \(available.rotationEntries().count) discovered)
+            """)
+        return true
     }
 
     /// Compiles the entry's shader and puts it in the entry's preset.

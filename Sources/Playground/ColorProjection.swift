@@ -68,6 +68,13 @@ enum Oklch {
                    h: hue < 0 ? hue + 360 : hue)
     }
 
+    /// The same, for the RGBA a `color` parameter is actually stored as: the
+    /// alpha is not part of the colour's position in OKLCH and is carried
+    /// separately by whoever needs it.
+    static func lch(of color: SIMD4<Float>) -> LCH {
+        lch(fromSRGB: SIMD3(Double(color.x), Double(color.y), Double(color.z)))
+    }
+
     static func srgb(fromLCH lch: LCH) -> SIMD3<Double> {
         let radians = lch.h * .pi / 180
         return srgb(fromLab: SIMD3(lch.l, lch.c * cos(radians), lch.c * sin(radians)))
@@ -257,7 +264,7 @@ enum ColorProjection {
     /// says so out loud, so a knob that has been quietly given a chroma floor
     /// is not doing it behind the user's back.
     static func isNearGrey(_ color: SIMD4<Float>) -> Bool {
-        let lch = Oklch.lch(fromSRGB: SIMD3(Double(color.x), Double(color.y), Double(color.z)))
+        let lch = Oklch.lch(of: color)
         let safe = Oklch.safeChroma(lightness: lch.l)
         return safe <= 1e-6 || lch.c < hueChromaFloor * safe
     }
@@ -275,8 +282,8 @@ enum ColorProjection {
     /// compound its own output and stop being absolute).
     static func apply(_ component: ColorComponent, position: Double,
                       to current: SIMD4<Float>, base: SIMD4<Float>) -> SIMD4<Float> {
-        var lch = Oklch.lch(fromSRGB: SIMD3(Double(current.x), Double(current.y), Double(current.z)))
-        let baseLCH = Oklch.lch(fromSRGB: SIMD3(Double(base.x), Double(base.y), Double(base.z)))
+        var lch = Oklch.lch(of: current)
+        let baseLCH = Oklch.lch(of: base)
         var alpha = Double(current.w)
         var floor = 0.0
 
@@ -315,10 +322,10 @@ enum ColorProjection {
     /// nudge *from*.
     static func position(of component: ColorComponent, in current: SIMD4<Float>,
                          base: SIMD4<Float>) -> Double {
-        let lch = Oklch.lch(fromSRGB: SIMD3(Double(current.x), Double(current.y), Double(current.z)))
+        let lch = Oklch.lch(of: current)
         switch component {
         case .hue:
-            let baseHue = Oklch.lch(fromSRGB: SIMD3(Double(base.x), Double(base.y), Double(base.z))).h
+            let baseHue = Oklch.lch(of: base).h
             var offset = wrapped(lch.h - baseHue)
             if offset > 180 { offset -= 360 }
             return offset / hueSpan + 0.5

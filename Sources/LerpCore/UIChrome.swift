@@ -81,4 +81,37 @@ public enum Chrome {
         stack.layer?.backgroundColor = EditorTheme.background.cgColor
         return stack
     }
+
+    /// A popup's menu, in menu order: the titles it shows and the value each one
+    /// stores. Titles, value → index and index → value all come out of the one
+    /// table, because spelling the same three-row menu out three times is how a
+    /// popup ends up one item off from what it saves.
+    ///
+    /// Both hosts have such a menu — the saver's Options… sheet for render scale
+    /// and the still-image timer, the playground's toolbar for render scale —
+    /// and both had their own arithmetic for reading one back. The *tables*
+    /// stay where they are, because they honestly differ; only the three lines
+    /// that get them wrong are shared.
+    public typealias Choices = [(title: String, value: Double)]
+
+    /// Where `value` sits in the menu, or `fallback` for a value the menu does
+    /// not offer (only reachable by hand-editing the defaults).
+    public static func index(of value: Double, in choices: Choices, default fallback: Int) -> Int {
+        choices.firstIndex { $0.value == value } ?? fallback
+    }
+
+    /// The value a popup is sitting on, clamped to the menu.
+    public static func value(of popup: NSPopUpButton?, in choices: Choices,
+                             default fallback: Int) -> Double {
+        let index = popup?.indexOfSelectedItem ?? fallback
+        return choices[max(0, min(index, choices.count - 1))].value
+    }
+
+    /// Fills a popup with `choices` and puts it on the item holding `value`.
+    public static func fill(_ popup: NSPopUpButton, with choices: Choices,
+                            selecting value: Double, default fallback: Int) {
+        popup.removeAllItems()
+        popup.addItems(withTitles: choices.map(\.title))
+        popup.selectItem(at: index(of: value, in: choices, default: fallback))
+    }
 }

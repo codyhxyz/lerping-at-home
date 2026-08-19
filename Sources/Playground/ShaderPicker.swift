@@ -72,6 +72,10 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
     private let thumbnails: RotationThumbnails
     private let popover = NSPopover()
     private var loadedFingerprint = ""
+    /// Everything the grid is currently drawn from: the shaders, the rotation,
+    /// and which look is open. See `prepare` for why the grid is keyed on all
+    /// three rather than on the shaders alone.
+    private var loadedStamp = ""
 
     init(thumbnails: RotationThumbnails) {
         self.thumbnails = thumbnails
@@ -104,11 +108,31 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
     // MARK: - Content
 
     /// Fills the grid and starts its stills before presentation.
+    ///
+    /// A no-op when the shaders, the rotation and the open look are all as they
+    /// were. That guard is not an optimisation — it is what makes the popover
+    /// usable at all.
+    ///
+    /// `PlaygroundWindowController.pollDisk` runs every 1.5 s, and while the
+    /// popover is up it called this every time. `RotationGalleryView.show`
+    /// begins by stopping the shared preview player, because the tiles it is
+    /// about to rebuild may be the one holding the live view — so pointing at a
+    /// tile started a preview that was torn down again a second and a half
+    /// later, for ever, and the rotation state on screen was re-read from disk
+    /// underneath the pointer just as often. The gallery *window* never had this
+    /// because its own `load` is fingerprinted; this is the same guard, widened
+    /// to the two other things the grid draws from.
     func prepare(shaders: [LerpShader], enabled: Set<LerpRotationEntry>,
                  current: LerpRotationEntry?) {
+        let fingerprint = RotationThumbnails.fingerprint(for: shaders)
+        let stamp = [fingerprint,
+                     enabled.map(\.key).sorted().joined(separator: ","),
+                     current?.key ?? ""].joined(separator: "\u{1}")
+        guard stamp != loadedStamp else { return }
+        loadedStamp = stamp
+
         gallery.show(shaders: shaders, enabled: enabled)
         gallery.showCurrent(current)
-        let fingerprint = RotationThumbnails.fingerprint(for: shaders)
         guard fingerprint != loadedFingerprint else { return }
         loadedFingerprint = fingerprint
         gallery.populate(
