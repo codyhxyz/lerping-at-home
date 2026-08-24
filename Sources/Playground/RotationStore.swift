@@ -30,8 +30,11 @@ enum RotationStore {
     ///
     static let module = LerpDefaults.module
 
-    /// Which host this is, in the saved state's `writer` field.
-    static let writerName = "playground"
+    /// Which host this is, in the saved state's `writer` field. Taken from
+    /// `LerpDefaults` rather than spelled here, because it is not only a label:
+    /// it is what `LerpRotation.write` checks before letting anything near the
+    /// user's real rotation.
+    static let writerName = LerpDefaults.playgroundWriter
 
     /// The screensaver's own defaults. `ScreenSaverDefaults` resolves to
     /// `~/Library/Preferences/ByHost/com.hergenroeder.lerping.<hardware UUID>.plist`,

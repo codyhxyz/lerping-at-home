@@ -11,7 +11,17 @@ public final class LerpMetalView: NSView {
     /// Same subsystem the saver logs under, so one `log show` predicate covers
     /// the whole story of a session. Used only where a silent answer would be
     /// indistinguishable from a broken one.
-    static let log = Logger(subsystem: "com.hergenroeder.lerping", category: "rotation")
+    ///
+    /// Deliberately the *production* module rather than `LerpDefaults.module`,
+    /// even in a host that has been sent at a scratch domain: the subsystem is
+    /// the thing you have to know in advance to type a `log show` predicate,
+    /// and one that moves with an environment variable is one that returns
+    /// nothing and reads as "the saver never ran". Which domain was actually in
+    /// use is reported in the `rotation resolved` line instead, where it costs
+    /// nothing to find. This was spelled as a literal here and taken from
+    /// `LerpDefaults.module` in the saver, so the two halves of one session
+    /// landed in two different subsystems.
+    static let log = Logger(subsystem: LerpDefaults.productionModule, category: "rotation")
 
     public struct Config {
         /// Shader name to render, or nil for shuffle mode.
@@ -105,8 +115,24 @@ public final class LerpMetalView: NSView {
     /// the view renders exactly the look `currentEntry` names.
     public private(set) var parameterValues: LerpParameterValues?
     private var displayLink: CADisplayLink?
+    /// The order the current cycle is played in, re-derived from
+    /// `LerpRotationSchedule` rather than remembered. Kept as a field only
+    /// because `loadEntry` needs a list to step through when a look will not
+    /// compile, and the log line wants its length.
     private var shuffleOrder: [LerpRotationEntry] = []
-    private var lastShuffleSwitch: CFTimeInterval = 0
+    /// Manual nudges from `advanceShuffle(by:)`, added to the clock's slot
+    /// number. Stays zero in the screensaver, which lets the clock alone decide
+    /// — that is the whole point of the schedule.
+    private var shuffleOffset = 0
+    /// Fires at the next slot boundary.
+    ///
+    /// Deliberately *not* the display link. The advance used to live in
+    /// `tick()`, which meant `park()` — the power-saving path the screensaver
+    /// spends most of its life in — silently stopped the rotation for hours at
+    /// a time. A run-loop timer keeps its own time regardless of whether
+    /// anything is being drawn, and the schedule it fires into is absolute, so
+    /// even a timer that is late or missed entirely lands on the right look.
+    private var shuffleTimer: Timer?
 
     /// Per-launch random seed handed to shaders as `u.seed`. Settable so a host
     /// (the playground) can re-roll it; the screensaver never touches it.
@@ -224,6 +250,15 @@ public final class LerpMetalView: NSView {
 
         if pipeline == nil {
             selectInitialShader()
+        } else {
+            // A view that already has a pipeline is one `legacyScreenSaver`
+            // built for an earlier session and never destroyed. It used to
+            // resume on whatever look it was showing hours ago and count five
+            // fresh minutes from here, which is why a rotation could run all
+            // week without ever getting past its first few entries. The
+            // schedule is absolute, so the right thing to do on resume is
+            // simply to ask what is due.
+            playScheduledEntry()
         }
         guard window != nil else { return }
         installDisplayLink()
@@ -234,6 +269,7 @@ public final class LerpMetalView: NSView {
         running = false
         parked = false
         pauseClock()
+        cancelShuffleTimer()
         tearDownDisplayLink()
     }
 
@@ -252,6 +288,13 @@ public final class LerpMetalView: NSView {
     /// picture that has moved on, not to the frame it was parked at. And unlike
     /// `stop()`, it leaves `running` set, so the freeze timer and the shuffle
     /// keep their place.
+    ///
+    /// The shuffle timer is deliberately left armed. Parking means "nobody can
+    /// see this right now", which is a statement about the display and not
+    /// about the passage of time: the look that is due at 03:00 is due whether
+    /// or not anyone was watching at 02:55, and a host that unparks has to come
+    /// back showing it. Tearing the rotation down here is exactly the bug this
+    /// arrangement exists to prevent — see `shuffleTimer`.
     public func park() {
         guard running, !parked else { return }
         parked = true
@@ -293,6 +336,7 @@ public final class LerpMetalView: NSView {
     deinit {
         NotificationCenter.default.removeObserver(self)
         displayLink?.invalidate()
+        shuffleTimer?.invalidate()
     }
 
     // MARK: - Shader selection
@@ -318,9 +362,7 @@ public final class LerpMetalView: NSView {
         if let name = config.shaderName, available.named(name) != nil {
             showPinned(from: available)
         } else {
-            refreshShuffleOrder(available)
-            lastShuffleSwitch = CACurrentMediaTime()
-            advanceShuffle(by: 0)
+            playScheduledEntry()
             // There used to be a fallback here: if nothing in the rotation
             // compiled, widen to *every* entry and try again. It is gone, and
             // deliberately.
@@ -351,20 +393,23 @@ public final class LerpMetalView: NSView {
         }
     }
 
-    /// Rebuilds `shuffleOrder` from the rotation `config` currently asks for.
+    /// Rebuilds `shuffleOrder` from the rotation `config` currently asks for,
+    /// and returns the position in it that the clock says is due.
     ///
-    /// Called before every step of the shuffle, not once at startup. That is the
-    /// whole of the deselection bug: `legacyScreenSaver` builds a host and never
-    /// destroys it, and `start()` only reaches `selectInitialShader` while
-    /// `pipeline` is nil — so a shuffle order computed during the first session
-    /// of the day survived every later one. Deselecting a look in Options…
-    /// wrote the defaults correctly, the next session re-read them correctly,
-    /// and the view then went on shuffling the list it had built before the
-    /// click. The look came back minutes later and the settings all said it
-    /// should not have.
+    /// Recomputed on every step, not once at startup. That is the whole of the
+    /// deselection bug: `legacyScreenSaver` builds a host and never destroys
+    /// it, and `start()` only reaches `selectInitialShader` while `pipeline` is
+    /// nil — so a shuffle order computed during the first session of the day
+    /// survived every later one. Deselecting a look in Options… wrote the
+    /// defaults correctly, the next session re-read them correctly, and the
+    /// view then went on shuffling the list it had built before the click. The
+    /// look came back minutes later and the settings all said it should not
+    /// have.
     ///
-    /// Reshuffles only when the eligible *set* changes, so this can be called on
-    /// every advance without the order being re-rolled underneath the user.
+    /// The order is now a pure function of the cycle number rather than a
+    /// remembered `shuffled()`, so recomputing it costs nothing and cannot
+    /// re-roll under the user: within one pass, the same cycle always produces
+    /// the same list. See `LerpRotationSchedule`.
     ///
     /// An empty rotation leaves the order empty, and `loadEntry` then does
     /// nothing at all — so whatever is already on screen stays there. That is
@@ -372,10 +417,49 @@ public final class LerpMetalView: NSView {
     /// black screen or the full library, and the full library is how a
     /// deselected look reached the screen in the first place. Unreachable
     /// through the gallery, which will not let the last look be switched off.
-    private func refreshShuffleOrder(_ available: [LerpShader]) {
+    @discardableResult
+    private func refreshShuffleOrder(_ available: [LerpShader]) -> Int {
         let picked = Config.rotation(of: config.enabledEntries, from: available.rotationEntries())
-        guard Set(picked) != Set(shuffleOrder) else { return }
-        shuffleOrder = picked.shuffled()
+        let scheduled = LerpRotationSchedule.rotation(picked, at: Date(),
+                                                      interval: config.shuffleInterval,
+                                                      offset: shuffleOffset)
+        shuffleOrder = scheduled.order
+        return scheduled.index
+    }
+
+    /// Puts the look the schedule names on screen and arms the clock for the
+    /// next one. The single path by which the rotation ever moves.
+    private func playScheduledEntry() {
+        let available = library.discover()
+        let index = refreshShuffleOrder(available)
+        loadEntry(after: nil, offset: index, in: shuffleOrder, from: available)
+        armShuffleTimer()
+    }
+
+    /// Arms the rotation clock for the next slot boundary.
+    ///
+    /// Fires once rather than repeating: each firing re-derives the boundary
+    /// from the absolute schedule, so a timer that ran late does not push every
+    /// later look late behind it. `.common` mode so a tracking run loop — a
+    /// menu held open, a window being dragged — does not hold the rotation.
+    private func armShuffleTimer() {
+        cancelShuffleTimer()
+        guard running, !frozen, config.shaderName == nil, shuffleOrder.count > 1,
+              let next = LerpRotationSchedule.nextBoundary(after: Date(),
+                                                           interval: config.shuffleInterval)
+        else { return }
+        // Weakly, so the run loop holding this timer is not what keeps a view
+        // alive: legacyScreenSaver already never destroys one.
+        let timer = Timer(fire: next, interval: 0, repeats: false) { [weak self] _ in
+            self?.playScheduledEntry()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        shuffleTimer = timer
+    }
+
+    private func cancelShuffleTimer() {
+        shuffleTimer?.invalidate()
+        shuffleTimer = nil
     }
 
     /// The looks this view will actually shuffle through, as it would compute
@@ -395,12 +479,15 @@ public final class LerpMetalView: NSView {
     /// Public because it is the one thing about the shuffle a host cannot
     /// observe by waiting: the interval is minutes long, and the check that
     /// matters — that a hundred advances never leave the enabled set — is not
-    /// one anybody can sit through. The interval timer calls exactly this, so a
-    /// test that drives it is driving the real path rather than a copy of it.
+    /// one anybody can sit through.
+    ///
+    /// Expressed as a nudge to the schedule's slot number rather than as a step
+    /// from whatever is on screen, so that stepping by hand and waiting for the
+    /// clock go through exactly the same arithmetic. `by: 0` re-asserts the
+    /// look that is due right now, which is what a resume wants.
     public func advanceShuffle(by offset: Int) {
-        let available = library.discover()
-        refreshShuffleOrder(available)
-        loadEntry(after: currentEntry, offset: offset, in: shuffleOrder, from: available)
+        shuffleOffset &+= offset
+        playScheduledEntry()
     }
 
     /// The rotation, or the pin, changed under us.
@@ -416,15 +503,22 @@ public final class LerpMetalView: NSView {
         guard config.shaderName == nil else {
             // Newly pinned: honour it immediately, the same way a fresh start
             // would have — and by the same call, so the two cannot disagree
-            // about what a pin means.
+            // about what a pin means. A pin has no rotation to keep time for.
+            cancelShuffleTimer()
             showPinned(from: library.discover())
             return
         }
         let available = library.discover()
-        refreshShuffleOrder(available)
+        let index = refreshShuffleOrder(available)
+        // The interval may have changed with the selection, so the boundary
+        // this view is waiting on has to be recomputed either way.
+        armShuffleTimer()
         guard let current = currentEntry, !shuffleOrder.contains(current) else { return }
-        lastShuffleSwitch = CACurrentMediaTime()
-        loadEntry(after: nil, offset: 0, in: shuffleOrder, from: available)
+        // The look on screen has just been switched off, so it goes now rather
+        // than at the next boundary. It is replaced by whatever the schedule
+        // says is due, which keeps this view in step with every other one
+        // instead of starting a private five minutes from the click.
+        loadEntry(after: nil, offset: index, in: shuffleOrder, from: available)
     }
 
     /// Loads the first entry that compiles, starting `offset` places from
@@ -612,17 +706,19 @@ public final class LerpMetalView: NSView {
 
         if config.freezeAfter > 0, time - freezeBaseline > config.freezeAfter {
             frozen = true
+            // "Still image after N minutes" is a promise about what is on
+            // screen, so the rotation stops with the picture. Nothing re-arms
+            // this until `start()` runs again, which is the only thing that
+            // clears `frozen`.
+            cancelShuffleTimer()
             tearDownDisplayLink()   // hold the last presented frame, GPU idle
             return
         }
 
-        // Shuffle rotation.
-        if config.shaderName == nil, shuffleOrder.count > 1,
-           now - lastShuffleSwitch > config.shuffleInterval {
-            lastShuffleSwitch = now
-            advanceShuffle(by: 1)
-        }
-
+        // The shuffle deliberately does not live here. It used to, and a
+        // display link is exactly the wrong clock for it: `park()` takes the
+        // link away for hours at a time and the rotation went with it. See
+        // `shuffleTimer`.
         drawFrame(at: time)
     }
 

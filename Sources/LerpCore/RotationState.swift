@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Everything the shuffle rotation persists, in one place, for every host.
 ///
@@ -105,6 +106,11 @@ public struct LerpRotationState: Equatable, Sendable {
 /// Reading and writing `LerpRotationState`, and the policy that turns it into
 /// the list the shuffle walks.
 public enum LerpRotation {
+
+    /// Same subsystem as every other host, so one `log show` predicate covers
+    /// the whole story. Used only for the refusal below, which is a thing that
+    /// must never happen silently.
+    static let log = Logger(subsystem: LerpDefaults.productionModule, category: "rotation")
 
     // MARK: - Keys
 
@@ -414,6 +420,25 @@ public enum LerpRotation {
                              writer: String,
                              to defaults: UserDefaults?) -> LerpRotationState {
         guard let defaults, !discovered.isEmpty else { return base ?? .empty }
+
+        // Who is allowed to own the user's rotation. See `LerpDefaults` for why
+        // this is a gate rather than a convention: the convention was tried, and
+        // a probe called `writeprobe` walked straight through it and spent two
+        // days' worth of the user's screensaver.
+        //
+        // Loud, because the alternative failure — a harness that believes it
+        // wrote the rotation, reads back the value it thinks it set, and passes
+        // — is exactly how a rotation bug survives three rounds of being fixed.
+        guard LerpDefaults.mayWrite(writer: writer) else {
+            log.error("""
+                refusing rotation write from '\(writer, privacy: .public)' to the production \
+                domain '\(LerpDefaults.productionModule, privacy: .public)'. Set \
+                \(LerpDefaults.moduleOverrideVariable, privacy: .public) to a scratch domain, \
+                or write as one of: \
+                \(LerpDefaults.trustedWriters.sorted().joined(separator: ", "), privacy: .public)
+                """)
+            return base ?? read(defaults, discovered: discovered)
+        }
 
         let all = Set(discovered)
         // Stored as given. A nil selection is "nobody has chosen" and disables

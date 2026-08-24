@@ -34,6 +34,33 @@ PLAYGROUND_BUILD_ID         := com.hergenroeder.lerping.playground.build
 PLAYGROUND_LEGACY_BUILD_ID  := com.hergenroeder.lerping.playground
 LEGACY_PLAYGROUND_APP       := $(BUILD)/LerpPlayground.app
 BUNDLE_VERSION      := $(shell date +%Y%m%d%H%M%S)
+
+# A digest of every source that goes into the .saver, stamped into its
+# Info.plist as `LerpSourceRevision` and logged by the running saver.
+#
+# `CFBundleVersion` above cannot answer "is what I am looking at built from
+# these sources?" — it is a wall-clock stamp, so it differs after a rebuild that
+# changed nothing and matches nothing in the tree. That gap is not theoretical:
+# the same rotation bug was reported and "fixed" three times while the bundle
+# macOS was loading sat a day behind HEAD, and every check available — a green
+# build, a passing harness, `codesign --verify` — was true of the wrong binary.
+#
+# Content-addressed rather than `git rev-parse HEAD`, deliberately: a commit id
+# says nothing about uncommitted edits, and the thing you want to know before
+# claiming a fix works is whether the bundle matches the code in front of you,
+# not whether it matches something in the object store.
+#
+# `$(CUSTOM_DIR)` is in the digest because `install` bakes those shaders into
+# the installed bundle. Leaving them out made this check lie in exactly the way
+# it exists to prevent: edit a custom look, and the bundle changes while the
+# digest does not, so `doctor` reports "up to date" about a bundle that is not.
+SAVER_SOURCE_ID := $(shell { cat $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/Info.plist; \
+                             cat "$(CUSTOM_DIR)"/*.metal 2>/dev/null; } 2>/dev/null \
+                           | shasum -a 256 | cut -c1-12)
+# The playground is deployed too, and to a copy rather than the build tree, so
+# it can go stale the same way and for the same reason.
+PLAYGROUND_SOURCE_ID := $(shell cat $(CORE) $(PLAYGROUND) Sources/Playground/Info.plist 2>/dev/null \
+                                | shasum -a 256 | cut -c1-12)
 LS_SUPPORT      := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support
 LSREGISTER      := $(LS_SUPPORT)/lsregister
 
@@ -114,7 +141,43 @@ define STAGE_DMG
 endef
 
 .PHONY: all preview playground playground-build saver saver-build midi-deps \
+        doctor doctor-saver doctor-playground \
         install install-example install-playground uninstall-playground package dmg release clean
+
+# Is the thing macOS will actually load built from the sources in this tree?
+# Ask before investigating a bug, and before claiming one is fixed.
+#
+# This exists because "it builds" and "it is deployed" were indistinguishable
+# for long enough to burn three rounds of debugging on a binary that predated
+# every fix being tested. Every install target runs the matching check, so
+# deploying cannot leave a stale bundle behind either.
+#
+# One definition, called twice: the saver and the playground are deployed
+# artifacts with identical failure modes, and writing the check out per bundle
+# is how the second one ends up without it.
+define check_bundle
+	@name="$(1)"; bundle="$(2)"; want="$(3)"; how="$(4)"; \
+	if [ ! -d "$$bundle" ]; then echo "$$name: NOT INSTALLED — run '$$how'."; exit 1; fi; \
+	got=$$(plutil -extract LerpSourceRevision raw "$$bundle/Contents/Info.plist" 2>/dev/null || echo unstamped); \
+	if [ "$$got" = "$$want" ]; then \
+		echo "$$name: up to date ($$want)"; \
+	else \
+		echo "$$name: STALE — installed '$$got', sources '$$want'."; \
+		echo "        What is running is NOT this code. Run '$$how'."; \
+		exit 1; \
+	fi
+endef
+
+doctor-saver:
+	$(call check_bundle,saver,$(INSTALLED),$(SAVER_SOURCE_ID),make saver)
+
+doctor-playground:
+	$(call check_bundle,playground,$(INSTALLED_PLAYGROUND),$(PLAYGROUND_SOURCE_ID),make playground)
+
+doctor: doctor-saver doctor-playground
+	@if pgrep -x legacyScreenSaver >/dev/null 2>&1; then \
+		echo "note: a legacyScreenSaver host is running and may still have the old bundle mapped."; \
+	fi
 
 # Normal targets deploy. The explicitly named *-build targets are the only
 # compile-only escape hatch, so "it built" cannot be mistaken for "it runs".
@@ -146,6 +209,7 @@ $(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/
 	plutil -replace CFBundleIdentifier -string $(PLAYGROUND_BUILD_ID) $(PLAYGROUND_APP)/Contents/Info.plist
 	plutil -replace CFBundleName -string LerpPlaygroundStaging $(PLAYGROUND_APP)/Contents/Info.plist
 	plutil -replace CFBundleVersion -string $(BUNDLE_VERSION) $(PLAYGROUND_APP)/Contents/Info.plist
+	plutil -replace LerpSourceRevision -string $(PLAYGROUND_SOURCE_ID) $(PLAYGROUND_APP)/Contents/Info.plist
 	cp $(PLAYGROUND_ICNS) $(PLAYGROUND_APP)/Contents/Resources/LerpPlayground.icns
 	cp LICENSE NOTICE.txt $(PLAYGROUND_APP)/Contents/Resources/
 	codesign --force -s - $(PLAYGROUND_APP)
@@ -185,6 +249,7 @@ saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/
 		-Xlinker -rpath -Xlinker /usr/lib/swift
 	cp Sources/Saver/Info.plist $(SAVER_DIR)/Contents/Info.plist
 	plutil -replace CFBundleVersion -string $(BUNDLE_VERSION) $(SAVER_DIR)/Contents/Info.plist
+	plutil -replace LerpSourceRevision -string $(SAVER_SOURCE_ID) $(SAVER_DIR)/Contents/Info.plist
 	cp $(SHADERS) $(SAVER_DIR)/Contents/Resources/Shaders/
 	cp LICENSE NOTICE.txt $(SAVER_DIR)/Contents/Resources/
 	$(BUILD)/LerpPreview --snapshot $(BUILD)/thumb --size 180x116 --time 4 \
@@ -218,6 +283,9 @@ install: saver-build
 	@test "$$(plutil -extract CFBundleVersion raw $(SAVER_DIR)/Contents/Info.plist)" = \
 	      "$$(plutil -extract CFBundleVersion raw "$(INSTALLED)/Contents/Info.plist")"
 	@codesign --verify --deep --strict "$(INSTALLED)"
+	# The check that the two above cannot make: the installed bundle was built
+	# from the sources currently in this tree.
+	@$(MAKE) --no-print-directory doctor-saver
 	@echo ""
 	@echo "Installed. Select 'Lerping@Home' in System Settings > Screen Saver."
 	@echo "Custom shaders: put .metal files in"

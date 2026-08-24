@@ -36,7 +36,25 @@ public final class LerpSaverView: ScreenSaverView {
 
     /// The ByHost preferences module the saver reads and the Options… sheet writes.
     static let defaultsModule = LerpDefaults.module
-    static let log = Logger(subsystem: LerpDefaults.module, category: "saver")
+    /// The production module, not `defaultsModule` — see `LerpMetalView.log`
+    /// for why the subsystem must not move when the domain does.
+    static let log = Logger(subsystem: LerpDefaults.productionModule, category: "saver")
+
+    /// A digest of the sources this bundle was built from, stamped into
+    /// `Info.plist` by `make saver-build` and logged on every init.
+    ///
+    /// The one fact that was missing when the same rotation bug was reported
+    /// three times: the fixes were committed, the build was green, and the
+    /// bundle Apple was actually loading was a day older than any of them.
+    /// `CFBundleVersion` could not have shown that — it is a wall-clock stamp,
+    /// so it changes on a rebuild that changed nothing and says nothing about
+    /// which sources went in. This is a hash of the sources themselves, so
+    /// `make doctor` can compare the installed bundle against the working tree
+    /// and the log can say which one ran.
+    static let buildRevision: String = {
+        Bundle(for: LerpSaverView.self).object(forInfoDictionaryKey: "LerpSourceRevision")
+            as? String ?? "unstamped"
+    }()
 
     private var metalView: LerpMetalView?
     private var effectiveIsPreview = false
@@ -114,7 +132,11 @@ public final class LerpSaverView: ScreenSaverView {
         wantsLayer = true
         setUpMetalView()
         observeScreenSaverLifecycle()
-        Self.log.notice("init frame=\(Int(frame.width))x\(Int(frame.height)) isPreview=\(isPreview) effectiveIsPreview=\(self.effectiveIsPreview)")
+        Self.log.notice("""
+            init frame=\(Int(frame.width))x\(Int(frame.height)) isPreview=\(isPreview) \
+            effectiveIsPreview=\(self.effectiveIsPreview) \
+            build=\(Self.buildRevision, privacy: .public)
+            """)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -906,10 +928,11 @@ private struct Settings {
     /// Opt-in: hand the last rendered frame off to the desktop picture.
     static let wallpaperKey = "setWallpaperOnStop"
 
-    /// Which host this is, in the saved state's `writer` field. Diagnostics
-    /// only — nothing branches on it — but "who turned this back on?" was not
-    /// answerable at all before, and two processes write this domain.
-    static let writerName = "saver"
+    /// Which host this is, in the saved state's `writer` field. It answers "who
+    /// turned this back on?", and it is also the credential `LerpRotation.write`
+    /// checks: only the names in `LerpDefaults.trustedWriters` may write the
+    /// user's real rotation at all.
+    static let writerName = LerpDefaults.saverWriter
 
     /// `shuffleTitle`, or the name of the single pinned shader.
     var shader = shuffleTitle
