@@ -30,10 +30,8 @@ enum RotationStore {
     ///
     static let module = LerpDefaults.module
 
-    /// Which host this is, in the saved state's `writer` field. Taken from
-    /// `LerpDefaults` rather than spelled here, because it is not only a label:
-    /// it is what `LerpRotation.write` checks before letting anything near the
-    /// user's real rotation.
+    /// Which host this is, in the saved state's `writer` field. Diagnostics
+    /// only — it is what makes "who turned this back on?" answerable in a log.
     static let writerName = LerpDefaults.playgroundWriter
 
     /// The screensaver's own defaults. `ScreenSaverDefaults` resolves to
@@ -53,15 +51,9 @@ enum RotationStore {
         LerpRotation.read(defaults, discovered: discovered)
     }
 
-    /// What the screensaver's saved rotation comes to for these looks, and the
-    /// state it was read from — the one spelling of it the playground uses, so
-    /// the gallery window and the toolbar popover cannot come up disagreeing
-    /// about what is in.
-    ///
-    /// The state comes back alongside because both surfaces write, and a writer
-    /// that does not know what it read cannot merge against a newer one. Every
-    /// caller of this is a window with a checkbox in it, so every caller needs
-    /// it; handing back only the set is what let the popover write blind.
+    /// What the screensaver's saved rotation comes to for these looks — the one
+    /// spelling of it the playground uses, so the gallery window and the toolbar
+    /// popover cannot come up disagreeing about what is in.
     ///
     /// `LerpRotation.enabled` is the policy; the cases it has to keep:
     ///
@@ -75,12 +67,10 @@ enum RotationStore {
     /// - A rotation saved before presets counted holds shader *names*; every
     ///   look of a shader that was in it joins.
     static func resolved(discovered: [LerpRotationEntry],
-                         from defaults: UserDefaults?)
-        -> (looks: Set<LerpRotationEntry>, base: LerpRotationState) {
-        let base = state(discovered: discovered, from: defaults)
-        let looks = Set(LerpMetalView.Config.rotation(
-            of: LerpRotation.enabled(discovered: discovered, in: base), from: discovered))
-        return (looks, base)
+                         from defaults: UserDefaults?) -> Set<LerpRotationEntry> {
+        let state = state(discovered: discovered, from: defaults)
+        return Set(LerpMetalView.Config.rotation(
+            of: LerpRotation.enabled(discovered: discovered, in: state), from: discovered))
     }
 
     /// What the screensaver will actually shuffle through, given what is saved
@@ -88,7 +78,7 @@ enum RotationStore {
     /// this file's.
     static func rotation(discovered: [LerpRotationEntry],
                          from defaults: UserDefaults?) -> [LerpRotationEntry] {
-        LerpMetalView.Config.rotation(of: resolved(discovered: discovered, from: defaults).looks,
+        LerpMetalView.Config.rotation(of: resolved(discovered: discovered, from: defaults),
                                       from: discovered)
     }
 
@@ -104,18 +94,17 @@ enum RotationStore {
     /// empty one back to everything. What stops a deselect-all blacking the
     /// screensaver out is the gallery refusing the last look, not this.
     ///
-    /// `base` is the state the caller last read. Pass the real one from any
-    /// window with a checkbox in it: it is what stops a gallery that has been
-    /// sitting open from undoing an Options… sheet that was pressed in the
-    /// meantime. Omitting it declares the rotation outright, which is what a
-    /// test fixture wants and a UI does not. The state actually written comes
-    /// back, for the caller to adopt as its next base.
+    /// There is no `base` any more, and nothing to merge against. The
+    /// playground is the rotation's only writer: the saver's Options… sheet
+    /// shows the gallery but no longer writes it, because it runs sandboxed and
+    /// could only ever write Apple's container rather than the file the saver
+    /// reads. Two writers needed a revision number and a three-way merge to stop
+    /// one silently undoing the other; one writer needs neither.
     @discardableResult
     static func save(_ enabled: Set<LerpRotationEntry>?,
                      entries: [LerpRotationEntry],
-                     base: LerpRotationState? = nil,
                      to defaults: UserDefaults?) -> LerpRotationState {
-        LerpRotation.write(enabled: enabled, base: base, discovered: entries,
+        LerpRotation.write(enabled: enabled, discovered: entries,
                            writer: writerName, to: defaults)
     }
 }

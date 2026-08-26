@@ -40,19 +40,19 @@ public final class LerpSaverView: ScreenSaverView {
     /// for why the subsystem must not move when the domain does.
     static let log = Logger(subsystem: LerpDefaults.productionModule, category: "saver")
 
-    /// A digest of the sources this bundle was built from, stamped into
-    /// `Info.plist` by `make saver-build` and logged on every init.
+    /// Which commit this bundle was built from, stamped into `Info.plist` by
+    /// `make saver-build` and logged on every init.
     ///
-    /// The one fact that was missing when the same rotation bug was reported
-    /// three times: the fixes were committed, the build was green, and the
-    /// bundle Apple was actually loading was a day older than any of them.
-    /// `CFBundleVersion` could not have shown that — it is a wall-clock stamp,
-    /// so it changes on a rebuild that changed nothing and says nothing about
-    /// which sources went in. This is a hash of the sources themselves, so
-    /// `make doctor` can compare the installed bundle against the working tree
-    /// and the log can say which one ran.
+    /// `git describe --always --dirty`, not a hash of the source tree. The
+    /// source-tree digest that used to live here existed to feed `make doctor`,
+    /// which compared it against the working tree and announced "up to date".
+    /// It said exactly that while this bug reproduced, because the thing it
+    /// checked — do these bytes match those bytes — was never the thing in
+    /// doubt. A commit id plus a dirty flag is legible to a human reading the
+    /// log, is greppable against `git log`, and makes no claim about
+    /// correctness. See AGENTS.md.
     static let buildRevision: String = {
-        Bundle(for: LerpSaverView.self).object(forInfoDictionaryKey: "LerpSourceRevision")
+        Bundle(for: LerpSaverView.self).object(forInfoDictionaryKey: "LerpBuild")
             as? String ?? "unstamped"
     }()
 
@@ -64,7 +64,6 @@ public final class LerpSaverView: ScreenSaverView {
     private var fpsPopup: NSPopUpButton?
     private var scalePopup: NSPopUpButton?
     private var freezePopup: NSPopUpButton?
-    private var wallpaperCheckbox: NSButton?
 
     /// True between a screensaver start notification and the matching stop.
     /// Logged rather than obeyed — a host never sees the start of its own
@@ -94,10 +93,6 @@ public final class LerpSaverView: ScreenSaverView {
     private var rotationEnabled: Set<LerpRotationEntry> = []
     private var rotationGallery: RotationGalleryView?
     private var rotationLabel: NSTextField?
-    /// The saved rotation as it stood when this sheet was built. `OK` merges
-    /// against it, so a sheet left open while the playground's gallery is
-    /// clicked writes back only what *this* sheet changed.
-    private var rotationBase: LerpRotationState?
 
     /// Stills for the Options… gallery, kept on the view rather than on the
     /// sheet: legacyScreenSaver builds the view once and the sheet every time
@@ -146,36 +141,41 @@ public final class LerpSaverView: ScreenSaverView {
         hostWatch?.invalidate()
     }
 
+    /// The saver's *own* settings — the pinned shader, frame rate, render scale,
+    /// freeze delay. Inside `legacyScreenSaver` this is Apple's sandbox
+    /// container, which is where the Options… sheet writes them and the only
+    /// place it can. Nothing else writes these keys, so there is no second
+    /// opinion about them to reconcile.
+    ///
+    /// The rotation is deliberately *not* here. See `savedRotation`.
     private static func defaults() -> ScreenSaverDefaults? {
-        guard let defaults = ScreenSaverDefaults(forModuleWithName: defaultsModule) else { return nil }
-        guard let shared = sharedDefaults() else { return defaults }
-
-        // legacyScreenSaver is sandboxed under Apple's bundle identifier, so
-        // ScreenSaverDefaults sees its container instead of the user's ByHost
-        // file. Read that file through the host's read-only `/` exception and
-        // use it as the fallback domain. A newer container write from Options…
-        // still wins; a later playground write replaces it.
-        if let sharedRecord = shared[LerpRotation.stateKey] as? [String: Any] {
-            let localRecord = defaults.dictionary(forKey: LerpRotation.stateKey)
-            let hasLocalRotation = LerpRotation.allKeys.contains {
-                defaults.object(forKey: $0) != nil
-            }
-            if hasLocalRotation,
-               rotationRecord(sharedRecord, isNewerThan: localRecord) {
-                LerpRotation.allKeys.forEach(defaults.removeObject(forKey:))
-                defaults.synchronize()
-            }
-        }
-        defaults.register(defaults: shared)
-        return defaults
+        ScreenSaverDefaults(forModuleWithName: defaultsModule)
     }
 
-    /// The unsandboxed ByHost domain written by the playground. App Sandbox
-    /// blocks CFPreferences from seeing it but the host explicitly permits
-    /// read-only file access, so read the plist itself.
-    private static func sharedDefaults() -> [String: Any]? {
-        guard let home = LerpFileLocations.realHomeDirectory,
-              home.path != NSHomeDirectory() else { return nil }
+    /// The user's rotation, read from the file the playground writes.
+    ///
+    /// This used to be loaded into the `ScreenSaverDefaults` above with
+    /// `register(defaults:)`. That is the *lowest*-precedence domain, so
+    /// anything ever written into Apple's container outranked the file the user
+    /// actually edits — and to stop that, `defaults()` had to compare revision
+    /// numbers between the two stores and delete container keys when the file
+    /// looked newer. Two stores for one truth, refereed at every read.
+    ///
+    /// The container half is gone: the Options… sheet's gallery no longer
+    /// writes (see `configureSheet`), so the ByHost file is the only place a
+    /// rotation exists. Reading it by path rather than through `UserDefaults`
+    /// removes the last way the two could disagree — no precedence order, no
+    /// registration domain, and no `cfprefsd` cache between the bytes the
+    /// playground wrote and the bytes this process parses.
+    ///
+    /// App Sandbox blocks CFPreferences from seeing that domain, but the host
+    /// explicitly permits read-only file access, which is why this works at all.
+    static func savedRotation(discovered: [LerpRotationEntry]) -> LerpRotationState {
+        LerpRotation.read(plist: rotationPlist(), discovered: discovered)
+    }
+
+    private static func rotationPlist() -> [String: Any]? {
+        guard let home = LerpFileLocations.realHomeDirectory else { return nil }
         var host = UUID().uuid
         var timeout = timespec(tv_sec: 1, tv_nsec: 0)
         guard gethostuuid(&host, &timeout) == 0 else { return nil }
@@ -187,23 +187,15 @@ public final class LerpSaverView: ScreenSaverView {
         return plist as? [String: Any]
     }
 
-    private static func rotationRecord(_ candidate: [String: Any],
-                                       isNewerThan current: [String: Any]?) -> Bool {
-        guard let current else { return true }
-        let revision = candidate["revision"] as? Int ?? 0
-        let currentRevision = current["revision"] as? Int ?? 0
-        if revision != currentRevision { return revision > currentRevision }
-        return (candidate["updatedAt"] as? Double ?? 0)
-            > (current["updatedAt"] as? Double ?? 0)
-    }
-
     private func discoveredShaders() -> [LerpShader] {
         metalView?.shaderLibrary.discover() ?? []
     }
 
     private func currentConfig() -> LerpMetalView.Config {
         let all = discoveredShaders().rotationEntries()
-        let config = Settings.load(from: Self.defaults(), discovered: all).config
+        var config = Settings.load(from: Self.defaults()).config
+        let state = Self.savedRotation(discovered: all)
+        config.enabledEntries = LerpRotation.enabled(discovered: all, in: state)
         // What this host believes it is allowed to play, recorded from inside
         // the real host rather than inferred from the file a harness read.
         // `enabledEntries == nil` is the widest possible answer -- every look --
@@ -213,7 +205,7 @@ public final class LerpSaverView: ScreenSaverView {
         let chosen = config.enabledEntries
         Self.log.notice("""
             rotation resolved: \(chosen.map { "\($0.count)" } ?? "nil (all)", privacy: .public) \
-            of \(all.count) discovered, module=\(Self.defaultsModule, privacy: .public), \
+            of \(all.count) discovered, \(state.summary, privacy: .public), \
             pinned=\(config.shaderName ?? "no", privacy: .public)
             """)
         return config
@@ -285,11 +277,8 @@ public final class LerpSaverView: ScreenSaverView {
         parkedReason = nil
         presenceSamples = 0
         guard rendering else { return }
-        // Read the exact frame the view is on *before* stopping it.
-        let frame = capturedFrame()
         stopRendering()
         Self.log.notice("[\(self.instanceID)] session end (\(reason, privacy: .public)) — display link torn down, window retained")
-        if let frame { publishWallpaper(frame) }
     }
 
     private func stopRendering() {
@@ -490,133 +479,51 @@ public final class LerpSaverView: ScreenSaverView {
         // Rendering is driven by LerpMetalView's display link.
     }
 
-    // MARK: - Wallpaper handoff
+    // MARK: - The desktop picture, and why the saver no longer sets it
 
-    /// The exact state a wallpaper still has to reproduce. The rotation entry
-    /// rather than a bare shader name: the still is rendered in a second process
-    /// from scratch, so it has to be told which preset was on screen or it
-    /// reproduces the defaults instead.
-    private struct CapturedFrame {
-        let entry: LerpRotationEntry
-        let time: Float
-        let seed: Float
-    }
-
-    private func capturedFrame() -> CapturedFrame? {
-        let enabled = Self.defaults()?.bool(forKey: Settings.wallpaperKey) ?? false
-        // legacyScreenSaver builds two view instances per host and only ever puts
-        // one of them in a window. The windowless one has a shader and a clock but
-        // has never drawn a pixel, so it must not publish anything.
-        guard enabled, window != nil, let view = metalView, let entry = view.currentEntry,
-              !entry.shader.isEmpty else {
-            Self.log.notice("[\(self.instanceID)] wallpaper skipped: enabled=\(enabled) window=\(self.window != nil) shader='\(self.metalView?.currentShaderName ?? "", privacy: .public)'")
-            return nil
-        }
-        return CapturedFrame(entry: entry, time: Float(view.time), seed: view.seed)
-    }
-
-    /// Directory for generated stills.
+    /// There used to be a `setWallpaperOnStop` option here: when the screensaver
+    /// stopped, render the frame it ended on and hand it to
+    /// `NSWorkspace.setDesktopImageURL` so the desktop, lock screen and login
+    /// window all matched. It is deleted, and this comment is what replaces it,
+    /// because the feature is the direct cause of the bug report that led here —
+    /// "one of the shaders I've taken out of rotation shows up on my lock
+    /// screen" — and it could not be repaired in place.
     ///
-    /// `NSHomeDirectory()` first, because inside legacyScreenSaver that is the
-    /// sandbox container and the container is the only place the saver can write:
-    /// the real `~/Library/Application Support/Lerping/` is denied outright
-    /// ("You don't have permission to save the file"), same as the custom shader
-    /// directory. Verified on macOS 27 that `NSWorkspace.setDesktopImageURL`
-    /// accepts a container URL and that `wallpaperexportd` mirrors it out to
-    /// `/var/db/Wallpapers/<uuid>/Wallpaper.png` for the login window.
+    /// Four properties, each fatal on its own:
     ///
-    /// The real home is kept as a second candidate so an unsandboxed host of this
-    /// code lands somewhere sensible. Returns nil (and logs) when the sandbox
-    /// denies every candidate.
-    static func writableWallpaperDirectory() -> URL? {
-        LerpFileLocations.writableHomeDirectory(
-            appending: "Library/Application Support/Lerping/wallpaper"
-        ) { dir, error in
-            log.error("wallpaper dir unusable \(dir.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    /// Renders the frame the saver ended on at each screen's native resolution,
-    /// writes it to a brand-new file (rewriting the same URL does not refresh the
-    /// desktop picture) and hands it to NSWorkspace.
-    private func publishWallpaper(_ frame: CapturedFrame) {
-        // NSScreen is main-thread state; snapshot what we need here.
-        let targets: [(screen: NSScreen, pixels: CGSize)] = NSScreen.screens.map { screen in
-            let scale = screen.backingScaleFactor
-            return (screen, CGSize(width: max(1, screen.frame.width * scale),
-                                   height: max(1, screen.frame.height * scale)))
-        }
-        guard !targets.isEmpty, let directory = Self.writableWallpaperDirectory() else { return }
-        let entry = frame.entry, time = frame.time, seed = frame.seed
-        let shaderName = entry.shader
-        let stamp = UUID().uuidString.prefix(8)
-
-        DispatchQueue.global(qos: .utility).async {
-            // A private renderer/library: the view's own are main-thread state.
-            guard let renderer = LerpRenderer() else {
-                Self.log.error("wallpaper: no Metal device")
-                return
-            }
-            let library = ShaderLibrary(device: renderer.device)
-            guard let shader = library.shader(named: shaderName) else {
-                Self.log.error("wallpaper: shader \(shaderName, privacy: .public) not found")
-                return
-            }
-            // Same (shader, time, seed, params) the view was rendering, so the
-            // still is the frame the saver stopped on and not a different look.
-            let values = shader.parameterValues(for: entry)
-
-            var written: [(NSScreen, URL)] = []
-            for (index, target) in targets.enumerated() {
-                let url = directory.appendingPathComponent("\(shaderName)-\(stamp)-\(index).png")
-                let result = LerpSnapshot.render(shader: shader, library: library, renderer: renderer,
-                                                 width: Int(target.pixels.width),
-                                                 height: Int(target.pixels.height),
-                                                 time: time, seed: seed, params: values, to: url)
-                if let error = result.error {
-                    Self.log.error("wallpaper: render failed: \(error, privacy: .public)")
-                } else {
-                    Self.log.notice("wallpaper: wrote \(url.path, privacy: .public) \(Int(target.pixels.width))x\(Int(target.pixels.height)) luma=\(result.meanLuminance)")
-                    written.append((target.screen, url))
-                }
-            }
-            guard !written.isEmpty else { return }
-
-            DispatchQueue.main.async {
-                var applied: Set<String> = []
-                for (screen, url) in written {
-                    do {
-                        try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: [:])
-                        applied.insert(url.lastPathComponent)
-                        Self.log.notice("wallpaper: set on \(screen.localizedName, privacy: .public)")
-                    } catch {
-                        Self.log.error("wallpaper: setDesktopImageURL failed: \(error.localizedDescription, privacy: .public)")
-                    }
-                }
-                guard !applied.isEmpty else { return }
-                Self.pruneWallpapers(in: directory, keeping: applied)
-            }
-        }
-    }
-
-    /// Bounds the directory. Every frame needs a brand-new filename (rewriting a
-    /// URL does not refresh the desktop picture), so old ones have to go.
+    /// 1. **It could not write where the answer has to live.** Inside
+    ///    `legacyScreenSaver` this process is sandboxed, so
+    ///    `~/Library/Application Support/Lerping/wallpaper/` resolves to Apple's
+    ///    container. macOS's wallpaper store then held absolute paths into a
+    ///    container that is not ours and can be reset from under us.
+    /// 2. **`setDesktopImageURL` reaches one space per screen.** The user's
+    ///    machine had 454 spaces across 5 displays. Each was pinned to whatever
+    ///    happened to be playing the moment that space was last refreshed, so the
+    ///    store fragmented across four different stills instead of converging.
+    /// 3. **Every still was uniquely named** (`<shader>-<uuid>-<n>.png`, because
+    ///    rewriting a URL does not refresh the picture) **and then garbage
+    ///    collected** by a 120-second age sweep — which deleted files the store
+    ///    was still pointing at. 173 of the user's references were to PNGs that
+    ///    no longer existed.
+    /// 4. **The flag lived in the container and its consequences did not.** The
+    ///    container was emptied at some point; the option read `false` again;
+    ///    and the pointers it had already planted in macOS's permanent store
+    ///    stayed exactly where they were. Nothing in this codebase would ever
+    ///    revisit them. The lock screen froze in mid-August on `neuro-noise` —
+    ///    a shader the user had switched off — and stayed there.
     ///
-    /// Age-based rather than "delete everything I did not just write": with more
-    /// than one display macOS can run more than one saver host, and a strict
-    /// keep-set would let one host delete the still another host had just handed
-    /// to the wallpaper agent.
-    static func pruneWallpapers(in directory: URL, keeping: Set<String>, olderThan age: TimeInterval = 120) {
-        let manager = FileManager.default
-        let contents = (try? manager.contentsOfDirectory(at: directory,
-                                                         includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        let cutoff = Date().addingTimeInterval(-age)
-        for url in contents where url.pathExtension.lowercased() == "png" && !keeping.contains(url.lastPathComponent) {
-            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-            guard let modified, modified < cutoff else { continue }
-            try? manager.removeItem(at: url)
-        }
-    }
+    /// The shape of the mistake is general: **a screensaver is an ephemeral,
+    /// sandboxed guest, and it was making permanent, global, un-owned
+    /// mutations.** The failure was silent, unbounded in time, and invisible to
+    /// every rotation fix, because the wallpaper was a *frozen copy* of a
+    /// decision rather than a view onto the live one.
+    ///
+    /// If the desktop picture should follow a shader again, it belongs in
+    /// `LerpPlayground`: unsandboxed, so it can write the real home; user-driven,
+    /// so the change is a visible action rather than a side effect of walking
+    /// away from the machine; and able to rewrite
+    /// `com.apple.wallpaper/Store/Index.plist` and restart `WallpaperAgent`,
+    /// which is the only thing that reaches every space at once.
 
     // MARK: - Configure sheet
 
@@ -643,7 +550,7 @@ public final class LerpSaverView: ScreenSaverView {
         let shaders = discoveredShaders()
         let shaderNames = shaders.map(\.name)
         let entries = shaders.rotationEntries()
-        let settings = Settings.load(from: Self.defaults(), discovered: entries)
+        let settings = Settings.load(from: Self.defaults())
 
         let shaderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
         shaderPopup.addItem(withTitle: Settings.shuffleTitle)
@@ -661,13 +568,24 @@ public final class LerpSaverView: ScreenSaverView {
         // fresh install) starts with every entry checked.
         rotationShaders = shaders
         rotationEntries = entries
-        rotationEnabled = Set(LerpMetalView.Config.rotation(of: settings.enabledEntries, from: entries))
-        rotationBase = settings.rotationBase
+        let state = Self.savedRotation(discovered: entries)
+        rotationEnabled = Set(LerpMetalView.Config.rotation(
+            of: LerpRotation.enabled(discovered: entries, in: state), from: entries))
 
-        // The gallery. Built from the same `rotationEntries()` the shuffle
-        // itself walks, so it cannot show a look the rotation does not offer.
-        // Nothing here waits on a picture: the tiles go up now and fill in as
-        // the stills land — see `startRotationStills`.
+        // The gallery, showing what is in the rotation and not editing it.
+        //
+        // It used to be editable, and that made this sheet the rotation's second
+        // writer. The playground writes the user's ByHost plist; this sheet runs
+        // sandboxed inside `legacyScreenSaver` and can only write Apple's
+        // container. Two stores holding one truth needed a revision number, a
+        // stale-writer three-way merge, and a newer-than comparison on every
+        // read to decide which store won — roughly a hundred lines whose entire
+        // job was to arbitrate a disagreement that only existed because both
+        // halves were allowed to write.
+        //
+        // So this half stopped. The rotation now has exactly one writer and one
+        // store, which is what makes "the saver plays what the playground says"
+        // true by construction rather than by merge.
         let gallery = RotationGalleryView(
             frame: NSRect(x: 0, y: 0, width: Self.sheetWidth - 40, height: Self.sheetGalleryHeight),
             tileSize: RotationTile.size(width: Self.sheetTileWidth),
@@ -677,9 +595,7 @@ public final class LerpSaverView: ScreenSaverView {
         gallery.layer?.cornerRadius = 6
         gallery.layer?.masksToBounds = true
         gallery.show(shaders: shaders, enabled: rotationEnabled)
-        // The sheet has an OK button, so unlike the playground's gallery this
-        // one only collects; `configureSheetOK` is what writes.
-        gallery.onChange = { [weak self] enabled in self?.rotationEnabled = enabled }
+        gallery.isEditable = false
         rotationGallery = gallery
 
         let fpsPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -694,14 +610,6 @@ public final class LerpSaverView: ScreenSaverView {
         Chrome.fill(freezePopup, with: Self.freezeChoices,
                     selecting: settings.freezeMinutes, default: 3)
 
-        // Off unless the user says otherwise: replacing someone's desktop picture
-        // behind their back is not a reasonable default.
-        let wallpaperCheck = NSButton(checkboxWithTitle: "Set desktop picture to the last frame",
-                                      target: nil, action: nil)
-        wallpaperCheck.state = settings.setsWallpaper ? .on : .off
-        wallpaperCheck.toolTip = "When the screensaver stops, render the frame it ended on and "
-            + "make it the desktop picture, so the desktop, lock screen and login window all match."
-
         func label(_ text: String) -> NSTextField {
             let field = NSTextField(labelWithString: text)
             field.alignment = .right
@@ -714,14 +622,14 @@ public final class LerpSaverView: ScreenSaverView {
         let grid = NSGridView(views: [
             [label("Shader:"), shaderPopup, label("Frame rate:"), fpsPopup],
             [label("Preset:"), presetPopup, label("Render scale:"), scalePopup],
-            [label("Still image:"), freezePopup, label("On stop:"), wallpaperCheck],
+            [label("Still image:"), freezePopup, NSGridCell.emptyContentView, NSGridCell.emptyContentView],
         ])
         grid.column(at: 0).width = 92
         grid.column(at: 2).leadingPadding = 26
         grid.rowAlignment = .firstBaseline
         grid.translatesAutoresizingMaskIntoConstraints = false
 
-        let inRotation = NSTextField(labelWithString: "In rotation")
+        let inRotation = NSTextField(labelWithString: "In rotation — edit in LerpPlayground")
         inRotation.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
         inRotation.translatesAutoresizingMaskIntoConstraints = false
         rotationLabel = inRotation
@@ -761,7 +669,6 @@ public final class LerpSaverView: ScreenSaverView {
         self.fpsPopup = fpsPopup
         self.scalePopup = scalePopup
         self.freezePopup = freezePopup
-        self.wallpaperCheckbox = wallpaperCheck
         reloadPresetPopup(selecting: settings.preset)
         updateRotationControls()
         // `fittingSize` sizes the gallery to its floor, so the difference is
@@ -869,13 +776,10 @@ public final class LerpSaverView: ScreenSaverView {
             var settings = Settings()
             settings.shader = shaderPopup?.titleOfSelectedItem ?? Settings.shuffleTitle
             settings.preset = selectedPreset
-            settings.enabledEntries = rotationEnabled
-            settings.rotationBase = rotationBase
             settings.fps = Int(fpsPopup?.titleOfSelectedItem ?? "30") ?? 30
             settings.renderScale = Chrome.value(of: scalePopup, in: Self.renderScales, default: 0)
             settings.freezeMinutes = Chrome.value(of: freezePopup, in: Self.freezeChoices, default: 3)
-            settings.setsWallpaper = wallpaperCheckbox?.state == .on
-            settings.save(to: defaults, entries: rotationEntries)
+            settings.save(to: defaults)
         }
         metalView?.config = currentConfig()
         endConfigureSheet()
@@ -901,7 +805,6 @@ public final class LerpSaverView: ScreenSaverView {
         rotationShaders = []
         rotationEntries = []
         presetPopup = nil
-        wallpaperCheckbox = nil
     }
 }
 
@@ -925,14 +828,6 @@ private struct Settings {
     private static let renderScaleKey = "renderScale"
     private static let shuffleMinutesKey = "shuffleMinutes"
     private static let freezeMinutesKey = "freezeAfterMinutes"
-    /// Opt-in: hand the last rendered frame off to the desktop picture.
-    static let wallpaperKey = "setWallpaperOnStop"
-
-    /// Which host this is, in the saved state's `writer` field. It answers "who
-    /// turned this back on?", and it is also the credential `LerpRotation.write`
-    /// checks: only the names in `LerpDefaults.trustedWriters` may write the
-    /// user's real rotation at all.
-    static let writerName = LerpDefaults.saverWriter
 
     /// `shuffleTitle`, or the name of the single pinned shader.
     var shader = shuffleTitle
@@ -943,16 +838,12 @@ private struct Settings {
     /// No UI offers this one; it is read but never written back.
     var shuffleMinutes = 5.0
     var freezeMinutes = 30.0
-    var setsWallpaper = false
-    /// The shuffle rotation — see `LerpMetalView.Config.rotation(of:from:)` for
-    /// what nil and empty both mean.
+    /// The shuffle rotation. Not loaded from here and never saved from here:
+    /// `LerpSaverView.savedRotation` reads it out of the ByHost plist the
+    /// playground writes. Set by `currentConfig` after this struct is built.
     var enabledEntries: Set<LerpRotationEntry>?
-    /// The persisted rotation exactly as this load found it. Carried so that
-    /// `save` can tell whether anything landed in the domain while the sheet was
-    /// open, and merge rather than trample if it did. See `LerpRotation.write`.
-    var rotationBase: LerpRotationState?
 
-    static func load(from defaults: UserDefaults?, discovered: [LerpRotationEntry]) -> Settings {
+    static func load(from defaults: UserDefaults?) -> Settings {
         var settings = Settings()
         guard let defaults else { return settings }
         settings.shader = defaults.string(forKey: shaderKey) ?? settings.shader
@@ -961,32 +852,24 @@ private struct Settings {
         settings.renderScale = (defaults.object(forKey: renderScaleKey) as? Double) ?? settings.renderScale
         settings.shuffleMinutes = (defaults.object(forKey: shuffleMinutesKey) as? Double) ?? settings.shuffleMinutes
         settings.freezeMinutes = (defaults.object(forKey: freezeMinutesKey) as? Double) ?? settings.freezeMinutes
-        settings.setsWallpaper = defaults.bool(forKey: wallpaperKey)
-        let state = LerpRotation.read(defaults, discovered: discovered)
-        settings.rotationBase = state
-        settings.enabledEntries = LerpRotation.enabled(discovered: discovered, in: state)
         return settings
     }
 
-    /// Writes back everything the Options sheet controls. `entries` is the full
-    /// rotation the sheet offered, in display order; an empty one leaves the
-    /// saved rotation alone, so a host that discovered nothing cannot wipe it.
-    func save(to defaults: UserDefaults, entries: [LerpRotationEntry]) {
+    /// Writes back everything the Options sheet still controls — which is the
+    /// pinned look and the three render settings, and deliberately not the
+    /// rotation. See `configureSheet` for why this sheet stopped writing that.
+    func save(to defaults: UserDefaults) {
         defaults.set(shader, forKey: Self.shaderKey)
         if let preset {
             defaults.set(preset, forKey: Self.presetKey)
         } else {
             defaults.removeObject(forKey: Self.presetKey)
         }
-        let state = LerpRotation.write(enabled: enabledEntries, base: rotationBase,
-                                       discovered: entries, writer: Self.writerName,
-                                       to: defaults)
         defaults.set(fps, forKey: Self.fpsKey)
         defaults.set(renderScale, forKey: Self.renderScaleKey)
         defaults.set(freezeMinutes, forKey: Self.freezeMinutesKey)
-        defaults.set(setsWallpaper, forKey: Self.wallpaperKey)
         defaults.synchronize()
-        LerpSaverView.log.notice("options: saved rotation \(state.summary, privacy: .public)")
+        LerpSaverView.log.notice("options: saved pinned=\(shader, privacy: .public) fps=\(fps)")
     }
 
     /// What these settings ask the view to render.

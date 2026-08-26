@@ -971,13 +971,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// should pay.
     private(set) var picker: ShaderPicker?
 
-    /// The saved rotation as the popover last read it. A badge click writes
-    /// against this rather than against nothing, so it cannot undo an Options…
-    /// sheet pressed in the meantime — the same protection the gallery window
-    /// has had, which this surface was missing. Set on every load of the
-    /// popover, on every write from it, and whenever the gallery writes.
-    private var rotationBase: LerpRotationState?
-
     /// One cache of stills for both grids. They show the same 123 looks, and
     /// `RotationThumbnails.start` supersedes the run in flight — two instances
     /// would mean two copies of 123 decoded images, and one instance driven by
@@ -995,10 +988,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                             defaults: rotationDefaults, hidden: hidden,
                                             thumbnails: thumbnails)
         made.onOpen = { [weak self] entry in self?.openEntry(entry) }
-        made.onChange = { [weak self] enabled, base in
-            self?.rotationBase = base
-            self?.picker?.showEnabled(enabled)
-        }
+        made.onChange = { [weak self] enabled in self?.picker?.showEnabled(enabled) }
         made.onImage = { [weak self] entry, image in self?.picker?.showImage(image, for: entry) }
         made.showCurrent(currentEntry)
         rotation = made
@@ -1051,9 +1041,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     private func loadPicker(_ picker: ShaderPicker, shaders: [LerpShader]) {
         let entries = shaders.rotationEntries()
-        let saved = RotationStore.resolved(discovered: entries, from: rotationDefaults)
-        rotationBase = saved.base
-        picker.prepare(shaders: shaders, enabled: saved.looks, current: currentEntry)
+        picker.prepare(shaders: shaders,
+                       enabled: RotationStore.resolved(discovered: entries, from: rotationDefaults),
+                       current: currentEntry)
     }
 
     /// A badge in the picker was clicked. Writes the screensaver's rotation the
@@ -1062,10 +1052,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// the grid up to date if it happens to be open.
     private func persistRotation(_ enabled: Set<LerpRotationEntry>) {
         let entries = metalView.shaderLibrary.discover().rotationEntries()
-        let written = RotationStore.save(enabled, entries: entries,
-                                         base: rotationBase, to: rotationDefaults)
-        rotationBase = written
-        rotation?.showEnabled(enabled, base: written)
+        RotationStore.save(enabled, entries: entries, to: rotationDefaults)
+        rotation?.showEnabled(enabled)
     }
 
     /// A shader was saved, or changed on disk. Both grids key their stills on

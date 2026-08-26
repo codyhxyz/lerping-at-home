@@ -23,18 +23,11 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     /// What the gallery was last built from, so an edit somewhere else in the
     /// app can be recognised as one shader changing rather than a reload.
     private var sourceFingerprint = ""
-    /// The saved rotation as this window last saw it. A click writes against it
-    /// rather than against nothing, so a gallery left open all afternoon cannot
-    /// undo an Options… sheet that was pressed while it sat there. Updated on
-    /// every load *and* every write, so this window is only ever one click
-    /// behind at worst.
-    private var base: LerpRotationState?
 
     /// A look was double-clicked: go and open it in the editor.
     var onOpen: ((LerpRotationEntry) -> Void)?
-    /// The rotation changed here. The editor's popover shows the same set, and
-    /// takes the state written with it so its own writes stay unstale too.
-    var onChange: ((Set<LerpRotationEntry>, LerpRotationState?) -> Void)?
+    /// The rotation changed here. The editor's popover shows the same set.
+    var onChange: ((Set<LerpRotationEntry>) -> Void)?
     /// A still landed. Handed on so the popover's copy of the grid can show it
     /// too — the two share one `RotationThumbnails`, and a `start` supersedes
     /// the run in flight, so whichever run is live has to feed both.
@@ -63,7 +56,7 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
 
         gallery.onChange = { [weak self] enabled in
             self?.persist(enabled)
-            self?.onChange?(enabled, self?.base)
+            self?.onChange?(enabled)
         }
         gallery.onOpen = { [weak self] entry in self?.onOpen?(entry) }
         gallery.onRegenerate = { [weak self] in
@@ -84,9 +77,8 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
         sourceFingerprint = fingerprint
 
         let entries = shaders.rotationEntries()
-        let saved = RotationStore.resolved(discovered: entries, from: defaults)
-        base = saved.base
-        gallery.show(shaders: shaders, enabled: saved.looks)
+        gallery.show(shaders: shaders,
+                     enabled: RotationStore.resolved(discovered: entries, from: defaults))
 
         gallery.populate(
             using: thumbnails,
@@ -98,13 +90,7 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     /// looks. Straight into the tiles, without going back out through
     /// `onChange`, because whoever changed it has already saved it.
     ///
-    /// `base` is the state they wrote, adopted as this window's own. Without it
-    /// this window would go on writing against the revision it read at load, so
-    /// every later click here would take the stale-writer branch — correct, but
-    /// only by way of the merge, for the rest of the session. Adopted before the
-    /// guard: a gallery that has not loaded its tiles yet still has a base.
-    func showEnabled(_ enabled: Set<LerpRotationEntry>, base: LerpRotationState?) {
-        if let base { self.base = base }
+    func showEnabled(_ enabled: Set<LerpRotationEntry>) {
         guard !gallery.entries.isEmpty else { return }
         gallery.show(shaders: gallery.shaders, enabled: enabled)
     }
@@ -115,7 +101,7 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     /// The whole point of the feature: a click writes the screensaver's own
     /// rotation, in the screensaver's own domain, immediately.
     private func persist(_ enabled: Set<LerpRotationEntry>) {
-        base = RotationStore.save(enabled, entries: gallery.entries, base: base, to: defaults)
+        RotationStore.save(enabled, entries: gallery.entries, to: defaults)
     }
 
     func show() {

@@ -711,6 +711,30 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     public private(set) var isActive = true
     private var inactiveNote: String?
 
+    /// Whether clicking a tile changes the rotation.
+    ///
+    /// False in the saver's Options… sheet, which shows the rotation but does
+    /// not own it: the playground is the rotation's only writer, because the
+    /// sheet runs sandboxed and can only reach Apple's container rather than the
+    /// ByHost file the saver reads. A gallery that accepted clicks it could not
+    /// persist where the saver would look for them is worse than one that does
+    /// not accept them.
+    ///
+    /// Distinct from `isActive`, which greys the gallery out entirely: a
+    /// read-only gallery is still legible, still scrolls, still previews on
+    /// hover and still shows which looks are in.
+    public var isEditable = true {
+        didSet { tiles.values.forEach { $0.toolTip = isEditable ? nil : Self.readOnlyNote } }
+    }
+
+    /// Said once, where a click would otherwise have gone.
+    public static let readOnlyNote = "Edit the rotation in LerpPlayground."
+
+    /// The one predicate every mutator asks. `isActive` is "the rotation does
+    /// not apply right now"; `isEditable` is "this gallery never writes". Both
+    /// have to be true before the enabled set moves.
+    private var canEdit: Bool { isActive && isEditable }
+
     private final class Canvas: NSView {
         override var isFlipped: Bool { true }
         var onLayout: ((CGFloat) -> CGFloat)?
@@ -1005,6 +1029,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     }
 
     private func toggle(_ entry: LerpRotationEntry) {
+        guard canEdit else { return refuse(Self.readOnlyNote) }
         if enabled.contains(entry) {
             guard !wouldEmpty([entry]) else { return refuse(Self.floorNote) }
             enabled.remove(entry)
@@ -1036,7 +1061,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// rather than off the checkbox's own next state — a three-state box's idea
     /// of what comes next is not what we mean.
     @objc private func groupToggled(_ sender: NSButton) {
-        guard isActive else { return }
+        guard canEdit else { return }
         let name = (sender.identifier?.rawValue ?? "").replacingOccurrences(of: "shader:", with: "")
         let group = entries.filter { $0.shader == name }
         guard !group.isEmpty else { return }
@@ -1058,7 +1083,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// is the far more useful "all the dark ones" rather than a button that
     /// quietly ignores the search.
     @objc private func selectAllLooks() {
-        guard isActive else { return }
+        guard canEdit else { return }
         enabled.formUnion(visibleEntries())
         commit()
     }
@@ -1069,7 +1094,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// change: a control that cannot do the wrong thing beats a control that
     /// does the opposite of what it says.
     @objc private func deselectAllLooks() {
-        guard isActive else { return }
+        guard canEdit else { return }
         let victims = visibleEntries()
         guard !wouldEmpty(victims) else {
             return refuse(filter.isEmpty

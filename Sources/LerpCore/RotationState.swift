@@ -3,56 +3,81 @@ import os
 
 /// Everything the shuffle rotation persists, in one place, for every host.
 ///
-/// This used to be written twice: `Settings.savedRotation` in the saver and
-/// the playground's own loader in `RotationStore`, each a hand transcription of
-/// the other. They agreed the day they were written. This file exists so that the
-/// question "is this look in the rotation?" has exactly one answer, computed by
-/// exactly one function, wherever it is asked.
+/// # One representation
 ///
-/// # What is stored, and why it is the *off* set
+/// This file used to write four keys that all claimed to answer the same
+/// question, plus a hash to referee them:
 ///
-/// The old schema stored `enabledEntries` — the looks that are in — beside
-/// `knownEntries`, the roster of everything that existed at save time. Anything
-/// missing from the roster counted as new and joined automatically, which is the
-/// behaviour you want for a shader someone just dropped in.
+/// - `rotationState.disabled` — the looks that are out (v2, authoritative)
+/// - `enabledEntries` / `knownEntries` — the looks that are in (v1)
+/// - `enabledShaders` / `knownShaders` — the *shaders* that are in (v0)
+/// - `rotationState.legacy` — a digest of the v1 keys, so a v2 reader could
+///   notice that someone had written v1 afterwards
+///
+/// The user's live plist showed what that costs. `enabledEntries` listed bare
+/// `fluted-glass` but none of its three presets; it listed seven
+/// `game-of-life/*` presets but no bare `game-of-life`; `enabledShaders` listed
+/// `metaballs`, `water` and `halftone-cmyk` as in the rotation while
+/// `enabledEntries` had switched off every look those shaders own except one
+/// apiece. All three were *correct* under their own schema — v0 genuinely
+/// cannot express "one preset of this shader" and reports the shader as in — but
+/// anything that read the coarser key got a broader answer than the user gave,
+/// and the digest existed only to arbitrate between copies that should never
+/// have existed.
+///
+/// So there is now exactly one: the `rotationState` record. The v1 keys are
+/// still *read*, once, by a domain that has no v2 record — that is a real
+/// migration and it costs ten lines. They are never written again, and
+/// `write` deletes them, so the disagreement cannot re-form. With one
+/// representation there is nothing for a digest to referee, and it is gone too.
+///
+/// # Why the stored set is the *off* set
+///
+/// The v1 schema stored the looks that are in, beside a roster of everything
+/// that existed at save time. Anything missing from the roster counted as new
+/// and joined automatically, which is the behaviour you want for a shader
+/// someone just dropped in.
 ///
 /// The trouble is that a *renamed* preset is indistinguishable from a new one
 /// under that scheme, and it is worse than merely ambiguous: renaming
-/// `SineWave` to `Sine Wave` retires the old key (so it falls out of
-/// `enabledEntries`) and mints a new one (so it is not in `knownEntries` and
-/// joins). A look the user deliberately switched off comes back on, silently,
-/// because somebody edited a comment. That has destroyed a real selection twice.
+/// `SineWave` to `Sine Wave` retires the old key (so it falls out of the
+/// selection) and mints a new one (so it is not in the roster and joins). A look
+/// the user deliberately switched off comes back on, silently, because somebody
+/// edited a comment. That has destroyed a real selection twice.
 ///
-/// So this schema stores the **disabled** set instead. It is the smaller list,
-/// it is the only thing the user has actually expressed an opinion *about*, and
-/// it does not have to be rewritten every time the library grows. "Not
-/// mentioned" means in, which is what makes a genuinely new look join without a
-/// roster entry having to say so.
+/// So this schema stores the **disabled** set. It is the smaller list, it is the
+/// only thing the user has actually expressed an opinion *about*, and it does
+/// not have to be rewritten every time the library grows. "Not mentioned" means
+/// in, which is what makes a genuinely new look join without a roster entry
+/// having to say so.
 ///
 /// # Telling a rename from a new look
 ///
-/// The roster is still kept, but it now records each shader's presets **in
-/// declaration order** rather than as a flat set of keys. That is enough to
-/// align the old list against the new one: a preset name present in both is
-/// itself; a name that vanished and a name that appeared *at the same position*
-/// are the same look under a new name, and the disabled flag travels with it. A
-/// new name with no vanished partner is genuinely new and joins the rotation.
-/// See `renamePairs(from:to:)`.
+/// The roster records each shader's presets **in declaration order** rather than
+/// as a flat set of keys. That is enough to align the old list against the new
+/// one: a preset name present in both is itself; a name that vanished and a name
+/// that appeared *at the same position* are the same look under a new name, and
+/// the disabled flag travels with it. A new name with no vanished partner is
+/// genuinely new and joins the rotation. See `renamePairs(from:to:)`.
 ///
-/// # Why there is a revision number
+/// # One writer
 ///
-/// Two processes write this: the screensaver's Options… sheet and the
-/// playground's rotation window. Neither used to know the other existed, so a
-/// sheet opened before a click in the playground would, on OK, write back the
-/// selection it had read minutes earlier and quietly undo it. Every write now
-/// carries a monotonic `revision`; a writer whose base revision is behind the
-/// live one does not get to blanket-overwrite. It contributes only the entries
-/// it actually toggled, three-way merged onto whatever landed in the meantime.
-/// A stale writer loses everything it did not touch.
+/// There used to be two — the playground's gallery and the screensaver's
+/// Options… sheet — and because the sheet runs sandboxed inside
+/// `legacyScreenSaver` they wrote to two *different* stores: the playground to
+/// the user's ByHost plist, the sheet to Apple's container. One truth in two
+/// files, reconciled by a hand-rolled "whose revision is higher" comparison, and
+/// a three-way merge inside this file to stop a sheet left open from undoing a
+/// click made in the playground.
+///
+/// The sheet's gallery is now read-only (see `LerpSaverView`), so the playground
+/// is the only writer and the ByHost plist is the only store. Everything that
+/// existed to arbitrate between them — `revision`, the base/stale comparison,
+/// the three-way merge, the container-versus-ByHost newer-than check — is
+/// deleted. A single writer does not need to merge with itself.
 public struct LerpRotationState: Equatable, Sendable {
 
-    /// Schema version of the `rotationState` dictionary. Bumped when the shape
-    /// changes; older shapes are migrated in `LerpRotation.read`.
+    /// Schema version of the `rotationState` dictionary.
     public static let currentVersion = 2
 
     /// Whether anything was ever saved. False only for `.empty`, and the
@@ -62,9 +87,6 @@ public struct LerpRotationState: Equatable, Sendable {
     /// "every entry", and the answer a fresh install has always given.
     public var stored: Bool
     public var version: Int
-    /// Monotonic, bumped once per write. `0` means "migrated from an older
-    /// schema and never written since", so the first real write is `1`.
-    public var revision: Int
     public var updatedAt: Date
     /// Which host wrote this last. Diagnostics only; nothing branches on it.
     public var writer: String
@@ -77,14 +99,12 @@ public struct LerpRotationState: Equatable, Sendable {
 
     public init(stored: Bool = false,
                 version: Int = LerpRotationState.currentVersion,
-                revision: Int = 0,
                 updatedAt: Date = Date(timeIntervalSince1970: 0),
                 writer: String = "",
                 disabled: Set<LerpRotationEntry> = [],
                 roster: [String: [String]] = [:]) {
         self.stored = stored
         self.version = version
-        self.revision = revision
         self.updatedAt = updatedAt
         self.writer = writer
         self.disabled = disabled
@@ -94,10 +114,9 @@ public struct LerpRotationState: Equatable, Sendable {
     /// Nothing has ever been saved: no opinions, no roster, so every look is in.
     public static let empty = LerpRotationState()
 
-    /// One line for the log. The revision and the writer are the two facts that
-    /// make "who turned this back on?" answerable next time.
+    /// One line for the log.
     public var summary: String {
-        "rev=\(revision) writer=\(writer.isEmpty ? "-" : writer) "
+        "writer=\(writer.isEmpty ? "-" : writer) "
             + "off=\(disabled.count) shaders=\(roster.count) "
             + "at=\(updatedAt.timeIntervalSince1970 > 0 ? ISO8601DateFormatter().string(from: updatedAt) : "never")"
     }
@@ -108,54 +127,18 @@ public struct LerpRotationState: Equatable, Sendable {
 public enum LerpRotation {
 
     /// Same subsystem as every other host, so one `log show` predicate covers
-    /// the whole story. Used only for the refusal below, which is a thing that
-    /// must never happen silently.
+    /// the whole story.
     static let log = Logger(subsystem: LerpDefaults.productionModule, category: "rotation")
 
     // MARK: - Keys
 
-    /// The versioned state. Everything below it is legacy.
+    /// The one key that holds the rotation.
     public static let stateKey = "rotationState"
-    /// v1: the looks that are in, plus the roster of everything that existed.
-    /// Still written, so a downgrade to an older build finds a sane rotation.
-    public static let enabledEntriesKey = "enabledEntries"
-    public static let knownEntriesKey = "knownEntries"
-    /// v0: the same two, before the rotation counted presets — shader names only.
-    public static let enabledShadersKey = "enabledShaders"
-    public static let knownShadersKey = "knownShaders"
 
-    /// Every key this file will ever touch.
-    public static let allKeys = [stateKey, enabledEntriesKey, knownEntriesKey,
-                                 enabledShadersKey, knownShadersKey]
-
-    // MARK: - Not being the only writer
-
-    /// A digest of the v1 keys exactly as the last v2 write left them, stored
-    /// inside the v2 state.
-    ///
-    /// Both are written together, every time. So if the v1 keys are present and
-    /// *do not* match this, somebody wrote them who did not write the v2 state —
-    /// an older build of the saver, or a `defaults write` by hand — and their
-    /// version is the newer one. Without this the v2 state would silently win
-    /// forever and a downgrade-then-upgrade would quietly restore a rotation the
-    /// user had changed in between.
-    ///
-    /// `LerpHash.fnv1a` rather than `hashValue`: Swift seeds its hasher per
-    /// process, so `hashValue` is not the same number twice and would make every
-    /// read distrust every write. See that file for the other things in this
-    /// project that cannot be salted — and for why this one passes a multiplier
-    /// that is not quite FNV's, which it must keep passing.
-    static func digest(_ parts: [String]) -> String {
-        String(LerpHash.fnv1a(parts.joined(separator: "\u{0}"),
-                              prime: LerpHash.rotationDigestPrime), radix: 16)
-    }
-
-    /// The digest of whatever the v1 keys hold right now, or nil when they are
-    /// not there at all — in which case there is nothing to disagree with.
-    static func legacyDigest(_ defaults: UserDefaults) -> String? {
-        guard let enabled = defaults.stringArray(forKey: enabledEntriesKey) else { return nil }
-        return digest(enabled + ["\u{1}"] + (defaults.stringArray(forKey: knownEntriesKey) ?? []))
-    }
+    /// Keys an older build of this project wrote. Read once by a domain with no
+    /// `rotationState` in it; deleted on the next write; never written again.
+    static let legacyKeys = ["enabledEntries", "knownEntries",
+                             "enabledShaders", "knownShaders"]
 
     // MARK: - Roster
 
@@ -189,8 +172,7 @@ public enum LerpRotation {
     ///
     /// Deliberately conservative in one direction only: an unpaired *new* name
     /// is treated as new (it joins the rotation), and an unpaired *old* name is
-    /// treated as deleted (its opinion is dropped). Both are the pre-existing
-    /// behaviour; the pairs are the only thing this adds.
+    /// treated as deleted (its opinion is dropped).
     static func renamePairs(from old: [String], to new: [String]) -> [(old: String, new: String)] {
         let kept = Set(old).intersection(new)
         var oldLeft = old.filter { !kept.contains($0) }
@@ -220,108 +202,79 @@ public enum LerpRotation {
     /// Never writes. Every host calls this, including ones that will never save,
     /// so it has to be free of side effects: a screensaver reading its rotation
     /// must not be able to change it.
-    ///
-    /// - `discovered`: every look on disk, in `rotationEntries()` order.
     public static func read(_ defaults: UserDefaults?,
                             discovered: [LerpRotationEntry]) -> LerpRotationState {
         guard let defaults else { return .empty }
-        return reconcile(stored(defaults, discovered: discovered), with: discovered)
+        return read(plist: [
+            stateKey: defaults.dictionary(forKey: stateKey) as Any,
+            legacyKeys[0]: defaults.stringArray(forKey: legacyKeys[0]) as Any,
+            legacyKeys[1]: defaults.stringArray(forKey: legacyKeys[1]) as Any,
+        ], discovered: discovered)
+    }
+
+    /// The same, from a property list read straight off disk.
+    ///
+    /// This is how the screensaver reads its rotation, and it is deliberately
+    /// not a `UserDefaults` lookup. Inside `legacyScreenSaver` the saver is
+    /// sandboxed under *Apple's* bundle identifier, so `ScreenSaverDefaults`
+    /// resolves to Apple's container rather than the user's ByHost file. The
+    /// previous code worked around that by loading the ByHost plist and
+    /// installing it with `register(defaults:)` — the *lowest* precedence
+    /// domain, so any value that had ever been written into the container
+    /// outranked the file the user actually edits, and a hand-rolled
+    /// "is the shared record newer?" comparison had to delete container keys to
+    /// stop it winning.
+    ///
+    /// Reading the file by path removes the question. There is no precedence
+    /// order to reason about, no second domain that can hold an older answer,
+    /// and no `cfprefsd` cache in between: the bytes the playground wrote are
+    /// the bytes the saver parses.
+    public static func read(plist: [String: Any]?,
+                            discovered: [LerpRotationEntry]) -> LerpRotationState {
+        guard let plist else { return .empty }
+        return reconcile(stored(plist), with: discovered)
     }
 
     /// The state exactly as persisted, migrated to the current shape but *not*
-    /// yet mapped onto what is on disk. Split out so `reconcile` can be tested
-    /// against a state that was never stored.
-    static func stored(_ defaults: UserDefaults,
-                       discovered: [LerpRotationEntry]) -> LerpRotationState {
-        let record = defaults.dictionary(forKey: stateKey)
-        let version = record?["version"] as? Int ?? 0
-        // Whether the v1 keys still say what this record left them saying. If
-        // they do not, somebody wrote them afterwards — an older build, or a
-        // hand `defaults write` — and their reading of the rotation is the
-        // newer one. See `legacyDigest`.
-        let recordIsCurrent = version >= 2
-            && legacyDigest(defaults).map({ $0 == record?["legacy"] as? String }) ?? true
-
-        if let record, recordIsCurrent {
-            return decodeRecord(
-                record,
-                version: version,
-                disabled: Set((record["disabled"] as? [String] ?? [])
-                    .map(LerpRotationEntry.init(key:))))
+    /// yet mapped onto what is on disk.
+    static func stored(_ plist: [String: Any]) -> LerpRotationState {
+        // The v2 record is authoritative whenever it exists, full stop. It used
+        // to have to prove itself against a digest of the v1 keys first, because
+        // both were written together and either could be the newer one. Only one
+        // of them is written now, so the newest thing on disk is the only thing
+        // on disk.
+        if let record = plist[stateKey] as? [String: Any],
+           (record["version"] as? Int ?? 0) >= 2 {
+            return LerpRotationState(
+                stored: true,
+                version: LerpRotationState.currentVersion,
+                updatedAt: Date(timeIntervalSince1970: record["updatedAt"] as? Double ?? 0),
+                writer: record["writer"] as? String ?? "",
+                disabled: Set((record["disabled"] as? [String] ?? []).map(LerpRotationEntry.init(key:))),
+                roster: record["roster"] as? [String: [String]] ?? [:])
         }
 
-        /// Denials this record already held. Kept even when the v1 keys have
-        /// overtaken it, because of the rule the whole schema turns on: **an
-        /// explicit no is revoked only by an explicit yes.**
-        ///
-        /// The v1 format cannot express "I have never heard of this look" — it
-        /// only has a roster, and absence from a roster used to be read as *put
-        /// it in*. So a writer that has not seen a look says nothing about it,
-        /// and nothing is not consent. What that writer did say, about looks it
-        /// listed, still wins.
-        let carried = Set((record?["disabled"] as? [String] ?? []).map(LerpRotationEntry.init(key:)))
-
-        // v1 — `enabledEntries` names what is in, `knownEntries` the roster it
-        // was chosen from. Everything in the roster and not in the selection was
-        // switched off; that is the whole of what the user told us.
-        if let saved = defaults.stringArray(forKey: enabledEntriesKey) {
-            // A selection with no roster beside it is taken at face value:
-            // nothing is "new", so everything on disk that is not selected is
-            // off. That is what the v1 reader did, and reproducing it exactly is
-            // the point of migrating rather than starting over.
-            let known = defaults.stringArray(forKey: knownEntriesKey) ?? discovered.map(\.key)
+        // No v2 record: migrate the v1 keys, once. `enabledEntries` named what
+        // was in and `knownEntries` the roster it was chosen from, so everything
+        // in the roster and not in the selection was switched off. That is the
+        // whole of what the user told the old schema.
+        //
+        // The v0 keys (`enabledShaders`/`knownShaders`) are deliberately *not*
+        // consulted, even as a last resort. They cannot express a per-preset
+        // choice, so migrating from them would take a user who had switched off
+        // eleven of `game-of-life`'s twelve looks and turn all twelve back on —
+        // widening a selection while claiming to preserve it. A domain old
+        // enough to have only v0 keys gets `.empty`, which lights everything up
+        // and is at least honest about having no opinion to carry.
+        if let saved = plist[legacyKeys[0]] as? [String] {
             let enabled = Set(saved.map(LerpRotationEntry.init(key:)))
-            let disabled = Set(known.map(LerpRotationEntry.init(key:))).subtracting(enabled)
-            return LerpRotationState(stored: true, revision: record?["revision"] as? Int ?? 0,
-                                     writer: "migrated-v1",
-                                     disabled: disabled.union(carried.subtracting(enabled)),
-                                     roster: roster(of: known.map(LerpRotationEntry.init(key:))))
-        }
-
-        // v0 — shader names only, from before the rotation counted presets. A
-        // shader that was out is out in all its looks; a shader nobody had heard
-        // of is in, which is how the presets arrived in the first place.
-        if let legacy = defaults.stringArray(forKey: enabledShadersKey) {
-            let enabled = Set(legacy)
-            let known = Set(defaults.stringArray(forKey: knownShadersKey)
-                            ?? discovered.map(\.shader))
-            let off = known.subtracting(enabled)
-            let disabled = Set(discovered.filter { off.contains($0.shader) })
-            let seen = discovered.filter { known.contains($0.shader) }
-            return LerpRotationState(stored: true, revision: record?["revision"] as? Int ?? 0,
-                                     writer: "migrated-v0",
-                                     // Same rule: a shader this format put in is
-                                     // an explicit yes and clears the denials on
-                                     // its looks; one it never mentions is not.
-                                     disabled: disabled.union(
-                                        carried.filter { !enabled.contains($0.shader) }),
-                                     roster: roster(of: seen))
-        }
-
-        // Nothing in the legacy keys at all. If there is a v2 record here it is
-        // the only thing anybody has said, whatever its digest claims — the keys
-        // it was measured against are gone rather than rewritten.
-        if let record {
-            return decodeRecord(
-                record,
-                version: max(version, LerpRotationState.currentVersion),
-                disabled: carried)
+            let known = (plist[legacyKeys[1]] as? [String] ?? saved).map(LerpRotationEntry.init(key:))
+            return LerpRotationState(stored: true, writer: "migrated-v1",
+                                     disabled: Set(known).subtracting(enabled),
+                                     roster: roster(of: known))
         }
 
         return .empty
-    }
-
-    private static func decodeRecord(_ record: [String: Any],
-                                     version: Int,
-                                     disabled: Set<LerpRotationEntry>) -> LerpRotationState {
-        LerpRotationState(
-            stored: true,
-            version: version,
-            revision: record["revision"] as? Int ?? 0,
-            updatedAt: Date(timeIntervalSince1970: record["updatedAt"] as? Double ?? 0),
-            writer: record["writer"] as? String ?? "",
-            disabled: disabled,
-            roster: record["roster"] as? [String: [String]] ?? [:])
     }
 
     /// A saved state re-expressed in today's keys: renames carried across,
@@ -372,18 +325,14 @@ public enum LerpRotation {
     ///
     /// It does *not* mean "the answer came out awkward". A stored selection is
     /// returned as it stands, including an empty one. That case is unreachable
-    /// through the gallery, which will not let the last look be switched off,
-    /// and a hand-edited domain that manages it gets what it asked for rather
-    /// than the entire library it did not.
+    /// through the gallery, which will not let the last look be switched off.
     public static func enabled(discovered: [LerpRotationEntry],
                                in defaults: UserDefaults?) -> Set<LerpRotationEntry>? {
         guard let defaults else { return nil }
         return enabled(discovered: discovered, in: read(defaults, discovered: discovered))
     }
 
-    /// The same, from a state the caller has already read — so a host that
-    /// wants both the rotation *and* the state it came from (to write back
-    /// against later) does not go through `UserDefaults` twice.
+    /// The same, from a state the caller has already read.
     public static func enabled(discovered: [LerpRotationEntry],
                                in state: LerpRotationState) -> Set<LerpRotationEntry>? {
         guard state.stored else { return nil }
@@ -392,118 +341,63 @@ public enum LerpRotation {
 
     // MARK: - Writing
 
-    /// Persists a selection, three-way merged against whatever is live.
+    /// Persists a selection.
     ///
-    /// - `enabled`: the looks the caller wants in. nil or empty means "all of
-    ///   them", which is `LerpMetalView.Config.rotation`'s policy and not
-    ///   restated here.
-    /// - `base`: the state the caller *read* before the user started clicking.
-    ///   If the live revision has moved on since, the caller is stale and only
-    ///   the entries it actually toggled are applied; everything else stays as
-    ///   the newer writer left it.
-    ///
-    ///   nil means the caller is not playing: it is declaring the rotation
-    ///   outright, and whatever is there is replaced. That is the right answer
-    ///   for a test fixture or a migration, and the wrong one for a window with
-    ///   a checkbox in it — both UIs in this project pass a real base, which is
-    ///   what makes them safe to leave open beside each other.
+    /// - `enabled`: the looks the caller wants in. nil means "all of them",
+    ///   which is `LerpMetalView.Config.rotation`'s policy and not restated
+    ///   here. An empty set means an empty rotation and is written as such;
+    ///   keeping that unreachable is the gallery's job, not this one's.
     /// - `discovered`: every look on disk, in `rotationEntries()` order. An
     ///   empty one saves nothing, so a host that discovered no shaders cannot
     ///   wipe a rotation.
     ///
-    /// Returns the state as written, so a long-lived caller can adopt it as its
-    /// new base and stop being stale.
+    /// Returns the state as written.
     @discardableResult
     public static func write(enabled: Set<LerpRotationEntry>?,
-                             base: LerpRotationState?,
                              discovered: [LerpRotationEntry],
                              writer: String,
                              to defaults: UserDefaults?) -> LerpRotationState {
-        guard let defaults, !discovered.isEmpty else { return base ?? .empty }
+        guard let defaults, !discovered.isEmpty else { return .empty }
 
-        // Who is allowed to own the user's rotation. See `LerpDefaults` for why
-        // this is a gate rather than a convention: the convention was tried, and
-        // a probe called `writeprobe` walked straight through it and spent two
-        // days' worth of the user's screensaver.
-        //
-        // Loud, because the alternative failure — a harness that believes it
-        // wrote the rotation, reads back the value it thinks it set, and passes
-        // — is exactly how a rotation bug survives three rounds of being fixed.
-        guard LerpDefaults.mayWrite(writer: writer) else {
+        // What the process *is*, not what it calls itself. See `LerpDefaults`.
+        guard LerpDefaults.mayWriteProduction else {
             log.error("""
-                refusing rotation write from '\(writer, privacy: .public)' to the production \
-                domain '\(LerpDefaults.productionModule, privacy: .public)'. Set \
-                \(LerpDefaults.moduleOverrideVariable, privacy: .public) to a scratch domain, \
-                or write as one of: \
-                \(LerpDefaults.trustedWriters.sorted().joined(separator: ", "), privacy: .public)
+                refusing rotation write from an unbundled process (writer \
+                '\(writer, privacy: .public)') to the production domain \
+                '\(LerpDefaults.productionModule, privacy: .public)'. Set \
+                \(LerpDefaults.moduleOverrideVariable, privacy: .public) to a scratch domain.
                 """)
-            return base ?? read(defaults, discovered: discovered)
+            return read(defaults, discovered: discovered)
         }
 
         let all = Set(discovered)
-        // Stored as given. A nil selection is "nobody has chosen" and disables
-        // nothing; an empty one is "everything is off" and is written as such.
-        // This used to convert the second into the first, which meant a saved
-        // rotation could say the opposite of the sheet that saved it. Making an
-        // empty selection unreachable is the gallery's job, not this one's, and
-        // a store that quietly rewrites what it is handed is how a setting
-        // stops being believed.
         let picked = Set(LerpMetalView.Config.rotation(of: enabled, from: discovered))
-        let wanted = all.subtracting(picked)
-
-        let live = read(defaults, discovered: discovered)
-        let merged: Set<LerpRotationEntry>
-        if let base, live.revision != base.revision {
-            // Stale. Contribute the toggles this caller made and nothing else:
-            // whatever it never touched belongs to whoever wrote more recently.
-            let turnedOff = wanted.subtracting(base.disabled)
-            let turnedOn = base.disabled.subtracting(wanted)
-            merged = live.disabled.subtracting(turnedOn).union(turnedOff)
-        } else {
-            merged = wanted
-        }
 
         let state = LerpRotationState(
             stored: true,
             version: LerpRotationState.currentVersion,
-            revision: max(live.revision, base?.revision ?? 0) + 1,
             updatedAt: Date(),
             writer: writer,
             // Only looks that exist. A shader that has gone takes its opinions
-            // with it, exactly as the v1 reader dropped stale keys.
-            disabled: merged.intersection(all),
+            // with it.
+            disabled: all.subtracting(picked),
             roster: roster(of: discovered))
-
-        // The v1 and v0 keys first, so a downgrade to an older build — or the
-        // `defaults read` somebody reaches for when this misbehaves — still
-        // finds the same rotation rather than an empty one. First because the
-        // v2 record carries a digest of them, which is how a *later* write to
-        // them by an older build is noticed rather than ignored.
-        let inRotation = discovered.filter { !state.disabled.contains($0) }
-        let enabledKeys = inRotation.map(\.key), knownKeys = discovered.map(\.key)
-        defaults.set(enabledKeys, forKey: enabledEntriesKey)
-        defaults.set(knownKeys, forKey: knownEntriesKey)
-        defaults.set(shaderNames(of: inRotation), forKey: enabledShadersKey)
-        defaults.set(shaderNames(of: discovered), forKey: knownShadersKey)
 
         defaults.set([
             "version": state.version,
-            "revision": state.revision,
             "updatedAt": state.updatedAt.timeIntervalSince1970,
             "writer": state.writer,
             "disabled": state.disabled.map(\.key).sorted(),
             "roster": state.roster,
-            "legacy": digest(enabledKeys + ["\u{1}"] + knownKeys),
         ] as [String: Any], forKey: stateKey)
+
+        // The old schemas, removed rather than left to rot. A stale
+        // `enabledEntries` sitting beside a live `rotationState` is the exact
+        // shape of the bug this file was rewritten to end: two answers to one
+        // question, with the older one still readable.
+        legacyKeys.forEach(defaults.removeObject(forKey:))
+
         defaults.synchronize()
         return state
-    }
-
-    /// The shaders these looks name, once each, in order. A shader counts as in
-    /// the pre-preset rotation when any of its looks is, so the v0 keys keep
-    /// saying something true.
-    static func shaderNames(of entries: [LerpRotationEntry]) -> [String] {
-        var seen = Set<String>()
-        return entries.map(\.shader).filter { seen.insert($0).inserted }
     }
 }

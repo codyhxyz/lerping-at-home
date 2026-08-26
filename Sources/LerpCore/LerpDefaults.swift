@@ -1,31 +1,37 @@
 import Foundation
 
 /// The screensaver defaults identity shared by every host that reads or writes
-/// it — and the one gate that decides who is allowed to write the user's real
-/// rotation.
+/// it, and the one rule about who may write the user's real rotation.
 ///
-/// # Why there is a gate
+/// # Why there is a rule at all
 ///
 /// The live rotation on this machine was found carrying `writer: "writeprobe"`,
-/// a name that appears nowhere in this repository: a throwaway probe from some
+/// a name that appears nowhere in this repository: a throwaway probe from an
 /// earlier debugging session had written the user's real selection and left.
-/// Every look the screensaver played for the next two days came from a harness
-/// rather than from anything the user clicked, and — worse for the three
-/// rounds of "the rotation is fixed now" that followed — the harness was both
-/// setting the state *and* checking it, so it agreed with itself no matter what
-/// the screensaver did.
 ///
-/// This was not the first time. `4b91f56 "Stop the self-test writing the
-/// user's real rotation"` fixed one instance of it by hand; `writeprobe`
-/// arrived afterwards. Fixing instances does not work, because writing to the
-/// production domain was the *default* behaviour and staying out of it took an
-/// act of care from every new throwaway binary.
+/// The first attempt at stopping that was an allowlist of *writer names*
+/// (`trustedWriters = ["saver", "playground"]`). It has been deleted, because it
+/// solved the problem the wrong way round in both directions:
 ///
-/// So the default is inverted here. A host that wants the production domain
-/// must be one of `trustedWriters`; anything else either sets
-/// `LERP_DEFAULTS_MODULE` and gets its own domain, or has its writes refused
-/// and logged. Reads are never restricted — a probe that wants to *look* at the
-/// real rotation is exactly what a probe is for.
+/// - It could be walked through by any probe that passed `writer: "saver"`,
+///   which is a five-character guess.
+/// - It sat in the path between the user's click and the disk, and refused by
+///   returning quietly. A host whose name was not on the list would have had
+///   every rotation edit silently discarded — which is precisely the class of
+///   bug this project keeps re-reporting.
+///
+/// What replaces it is a fact a probe cannot forge and a real host cannot lose:
+/// **the two hosts that own this setting are application bundles, and a
+/// throwaway command-line binary is not.** `Bundle.main.bundleIdentifier` is nil
+/// for a bare `swiftc -o /tmp/probe` executable and non-nil for the saver (whose
+/// host is `legacyScreenSaver.app`) and for `LerpPlayground.app`. So the gate
+/// needs no registry of legitimate names, cannot be defeated by choosing a
+/// better string, and cannot misfire on a real host, because a real host is a
+/// bundle by construction — `make saver` and `make playground` cannot produce
+/// anything else.
+///
+/// Reads are never restricted. A probe that wants to *look* at the real
+/// rotation is exactly what a probe is for.
 public enum LerpDefaults {
 
     /// The domain the user's real screensaver reads. Under the sandbox this
@@ -49,22 +55,19 @@ public enum LerpDefaults {
     /// Whether this process is pointed at the user's real settings.
     public static var isProduction: Bool { module == productionModule }
 
-    /// The two hosts that legitimately own the user's rotation: the
-    /// screensaver's Options… sheet and the playground's rotation gallery.
-    ///
-    /// Held here rather than as a `writerName` constant in each of them. They
-    /// were declared separately before, which meant the set of legitimate
-    /// writers was not written down anywhere and could not be checked against.
+    /// Which host wrote a given state. Diagnostics only — nothing branches on
+    /// it, and it is not a credential. It is what makes "who turned this back
+    /// on?" answerable, which is the only job it ever did well.
     public static let saverWriter = "saver"
     public static let playgroundWriter = "playground"
-    public static let trustedWriters: Set<String> = [saverWriter, playgroundWriter]
 
-    /// Whether `writer` may write the domain this process resolved to.
+    /// Whether this process may write the domain it resolved to.
     ///
     /// Anything outside the production domain is a scratch domain and is
     /// nobody's business but its owner's, so the check is only ever about the
-    /// real one.
-    public static func mayWrite(writer: String) -> Bool {
-        !isProduction || trustedWriters.contains(writer)
+    /// real one. See the type comment for why this asks what the process *is*
+    /// rather than what it calls itself.
+    public static var mayWriteProduction: Bool {
+        !isProduction || Bundle.main.bundleIdentifier != nil
     }
 }
