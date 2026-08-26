@@ -11,12 +11,12 @@
 // lerp-param: color3          color         = (0.769, 0.286, 0.580, 1.0) "Magenta"
 // lerp-param: color4          color         = (0.212, 0.114, 0.400, 1.0) "Deep violet"
 // lerp-param: colorBack       color         = (0.016, 0.012, 0.031) "Background"
-// lerp-param: thickness       float 0.01 1  = 0.50 "Thickness"
-// lerp-param: radius          float 0 1     = 0.42 "Radius"
-// lerp-param: innerShape      float 0 4     = 1.0  "Inner shape"
-// lerp-param: noiseScale      float 0.01 5  = 1.8  "Noise scale"
+// lerp-param: thickness       float 0.01 1  = 0.8777846 "Thickness"
+// lerp-param: radius          float 0 1     = 0.8188244 "Radius"
+// lerp-param: innerShape      float 0 4     = 0.61383927 "Inner shape"
+// lerp-param: noiseScale      float 0.01 5  = 5    "Noise scale"
 // lerp-param: noiseIterations int 1 8       = 6    "Noise iterations"
-// lerp-param: speed           float 0 4     = 0.8  "Speed"
+// lerp-param: speed           float 0 4     = 4         "Speed"
 //
 // Upstream presets, speed scaled to this port's ambience (upstream × 1.6).
 // lerp-preset: Line   colorBack=#000000, color1=#4540a4, color2=#1fe8ff, color3=#4540a4
@@ -25,9 +25,9 @@
 // lerp-preset: Solar  colorBack=#000000, color1=#ffffff, color2=#ffca0a, color3=#fc6203
 // lerp-preset: Solar  color4=#fc620366, noiseScale=2, noiseIterations=3, radius=0.4
 // lerp-preset: Solar  thickness=0.8, innerShape=4, speed=1.6
-// lerp-preset: Cloud  colorBack=#81adec, color1=#ffffff, color2=#ffffff, color3=#ffffff
-// lerp-preset: Cloud  color4=#ffffff, noiseScale=3, noiseIterations=8, radius=0.5
-// lerp-preset: Cloud  thickness=0.65, innerShape=0.85, speed=0.8
+// lerp-preset: Cloud  color1=#ffffff, color2=#ffffff, color3=#ffffff, color4=#ffffff
+// lerp-preset: Cloud  colorBack=#81adec, thickness=0.65, radius=0.5, innerShape=0.85
+// lerp-preset: Cloud  noiseScale=3, noiseIterations=8, speed=1.0745536
 
 constant int SR_COLOR_COUNT = 4;
 
