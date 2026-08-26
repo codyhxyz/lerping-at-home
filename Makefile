@@ -238,11 +238,19 @@ install: saver-build
 	# like every other look. Reads that bundle's own Shaders directory, so this
 	# is the one place the two can never disagree.
 	$(BUILD)/LerpPreview --thumbnails "$(INSTALLED)"
+	# Stamp the revision here, not in the build rule. That rule is a file
+	# target, so make skips it whenever the binary is already newer than its
+	# prerequisites — and then this target cheerfully installs a bundle
+	# labelled with whatever commit last happened to recompile Swift.
+	plutil -replace LerpBuild -string $(LERP_BUILD) "$(INSTALLED)/Contents/Info.plist"
 	codesign --force -s - "$(INSTALLED)"
 	@pkill -9 -x legacyScreenSaver 2>/dev/null || true
 	@! pgrep -x legacyScreenSaver >/dev/null
-	@test "$$(plutil -extract CFBundleVersion raw $(SAVER_DIR)/Contents/Info.plist)" = \
-	      "$$(plutil -extract CFBundleVersion raw "$(INSTALLED)/Contents/Info.plist")"
+	# Against the tree, not against staging. Staging and installed are a copy of
+	# each other and agree however wrong they both are — that is the same shape
+	# of check as the deleted doctor, and it passed for the same reason.
+	@test "$$(plutil -extract LerpBuild raw "$(INSTALLED)/Contents/Info.plist")" = "$(LERP_BUILD)" \
+		|| { echo "install: installed bundle says $$(plutil -extract LerpBuild raw "$(INSTALLED)/Contents/Info.plist"), tree is $(LERP_BUILD)"; exit 1; }
 	@codesign --verify --deep --strict "$(INSTALLED)"
 	@echo ""
 	@echo "Installed. Select 'Lerping@Home' in System Settings > Screen Saver."
@@ -287,9 +295,13 @@ install-playground: $(PLAYGROUND_BIN)
 		"$(INSTALLED_PLAYGROUND)/Contents/Info.plist"
 	plutil -replace LerpRepoRoot -string "$(PLAYGROUND_REPO)" \
 		"$(INSTALLED_PLAYGROUND)/Contents/Info.plist"
+	# See the note in `install`: staging carries the stamp of whatever commit
+	# last recompiled Swift, which is not necessarily this one.
+	plutil -replace LerpBuild -string $(LERP_BUILD) \
+		"$(INSTALLED_PLAYGROUND)/Contents/Info.plist"
 	codesign --force -s - "$(INSTALLED_PLAYGROUND)"
-	@test "$$(plutil -extract CFBundleVersion raw $(PLAYGROUND_APP)/Contents/Info.plist)" = \
-	      "$$(plutil -extract CFBundleVersion raw "$(INSTALLED_PLAYGROUND)/Contents/Info.plist")"
+	@test "$$(plutil -extract LerpBuild raw "$(INSTALLED_PLAYGROUND)/Contents/Info.plist")" = "$(LERP_BUILD)" \
+		|| { echo "install-playground: installed bundle says $$(plutil -extract LerpBuild raw "$(INSTALLED_PLAYGROUND)/Contents/Info.plist"), tree is $(LERP_BUILD)"; exit 1; }
 	@codesign --verify --deep --strict "$(INSTALLED_PLAYGROUND)"
 	# Register it now rather than waiting for Spotlight to notice.
 	@$(LSREGISTER) -f "$(INSTALLED_PLAYGROUND)" 2>/dev/null || true
