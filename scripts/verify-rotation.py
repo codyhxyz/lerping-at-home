@@ -41,9 +41,20 @@ LOG = "/usr/bin/log"
 PLAYING = re.compile(r"playing (.+?) \((\d+) in rotation of (\d+) discovered\)")
 
 
+# Exactly `<subsystem>.<hardware UUID>.plist` and nothing else. A bare
+# `{SUBSYSTEM}.*.plist` glob also matches the scratch domains tests leave behind
+# — com.hergenroeder.lerping.uitest.<UUID>.plist and friends — and this file
+# then judges the rotation against a 42-byte stub. Today it survives that only
+# because sorted() happens to put a UUID starting with a digit ahead of
+# "eureka" and "uitest"; a machine whose UUID began with a letter would read the
+# wrong file and either crash or pass against nothing.
+UUID_SEGMENT = re.compile(r"^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$", re.I)
+
+
 def rotation():
     """(disabled set, source path). The v2 record is the only representation."""
-    hits = sorted(BYHOST.glob(f"{SUBSYSTEM}.*.plist"))
+    hits = sorted(p for p in BYHOST.glob(f"{SUBSYSTEM}.*.plist")
+                  if UUID_SEGMENT.match(p.name[len(SUBSYSTEM) + 1:-len(".plist")]))
     if not hits:
         sys.exit(f"no {SUBSYSTEM} ByHost plist under {BYHOST}")
     with hits[0].open("rb") as handle:
@@ -58,11 +69,22 @@ def rotation():
     return set(state.get("disabled", [])), hits[0], stale
 
 
+# The saver's host process. The predicate has to name it: LerpPlayground logs
+# to the same subsystem and category, and its editor deliberately shows every
+# look there is — `make playground` ends by opening it, so without this filter a
+# normal deploy reports the shader you were last editing as a rotation
+# violation. A check that cries wolf on a routine deploy is the next check
+# everyone learns to ignore.
+SAVER_PROCESS = "legacyScreenSaver"
+
+
 def played(days):
     """Every look a real saver session put on screen, newest last."""
     out = subprocess.run(
         [LOG, "show", "--last", f"{days}d",
-         "--predicate", f'subsystem == "{SUBSYSTEM}"', "--style", "compact"],
+         "--predicate",
+         f'subsystem == "{SUBSYSTEM}" AND process == "{SAVER_PROCESS}"',
+         "--style", "compact"],
         capture_output=True, text=True, check=True).stdout
     return [(m.group(1), int(m.group(2)), int(m.group(3)))
             for m in (PLAYING.search(line) for line in out.splitlines()) if m]
