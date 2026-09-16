@@ -133,6 +133,11 @@ public final class LerpMetalView: NSView {
     /// anything is being drawn, and the schedule it fires into is absolute, so
     /// even a timer that is late or missed entirely lands on the right look.
     private var shuffleTimer: Timer?
+    /// Whether the look on screen was put there by the schedule rather than by
+    /// an explicit `show`. A view the schedule is driving asks it what is due
+    /// when it resumes; a view a host pointed at a look keeps that look across
+    /// stop/start.
+    private var followsSchedule = false
 
     /// Per-launch random seed handed to shaders as `u.seed`. Settable so a host
     /// (the playground) can re-roll it; the screensaver never touches it.
@@ -250,7 +255,7 @@ public final class LerpMetalView: NSView {
 
         if pipeline == nil {
             selectInitialShader()
-        } else {
+        } else if followsSchedule {
             // A view that already has a pipeline is one `legacyScreenSaver`
             // built for an earlier session and never destroyed. It used to
             // resume on whatever look it was showing hours ago and count five
@@ -258,6 +263,12 @@ public final class LerpMetalView: NSView {
             // week without ever getting past its first few entries. The
             // schedule is absolute, so the right thing to do on resume is
             // simply to ask what is due.
+            //
+            // Only when the schedule is what put the look there, though. A
+            // view a host pointed at a look — the hover preview, the
+            // playground's editor, the preview app, a pinned screensaver —
+            // keeps that look across stop/start; asking the schedule here is
+            // what made every hovered tile play the same wrong look.
             playScheduledEntry()
         }
         guard window != nil else { return }
@@ -433,6 +444,9 @@ public final class LerpMetalView: NSView {
         let available = library.discover()
         let index = refreshShuffleOrder(available)
         loadEntry(after: nil, offset: index, in: shuffleOrder, from: available)
+        // After `show` above cleared it: the schedule put this look up, so a
+        // later resume asks the schedule again rather than keeping it.
+        followsSchedule = true
         armShuffleTimer()
     }
 
@@ -519,6 +533,7 @@ public final class LerpMetalView: NSView {
         // says is due, which keeps this view in step with every other one
         // instead of starting a private five minutes from the click.
         loadEntry(after: nil, offset: index, in: shuffleOrder, from: available)
+        followsSchedule = true
     }
 
     /// Loads the first entry that compiles, starting `offset` places from
@@ -602,6 +617,10 @@ public final class LerpMetalView: NSView {
     /// means depends on whether the shader was pinned or shuffled to.
     @discardableResult
     public func show(_ entry: LerpRotationEntry, of shader: LerpShader) -> Bool {
+        // A host pointed this view at a look, so the schedule no longer owns
+        // what is on screen. `playScheduledEntry` sets this back after its own
+        // `show`, which is the one path where the schedule is the host.
+        followsSchedule = false
         do {
             pipeline = try library.pipeline(for: shader)
             dataProvider = try library.dataProvider(for: shader)
