@@ -9,6 +9,10 @@
 # (scripts/release-update.sh) picks that asset up: the release tag is the
 # version, and the bundle's LerpBuild stamp must equal it.
 #
+# It also builds the human installer (make dmg) and uploads the resulting
+# LerpingAtHome-<version>-arm64.dmg, where <version> is the tag without the
+# leading v (the PKG requires a numeric-looking version).
+#
 # Requires a clean checkout (releases what you see), the Xcode command-line
 # tools (via make), and the `gh` CLI authenticated to codyhxyz/lerping-at-home.
 set -euo pipefail
@@ -49,15 +53,27 @@ unzip -q "$WORK/$ASSET" -d "$WORK/check"
 codesign --verify --deep "$WORK/check/Lerping@Home.saver"
 [ "$(plutil -extract LerpBuild raw "$WORK/check/Lerping@Home.saver/Contents/Info.plist")" = "$TAG" ]
 
+echo "==> building the DMG installer"
+VERSION="${TAG#v}" # the PKG requires a numeric-looking version, no v prefix
+make dmg LERP_BUILD="$TAG" RELEASE_VERSION="$VERSION"
+DMG="$(echo build/release/LerpingAtHome-*-arm64.dmg)"
+[ -f "$DMG" ] || { echo "dmg build did not produce a dmg" >&2; exit 1; }
+# The staged saver inside the package must carry the same stamp as the zip.
+STAGED="build/release/saver-root/Library/Screen Savers/Lerping@Home.saver"
+[ "$(plutil -extract LerpBuild raw "$STAGED/Contents/Info.plist")" = "$TAG" ] \
+    || { echo "dmg saver stamp is not $TAG" >&2; exit 1; }
+
 echo "==> publishing release $TAG"
 gh release create "$TAG" \
-    --title "Lerping@Home saver $TAG" \
-    --notes "Automated saver build for the in-app updater." \
-    "$WORK/$ASSET"
+    --title "Lerping@Home $TAG" \
+    --notes "LerpingAtHome-saver-$TAG.zip feeds the playground's automatic updater. The DMG is the installer for people. (The DMG is not notarized yet; if macOS refuses to open it, right-click it and choose Open.)" \
+    "$WORK/$ASSET" \
+    "$DMG"
 
 cat <<EOF
 
-Published $TAG. Machines with automatic updates will pick it up on their next
-check (launch, or within four hours). The playground itself is not updated by
-the release; install a new playground from the DMG or make install-playground.
+Published $TAG with the updater zip and the installer DMG. Machines with
+automatic updates will pick up the saver on their next check (launch, or
+within four hours). The playground itself is not updated by the release;
+install a new playground from the DMG or make install-playground.
 EOF
