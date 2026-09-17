@@ -1,0 +1,19 @@
+name: build
+# The Mac in the loop was Cody's. Now GitHub's macOS runners compile every
+# push instead: `make dmg` exercises the whole release pipeline (MIDI shim,
+# saver, playground, PKG, DMG) without launching anything.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use newest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+      - name: Build and package
+        run: make dmg
