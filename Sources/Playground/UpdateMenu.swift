@@ -143,9 +143,10 @@ final class UpdateStatusItem: NSObject {
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
-        NSWorkspace.shared.open([url], withApplicationAt: nil,
-                                configuration: NSWorkspace.OpenConfiguration(),
-                                completionHandler: nil)
+        // The macOS 26 SDK made withApplicationAt non-optional, so the
+        // longer open(_:withApplicationAt:...) call no longer compiles
+        // with nil. This is the same thing: open with the default app.
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: Checking
