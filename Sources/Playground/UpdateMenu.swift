@@ -9,9 +9,15 @@ import AppKit
 /// briefly existed on 2026-09-16; it was ripped out the same day. Chrome and
 /// Office update that way, but a personal tool should not plant invisible
 /// processes.) The playground checks on launch and every four hours while it
-/// runs; when GitHub is ahead it pulls the checkout and runs `make saver` in
-/// the background, silently. The work itself stays in `scripts/auto-update.sh`;
-/// this is the scheduler, the switch, and the button.
+/// runs; when a newer GitHub Release exists it downloads the prebuilt saver
+/// zip and installs it, silently. The work itself stays in
+/// `scripts/release-update.sh`; this is the scheduler, the switch, and the
+/// button.
+///
+/// Delivery is prebuilt artifacts from GitHub Releases — the standard shape —
+/// not a source rebuild on the machine: no checkout update, no compiler
+/// needed. The release tag is the version; the bundle's LerpBuild stamp must
+/// equal it, and the signature must verify, or the install is refused.
 ///
 /// It lives in the playground because the playground is the only component
 /// that is always a real app process — the saver runs inside `legacyScreenSaver`
@@ -58,7 +64,9 @@ final class UpdateStatusItem: NSObject {
     // MARK: Automatic checks
 
     /// On by default: a check shortly after launch, then every four hours while
-    /// the app runs. Each check is skipped when the toggle is off.
+    /// the app runs. Each check is skipped when the toggle is off. Installing
+    /// a release never touches the playground itself: replacing it unattended
+    /// could discard unsaved editor state.
     private func beginAutomaticChecks() {
         checkTimer = Timer.scheduledTimer(withTimeInterval: 4 * 3600, repeats: true) {
             [weak self] _ in self?.performCheck(announce: false)
@@ -142,19 +150,20 @@ final class UpdateStatusItem: NSObject {
 
     // MARK: Checking
 
-    /// Runs `scripts/auto-update.sh` off the main thread. `announce` is the
+    /// Runs `scripts/release-update.sh` off the main thread. `announce` is the
     /// manual check: it always runs and always reports. The automatic check
     /// runs only with the toggle on and reports by footer alone — an update
-    /// that needed no decision gets no dialog.
+    /// that needed no decision gets no dialog. The outcome comes from the
+    /// script's single `LERP_RESULT=` stdout line.
     private func performCheck(announce: Bool) {
         guard !checkRunning else { return }
         if !announce, !UpdateSettings.isEnabled { return }
-        let script = repoRoot.appendingPathComponent("scripts/auto-update.sh")
+        let script = repoRoot.appendingPathComponent("scripts/release-update.sh")
         guard FileManager.default.isExecutableFile(atPath: script.path) else {
             if announce {
                 let alert = NSAlert()
                 alert.messageText = "Updater not in this checkout"
-                alert.informativeText = "This checkout predates scripts/auto-update.sh. " +
+                alert.informativeText = "This checkout predates scripts/release-update.sh. " +
                     "Pull the latest and try again."
                 alert.runModal()
             }
@@ -165,14 +174,10 @@ final class UpdateStatusItem: NSObject {
             checkItem?.title = "Checking for Updates…"
             checkItem?.isEnabled = false
         }
-        // The script appends to the log; snapshot the size so the outcome is
-        // read from this run's lines only.
-        let logOffset = UpdateAgent.logByteCount()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let run = UpdateAgent.run("/bin/bash", [script.path])
-            let outcome = UpdateOutcome.classify(newLog: UpdateAgent.readLog(sinceByte: logOffset),
-                                                processOK: run.succeeded)
+            let outcome = UpdateOutcome.from(resultLine(in: run.output))
             DispatchQueue.main.async {
                 self.checkRunning = false
                 self.checkItem?.title = "Check for Updates"
@@ -181,6 +186,13 @@ final class UpdateStatusItem: NSObject {
                 if announce { self.showOutcome(outcome) }
             }
         }
+    }
+
+    /// The script's one stdout line; progress goes to the log (and to stderr
+    /// in a terminal), so anything else captured here is ignored.
+    private func resultLine(in output: String) -> String {
+        output.split(separator: "\n").first(where: { $0.hasPrefix("LERP_RESULT=") })
+            .map(String.init) ?? ""
     }
 
     // MARK: Outcome UI
@@ -198,9 +210,9 @@ final class UpdateStatusItem: NSObject {
         case .skipped(let reason):
             alert.messageText = "Update skipped"
             alert.informativeText = "\(reason)\n\nAutomatic updates will try again at the next check."
-        case .failed:
+        case .failed(let reason):
             alert.messageText = "Update failed"
-            alert.informativeText = "Show Update Log has the details."
+            alert.informativeText = "\(reason)\n\nShow Update Log has the details."
         }
         alert.runModal()
     }
@@ -236,8 +248,8 @@ enum UpdateSettings {
 
 // MARK: - Running the updater
 
-/// The update itself lives in `scripts/auto-update.sh`; this is process
-/// plumbing, log reading, and cleanup of the retired LaunchAgent.
+/// The update itself lives in `scripts/release-update.sh`; this is process
+/// plumbing, the log location, and cleanup of the retired LaunchAgent.
 enum UpdateAgent {
     static let label = "com.hergenroeder.lerping.autoupdate"
 
@@ -254,18 +266,6 @@ enum UpdateAgent {
         let plist = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/\(label).plist")
         try? FileManager.default.removeItem(at: plist)
-    }
-
-    static func logByteCount() -> UInt64 {
-        (try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size] as? UInt64) ?? 0
-    }
-
-    static func readLog(sinceByte offset: UInt64) -> String {
-        guard let handle = try? FileHandle(forReadingFrom: logURL) else { return "" }
-        defer { try? handle.close() }
-        guard (try? handle.seek(toOffset: offset)) != nil else { return "" }
-        let data = (try? handle.readToEnd()) ?? Data()
-        return String(data: data, encoding: .utf8) ?? ""
     }
 
     @discardableResult
@@ -289,37 +289,38 @@ enum UpdateAgent {
 
 // MARK: - Reading the result
 
-/// Classified from the lines the script appended during the run — the script's
-/// `say` lines are the contract, not the process exit code, because "already up
-/// to date" and "skipped: dirty checkout" both exit 0.
+/// Parsed from the script's single `LERP_RESULT=` stdout line — the contract
+/// in scripts/release-update.sh. The footer still seeds from the log, whose
+/// "up to date (…)" / "saver now at …" lines the new script kept.
 enum UpdateOutcome {
     case upToDate(build: String)
     case updated(build: String)
     case skipped(reason: String)
-    case failed
+    case failed(reason: String)
 
-    static func classify(newLog: String, processOK: Bool) -> UpdateOutcome {
-        let lines = newLog.split(separator: "\n").map(String.init)
-        // A say line is "YYYY-MM-DD HH:MM:SS <message>"; the message starts at 20.
-        func message(containing phrase: String) -> String? {
-            lines.last(where: { $0.contains(phrase) }).map {
-                $0.count > 20 ? String($0.dropFirst(20)) : $0
-            }
+    /// `LERP_RESULT=up-to-date BUILD=v1.2.3`, `LERP_RESULT=updated BUILD=…`,
+    /// `LERP_RESULT=skipped REASON=…`, `LERP_RESULT=failed REASON=…`.
+    /// Anything unrecognized is a failure: the script always prints exactly
+    /// one well-formed line, so a missing one means it never got there.
+    static func from(_ line: String) -> UpdateOutcome {
+        let fields = line.split(separator: " ")
+        func token(for key: String) -> String {
+            fields.first(where: { $0.hasPrefix(key + "=") })
+                .map { String($0.dropFirst(key.count + 1)) } ?? ""
         }
-        if let found = message(containing: "saver now at ") {
-            return .updated(build: found.replacingOccurrences(of: "saver now at ", with: ""))
+        // REASON is always the last field and may contain spaces: everything
+        // after "REASON=" belongs to it. BUILD tags never contain spaces.
+        func rest(for key: String) -> String {
+            guard let range = line.range(of: key + "=") else { return "" }
+            return String(line[range.upperBound...])
         }
-        if let found = message(containing: "up to date (") {
-            let build = found.replacingOccurrences(of: "up to date (", with: "")
-                .replacingOccurrences(of: ")", with: "")
-            return .upToDate(build: build)
+        switch token(for: "LERP_RESULT") {
+        case "up-to-date": return .upToDate(build: token(for: "BUILD"))
+        case "updated":    return .updated(build: token(for: "BUILD"))
+        case "skipped":    return .skipped(reason: rest(for: "REASON"))
+        case "failed":     return .failed(reason: rest(for: "REASON"))
+        default:           return .failed(reason: "the updater produced no result")
         }
-        if newLog.contains("FAILED") || !processOK { return .failed }
-        if let last = lines.last {
-            let reason = last.count > 20 ? String(last.dropFirst(20)) : last
-            return .skipped(reason: reason)
-        }
-        return .failed
     }
 
     var footer: String {

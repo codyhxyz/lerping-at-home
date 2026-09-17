@@ -52,12 +52,12 @@ say yes. Every choice has a flag (`--with-playground`, `--without-auto-update`,
 ### Automatic updates
 
 The playground checks for updates itself — the Sparkle shape, no background
-daemon. On launch and every four hours while it runs, it compares the installed
-saver's `LerpBuild` stamp against `origin/main` on GitHub; when GitHub is ahead
-it pulls the checkout and runs `make saver` in the background, silently. It
-never builds a dirty tree and never merges over diverged local work — either
-case is logged and left alone. The playground is not updated unattended:
-replacing it could discard unsaved editor state.
+daemon. On launch and every four hours while it runs, it asks the GitHub
+Releases API for the latest release; when the release tag is newer than the
+installed saver's `LerpBuild` stamp it downloads the prebuilt saver zip,
+verifies the code signature and that the bundle's stamp matches the tag, and
+installs it to `~/Library/Screen Savers` — no checkout update, no compiler on
+the receiving end. Anything that fails verification is refused and logged.
 
 The menu-bar item (the circular-arrows icon) is the manual side: **Check for
 Updates** runs the same script on demand and reports the result, **Automatic
@@ -66,6 +66,13 @@ at `~/Library/Logs/LerpingAutoUpdate.log`. The toggle is on by default. The
 standalone release app has no menu-bar item; its updates come from the DMG. The
 installer asks about automatic checks too (`--with-auto-update` /
 `--without-auto-update`), defaulting to on.
+
+Releases are cut by hand, on the Mac: `scripts/publish-release.sh [tag]`
+builds the saver from a clean checkout, stamps it with the tag (default
+`vYYYY.MM.DD.HHMM`), and uploads it with the `gh` CLI. Run it whenever there
+is something worth shipping — until the first release exists, the updater
+reports "no releases published yet". The playground itself is never updated
+unattended: replacing it could discard unsaved editor state.
 
 ### Screen saver
 
