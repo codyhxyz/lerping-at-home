@@ -3,320 +3,204 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Metallum ad Infinitum — Texture Pack Viewer</title>
+<title>Lerping@Home — every shader, live in your browser</title>
+<meta name="description" content="All 31 Lerping@Home screensaver shaders, transpiled from Metal to WebGL and rendered live on your device.">
 <style>
   :root {
-    --bg: #0b0d10;
-    --panel: #14171c;
-    --line: #232830;
-    --text: #e8ecf1;
-    --dim: #9aa3ad;
-    --accent: #c9a86a;
-    --accent-dim: #8a744a;
+    --bg: #0b0d12;
+    --panel: #141821;
+    --panel2: #1a2030;
+    --text: #e8ecf4;
+    --muted: #8b93a7;
+    --accent: #7dd3fc;
+    --accent2: #c084fc;
+    --border: #262d3d;
+    --radius: 14px;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  * { box-sizing: border-box; }
   body {
-    background: var(--bg);
+    margin: 0;
+    background: radial-gradient(1200px 600px at 20% -10%, #16203233, transparent),
+                radial-gradient(1000px 500px at 90% 0%, #2a1a3d33, transparent),
+                var(--bg);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, Helvetica, Arial, sans-serif;
-    min-height: 100vh;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, sans-serif;
+    line-height: 1.5;
   }
   header {
-    padding: 56px 32px 32px;
-    max-width: 1200px;
-    margin: 0 auto;
+    display: flex; align-items: center; gap: 14px;
+    padding: 20px 28px;
+    border-bottom: 1px solid var(--border);
   }
-  .kicker {
-    color: var(--accent);
-    font-size: 12px;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    margin-bottom: 12px;
+  .logo {
+    width: 38px; height: 38px; border-radius: 10px; flex: none;
+    background: conic-gradient(from 40deg, var(--accent), var(--accent2), #f472b6, var(--accent));
+    box-shadow: 0 0 24px #7dd3fc44;
   }
-  h1 {
-    font-size: clamp(32px, 5vw, 56px);
-    font-weight: 700;
-    letter-spacing: -0.5px;
-    background: linear-gradient(135deg, #f4ead2 0%, var(--accent) 45%, #6e5c38 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
+  header h1 { font-size: 20px; margin: 0; letter-spacing: 0.2px; }
+  header h1 .at { color: var(--accent); }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  header .spacer { flex: 1; }
+  .gh-link {
+    color: var(--muted); text-decoration: none; font-size: 13px;
+    border: 1px solid var(--border); border-radius: 999px; padding: 8px 16px;
+    transition: color .15s, border-color .15s;
   }
-  .sub {
-    color: var(--dim);
-    margin-top: 12px;
-    font-size: 16px;
-    max-width: 640px;
-    line-height: 1.55;
+  .gh-link:hover { color: var(--text); border-color: var(--accent); }
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
+
+  /* Stage */
+  #stage {
+    display: grid; grid-template-columns: 1.65fr 1fr; gap: 22px;
+    margin-bottom: 44px;
   }
-  .toolbar {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    max-width: 1200px;
-    margin: 8px auto 0;
-    padding: 0 32px 8px;
+  @media (max-width: 860px) { #stage { grid-template-columns: 1fr; } }
+  #heroWrap {
+    position: relative; border-radius: var(--radius); overflow: hidden;
+    border: 1px solid var(--border); background: #000;
+    aspect-ratio: 16 / 10; min-height: 280px;
   }
-  .toolbar input {
-    flex: 1;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    color: var(--text);
-    border-radius: 8px;
-    padding: 10px 14px;
-    font-size: 14px;
-    outline: none;
+  #hero { width: 100%; height: 100%; display: block; }
+  #nogl {
+    display: none; position: absolute; inset: 0; align-items: center; justify-content: center;
+    text-align: center; padding: 30px; color: var(--muted); background: var(--panel);
   }
-  .toolbar input:focus { border-color: var(--accent-dim); }
-  .count { color: var(--dim); font-size: 13px; white-space: nowrap; }
-  main { max-width: 1200px; margin: 0 auto; padding: 16px 32px 64px; }
-  .pack-head { margin: 28px 0 16px; }
-  .pack-head h2 { font-size: 22px; font-weight: 600; }
-  .pack-head p { color: var(--dim); font-size: 14px; margin-top: 4px; }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 20px;
+  #heroError {
+    display: none; position: absolute; left: 12px; right: 12px; bottom: 12px;
+    background: #3d1a1acc; border: 1px solid #7f2d2d; border-radius: 10px;
+    padding: 10px 14px; font-size: 13px;
+  }
+  #heroInfo { display: flex; flex-direction: column; min-width: 0; }
+  #heroCount { color: var(--muted); font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; }
+  #heroTitle { margin: 4px 0 8px; font-size: 30px; letter-spacing: -0.3px; }
+  #heroDesc { color: var(--muted); margin: 0 0 16px; font-size: 14.5px; }
+  .transport { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  .btn {
+    appearance: none; border: 1px solid var(--border); background: var(--panel2);
+    color: var(--text); border-radius: 10px; padding: 9px 15px; font-size: 14px;
+    cursor: pointer; transition: border-color .15s, transform .05s;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary { background: linear-gradient(135deg, #0ea5e955, #a855f755); border-color: #7dd3fc55; }
+  #sliders { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: 340px; padding-right: 4px; }
+  .slider-row label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; }
+  .slider-row .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .slider-row input[type="range"] { width: 100%; accent-color: var(--accent); }
+  .slider-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); }
+  .color-ctl { display: flex; gap: 10px; align-items: center; }
+  .color-ctl input[type="color"] { width: 52px; height: 34px; border: 1px solid var(--border); border-radius: 8px; background: none; padding: 2px; cursor: pointer; }
+  .color-ctl input[type="range"] { flex: 1; }
+  #shaderFile { margin-top: 16px; font-size: 12.5px; color: var(--muted); text-decoration: none; font-family: ui-monospace, monospace; }
+  #shaderFile:hover { color: var(--accent); }
+  .muted { color: var(--muted); font-size: 13px; }
+
+  /* Gallery */
+  #gallery h2 { font-size: 18px; margin: 0 0 4px; }
+  #gallery .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 18px; }
+  #grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   }
   .card {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    overflow: hidden;
-    cursor: pointer;
-    transition: transform .15s ease, border-color .15s ease;
+    appearance: none; border: 1px solid var(--border); background: var(--panel);
+    border-radius: var(--radius); overflow: hidden; cursor: pointer; padding: 0;
+    color: var(--text); text-align: left; font: inherit;
+    transition: border-color .15s, transform .12s;
   }
-  .card:hover { transform: translateY(-3px); border-color: var(--accent-dim); }
-  .card img {
-    width: 100%;
-    aspect-ratio: 16 / 10;
-    object-fit: cover;
-    display: block;
-    background: #000;
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 8px 28px #7dd3fc22; }
+  .card canvas { width: 100%; aspect-ratio: 8 / 5; display: block; background: #000; }
+  .card-label { padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; }
+  .card-title { font-size: 14px; font-weight: 600; }
+  .card.skeleton { cursor: default; }
+  .card.skeleton:hover { transform: none; border-color: var(--border); }
+  .sk-thumb { aspect-ratio: 8 / 5; background: linear-gradient(100deg, var(--panel2) 40%, #222a3d 50%, var(--panel2) 60%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+  .sk-label { height: 18px; margin: 12px 14px; border-radius: 6px; background: var(--panel2); }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+
+  .card.mac-only { cursor: default; display: flex; flex-direction: column; }
+  .card.mac-only:hover { transform: none; border-color: var(--border); }
+  .mac-chip {
+    align-self: flex-start; margin: 12px 0 0 12px; font-size: 11px; letter-spacing: 0.6px;
+    text-transform: uppercase; color: var(--accent2);
+    border: 1px solid #c084fc55; border-radius: 999px; padding: 4px 10px;
   }
-  .card .meta { padding: 14px 16px 16px; }
-  .card .name { font-size: 15px; font-weight: 600; }
-  .card .shader {
-    display: inline-block;
-    margin-top: 8px;
-    font-size: 12px;
-    color: var(--accent);
-    background: rgba(201, 168, 106, .1);
-    border: 1px solid rgba(201, 168, 106, .25);
-    border-radius: 20px;
-    padding: 3px 10px;
-  }
-  .card .desc {
-    margin-top: 8px;
-    font-size: 13px;
-    color: var(--dim);
-    line-height: 1.5;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .sources { margin-top: 56px; border-top: 1px solid var(--line); padding-top: 28px; }
-  .sources h2 { font-size: 18px; margin-bottom: 6px; }
-  .sources p { color: var(--dim); font-size: 13px; margin-bottom: 14px; }
-  .shader-list { display: flex; flex-wrap: wrap; gap: 8px; }
-  .shader-list a {
-    font-size: 12px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--dim);
-    text-decoration: none;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 5px 10px;
-    background: var(--panel);
-  }
-  .shader-list a:hover { color: var(--accent); border-color: var(--accent-dim); }
+  .mac-body { padding: 12px 14px 16px; }
+  .mac-title { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+  .mac-desc { color: var(--muted); font-size: 13px; }
+
   footer {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 0 32px 48px;
-    color: var(--dim);
-    font-size: 13px;
-    line-height: 1.7;
+    border-top: 1px solid var(--border); padding: 22px 28px; color: var(--muted);
+    font-size: 13px; display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
   }
-  footer code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 12px;
-  }
-  footer a { color: var(--accent); }
-  .lightbox {
-    position: fixed;
-    inset: 0;
-    background: rgba(4, 5, 7, .92);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    z-index: 50;
-    padding: 32px;
-  }
-  .lightbox.open { display: flex; }
-  .lightbox figure { max-width: min(1100px, 94vw); max-height: 90vh; }
-  .lightbox img {
-    max-width: 100%;
-    max-height: 74vh;
-    object-fit: contain;
-    border-radius: 10px;
-    border: 1px solid var(--line);
-    display: block;
-    margin: 0 auto;
-    background: #000;
-  }
-  .lightbox figcaption { margin-top: 14px; text-align: center; }
-  .lightbox .lb-name { font-size: 17px; font-weight: 600; }
-  .lightbox .lb-desc { color: var(--dim); font-size: 13px; margin-top: 6px; max-width: 640px; margin-left: auto; margin-right: auto; line-height: 1.55; }
-  .lightbox .lb-actions { margin-top: 12px; }
-  .lightbox .lb-actions a {
-    color: var(--accent);
-    font-size: 13px;
-    text-decoration: none;
-    border: 1px solid var(--accent-dim);
-    border-radius: 6px;
-    padding: 7px 14px;
-    margin: 0 4px;
-    display: inline-block;
-  }
-  .lightbox .close {
-    position: absolute;
-    top: 18px; right: 24px;
-    background: none; border: none;
-    color: var(--dim); font-size: 28px; cursor: pointer;
-  }
-  .lightbox .close:hover { color: var(--text); }
-  .empty { color: var(--dim); padding: 40px 0; text-align: center; }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--accent); }
+  footer .spacer { flex: 1; }
 </style>
 </head>
 <body>
-
 <header>
-  <div class="kicker">Lerping@Home &middot; texture pack</div>
-  <h1>Metallum ad Infinitum</h1>
-  <p class="sub">Procedural textures rendered by the Lerping@Home Metal shader engine.
-  New renders land here automatically — drop an image in <code style="font-family:ui-monospace,Menlo,monospace;font-size:13px">docs/textures/</code>,
-  add it to the manifest, push, and it appears.</p>
+  <div class="logo"></div>
+  <div>
+    <h1>Lerping<span class="at">@</span>Home</h1>
+    <p>Every shader, live in your browser — transpiled from Metal to WebGL on the fly.</p>
+  </div>
+  <div class="spacer"></div>
+  <a class="gh-link" href="https://github.com/codyhxyz/lerping-at-home">GitHub</a>
 </header>
 
-<div class="toolbar">
-  <input id="search" type="search" placeholder="Filter textures by name or shader&hellip;" autocomplete="off">
-  <span class="count" id="count"></span>
-</div>
+<main>
+  <section id="stage">
+    <div id="heroWrap">
+      <canvas id="hero"></canvas>
+      <div id="nogl">
+        <div>
+          <p style="font-size:18px;color:var(--text)">WebGL2 isn't available here.</p>
+          <p>These shaders need a browser with WebGL2 enabled — try a recent Chrome, Edge, Firefox, or Safari.</p>
+        </div>
+      </div>
+      <div id="heroError"></div>
+    </div>
+    <div id="heroInfo">
+      <div id="heroCount"></div>
+      <h2 id="heroTitle"></h2>
+      <p id="heroDesc"></p>
+      <div class="transport">
+        <button class="btn" id="prevBtn" title="Previous shader (←)">← Prev</button>
+        <button class="btn" id="nextBtn" title="Next shader (→)">Next →</button>
+        <button class="btn primary" id="shuffleBtn" title="New random seed (space)">Shuffle seed</button>
+        <button class="btn" id="resetBtn" title="Restore default parameters">Reset</button>
+      </div>
+      <div id="sliders"></div>
+      <a id="shaderFile" href="#"></a>
+    </div>
+  </section>
 
-<main id="packs"></main>
-
-<section class="sources" style="max-width:1200px;margin:0 auto;padding-left:32px;padding-right:32px;">
-  <h2>Shader sources</h2>
-  <p>Every texture in this pack is rendered from one of these runtime-compiled <code>.metal</code> shaders.</p>
-  <div class="shader-list" id="shaders"></div>
-</section>
+  <section id="gallery">
+    <h2>All shaders</h2>
+    <p class="sub">Thumbnails render on your device the moment they scroll into view. Three shaders need the Mac app's native engine — they're marked below.</p>
+    <div id="grid">
+      <!-- skeleton cards, replaced on load -->
+      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
+      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
+      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
+      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
+      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
+      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
+      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
+      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
+    </div>
+  </section>
+</main>
 
 <footer>
-  <p>Hosted on GitHub Pages from the <code>docs/</code> folder of
-  <a href="https://github.com/codyhxyz/lerping-at-home">codyhxyz/lerping-at-home</a>.
-  The agent adds textures by committing renders to <code>docs/textures/</code> and entries to
-  <code>docs/textures/manifest.json</code> — the site rebuilds on every push, about a minute later.</p>
+  <span>Lerping@Home — a screensaver that never sits still.</span>
+  <div class="spacer"></div>
+  <a href="https://github.com/codyhxyz/lerping-at-home">Source</a>
+  <a href="https://github.com/codyhxyz/lerping-at-home/tree/main/Sources/Shaders">All 31 shaders</a>
 </footer>
 
-<div class="lightbox" id="lightbox" role="dialog" aria-modal="true">
-  <button class="close" id="lbClose" aria-label="Close">&times;</button>
-  <figure>
-    <img id="lbImg" alt="">
-    <figcaption>
-      <div class="lb-name" id="lbName"></div>
-      <div class="lb-desc" id="lbDesc"></div>
-      <div class="lb-actions"><a id="lbFull" href="#" target="_blank" rel="noopener">Open full size</a></div>
-    </figcaption>
-  </figure>
-</div>
-
-<script>
-const SHADERS = ["aurora","color-panels","dithering","dot-grid","dot-orbit","fluted-glass",
-"game-of-life","gem-smoke","god-rays","grain-gradient","halftone-cmyk","halftone-dots",
-"heatmap","liquid-metal","mesh-gradient","metaballs","neuro-noise","paper-texture",
-"perlin-noise","pipes","pulsing-border","simplex-noise","smoke-ring","spiral",
-"static-mesh-gradient","static-radial-gradient","swirl","voronoi","warp","water","waves"];
-
-const shaderBase = "https://github.com/codyhxyz/lerping-at-home/blob/main/Sources/Shaders/";
-document.getElementById("shaders").innerHTML = SHADERS.map(s =>
-  `<a href="${shaderBase}${s}.metal" target="_blank" rel="noopener">${s}</a>`).join("");
-
-let allTextures = [];
-
-async function load() {
-  const res = await fetch("textures/manifest.json");
-  const data = await res.json();
-  const packsEl = document.getElementById("packs");
-  packsEl.innerHTML = "";
-  allTextures = [];
-  for (const pack of data.packs) {
-    const section = document.createElement("section");
-    section.innerHTML = `<div class="pack-head"><h2></h2><p></p></div><div class="grid"></div>`;
-    section.querySelector("h2").textContent = pack.name;
-    section.querySelector("p").textContent = pack.description || "";
-    const grid = section.querySelector(".grid");
-    for (const t of pack.textures) {
-      t._pack = pack.name;
-      allTextures.push(t);
-      const card = document.createElement("article");
-      card.className = "card";
-      card.innerHTML = `
-        <img loading="lazy" alt="">
-        <div class="meta">
-          <div class="name"></div>
-          <span class="shader"></span>
-          <div class="desc"></div>
-        </div>`;
-      card.querySelector("img").src = t.image;
-      card.querySelector("img").alt = t.name;
-      card.querySelector(".name").textContent = t.name;
-      card.querySelector(".shader").textContent = t.shader || "";
-      card.querySelector(".desc").textContent = t.description || "";
-      card.addEventListener("click", () => openLightbox(t));
-      card.dataset.search = (t.name + " " + (t.shader || "") + " " + (t.description || "")).toLowerCase();
-      grid.appendChild(card);
-    }
-    packsEl.appendChild(section);
-  }
-  updateCount();
-}
-
-function updateCount() {
-  const visible = [...document.querySelectorAll(".card")].filter(c => c.style.display !== "none").length;
-  document.getElementById("count").textContent = visible + " texture" + (visible === 1 ? "" : "s");
-}
-
-document.getElementById("search").addEventListener("input", (e) => {
-  const q = e.target.value.trim().toLowerCase();
-  for (const card of document.querySelectorAll(".card")) {
-    card.style.display = !q || card.dataset.search.includes(q) ? "" : "none";
-  }
-  updateCount();
-});
-
-const lb = document.getElementById("lightbox");
-function openLightbox(t) {
-  document.getElementById("lbImg").src = t.image;
-  document.getElementById("lbImg").alt = t.name;
-  document.getElementById("lbName").textContent = t.name + (t.shader ? " — " + t.shader : "");
-  document.getElementById("lbDesc").textContent = t.description || "";
-  document.getElementById("lbFull").href = t.image;
-  lb.classList.add("open");
-}
-document.getElementById("lbClose").addEventListener("click", () => lb.classList.remove("open"));
-lb.addEventListener("click", (e) => { if (e.target === lb) lb.classList.remove("open"); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") lb.classList.remove("open"); });
-
-load().catch(() => {
-  document.getElementById("packs").innerHTML = '<p class="empty">Could not load the texture manifest.</p>';
-});
-</script>
-
+<script type="module" src="lerp-web/app.js"></script>
 </body>
 </html>
