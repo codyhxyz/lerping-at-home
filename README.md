@@ -60,6 +60,16 @@ alone. The playground is not updated unattended: replacing it could discard
 unsaved editor state. `make uninstall-auto-update` removes the agent; the log is
 `~/Library/Logs/LerpingAutoUpdate.log`.
 
+The playground also keeps a menu-bar item (the circular-arrows icon, top right):
+**Check for Updates** runs the same script on demand and reports the result,
+**Automatic Updates** toggles the daily agent, and **Show Update Log** opens the
+log. The toggle is on by default — the first launch with a checkout enrolls the
+agent, and every launch after that re-points it at the current checkout. Turning
+it off is the supported way to disable updates. The standalone release app has
+no menu-bar item; its updates come from the DMG. The installer asks about
+auto-updates too (`--with-auto-update` / `--without-auto-update`), defaulting
+to on.
+
 ### Screen saver
 
 ![Visual gallery for choosing the shader looks included in the screen saver rotation](docs/images/rotation-gallery.png)

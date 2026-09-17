@@ -175,6 +175,7 @@ enum PlaygroundMain {
 
 final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
     private var controller: PlaygroundWindowController?
+    private var updateStatusItem: UpdateStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build()
@@ -192,6 +193,9 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
         }
         self.controller = controller
         controller.showAndStart()
+        // The menu-bar home for updates. Nil for the standalone release app,
+        // which has no checkout for the updater to pull.
+        updateStatusItem = UpdateStatusItem.makeIfAppropriate()
         NSApp.activate(ignoringOtherApps: true)
     }
 
