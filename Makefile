@@ -102,6 +102,8 @@ MIDI_LIB   := $(MIDI_BIN)/libMIDIDeps.a
 MIDI_SRC   := $(MIDI_PKG)/Package.swift $(wildcard $(MIDI_PKG)/Sources/MIDIDeps/*.swift)
 # CoreMIDI.framework comes in through Swift autolink metadata; no -framework needed.
 MIDI_FLAGS := -I $(MIDI_BIN)/Modules -L $(MIDI_BIN) -lMIDIDeps
+# Records the Swift toolchain that built the archive; see midi-deps below.
+MIDI_SWIFT_STAMP := $(MIDI_BIN)/swift-version.stamp
 
 # Public installer. The PKG supplies Installer's optional Playground checkbox;
 # the DMG is the downloadable release container. `release` signs and notarizes
@@ -132,7 +134,8 @@ endef
 
 .PHONY: all preview playground playground-build saver saver-build midi-deps \
         verify-rotation \
-        install install-example install-playground uninstall-playground package dmg release clean
+        install install-example install-playground uninstall-playground package dmg release clean \
+        FORCE
 
 # Did the screensaver put a switched-off look on screen? Asked of the unified
 # log of real sessions, not of a fixture. See the header of the script for why
@@ -320,11 +323,27 @@ uninstall-playground: $(PLAYGROUND_BIN)
 	rm -rf "$(INSTALLED_PLAYGROUND)"
 	@echo "Removed $(INSTALLED_PLAYGROUND)."
 
-# Fetches and builds swift-midi-io once; after that it is a no-op.
+# Builds the MIDI shim once per Swift toolchain; after that it is a no-op
+# until the shim sources or the compiler change.
 midi-deps: $(MIDI_LIB)
 
-$(MIDI_LIB): $(MIDI_SRC)
+$(MIDI_LIB): $(MIDI_SRC) $(MIDI_SWIFT_STAMP)
 	swift build -c release --package-path $(MIDI_PKG)
+
+# Swift modules do not survive a compiler upgrade: a .swiftmodule built with
+# 6.3 cannot be imported by 6.4. The stamp records the toolchain that produced
+# the archive; when it differs, the package build dir is wiped so the rule
+# above rebuilds with the current compiler instead of failing the import.
+$(MIDI_SWIFT_STAMP): FORCE
+	@mkdir -p $(MIDI_BIN)
+	@if [ ! -f $@ ] || [ "$$(cat $@)" != "$$(swiftc --version 2>/dev/null | head -1)" ]; then \
+		echo "midi-deps: Swift toolchain changed; rebuilding."; \
+		rm -rf $(MIDI_PKG)/.build; \
+		mkdir -p $(MIDI_BIN); \
+		swiftc --version 2>/dev/null | head -1 > $@; \
+	fi
+
+FORCE:
 
 # Builds the native Installer package without touching /Applications or
 # /Library. The screen saver is required; the standalone Playground is selected
