@@ -97,13 +97,18 @@ INSTALLED_PLAYGROUND_ID ?= com.hergenroeder.lerping.playground.installed
 # preview app and the snapshot renderer link nothing but system frameworks, and
 # `make all` never invokes swift build.
 MIDI_PKG   := Sources/MIDIDeps
-MIDI_BIN   := $(MIDI_PKG)/.build/release
+# SwiftPM 6.4 moved build products from .build/<config>/ to
+# .build/out/Products/<config>/, and the .swiftmodule files now sit beside
+# the archive instead of in a Modules/ subdirectory.
+MIDI_BIN   := $(MIDI_PKG)/.build/out/Products/Release
 MIDI_LIB   := $(MIDI_BIN)/libMIDIDeps.a
 MIDI_SRC   := $(MIDI_PKG)/Package.swift $(wildcard $(MIDI_PKG)/Sources/MIDIDeps/*.swift)
 # CoreMIDI.framework comes in through Swift autolink metadata; no -framework needed.
-MIDI_FLAGS := -I $(MIDI_BIN)/Modules -L $(MIDI_BIN) -lMIDIDeps
-# Records the Swift toolchain that built the archive; see midi-deps below.
-MIDI_SWIFT_STAMP := $(MIDI_BIN)/swift-version.stamp
+MIDI_FLAGS := -I $(MIDI_BIN) -L $(MIDI_BIN) -lMIDIDeps
+# The toolchain stamp lives in build/, not in .build/: SwiftPM cleans unknown
+# products dirs (it removed the legacy .build/release/ tree outright), which
+# would otherwise read as "toolchain changed" on every invocation.
+MIDI_SWIFT_STAMP := $(BUILD)/midi-swift-version.stamp
 
 # Public installer. The PKG supplies Installer's optional Playground checkbox;
 # the DMG is the downloadable release container. `release` signs and notarizes
@@ -335,11 +340,10 @@ $(MIDI_LIB): $(MIDI_SRC) $(MIDI_SWIFT_STAMP)
 # the archive; when it differs, the package build dir is wiped so the rule
 # above rebuilds with the current compiler instead of failing the import.
 $(MIDI_SWIFT_STAMP): FORCE
-	@mkdir -p $(MIDI_BIN)
+	@mkdir -p $(dir $(MIDI_SWIFT_STAMP))
 	@if [ ! -f $@ ] || [ "$$(cat $@)" != "$$(swiftc --version 2>/dev/null | head -1)" ]; then \
 		echo "midi-deps: Swift toolchain changed; rebuilding."; \
 		rm -rf $(MIDI_PKG)/.build; \
-		mkdir -p $(MIDI_BIN); \
 		swiftc --version 2>/dev/null | head -1 > $@; \
 	fi
 
