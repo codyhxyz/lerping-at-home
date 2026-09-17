@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Metallum ad Infinitum — Texture Pack Viewer</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14171c;
+    --line: #232830;
+    --text: #e8ecf1;
+    --dim: #9aa3ad;
+    --accent: #c9a86a;
+    --accent-dim: #8a744a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, Helvetica, Arial, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    padding: 56px 32px 32px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  .kicker {
+    color: var(--accent);
+    font-size: 12px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: clamp(32px, 5vw, 56px);
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #f4ead2 0%, var(--accent) 45%, #6e5c38 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .sub {
+    color: var(--dim);
+    margin-top: 12px;
+    font-size: 16px;
+    max-width: 640px;
+    line-height: 1.55;
+  }
+  .toolbar {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    max-width: 1200px;
+    margin: 8px auto 0;
+    padding: 0 32px 8px;
+  }
+  .toolbar input {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14px;
+    outline: none;
+  }
+  .toolbar input:focus { border-color: var(--accent-dim); }
+  .count { color: var(--dim); font-size: 13px; white-space: nowrap; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px 32px 64px; }
+  .pack-head { margin: 28px 0 16px; }
+  .pack-head h2 { font-size: 22px; font-weight: 600; }
+  .pack-head p { color: var(--dim); font-size: 14px; margin-top: 4px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform .15s ease, border-color .15s ease;
+  }
+  .card:hover { transform: translateY(-3px); border-color: var(--accent-dim); }
+  .card img {
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    object-fit: cover;
+    display: block;
+    background: #000;
+  }
+  .card .meta { padding: 14px 16px 16px; }
+  .card .name { font-size: 15px; font-weight: 600; }
+  .card .shader {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--accent);
+    background: rgba(201, 168, 106, .1);
+    border: 1px solid rgba(201, 168, 106, .25);
+    border-radius: 20px;
+    padding: 3px 10px;
+  }
+  .card .desc {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--dim);
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .sources { margin-top: 56px; border-top: 1px solid var(--line); padding-top: 28px; }
+  .sources h2 { font-size: 18px; margin-bottom: 6px; }
+  .sources p { color: var(--dim); font-size: 13px; margin-bottom: 14px; }
+  .shader-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .shader-list a {
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--dim);
+    text-decoration: none;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 5px 10px;
+    background: var(--panel);
+  }
+  .shader-list a:hover { color: var(--accent); border-color: var(--accent-dim); }
+  footer {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 32px 48px;
+    color: var(--dim);
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  footer code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 12px;
+  }
+  footer a { color: var(--accent); }
+  .lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 5, 7, .92);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    padding: 32px;
+  }
+  .lightbox.open { display: flex; }
+  .lightbox figure { max-width: min(1100px, 94vw); max-height: 90vh; }
+  .lightbox img {
+    max-width: 100%;
+    max-height: 74vh;
+    object-fit: contain;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    display: block;
+    margin: 0 auto;
+    background: #000;
+  }
+  .lightbox figcaption { margin-top: 14px; text-align: center; }
+  .lightbox .lb-name { font-size: 17px; font-weight: 600; }
+  .lightbox .lb-desc { color: var(--dim); font-size: 13px; margin-top: 6px; max-width: 640px; margin-left: auto; margin-right: auto; line-height: 1.55; }
+  .lightbox .lb-actions { margin-top: 12px; }
+  .lightbox .lb-actions a {
+    color: var(--accent);
+    font-size: 13px;
+    text-decoration: none;
+    border: 1px solid var(--accent-dim);
+    border-radius: 6px;
+    padding: 7px 14px;
+    margin: 0 4px;
+    display: inline-block;
+  }
+  .lightbox .close {
+    position: absolute;
+    top: 18px; right: 24px;
+    background: none; border: none;
+    color: var(--dim); font-size: 28px; cursor: pointer;
+  }
+  .lightbox .close:hover { color: var(--text); }
+  .empty { color: var(--dim); padding: 40px 0; text-align: center; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="kicker">Lerping@Home &middot; texture pack</div>
+  <h1>Metallum ad Infinitum</h1>
+  <p class="sub">Procedural textures rendered by the Lerping@Home Metal shader engine.
+  New renders land here automatically — drop an image in <code style="font-family:ui-monospace,Menlo,monospace;font-size:13px">docs/textures/</code>,
+  add it to the manifest, push, and it appears.</p>
+</header>
+
+<div class="toolbar">
+  <input id="search" type="search" placeholder="Filter textures by name or shader&hellip;" autocomplete="off">
+  <span class="count" id="count"></span>
+</div>
+
+<main id="packs"></main>
+
+<section class="sources" style="max-width:1200px;margin:0 auto;padding-left:32px;padding-right:32px;">
+  <h2>Shader sources</h2>
+  <p>Every texture in this pack is rendered from one of these runtime-compiled <code>.metal</code> shaders.</p>
+  <div class="shader-list" id="shaders"></div>
+</section>
+
+<footer>
+  <p>Hosted on GitHub Pages from the <code>docs/</code> folder of
+  <a href="https://github.com/codyhxyz/lerping-at-home">codyhxyz/lerping-at-home</a>.
+  The agent adds textures by committing renders to <code>docs/textures/</code> and entries to
+  <code>docs/textures/manifest.json</code> — the site rebuilds on every push, about a minute later.</p>
+</footer>
+
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true">
+  <button class="close" id="lbClose" aria-label="Close">&times;</button>
+  <figure>
+    <img id="lbImg" alt="">
+    <figcaption>
+      <div class="lb-name" id="lbName"></div>
+      <div class="lb-desc" id="lbDesc"></div>
+      <div class="lb-actions"><a id="lbFull" href="#" target="_blank" rel="noopener">Open full size</a></div>
+    </figcaption>
+  </figure>
+</div>
+
+<script>
+const SHADERS = ["aurora","color-panels","dithering","dot-grid","dot-orbit","fluted-glass",
+"game-of-life","gem-smoke","god-rays","grain-gradient","halftone-cmyk","halftone-dots",
+"heatmap","liquid-metal","mesh-gradient","metaballs","neuro-noise","paper-texture",
+"perlin-noise","pipes","pulsing-border","simplex-noise","smoke-ring","spiral",
+"static-mesh-gradient","static-radial-gradient","swirl","voronoi","warp","water","waves"];
+
+const shaderBase = "https://github.com/codyhxyz/lerping-at-home/blob/main/Sources/Shaders/";
+document.getElementById("shaders").innerHTML = SHADERS.map(s =>
+  `<a href="${shaderBase}${s}.metal" target="_blank" rel="noopener">${s}</a>`).join("");
+
+let allTextures = [];
+
+async function load() {
+  const res = await fetch("textures/manifest.json");
+  const data = await res.json();
+  const packsEl = document.getElementById("packs");
+  packsEl.innerHTML = "";
+  allTextures = [];
+  for (const pack of data.packs) {
+    const section = document.createElement("section");
+    section.innerHTML = `<div class="pack-head"><h2></h2><p></p></div><div class="grid"></div>`;
+    section.querySelector("h2").textContent = pack.name;
+    section.querySelector("p").textContent = pack.description || "";
+    const grid = section.querySelector(".grid");
+    for (const t of pack.textures) {
+      t._pack = pack.name;
+      allTextures.push(t);
+      const card = document.createElement("article");
+      card.className = "card";
+      card.innerHTML = `
+        <img loading="lazy" alt="">
+        <div class="meta">
+          <div class="name"></div>
+          <span class="shader"></span>
+          <div class="desc"></div>
+        </div>`;
+      card.querySelector("img").src = t.image;
+      card.querySelector("img").alt = t.name;
+      card.querySelector(".name").textContent = t.name;
+      card.querySelector(".shader").textContent = t.shader || "";
+      card.querySelector(".desc").textContent = t.description || "";
+      card.addEventListener("click", () => openLightbox(t));
+      card.dataset.search = (t.name + " " + (t.shader || "") + " " + (t.description || "")).toLowerCase();
+      grid.appendChild(card);
+    }
+    packsEl.appendChild(section);
+  }
+  updateCount();
+}
+
+function updateCount() {
+  const visible = [...document.querySelectorAll(".card")].filter(c => c.style.display !== "none").length;
+  document.getElementById("count").textContent = visible + " texture" + (visible === 1 ? "" : "s");
+}
+
+document.getElementById("search").addEventListener("input", (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  for (const card of document.querySelectorAll(".card")) {
+    card.style.display = !q || card.dataset.search.includes(q) ? "" : "none";
+  }
+  updateCount();
+});
+
+const lb = document.getElementById("lightbox");
+function openLightbox(t) {
+  document.getElementById("lbImg").src = t.image;
+  document.getElementById("lbImg").alt = t.name;
+  document.getElementById("lbName").textContent = t.name + (t.shader ? " — " + t.shader : "");
+  document.getElementById("lbDesc").textContent = t.description || "";
+  document.getElementById("lbFull").href = t.image;
+  lb.classList.add("open");
+}
+document.getElementById("lbClose").addEventListener("click", () => lb.classList.remove("open"));
+lb.addEventListener("click", (e) => { if (e.target === lb) lb.classList.remove("open"); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") lb.classList.remove("open"); });
+
+load().catch(() => {
+  document.getElementById("packs").innerHTML = '<p class="empty">Could not load the texture manifest.</p>';
+});
+</script>
+
+</body>
+</html>
