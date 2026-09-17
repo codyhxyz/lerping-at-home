@@ -132,7 +132,8 @@ endef
 
 .PHONY: all preview playground playground-build saver saver-build midi-deps \
         verify-rotation \
-        install install-example install-playground uninstall-playground package dmg release clean
+        install install-example install-playground uninstall-playground \
+        install-auto-update uninstall-auto-update package dmg release clean
 
 # Did the screensaver put a switched-off look on screen? Asked of the unified
 # log of real sessions, not of a fixture. See the header of the script for why
@@ -319,6 +320,27 @@ uninstall-playground: $(PLAYGROUND_BIN)
 	@$(LSREGISTER) -u "$(INSTALLED_PLAYGROUND)" 2>/dev/null || true
 	rm -rf "$(INSTALLED_PLAYGROUND)"
 	@echo "Removed $(INSTALLED_PLAYGROUND)."
+
+# Daily auto-update. Registers a LaunchAgent that runs scripts/auto-update.sh,
+# which fast-forward pulls this checkout when origin/main is ahead of the
+# installed saver's LerpBuild stamp and re-runs `make saver`. Never builds a
+# dirty tree, never merges over diverged work, and never touches the playground
+# unattended — replacing it could discard unsaved editor state (see AGENTS.md).
+install-auto-update:
+	@mkdir -p "$(HOME)/Library/LaunchAgents"
+	@sed 's|@SCRIPT@|$(CURDIR)/scripts/auto-update.sh|' \
+		scripts/com.hergenroeder.lerping.autoupdate.plist > \
+		"$(HOME)/Library/LaunchAgents/com.hergenroeder.lerping.autoupdate.plist"
+	@launchctl bootout "gui/$$(id -u)/com.hergenroeder.lerping.autoupdate" 2>/dev/null || true
+	@launchctl bootstrap "gui/$$(id -u)" \
+		"$(HOME)/Library/LaunchAgents/com.hergenroeder.lerping.autoupdate.plist"
+	@echo "Auto-update installed: once a day, origin/main against the installed saver."
+	@echo "Log: $(HOME)/Library/Logs/LerpingAutoUpdate.log"
+
+uninstall-auto-update:
+	@launchctl bootout "gui/$$(id -u)/com.hergenroeder.lerping.autoupdate" 2>/dev/null || true
+	@rm -f "$(HOME)/Library/LaunchAgents/com.hergenroeder.lerping.autoupdate.plist"
+	@echo "Auto-update removed."
 
 # Fetches and builds swift-midi-io once; after that it is a no-op.
 midi-deps: $(MIDI_LIB)

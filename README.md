@@ -41,6 +41,25 @@ These commands deploy what this Mac runs. Use `make saver-build` or
 `make playground-build` for a compile-only build. `make install` and
 `make install-playground` are deployment aliases.
 
+### Installer script
+
+`scripts/install.sh` is the fresh-machine path: it checks for macOS 14+ on Apple
+Silicon and the Xcode command-line tools, clones the repo when it is not already
+in one, and runs `make saver` — then the playground and the auto-updater when you
+say yes. Every choice has a flag (`--with-playground`, `--without-auto-update`,
+`--repo-dir DIR`), so it also runs non-interactively.
+
+### Automatic updates
+
+`make install-auto-update` registers a LaunchAgent that runs
+`scripts/auto-update.sh` once a day. The script compares the installed saver's
+`LerpBuild` stamp against `origin/main` on GitHub; when GitHub is ahead it
+fast-forward pulls the checkout and runs `make saver`. It never builds a dirty
+tree and never merges over diverged local work — either case is logged and left
+alone. The playground is not updated unattended: replacing it could discard
+unsaved editor state. `make uninstall-auto-update` removes the agent; the log is
+`~/Library/Logs/LerpingAutoUpdate.log`.
+
 ### Screen saver
 
 ![Visual gallery for choosing the shader looks included in the screen saver rotation](docs/images/rotation-gallery.png)
