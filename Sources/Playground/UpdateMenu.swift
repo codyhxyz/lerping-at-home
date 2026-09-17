@@ -5,27 +5,33 @@ import AppKit
 /// The menu-bar home for updates: a manual "Check for Updates", the
 /// automatic-updates toggle, and a shortcut to the update log.
 ///
+/// Updates are in-app, the Sparkle shape — no background daemon. (A LaunchAgent
+/// briefly existed on 2026-09-16; it was ripped out the same day. Chrome and
+/// Office update that way, but a personal tool should not plant invisible
+/// processes.) The playground checks on launch and every four hours while it
+/// runs; when GitHub is ahead it pulls the checkout and runs `make saver` in
+/// the background, silently. The work itself stays in `scripts/auto-update.sh`;
+/// this is the scheduler, the switch, and the button.
+///
 /// It lives in the playground because the playground is the only component
 /// that is always a real app process — the saver runs inside `legacyScreenSaver`
-/// and cannot own a status item. The work itself stays in
-/// `scripts/auto-update.sh` and the `install-auto-update` /
-/// `uninstall-auto-update` targets; this is the switch and the button.
+/// and cannot own a status item, and its sandbox could not reach the network
+/// anyway.
 ///
-/// Automatic updates are on by default: the first launch with a checkout
-/// enrolls the daily LaunchAgent, and every launch after that makes sure the
-/// agent is still there and still points at this checkout. Turning the toggle
-/// off unloads the agent; the toggle is the supported off-switch — a hand-run
-/// `launchctl bootout` gets healed on the next launch, by design.
+/// Automatic updates are on by default. Turning the toggle off stops the
+/// background checks; it is the supported off-switch.
 ///
 /// A copy with no checkout behind it (the standalone release app) gets no
 /// status item: there is nothing `git pull` could update.
 final class UpdateStatusItem: NSObject {
 
-    /// Creates the item when this copy has a checkout to update, and reconciles
-    /// the LaunchAgent with the toggle. Nil for the standalone release app and
-    /// for a copy whose checkout cannot be resolved.
+    /// Creates the item when this copy has a checkout to update. Nil for the
+    /// standalone release app and for a copy whose checkout cannot be resolved.
     static func makeIfAppropriate() -> UpdateStatusItem? {
         UpdateSettings.registerDefaults()
+        // Retire the LaunchAgent from the brief daemon experiment, when present.
+        // A leftover agent would double-install beside the in-app checks.
+        UpdateAgent.removeLegacyLaunchAgent()
         guard !RepoLocation.isStandalone else { return nil }
         let root: URL
         switch RepoLocation.settled() {
@@ -35,8 +41,7 @@ final class UpdateStatusItem: NSObject {
         let item = UpdateStatusItem(repoRoot: root)
         item.show()
         item.refreshFooterFromLog()
-        // Shelling out to make hitches for a beat; launch does not need it.
-        DispatchQueue.global(qos: .utility).async { item.reconcile() }
+        item.beginAutomaticChecks()
         return item
     }
 
@@ -45,21 +50,21 @@ final class UpdateStatusItem: NSObject {
     private var checkItem: NSMenuItem?
     private var toggleItem: NSMenuItem?
     private var footerItem: NSMenuItem?
+    private var checkTimer: Timer?
     private var checkRunning = false
 
     private init(repoRoot: URL) { self.repoRoot = repoRoot }
 
-    // MARK: Agent reconciliation
+    // MARK: Automatic checks
 
-    /// Automatic updates are on by default, so "enabled" both enrolls the
-    /// agent the first time and repairs it afterwards — a checkout that moved
-    /// gets its agent re-pointed, because the installed plist names the
-    /// update script by absolute path.
-    private func reconcile() {
-        if UpdateSettings.isEnabled {
-            UpdateAgent.install(repoRoot: repoRoot)
-        } else {
-            UpdateAgent.uninstall(repoRoot: repoRoot)
+    /// On by default: a check shortly after launch, then every four hours while
+    /// the app runs. Each check is skipped when the toggle is off.
+    private func beginAutomaticChecks() {
+        checkTimer = Timer.scheduledTimer(withTimeInterval: 4 * 3600, repeats: true) {
+            [weak self] _ in self?.performCheck(announce: false)
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15) { [weak self] in
+            self?.performCheck(announce: false)
         }
     }
 
@@ -108,61 +113,19 @@ final class UpdateStatusItem: NSObject {
 
     // MARK: Actions
 
+    /// Manual check: always runs, always reports.
     @objc private func checkForUpdates(_ sender: Any?) {
-        guard !checkRunning else { return }
-        let script = repoRoot.appendingPathComponent("scripts/auto-update.sh")
-        guard FileManager.default.isExecutableFile(atPath: script.path) else {
-            let alert = NSAlert()
-            alert.messageText = "Updater not in this checkout"
-            alert.informativeText = "This checkout predates scripts/auto-update.sh. " +
-                "Pull the latest and try again."
-            alert.runModal()
-            return
-        }
-        checkRunning = true
-        checkItem?.title = "Checking for Updates…"
-        checkItem?.isEnabled = false
-        // The script appends to the log; snapshot the size so the outcome is
-        // read from this run's lines only, not a concurrent daily run's.
-        let logOffset = UpdateAgent.logByteCount()
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
-            let run = UpdateAgent.run("/bin/bash", [script.path])
-            let outcome = UpdateOutcome.classify(newLog: UpdateAgent.readLog(sinceByte: logOffset),
-                                                processOK: run.succeeded)
-            DispatchQueue.main.async {
-                self.checkRunning = false
-                self.checkItem?.title = "Check for Updates"
-                self.checkItem?.isEnabled = true
-                self.footerItem?.title = outcome.footer
-                self.showOutcome(outcome)
-            }
-        }
+        performCheck(announce: true)
     }
 
+    /// The toggle is a plain default flip — no daemon to enroll or unload.
+    /// Turning it back on checks soon, so re-enabling does not wait four hours.
     @objc private func toggleAutomatic(_ sender: Any?) {
-        let enable = !UpdateSettings.isEnabled
-        toggleItem?.isEnabled = false
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
-            if enable {
-                UpdateAgent.install(repoRoot: self.repoRoot)
-            } else {
-                UpdateAgent.uninstall(repoRoot: self.repoRoot)
-            }
-            let ok = UpdateAgent.isLoaded == enable
-            DispatchQueue.main.async {
-                if ok { UpdateSettings.isEnabled = enable }
-                self.toggleItem?.state = UpdateSettings.isEnabled ? .on : .off
-                self.toggleItem?.isEnabled = true
-                if !ok {
-                    let alert = NSAlert()
-                    alert.messageText = enable ? "Could not enable automatic updates"
-                                               : "Could not disable automatic updates"
-                    alert.informativeText = "The LaunchAgent did not change state. " +
-                        "Pull the latest checkout and try again."
-                    alert.runModal()
-                }
+        UpdateSettings.isEnabled.toggle()
+        toggleItem?.state = UpdateSettings.isEnabled ? .on : .off
+        if UpdateSettings.isEnabled {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { [weak self] in
+                self?.performCheck(announce: false)
             }
         }
     }
@@ -175,6 +138,49 @@ final class UpdateStatusItem: NSObject {
         NSWorkspace.shared.open([url], withApplicationAt: nil,
                                 configuration: NSWorkspace.OpenConfiguration(),
                                 completionHandler: nil)
+    }
+
+    // MARK: Checking
+
+    /// Runs `scripts/auto-update.sh` off the main thread. `announce` is the
+    /// manual check: it always runs and always reports. The automatic check
+    /// runs only with the toggle on and reports by footer alone — an update
+    /// that needed no decision gets no dialog.
+    private func performCheck(announce: Bool) {
+        guard !checkRunning else { return }
+        if !announce, !UpdateSettings.isEnabled { return }
+        let script = repoRoot.appendingPathComponent("scripts/auto-update.sh")
+        guard FileManager.default.isExecutableFile(atPath: script.path) else {
+            if announce {
+                let alert = NSAlert()
+                alert.messageText = "Updater not in this checkout"
+                alert.informativeText = "This checkout predates scripts/auto-update.sh. " +
+                    "Pull the latest and try again."
+                alert.runModal()
+            }
+            return
+        }
+        checkRunning = true
+        if announce {
+            checkItem?.title = "Checking for Updates…"
+            checkItem?.isEnabled = false
+        }
+        // The script appends to the log; snapshot the size so the outcome is
+        // read from this run's lines only.
+        let logOffset = UpdateAgent.logByteCount()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let run = UpdateAgent.run("/bin/bash", [script.path])
+            let outcome = UpdateOutcome.classify(newLog: UpdateAgent.readLog(sinceByte: logOffset),
+                                                processOK: run.succeeded)
+            DispatchQueue.main.async {
+                self.checkRunning = false
+                self.checkItem?.title = "Check for Updates"
+                self.checkItem?.isEnabled = true
+                self.footerItem?.title = outcome.footer
+                if announce { self.showOutcome(outcome) }
+            }
+        }
     }
 
     // MARK: Outcome UI
@@ -200,7 +206,7 @@ final class UpdateStatusItem: NSObject {
     }
 
     /// Seeds the footer from the newest result already in the log, so a machine
-    /// the daily agent has been updating does not claim it never checked.
+    /// that has been updating does not claim it never checked.
     private func refreshFooterFromLog() {
         guard let text = try? String(contentsOf: UpdateAgent.logURL, encoding: .utf8) else { return }
         let lines = text.split(separator: "\n").map(String.init)
@@ -214,7 +220,7 @@ final class UpdateStatusItem: NSObject {
 // MARK: - The toggle
 
 /// On by default: `registerDefaults` runs before the first read, so a fresh
-/// machine has automatic updates without anyone writing a preference.
+/// machine checks for updates without anyone writing a preference.
 enum UpdateSettings {
     private static let key = "LerpAutoUpdateEnabled"
 
@@ -228,11 +234,10 @@ enum UpdateSettings {
     }
 }
 
-// MARK: - The agent
+// MARK: - Running the updater
 
-/// Thin wrapper over the Makefile targets, so the install/uninstall knowledge
-/// lives in one place. `make` is at a fixed path because a GUI app's PATH is
-/// whatever launchd felt like.
+/// The update itself lives in `scripts/auto-update.sh`; this is process
+/// plumbing, log reading, and cleanup of the retired LaunchAgent.
 enum UpdateAgent {
     static let label = "com.hergenroeder.lerping.autoupdate"
 
@@ -241,19 +246,14 @@ enum UpdateAgent {
             .appendingPathComponent("Library/Logs/LerpingAutoUpdate.log")
     }
 
-    /// Idempotent: the target boots out whatever is there, then bootstraps.
-    static func install(repoRoot: URL) {
-        _ = run("/usr/bin/make", ["-C", repoRoot.path, "install-auto-update"])
-    }
-
-    /// Idempotent: bootout of an absent agent and removal of a missing plist
-    /// are both tolerated by the target.
-    static func uninstall(repoRoot: URL) {
-        _ = run("/usr/bin/make", ["-C", repoRoot.path, "uninstall-auto-update"])
-    }
-
-    static var isLoaded: Bool {
-        run("/bin/launchctl", ["print", "gui/\(Darwin.getuid())/\(label)"]).succeeded
+    /// Removes the LaunchAgent from the brief 2026-09-16 daemon experiment,
+    /// when present. Updates are in-app now; a leftover agent would run the
+    /// same script on its own schedule. Idempotent.
+    static func removeLegacyLaunchAgent() {
+        _ = run("/bin/launchctl", ["bootout", "gui/\(Darwin.getuid())/\(label)"])
+        let plist = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+        try? FileManager.default.removeItem(at: plist)
     }
 
     static func logByteCount() -> UInt64 {

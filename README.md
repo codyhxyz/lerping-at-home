@@ -51,24 +51,21 @@ say yes. Every choice has a flag (`--with-playground`, `--without-auto-update`,
 
 ### Automatic updates
 
-`make install-auto-update` registers a LaunchAgent that runs
-`scripts/auto-update.sh` once a day. The script compares the installed saver's
-`LerpBuild` stamp against `origin/main` on GitHub; when GitHub is ahead it
-fast-forward pulls the checkout and runs `make saver`. It never builds a dirty
-tree and never merges over diverged local work — either case is logged and left
-alone. The playground is not updated unattended: replacing it could discard
-unsaved editor state. `make uninstall-auto-update` removes the agent; the log is
-`~/Library/Logs/LerpingAutoUpdate.log`.
+The playground checks for updates itself — the Sparkle shape, no background
+daemon. On launch and every four hours while it runs, it compares the installed
+saver's `LerpBuild` stamp against `origin/main` on GitHub; when GitHub is ahead
+it pulls the checkout and runs `make saver` in the background, silently. It
+never builds a dirty tree and never merges over diverged local work — either
+case is logged and left alone. The playground is not updated unattended:
+replacing it could discard unsaved editor state.
 
-The playground also keeps a menu-bar item (the circular-arrows icon, top right):
-**Check for Updates** runs the same script on demand and reports the result,
-**Automatic Updates** toggles the daily agent, and **Show Update Log** opens the
-log. The toggle is on by default — the first launch with a checkout enrolls the
-agent, and every launch after that re-points it at the current checkout. Turning
-it off is the supported way to disable updates. The standalone release app has
-no menu-bar item; its updates come from the DMG. The installer asks about
-auto-updates too (`--with-auto-update` / `--without-auto-update`), defaulting
-to on.
+The menu-bar item (the circular-arrows icon) is the manual side: **Check for
+Updates** runs the same script on demand and reports the result, **Automatic
+Updates** toggles the background checks, and **Show Update Log** opens the log
+at `~/Library/Logs/LerpingAutoUpdate.log`. The toggle is on by default. The
+standalone release app has no menu-bar item; its updates come from the DMG. The
+installer asks about automatic checks too (`--with-auto-update` /
+`--without-auto-update`), defaulting to on.
 
 ### Screen saver
 

@@ -69,15 +69,22 @@ if [ "$PLAYGROUND" = "yes" ]; then
     make install-playground
 fi
 
-[ -n "$AUTOUPDATE" ] || ask AUTOUPDATE "Enable daily auto-updates? (yes/no)" "yes"
-if [ "$AUTOUPDATE" = "yes" ]; then
-    echo "==> Enabling auto-updates"
-    make install-auto-update
+[ -n "$AUTOUPDATE" ] || ask AUTOUPDATE "Enable automatic update checks? (yes/no)" "yes"
+if [ "$AUTOUPDATE" != "yes" ]; then
+    # The playground checks for updates itself and the toggle defaults to on;
+    # this records the opt-out before the first launch.
+    defaults write com.hergenroeder.lerping.playground.installed LerpAutoUpdateEnabled -bool false
+    echo "Automatic update checks disabled (toggle them back on from the playground's menu-bar item)."
 fi
+
+# Retire the LaunchAgent from the brief 2026-09-16 daemon experiment: updates
+# are in-app now. No-op when it was never enrolled.
+launchctl bootout "gui/$(id -u)/com.hergenroeder.lerping.autoupdate" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.hergenroeder.lerping.autoupdate.plist"
 
 cat <<'EOF'
 
 Installed. Next steps:
 - Select "Lerping@Home" in System Settings > Screen Saver.
-- Auto-update log, when enabled: ~/Library/Logs/LerpingAutoUpdate.log
+- Update log: ~/Library/Logs/LerpingAutoUpdate.log
 EOF
