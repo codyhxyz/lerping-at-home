@@ -455,6 +455,7 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
                     : "SDR"
             self.window?.title = label + "\(view.currentShaderName) · \(range) (\(view.statusText))"
         }
+        titleTimer?.tolerance = 0.5
 
         NSApp.activate(ignoringOtherApps: true)
     }
