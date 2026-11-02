@@ -207,6 +207,22 @@ in `LerpDataProviders`, and give the shader a matching `// lerp-data:` line.
 A shader with no `// lerp-data:` line gets no provider, is bound exactly as it
 always was, and needs no changes.
 
+**Shaders that need newer hardware.** `neural-field` uses Metal 4 tensors and
+Metal Performance Primitives, which exist only on macOS 26+ with a `.metal4`
+GPU. It says so on one of its first 40 lines:
+
+```metal
+// lerp-requires: metal4
+```
+
+`ShaderLibrary.discover()` leaves such a shader out on a machine that cannot run
+it, so it is absent from the rotation, the gallery and every picker there,
+rather than present as a compile error. `metal4` is the only requirement this
+build knows; an unknown word hides nothing. `NeuralFieldData.swift` is also the
+worked example of binding a tensor through the classic render encoder: the
+tensor sits in an argument buffer (its `gpuResourceID`) bound with
+`setFragmentBuffer`, plus `useResource`.
+
 ## House style
 
 - **Ambience**: this runs as a screensaver. Slow the original's time scale
