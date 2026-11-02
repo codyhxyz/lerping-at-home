@@ -385,6 +385,9 @@ enum MainMenu {
             item("Recompile", Selector(("recompile:")), "r"),
             item("Play / Pause", Selector(("togglePlayPause:")), "\\"),
             item("Re-roll Seed", Selector(("rerollSeed:")), "r", [.command, .shift]),
+            // Off at launch. Feeds u.audioLevel/Bass/Mid/Treble; see PORTING.md.
+            item("React to System Audio",
+                 #selector(PlaygroundWindowController.toggleSystemAudio(_:)), ""),
             .separator(),
             item("Next Look", Selector(("nextLook:")), "]", [.command, .shift]),
             item("Previous Look", Selector(("previousLook:")), "[", [.command, .shift]),

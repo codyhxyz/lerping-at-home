@@ -227,6 +227,11 @@ export function transpile(src) {
     "uniform vec2 u_resolution;",
     "uniform float u_time;",
     "uniform float u_seed;",
+    // Never set by the gallery, so they read 0 — the saver's silent case.
+    "uniform float u_audioLevel;",
+    "uniform float u_audioBass;",
+    "uniform float u_audioMid;",
+    "uniform float u_audioTreble;",
     ...params.map((p) => (p.type === "color" ? `uniform vec4 u_${p.name};`
       : p.type === "int" ? `uniform int u_${p.name};`
       : `uniform float u_${p.name};`)),

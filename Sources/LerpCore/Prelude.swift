@@ -19,17 +19,23 @@ public enum LerpPrelude {
     #define TWO_PI 6.28318530718
     """
 
-    /// `struct LerpUniforms` for a given parameter list. The first 16 bytes are
-    /// always the same three fields; a shader's `// lerp-param:` declarations
-    /// are appended as extra members, which is why reading a parameter needs no
-    /// change to the `lerpMain` signature. With no parameters this is
-    /// byte-for-byte the struct every shader has always been compiled against.
+    /// `struct LerpUniforms` for a given parameter list. The first 32 bytes are
+    /// always the same fields; a shader's `// lerp-param:` declarations are
+    /// appended as extra members, which is why reading a parameter needs no
+    /// change to the `lerpMain` signature. The audio fields were appended to
+    /// the fixed head after the original three, so a shader that never names
+    /// them compiles and renders exactly as before; they read 0 whenever the
+    /// host is not capturing audio, which is everywhere but the playground.
     public static func uniformsStruct(parameters: [LerpParam] = []) -> String {
         var text = """
         struct LerpUniforms {
             float2 resolution; // drawable size in pixels
             float  time;       // seconds since the renderer started
             float  seed;       // random per-launch seed in [0, 1)
+            float  audioLevel;  // smoothed system-audio loudness, ~0..1 (0 = off/silent)
+            float  audioBass;   // ~20-250 Hz band, ~0..1
+            float  audioMid;    // ~250-4000 Hz band, ~0..1
+            float  audioTreble; // ~4-16 kHz band, ~0..1
         """
         if !parameters.isEmpty {
             text += "\n    // --- declared by `// lerp-param:` in the shader file ---\n"

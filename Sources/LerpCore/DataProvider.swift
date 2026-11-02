@@ -2,7 +2,7 @@ import Foundation
 import Metal
 
 /// Optional per-frame CPU-computed data for shaders that need more than the
-/// 16-byte `LerpUniforms` block — a segment list, a lookup table, an occupancy
+/// fixed `LerpUniforms` block — a segment list, a lookup table, an occupancy
 /// grid. A shader opts in with a comment on any of its first lines:
 ///
 ///     // lerp-data: pipes
