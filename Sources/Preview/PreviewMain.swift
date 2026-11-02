@@ -9,6 +9,9 @@ import Metal
 ///   LerpPreview --snapshot DIR      render every shader to PNG in DIR
 ///       [--size WxH] [--time T] [--seed S] [--shader NAME]
 ///       [--preset NAME] [--param name=value ...]
+///       [--hdr [--hdr-format exr|heic|avif|png] [--edr-peak P]]
+///                                   extended-range stills through the EDR
+///                                   path (default exr, peak 4× SDR white)
 ///   LerpPreview --thumbnails SAVER  bake the Options… gallery's stills into
 ///                                   a .saver bundle
 ///
@@ -165,6 +168,10 @@ enum PreviewMain {
         let time = Float(flagValue(args, "--time") ?? "3.0") ?? 3.0
         let seed = Float(flagValue(args, "--seed") ?? "0.5") ?? 0.5
         let only = flagValue(args, "--shader")
+        // `--hdr` writes extended-range stills through the EDR path instead.
+        let hdrPeak: Float? = args.contains("--hdr")
+            ? Float(flagValue(args, "--edr-peak") ?? "") ?? LerpEDR.defaultPeak : nil
+        let ext = hdrPeak == nil ? "png" : (flagValue(args, "--hdr-format") ?? "exr")
 
         let outURL = URL(fileURLWithPath: outDir)
         try? FileManager.default.createDirectory(at: outURL, withIntermediateDirectories: true)
@@ -175,17 +182,20 @@ enum PreviewMain {
 
         var failed = false
         for shader in shaders {
-            let url = outURL.appendingPathComponent(shader.name + ".png")
+            let url = outURL.appendingPathComponent(shader.name + "." + ext)
             let result = LerpSnapshot.render(shader: shader, library: library, renderer: renderer,
                                             width: width, height: height,
                                             time: time, seed: seed,
                                             params: parameterValues(for: shader, args: args),
+                                            hdrPeak: hdrPeak,
                                             to: url)
             if let error = result.error {
                 failed = true
                 print("FAIL  \(shader.name): \(error)")
             } else {
-                print(String(format: "OK    %-16s luma=%.3f  %@", (shader.name as NSString).utf8String!, result.meanLuminance, url.path))
+                let peak = hdrPeak == nil ? "" : String(format: " peak=%.2f", result.peak)
+                print(String(format: "OK    %-16s luma=%.3f%@  %@", (shader.name as NSString).utf8String!,
+                             result.meanLuminance, peak, url.path))
             }
         }
         exit(failed ? 1 : 0)
@@ -278,8 +288,8 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
             print("compile error in \(name):\n\(error)")
         }
         if args.contains("--edr") {
-            view.extendedDynamicRange = true
-            if let peak = flag("--edr-peak").flatMap(Float.init) { view.edrPeak = peak > 0 ? peak : nil }
+            view.config.extendedDynamicRange = true
+            if let peak = flag("--edr-peak").flatMap(Float.init) { view.config.edrPeak = max(0, peak) }
         }
         if let seed = flag("--seed").flatMap(Float.init) { view.seed = seed }
         let label = flag("--label").map { $0 + " — " } ?? ""
@@ -322,10 +332,12 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
         titleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self, let view = self.metalView else { return }
             resync()
-            let range = view.extendedDynamicRange
+            let range = view.isEDRActive
                 ? String(format: "EDR %.1fx of %.1fx", view.edrHeadroomInUse,
                          LerpEDR.potentialHeadroom(of: self.window?.screen))
-                : "SDR"
+                : view.config.extendedDynamicRange
+                    ? "SDR, EDR held back: \(LerpEDR.blocker(on: self.window?.screen) ?? "pending")"
+                    : "SDR"
             self.window?.title = label + "\(view.currentShaderName) · \(range) (\(view.statusText))"
         }
 

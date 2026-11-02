@@ -1,8 +1,9 @@
 import AppKit
+import IOKit.ps
 import Metal
 import QuartzCore
 
-/// Opt-in EDR (extended dynamic range) output — phase 1, preview-only.
+/// Opt-in EDR (extended dynamic range) output.
 ///
 /// Shaders still write `half4` in 0..1, display-referred, the way every look in
 /// the library was authored (by eye, on a P3 panel, through an untagged
@@ -48,6 +49,40 @@ public enum LerpEDR {
     /// The most headroom the panel can ever offer (16 on an XDR panel).
     public static func potentialHeadroom(of screen: NSScreen?) -> Float {
         Float(screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1.0)
+    }
+
+    /// Highlights go to at most 4× SDR white unless a host says otherwise:
+    /// enough to read as light rather than paint, short of the 16× an XDR
+    /// panel offers, which is a lot to leave running in a dark room.
+    public static let defaultPeak: Float = 4.0
+
+    /// How often a view re-asks `blocker(on:)` while drawing.
+    public static let recheckInterval: CFTimeInterval = 2.0
+
+    /// Why EDR must not engage on `screen` right now, or nil if it may.
+    ///
+    /// The one predicate every EDR decision goes through, kept small so the
+    /// frame-pacing work's power/thermal observation can fold into it:
+    /// - a screen with no potential headroom gains nothing and pays the
+    ///   16-bit bandwidth and the extra pass anyway;
+    /// - on battery and in Low Power Mode the 8-bit path is the cheaper one,
+    ///   and a screensaver that drains a laptop to show brighter highlights is
+    ///   the wrong trade.
+    public static func blocker(on screen: NSScreen?) -> String? {
+        if potentialHeadroom(of: screen) <= 1.0 { return "screen has no EDR headroom" }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return "Low Power Mode" }
+        if isOnBattery { return "on battery" }
+        return nil
+    }
+
+    /// True when the Mac is running from its battery. False on a desktop, or
+    /// if the power-source query fails — the check is a power saving, not a
+    /// correctness guard, so an unknown answer must not take EDR away.
+    public static var isOnBattery: Bool {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let type = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue()
+        else { return false }
+        return (type as String) == kIOPSBatteryPowerValue
     }
 
     /// Layout matches `EDRParams` in `postSource`.
