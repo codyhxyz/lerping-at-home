@@ -400,8 +400,9 @@ public final class ShaderLibrary {
 
     /// Compiles (or returns a cached) pipeline for a shader. Throws with the
     /// Metal compiler's diagnostics on failure.
-    public func pipeline(for shader: LerpShader) throws -> MTLRenderPipelineState {
-        let cacheKey = shader.name + "|" + String(shader.source.hashValue)
+    public func pipeline(for shader: LerpShader,
+                         pixelFormat: MTLPixelFormat = .bgra8Unorm) throws -> MTLRenderPipelineState {
+        let cacheKey = shader.name + "|" + String(shader.source.hashValue) + "|" + String(pixelFormat.rawValue)
         if let cached = pipelineCache[cacheKey] { return cached }
 
         if !shader.parameterErrors.isEmpty {
@@ -432,7 +433,7 @@ public final class ShaderLibrary {
         descriptor.label = "Lerping/" + shader.name
         descriptor.vertexFunction = vertexFn
         descriptor.fragmentFunction = fragmentFn
-        descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        descriptor.colorAttachments[0].pixelFormat = pixelFormat
 
         let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
         compileErrors[shader.name] = nil

@@ -142,6 +142,33 @@ public final class LerpMetalView: NSView {
     /// Per-launch random seed handed to shaders as `u.seed`. Settable so a host
     /// (the playground) can re-roll it; the screensaver never touches it.
     public var seed = Float.random(in: 0..<1)
+
+    /// Opt-in EDR output (see `LerpEDR`). Off by default; only LerpPreview
+    /// turns it on so far. Switching recompiles the current look for the
+    /// matching pixel format.
+    public var extendedDynamicRange = false {
+        didSet {
+            guard extendedDynamicRange != oldValue else { return }
+            LerpEDR.configure(metalLayer, edr: extendedDynamicRange)
+            if extendedDynamicRange, edrPostPipeline == nil {
+                edrPostPipeline = try? LerpEDR.makePostPipeline(device: renderer.device)
+            }
+            edrSource = nil
+            if let name = currentEntry?.shader, let shader = library.shader(named: name) {
+                pipeline = try? library.pipeline(for: shader, pixelFormat: shaderPixelFormat)
+            }
+        }
+    }
+    /// Peak the post pass lifts SDR white to, capped by what the screen offers
+    /// at that moment. Nil means "whatever the screen offers".
+    public var edrPeak: Float? = 4.0
+    /// The headroom the last EDR frame actually used, for a host's titlebar.
+    public private(set) var edrHeadroomInUse: Float = 1.0
+    private var edrPostPipeline: MTLRenderPipelineState?
+    private var edrSource: MTLTexture?
+    private var shaderPixelFormat: MTLPixelFormat {
+        extendedDynamicRange ? LerpEDR.shaderPixelFormat : .bgra8Unorm
+    }
     private var elapsed: CFTimeInterval = 0
     private var resumeStamp: CFTimeInterval = 0
     private var running = false
@@ -201,8 +228,7 @@ public final class LerpMetalView: NSView {
     public override func makeBackingLayer() -> CALayer {
         let layer = CAMetalLayer()
         layer.device = renderer.device
-        layer.pixelFormat = .bgra8Unorm
-        layer.framebufferOnly = true
+        LerpEDR.configure(layer, edr: false)
         layer.isOpaque = true
         return layer
     }
@@ -622,7 +648,7 @@ public final class LerpMetalView: NSView {
         // `show`, which is the one path where the schedule is the host.
         followsSchedule = false
         do {
-            pipeline = try library.pipeline(for: shader)
+            pipeline = try library.pipeline(for: shader, pixelFormat: shaderPixelFormat)
             dataProvider = try library.dataProvider(for: shader)
             parameterValues = shader.parameterValues(for: entry)
             currentShaderName = shader.name
@@ -768,8 +794,39 @@ public final class LerpMetalView: NSView {
                                          Float(metalLayer.drawableSize.height)),
                 time: Float(time),
                 seed: seed)
-            renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms,
-                          params: parameterValues, data: dataProvider)
+            if extendedDynamicRange, let post = edrPostPipeline {
+                drawEDR(drawable: drawable, pipeline: pipeline, post: post, uniforms: uniforms)
+            } else {
+                renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms,
+                              params: parameterValues, data: dataProvider)
+            }
         }
+    }
+
+    /// Shader into an rgba16Float scratch texture, then `LerpEDR`'s expand pass
+    /// into the drawable, on one command buffer.
+    private func drawEDR(drawable: CAMetalDrawable, pipeline: MTLRenderPipelineState,
+                         post: MTLRenderPipelineState, uniforms: LerpUniforms) {
+        let target = drawable.texture
+        if edrSource?.width != target.width || edrSource?.height != target.height {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: LerpEDR.shaderPixelFormat,
+                width: target.width, height: target.height, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .private
+            edrSource = renderer.device.makeTexture(descriptor: descriptor)
+        }
+        guard let source = edrSource,
+              let commandBuffer = renderer.encodePass(target: source, pipeline: pipeline,
+                                                      uniforms: uniforms,
+                                                      params: parameterValues,
+                                                      data: dataProvider) else { return }
+        let available = LerpEDR.currentHeadroom(of: window?.screen)
+        let headroom = edrPeak.map { min($0, available) } ?? available
+        edrHeadroomInUse = headroom
+        LerpEDR.encodeExpand(into: commandBuffer, source: source, target: target,
+                             pipeline: post, params: LerpEDR.Params(headroom: headroom))
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
     }
 }
