@@ -67,7 +67,7 @@ public enum LerpEDR {
     /// - on battery and in Low Power Mode the 8-bit path is the cheaper one,
     ///   and a screensaver that drains a laptop to show brighter highlights is
     ///   the wrong trade.
-    public static func blocker(on screen: NSScreen?) -> String? {
+    @MainActor public static func blocker(on screen: NSScreen?) -> String? {
         if potentialHeadroom(of: screen) <= 1.0 { return "screen has no EDR headroom" }
         // One reader of the power state per process: LerpPowerMonitor, which
         // also sets the frame-rate cap and logs every change.
