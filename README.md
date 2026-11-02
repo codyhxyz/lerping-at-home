@@ -208,6 +208,40 @@ make preview && ./build/LerpPreview
   - Flags: `--size WxH`, `--time T`, `--seed S`, `--shader name`.
   - Exits non-zero if a shader does not compile.
 
+### GPU cost and profiling
+
+- `./build/LerpPreview --bench` prints a Markdown table of GPU time per frame
+  (mean, p95, max, share of a 60 fps budget) for every shader, offscreen, at
+  3840×2160. Flags: `--size WxH`, `--frames N` (default 120), `--shader name`,
+  `--looks` (every preset, not only each shader's defaults).
+- The screensaver, playground and preview log what each look cost while it was
+  on screen, as one line per look switch (never per frame):
+
+  ```sh
+  /usr/bin/log show --last 1d --style compact \
+    --predicate 'subsystem == "com.hergenroeder.lerping" AND category == "gpu"'
+  # e.g. gpu voronoi/Molten frames=17940 mean=1.912ms p95=2.301ms max=6.004ms at 3456x2234 over 300.0s
+  ```
+
+  Both numbers count GPU busy time from `gpuStartTime`/`gpuEndTime`, minus any
+  overlap with the previous command buffer. Queued buffers overlap, so their
+  raw spans overstate a slow look several-fold.
+- Signposts: `compile` intervals (one per pipeline build, category
+  `performance`) and `encode` intervals (one per frame, `.dynamicTracing`,
+  recorded only while Instruments is recording). Use the os_signpost or Points
+  of Interest instrument, or `/usr/bin/log show --signpost` for `compile`.
+- `.gputrace` capture: `./build/LerpPreview --snapshot out/ --shader aurora
+  --gputrace aurora.gputrace` captures every frame the snapshot draws. Set
+  `LERP_GPUTRACE=path.gputrace` to capture the live window's first
+  `LERP_GPUTRACE_FRAMES` frames (default 3). Open the trace in Xcode. The flag
+  sets `MTL_CAPTURE_ENABLED=1` itself, so no Xcode scheme is needed.
+- Metal Performance HUD in the live window: `MTL_HUD_ENABLED=1
+  ./build/LerpPreview` overlays frame rate, frame time, GPU time and memory.
+  Add `MTL_HUD_LOG_SHADER_ENABLED=1` to also report shader compilation, which
+  is useful while pressing `r` to recompile. Metal reads both variables at
+  launch. They only affect a window that presents, so `--snapshot` and
+  `--bench` ignore them.
+
 ## Shader playground
 
 ```sh
@@ -494,9 +528,10 @@ Sources/LerpCore/     shared engine, no ScreenSaver dependency
   ShaderParameters.swift  `// lerp-param:` / `// lerp-preset:` parsing, layout and packing
   DataProvider.swift   optional per-frame CPU→GPU data for shaders that need it
   PipesData.swift      data provider for pipes: deterministic lattice walk
-  LerpRenderer.swift   stateless fullscreen-triangle pass encoder
+  LerpRenderer.swift   fullscreen-triangle pass encoder
+  GPUDiagnostics.swift per-look GPU cost meter + signposts
   LerpMetalView.swift  CAMetalLayer view: CADisplayLink, fps cap, occlusion pause
-  Snapshot.swift       offscreen render to PNG
+  Snapshot.swift       offscreen render to PNG (HEIC for gallery stills)
 Sources/Shaders/     built-in shaders, shipped as bundle Resources
 Sources/Saver/       ScreenSaverView shim + Info.plist
 Sources/Preview/     LerpPreview dev app / snapshot CLI
