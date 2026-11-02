@@ -17,12 +17,15 @@ public struct LerpUniforms {
     }
 }
 
-/// Thin stateless encoder: draws one fullscreen-triangle pass of the given
-/// pipeline into any texture or drawable. Shared by the live view and the
-/// offscreen snapshot path.
+/// Thin encoder: draws one fullscreen-triangle pass of the given pipeline into
+/// any texture or drawable. Shared by the live view and the offscreen snapshot
+/// path. Its one piece of state is the GPU cost meter, `gpuCost`.
 public final class LerpRenderer {
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
+    /// Per-look GPU time, summarised in the log once per look switch. Idle
+    /// until a host calls `gpuCost.begin(look:)`. See `LerpGPUCost`.
+    public let gpuCost = LerpGPUCost()
 
     public init?(device: MTLDevice? = nil) {
         guard let device = device ?? MTLCreateSystemDefaultDevice(),
@@ -42,7 +45,10 @@ public final class LerpRenderer {
                            uniforms: LerpUniforms,
                            params: LerpParameterValues? = nil,
                            data: LerpDataProvider? = nil) -> MTLCommandBuffer? {
+        let signpost = LerpSignposts.frames.beginInterval("encode")
+        defer { LerpSignposts.frames.endInterval("encode", signpost) }
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+        gpuCost.attach(to: commandBuffer, width: target.width, height: target.height)
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
         pass.colorAttachments[0].loadAction = .clear

@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import Metal
 
 /// Preview stills for the rotation gallery: one per (shader, preset), rendered
@@ -179,12 +180,22 @@ public final class RotationThumbnails {
         Self.hash(entry.key + "\u{1}" + source + "\u{1}" + recipe.token)
     }
 
-    /// `voronoi-Molten-4f0c….png` — the hash is what makes it unique; the
+    /// `voronoi-Molten-4f0c….heic` — the hash is what makes it unique; the
     /// readable part is so the cache directory can be looked at by a human.
     public func fileName(entry: LerpRotationEntry, source: String) -> String {
         Self.slug(entry.shader) + "-" + Self.slug(entry.preset ?? "defaults")
-            + "-" + key(entry: entry, source: source) + ".png"
+            + "-" + key(entry: entry, source: source) + "." + Self.fileExtension
     }
+
+    /// HEIC at `LerpSnapshot.heicQuality`: 7.9 MB for the 123 bundled stills
+    /// against 11.5 MB of PNG, at most 3/255 off per channel. `NSImage` decodes
+    /// either, so nothing that reads a still had to change.
+    public static let fileExtension = "heic"
+
+    /// Extensions a still of ours may have on disk. PNG is the format before
+    /// HEIC; it is listed so `prune` and `evictAll` clear an old cache out
+    /// instead of leaving it behind, unclaimed, forever.
+    static let ownedExtensions: Set<String> = [fileExtension, "png"]
 
     /// Where this still is written. Always the writable directory: the bundled
     /// tier is read at `existingURL`, never written.
@@ -208,6 +219,36 @@ public final class RotationThumbnails {
     private static func slug(_ text: String) -> String {
         let out = text.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
         return String(String(out).prefix(28))
+    }
+
+    /// A still, decoded *now*, on whatever queue asked — which is always this
+    /// cache's own, never the main thread.
+    ///
+    /// `NSImage(contentsOf:)` only reads the header; the pixels are decoded the
+    /// first time the tile is drawn, on the main thread. That was ~1 ms a tile
+    /// for PNG and is ~3 ms for HEIC (0.4 s across the whole gallery on an M5),
+    /// so the decode moved here, where it is paid as tiles arrive instead of as
+    /// the gallery scrolls. nil for a file that is missing, truncated or not an
+    /// image, which the callers already treat as a miss.
+    static func decodedImage(at url: URL) -> NSImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let decoded = CGImageSourceCreateImageAtIndex(
+                source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        else { return nil }
+        // …and then drawn once into a plain premultiplied BGRA bitmap, the
+        // format the window server composites without converting. What ImageIO
+        // hands back for a HEIC is not that, and drew ~1.6x slower than a PNG
+        // on *every* redraw, not just the first.
+        let width = decoded.width, height = decoded.height
+        guard let context = CGContext(data: nil, width: width, height: height,
+                                      bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: decoded.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                          | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return NSImage(cgImage: decoded, size: NSSize(width: width, height: height)) }
+        context.draw(decoded, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let image = context.makeImage() ?? decoded
+        return NSImage(cgImage: image, size: NSSize(width: width, height: height))
     }
 
     // MARK: - Lookup
@@ -274,7 +315,7 @@ public final class RotationThumbnails {
                 guard self.isCurrent(run) else { return }
                 let key = self.key(entry: job.entry, source: job.shader.source)
                 guard let url = self.existingURL(entry: job.entry, source: job.shader.source),
-                      let image = NSImage(contentsOf: url), image.isValid else {
+                      let image = Self.decodedImage(at: url) else {
                     // A half-written file from an interrupted run reads as a
                     // miss and is drawn again, rather than as a broken tile.
                     try? FileManager.default.removeItem(
@@ -344,7 +385,7 @@ public final class RotationThumbnails {
         queue.async {
             let files = (try? FileManager.default.contentsOfDirectory(at: directory,
                                                                       includingPropertiesForKeys: nil)) ?? []
-            for url in files where url.pathExtension == "png" {
+            for url in files where Self.ownedExtensions.contains(url.pathExtension) {
                 try? FileManager.default.removeItem(at: url)
             }
         }
@@ -415,9 +456,9 @@ public final class RotationThumbnails {
                                                      width: recipe.width, height: recipe.height,
                                                      time: recipe.time, seed: recipe.seed,
                                                      params: values, to: url)
-                    guard result.error == nil, let image = NSImage(contentsOf: url), image.isValid else {
+                    guard result.error == nil, let image = Self.decodedImage(at: url) else {
                         lock.lock()
-                        failed.append(job.entry.key + ": " + (result.error ?? "unreadable PNG"))
+                        failed.append(job.entry.key + ": " + (result.error ?? "unreadable still"))
                         lock.unlock()
                         continue
                     }
@@ -436,7 +477,8 @@ public final class RotationThumbnails {
     private func prune(expected: Set<String>) {
         let files = (try? FileManager.default.contentsOfDirectory(at: directory,
                                                                   includingPropertiesForKeys: nil)) ?? []
-        for url in files where url.pathExtension == "png" && !expected.contains(url.lastPathComponent) {
+        for url in files where Self.ownedExtensions.contains(url.pathExtension)
+                                && !expected.contains(url.lastPathComponent) {
             try? FileManager.default.removeItem(at: url)
         }
     }

@@ -627,6 +627,7 @@ public final class LerpMetalView: NSView {
             parameterValues = shader.parameterValues(for: entry)
             currentShaderName = shader.name
             currentEntry = entry
+            renderer.gpuCost.begin(look: entry.key)
             return true
         } catch {
             onCompileError?(shader.name, String(describing: error))

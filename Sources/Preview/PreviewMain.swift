@@ -11,6 +11,12 @@ import Metal
 ///       [--preset NAME] [--param name=value ...]
 ///   LerpPreview --thumbnails SAVER  bake the Options… gallery's stills into
 ///                                   a .saver bundle
+///   LerpPreview --bench             per-shader GPU cost table (Markdown)
+///       [--size WxH] [--frames N] [--shader NAME] [--looks]
+///
+/// `--gputrace PATH.gputrace` (or `LERP_GPUTRACE=PATH`) records a Metal
+/// capture: of every frame `--snapshot` draws, or of the live window's first
+/// `LERP_GPUTRACE_FRAMES` frames (default 3). Open it in Xcode.
 ///
 /// Live window keys: ←/→ switch shader, space pause/resume, r reload
 /// (recompiles, picks up custom-shader edits), q quit.
@@ -21,6 +27,7 @@ enum PreviewMain {
         // Search the repo's shader folder when running from a build tree, so
         // the preview works without installing anything.
         let extraSearch = ShaderLocations.repoSearchURLs()
+        GPUTrace.prepare(args)
 
         if args.contains("--life-selftest") {
             guard LifeData.selfTest() else { fail("Game of Life rule self-test failed") }
@@ -54,6 +61,11 @@ enum PreviewMain {
                 fail("--thumbnails needs the path to a .saver bundle")
             }
             bakeThumbnails(into: URL(fileURLWithPath: args[index + 1]))
+            return
+        }
+
+        if args.contains("--bench") {
+            bench(args: args, extraSearch: extraSearch)
             return
         }
 
@@ -155,13 +167,7 @@ enum PreviewMain {
     static func snapshotAll(outDir: String, args: [String], extraSearch: [URL]) {
         let (renderer, library) = makeLibrary(extraSearch)
 
-        var width = 1200, height = 750
-        if let size = flagValue(args, "--size") {
-            let parts = size.lowercased().split(separator: "x")
-            if parts.count == 2, let parsedW = Int(parts[0]), let parsedH = Int(parts[1]) {
-                width = parsedW; height = parsedH
-            }
-        }
+        let (width, height) = size(args, default: (1200, 750))
         let time = Float(flagValue(args, "--time") ?? "3.0") ?? 3.0
         let seed = Float(flagValue(args, "--seed") ?? "0.5") ?? 0.5
         let only = flagValue(args, "--shader")
@@ -173,6 +179,7 @@ enum PreviewMain {
         if let only { shaders = shaders.filter { $0.name == only } }
         guard !shaders.isEmpty else { fail("no shaders found\(only.map { " named \($0)" } ?? "")") }
 
+        GPUTrace.start(device: renderer.device)
         var failed = false
         for shader in shaders {
             let url = outURL.appendingPathComponent(shader.name + ".png")
@@ -187,6 +194,106 @@ enum PreviewMain {
             } else {
                 print(String(format: "OK    %-16s luma=%.3f  %@", (shader.name as NSString).utf8String!, result.meanLuminance, url.path))
             }
+        }
+        GPUTrace.stop()
+        exit(failed ? 1 : 0)
+    }
+
+    static func size(_ args: [String], default fallback: (Int, Int)) -> (Int, Int) {
+        guard let size = flagValue(args, "--size") else { return fallback }
+        let parts = size.lowercased().split(separator: "x")
+        guard parts.count == 2, let width = Int(parts[0]), let height = Int(parts[1]) else { return fallback }
+        return (width, height)
+    }
+
+    // MARK: - GPU cost table
+
+    /// What each look costs the GPU at a given size, offscreen: the number the
+    /// screensaver logs once per look switch (`LerpGPUCost`), measured for all
+    /// of them at once instead of over a week of real sessions.
+    ///
+    /// Every frame is its own command buffer through `LerpRenderer.encodePass`,
+    /// the path the live view draws with, timed by the GPU's own
+    /// `gpuStartTime`/`gpuEndTime`. The clock advances 1/60 s a frame from the
+    /// gallery's t=6, so a shader whose cost moves with time is sampled across
+    /// two seconds of itself. The first frames are thrown away: they pay for
+    /// residency and clock ramp-up, not for the shader.
+    static func bench(args: [String], extraSearch: [URL]) {
+        let (renderer, library) = makeLibrary(extraSearch)
+        let (width, height) = size(args, default: (3840, 2160))
+        let frames = max(1, Int(flagValue(args, "--frames") ?? "") ?? 120)
+        let warmup = 10
+        let only = flagValue(args, "--shader")
+
+        var shaders = library.discover()
+        if let only { shaders = shaders.filter { $0.name == only } }
+        guard !shaders.isEmpty else { fail("no shaders found\(only.map { " named \($0)" } ?? "")") }
+        let looks: [(entry: LerpRotationEntry, shader: LerpShader)] = args.contains("--looks")
+            ? RotationThumbnails.jobs(for: shaders).map { ($0.entry, $0.shader) }
+            : shaders.map { (LerpRotationEntry(shader: $0.name), $0) }
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
+                                                                  width: width, height: height,
+                                                                  mipmapped: false)
+        descriptor.usage = [.renderTarget]
+        descriptor.storageMode = .private
+        guard let target = renderer.device.makeTexture(descriptor: descriptor) else {
+            fail("could not allocate a \(width)x\(height) target")
+        }
+
+        var rows: [(summary: LerpGPUCost.Summary, compileMs: Double)] = []
+        var failed = false
+        for look in looks {
+            let compileStart = CFAbsoluteTimeGetCurrent()
+            let pipeline: MTLRenderPipelineState
+            let data: LerpDataProvider?
+            do {
+                pipeline = try library.pipeline(for: look.shader)
+                data = try library.dataProvider(for: look.shader)
+            } catch {
+                failed = true
+                print("FAIL  \(look.shader.name): \(error)")
+                continue
+            }
+            // Zero for every preset after a shader's first look: the pipeline
+            // is cached, which is also what the live view gets.
+            let compileMs = (CFAbsoluteTimeGetCurrent() - compileStart) * 1000
+            let values = look.shader.parameterValues(for: look.entry)
+            var buffers: [MTLCommandBuffer] = []
+            for frame in 0..<(warmup + frames) {
+                let uniforms = LerpUniforms(resolution: SIMD2<Float>(Float(width), Float(height)),
+                                            time: 6 + Float(frame) / 60, seed: 0.37)
+                guard let buffer = renderer.encodePass(target: target, pipeline: pipeline,
+                                                       uniforms: uniforms, params: values, data: data)
+                else { fail("could not encode a frame of \(look.entry.key)") }
+                buffer.commit()
+                buffers.append(buffer)
+            }
+            buffers.forEach { $0.waitUntilCompleted() }
+            // Queued back to back, so they overlap on the GPU; count what each
+            // added, exactly as the live meter does (see `LerpGPUCost.busyMs`).
+            // The warm-up frames are measured too, only so the first counted
+            // frame has a predecessor to be measured against.
+            var previousEnd: CFTimeInterval = 0
+            let samples = buffers.filter { $0.status == .completed }.map { buffer in
+                defer { previousEnd = max(previousEnd, buffer.gpuEndTime) }
+                return LerpGPUCost.busyMs(start: buffer.gpuStartTime, end: buffer.gpuEndTime,
+                                          previousEnd: previousEnd)
+            }.dropFirst(warmup)
+            rows.append((LerpGPUCost.summarize(look: look.entry.key, samplesMs: Array(samples),
+                                               width: width, height: height, seconds: 0),
+                         compileMs))
+        }
+
+        let budget = 1000.0 / 60
+        print("GPU time per frame at \(width)x\(height), \(frames) frames per look after "
+              + "\(warmup) warm-up, \(renderer.device.name). Sorted by p95.\n")
+        print("| look | mean ms | p95 ms | max ms | % of 60 fps budget | compile ms |")
+        print("|---|---:|---:|---:|---:|---:|")
+        for row in rows.sorted(by: { $0.summary.p95Ms > $1.summary.p95Ms }) {
+            let s = row.summary
+            print(String(format: "| %@ | %.3f | %.3f | %.3f | %.0f%% | %.0f |",
+                         s.look, s.meanMs, s.p95Ms, s.maxMs, 100 * s.meanMs / budget, row.compileMs))
         }
         exit(failed ? 1 : 0)
     }
@@ -275,6 +382,10 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
         self.window = window
         self.metalView = view
         view.start()
+        if GPUTrace.start(device: view.shaderLibrary.device) {
+            let frames = Double(ProcessInfo.processInfo.environment["LERP_GPUTRACE_FRAMES"] ?? "") ?? 3
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(1, frames) / 60) { GPUTrace.stop() }
+        }
 
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleKey(event) == true ? nil : event
@@ -315,4 +426,52 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
+/// `MTLCaptureManager` to a `.gputrace` file, without Xcode attached.
+///
+/// Outside Xcode, Metal offers the `.gpuTraceDocument` destination only to a
+/// process that had `MTL_CAPTURE_ENABLED=1` in its environment when Metal
+/// loaded, so `prepare` sets it before anything has asked for a device. The
+/// capture is scoped to the device, which takes in every queue on it — the live
+/// view's renderer is private to the view and does not need to be reachable.
+enum GPUTrace {
+    private static var path: String?
+    private static var capturing = false
+
+    static func prepare(_ args: [String]) {
+        path = PreviewMain.flagValue(args, "--gputrace")
+            ?? ProcessInfo.processInfo.environment["LERP_GPUTRACE"].flatMap { $0.isEmpty ? nil : $0 }
+        if path != nil { setenv("MTL_CAPTURE_ENABLED", "1", 1) }
+    }
+
+    @discardableResult
+    static func start(device: MTLDevice) -> Bool {
+        guard let path, !capturing else { return false }
+        let manager = MTLCaptureManager.shared()
+        guard manager.supportsDestination(.gpuTraceDocument) else {
+            PreviewMain.fail("this process cannot write .gputrace files (MTL_CAPTURE_ENABLED was not honoured)")
+        }
+        let url = URL(fileURLWithPath: path)
+        // The capture will not overwrite, and a stale trace is worse than none.
+        try? FileManager.default.removeItem(at: url)
+        let descriptor = MTLCaptureDescriptor()
+        descriptor.captureObject = device
+        descriptor.destination = .gpuTraceDocument
+        descriptor.outputURL = url
+        do {
+            try manager.startCapture(with: descriptor)
+        } catch {
+            PreviewMain.fail("could not start GPU capture: \(error)")
+        }
+        capturing = true
+        return true
+    }
+
+    static func stop() {
+        guard capturing else { return }
+        MTLCaptureManager.shared().stopCapture()
+        capturing = false
+        FileHandle.standardError.write(("GPU trace written to \(path ?? "")\n").data(using: .utf8)!)
+    }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import Metal
+import os
 
 public struct LerpShader: Sendable {
     public let name: String        // file stem, e.g. "neuro-noise"
@@ -403,6 +404,8 @@ public final class ShaderLibrary {
     public func pipeline(for shader: LerpShader) throws -> MTLRenderPipelineState {
         let cacheKey = shader.name + "|" + String(shader.source.hashValue)
         if let cached = pipelineCache[cacheKey] { return cached }
+        let signpost = LerpSignposts.signposter.beginInterval("compile", "\(shader.name, privacy: .public)")
+        defer { LerpSignposts.signposter.endInterval("compile", signpost) }
 
         if !shader.parameterErrors.isEmpty {
             try fail(shader, 3, "shader '\(shader.name)' has malformed parameter declarations:\n"

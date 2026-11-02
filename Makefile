@@ -381,7 +381,7 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 	mkdir -p "$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders" \
 		"$(RELEASE_PLAYGROUND)/Contents/Resources/Thumbnails"
 	cp $(SHADERS) "$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders/"
-	cp "$(RELEASE_SAVER)/Contents/Resources/Thumbnails/"*.png \
+	cp "$(RELEASE_SAVER)/Contents/Resources/Thumbnails/"*.heic \
 		"$(RELEASE_PLAYGROUND)/Contents/Resources/Thumbnails/"
 	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_SAVER)/Contents/Resources/"
 	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_PLAYGROUND)/Contents/Resources/"
