@@ -278,8 +278,13 @@ public final class ShaderLibrary {
     private var pipelineCache: [String: MTLRenderPipelineState] = [:]
     private var dataProviders: [String: LerpDataProvider] = [:]
     private let extraSearchURLs: [URL]
+    /// Guards the three dictionaries, and nothing else: `LerpMetalView`
+    /// compiles the next look on a background queue while the main thread
+    /// keeps drawing (and may compile too). Never held across a compile.
+    private let lock = NSLock()
 
-    public private(set) var compileErrors: [String: String] = [:]
+    private var errors: [String: String] = [:]
+    public var compileErrors: [String: String] { lock.withLock { errors } }
 
     public init(device: MTLDevice, extraSearchURLs: [URL] = []) {
         self.device = device
@@ -372,7 +377,7 @@ public final class ShaderLibrary {
     /// refusal in here goes through this, so `compileErrors` cannot disagree
     /// with what the caller was handed.
     private func fail(_ shader: LerpShader, _ code: Int, _ message: String) throws -> Never {
-        compileErrors[shader.name] = message
+        lock.withLock { errors[shader.name] = message }
         throw NSError(domain: "LerpingAtHome", code: code,
                       userInfo: [NSLocalizedDescriptionKey: message])
     }
@@ -381,7 +386,7 @@ public final class ShaderLibrary {
     /// over and over (the playground's hot reload keys the cache on the edited
     /// source, so every keystroke would add an entry) call this to bound memory.
     public func clearPipelineCache() {
-        pipelineCache.removeAll()
+        lock.withLock { pipelineCache.removeAll() }
     }
 
     /// The `LerpDataProvider` a shader asked for, or nil if it asked for none.
@@ -390,19 +395,23 @@ public final class ShaderLibrary {
     /// not registered.
     public func dataProvider(for shader: LerpShader) throws -> LerpDataProvider? {
         guard let name = shader.dataProviderName else { return nil }
-        if let cached = dataProviders[name] { return cached }
+        if let cached = lock.withLock({ dataProviders[name] }) { return cached }
         guard let provider = LerpDataProviders.make(named: name, device: device) else {
             try fail(shader, 2, "shader '\(shader.name)' declares `// lerp-data: \(name)` but no such data provider is registered (known: \(LerpDataProviders.registeredNames.joined(separator: ", ")))")
         }
-        dataProviders[name] = provider
-        return provider
+        // First writer wins, so every caller shares one instance per name.
+        return lock.withLock {
+            if let raced = dataProviders[name] { return raced }
+            dataProviders[name] = provider
+            return provider
+        }
     }
 
     /// Compiles (or returns a cached) pipeline for a shader. Throws with the
     /// Metal compiler's diagnostics on failure.
     public func pipeline(for shader: LerpShader) throws -> MTLRenderPipelineState {
         let cacheKey = shader.name + "|" + String(shader.source.hashValue)
-        if let cached = pipelineCache[cacheKey] { return cached }
+        if let cached = lock.withLock({ pipelineCache[cacheKey] }) { return cached }
 
         if !shader.parameterErrors.isEmpty {
             try fail(shader, 3, "shader '\(shader.name)' has malformed parameter declarations:\n"
@@ -420,7 +429,7 @@ public final class ShaderLibrary {
         do {
             library = try device.makeLibrary(source: prelude + shader.source, options: options)
         } catch {
-            compileErrors[shader.name] = String(describing: error)
+            lock.withLock { errors[shader.name] = String(describing: error) }
             throw error
         }
         guard let vertexFn = library.makeFunction(name: "lerpVertex"),
@@ -435,8 +444,10 @@ public final class ShaderLibrary {
         descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
 
         let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
-        compileErrors[shader.name] = nil
-        pipelineCache[cacheKey] = pipeline
+        lock.withLock {
+            errors[shader.name] = nil
+            pipelineCache[cacheKey] = pipeline
+        }
         return pipeline
     }
 }

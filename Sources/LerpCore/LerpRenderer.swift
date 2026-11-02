@@ -75,12 +75,15 @@ public final class LerpRenderer {
                      pipeline: MTLRenderPipelineState,
                      uniforms: LerpUniforms,
                      params: LerpParameterValues? = nil,
-                     data: LerpDataProvider? = nil) {
+                     data: LerpDataProvider? = nil,
+                     overlay: LerpCrossfade.Overlay? = nil) {
         guard let commandBuffer = encodePass(target: drawable.texture,
                                              pipeline: pipeline,
                                              uniforms: uniforms,
                                              params: params,
                                              data: data) else { return }
+        // Mid-crossfade only: the outgoing look, laid over the finished frame.
+        if let overlay { LerpCrossfade.encode(overlay, onto: drawable.texture, in: commandBuffer) }
         commandBuffer.present(drawable)
         commandBuffer.commit()
     }

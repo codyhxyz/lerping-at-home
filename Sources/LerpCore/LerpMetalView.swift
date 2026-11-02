@@ -139,6 +139,51 @@ public final class LerpMetalView: NSView {
     /// stop/start.
     private var followsSchedule = false
 
+    // MARK: Switching state
+    //
+    // A look change used to compile on the main thread, inside the timer that
+    // fired it — hundreds of milliseconds of a frozen picture in the middle of
+    // a screensaver — and then cut. Now the next look is compiled on
+    // `compileQueue` ahead of its boundary (`prefetch`), the switch itself
+    // resolves there too (`requestEntry`), and the old look dissolves into the
+    // new one over `LerpCrossfade.duration` instead of cutting.
+
+    /// One look's GPU-side state, as `drawFrame` needs it.
+    private struct Look {
+        let pipeline: MTLRenderPipelineState
+        let data: LerpDataProvider?
+        let params: LerpParameterValues?
+    }
+
+    /// Serial, so a burst of requests compiles one shader at a time and a
+    /// prefetch queued behind a switch never races it for the same file.
+    private static let compileQueue = DispatchQueue(label: "com.hergenroeder.lerping.compile",
+                                                    qos: .utility)
+    /// Bumped by every switch request and every direct `show`; a background
+    /// result that comes back to an older number has been overtaken.
+    private var switchToken = 0
+    /// Set while a request is replacing a look that must not be drawn again —
+    /// one that has just left the rotation. Frames are held, not drawn, until
+    /// the replacement is in, so a switched-off look never animates on.
+    private var holdingFrame = false
+    /// Where the ←/→ keys step from while their last press is still resolving,
+    /// so two quick presses move two places rather than one.
+    private var pendingBrowse: LerpRotationEntry?
+    /// Whether the look on screen has been drawn at least once. A look nobody
+    /// has seen is cut away from, not faded from.
+    private var drewCurrentLook = false
+    /// The look being faded out, and when (on the shader clock) it started.
+    private var fadingOut: Look?
+    private var fadeStart: CFTimeInterval = 0
+    /// The outgoing look's render target. Exists only mid-fade.
+    private var fadeScratch: MTLTexture?
+    /// Second instances of data providers, for a fade between two looks of the
+    /// same shader. `ShaderLibrary` hands out one provider per name, and a
+    /// provider caches by its inputs (`life`'s board, `heatmap`'s texture), so
+    /// binding one instance for two looks in the same frame would make the
+    /// second bind overwrite what the first pass reads.
+    private var spareProviders: [String: LerpDataProvider] = [:]
+
     /// Per-launch random seed handed to shaders as `u.seed`. Settable so a host
     /// (the playground) can re-roll it; the screensaver never touches it.
     public var seed = Float.random(in: 0..<1)
@@ -282,6 +327,9 @@ public final class LerpMetalView: NSView {
         pauseClock()
         cancelShuffleTimer()
         tearDownDisplayLink()
+        // A fade in progress keeps its place on the paused clock, but its
+        // scratch texture is per-frame and the next frame rebuilds it.
+        fadeScratch = nil
     }
 
     /// Whether the display link has been taken away by `park()`.
@@ -443,11 +491,15 @@ public final class LerpMetalView: NSView {
     private func playScheduledEntry() {
         let available = library.discover()
         let index = refreshShuffleOrder(available)
-        loadEntry(after: nil, offset: index, in: shuffleOrder, from: available)
+        // The look on screen may fade out only if it is still one the user
+        // wants. One that has left the rotation is cut away from instead.
+        let stillWanted = currentEntry.map(shuffleOrder.contains) ?? false
+        loadEntry(after: nil, offset: index, in: shuffleOrder, from: available,
+                  fadingOutAllowed: stillWanted)
         // After `show` above cleared it: the schedule put this look up, so a
         // later resume asks the schedule again rather than keeping it.
         followsSchedule = true
-        armShuffleTimer()
+        armShuffleTimer(available)
     }
 
     /// Arms the rotation clock for the next slot boundary.
@@ -456,7 +508,7 @@ public final class LerpMetalView: NSView {
     /// from the absolute schedule, so a timer that ran late does not push every
     /// later look late behind it. `.common` mode so a tracking run loop — a
     /// menu held open, a window being dragged — does not hold the rotation.
-    private func armShuffleTimer() {
+    private func armShuffleTimer(_ available: [LerpShader]) {
         cancelShuffleTimer()
         guard running, !frozen, config.shaderName == nil, shuffleOrder.count > 1,
               let next = LerpRotationSchedule.nextBoundary(after: Date(),
@@ -469,6 +521,34 @@ public final class LerpMetalView: NSView {
         }
         RunLoop.main.add(timer, forMode: .common)
         shuffleTimer = timer
+        prefetch(slotAfter: next, from: available)
+    }
+
+    /// Compiles, off the main thread, the look the schedule will ask for at
+    /// `boundary`, so that when the timer fires the switch is a cache hit.
+    ///
+    /// Asked of the schedule exactly as the timer will ask it — same entries,
+    /// same offset — but at the middle of the next slot, which no rounding at
+    /// the boundary can land on the wrong side of. Walks past a look that will
+    /// not build the same way `loadEntry` will, so what gets warmed is the look
+    /// that will actually play. A wrong guess (the rotation changed in
+    /// between) costs one compile that the switch would have paid anyway.
+    private func prefetch(slotAfter boundary: Date, from available: [LerpShader]) {
+        let interval = config.shuffleInterval
+        let picked = Config.rotation(of: config.enabledEntries, from: available.rotationEntries())
+        let upcoming = LerpRotationSchedule.rotation(picked,
+                                                     at: boundary.addingTimeInterval(interval / 2),
+                                                     interval: interval, offset: shuffleOffset)
+        let library = self.library
+        let format = metalLayer.pixelFormat
+        Self.compileQueue.async {
+            _ = ShaderLibrary.firstStep(in: upcoming.order, after: nil, offset: upcoming.index) {
+                guard let look = Self.resolve($0, from: available, allowingDefaultsFallback: false)
+                else { return false }
+                return (try? library.pipeline(for: look.shader)) != nil
+            }
+            LerpCrossfade.prepare(device: library.device, pixelFormat: format)
+        }
     }
 
     private func cancelShuffleTimer() {
@@ -526,13 +606,15 @@ public final class LerpMetalView: NSView {
         let index = refreshShuffleOrder(available)
         // The interval may have changed with the selection, so the boundary
         // this view is waiting on has to be recomputed either way.
-        armShuffleTimer()
+        armShuffleTimer(available)
         guard let current = currentEntry, !shuffleOrder.contains(current) else { return }
         // The look on screen has just been switched off, so it goes now rather
         // than at the next boundary. It is replaced by whatever the schedule
         // says is due, which keeps this view in step with every other one
-        // instead of starting a private five minutes from the click.
-        loadEntry(after: nil, offset: index, in: shuffleOrder, from: available)
+        // instead of starting a private five minutes from the click. Cut, not
+        // faded: a look the user switched off does not get another 1.5 s.
+        loadEntry(after: nil, offset: index, in: shuffleOrder, from: available,
+                  fadingOutAllowed: false)
         followsSchedule = true
     }
 
@@ -544,12 +626,84 @@ public final class LerpMetalView: NSView {
     /// playground picks the look it opens on — see there for why a candidate
     /// that will not build is stepped over rather than stopped at. What is left
     /// here is what the screensaver does with the answer.
+    ///
+    /// Synchronous only for the very first look, when there is nothing on
+    /// screen to keep showing and the callers want to know at once whether
+    /// anything built. Every later switch goes through `requestEntry`, which
+    /// walks the same way off the main thread and returns before it lands;
+    /// `fadingOutAllowed` says whether the look it replaces may dissolve out.
     @discardableResult
     private func loadEntry(after current: LerpRotationEntry?, offset: Int,
-                           in order: [LerpRotationEntry], from available: [LerpShader]) -> Bool {
+                           in order: [LerpRotationEntry], from available: [LerpShader],
+                           fadingOutAllowed: Bool = false) -> Bool {
+        guard pipeline == nil else {
+            requestEntry(after: current, offset: offset, in: order, from: available,
+                         fadingOutAllowed: fadingOutAllowed)
+            return true
+        }
         guard let candidate = ShaderLibrary.firstStep(in: order, after: current, offset: offset,
                                                       where: { setEntry($0, from: available) })
         else { return false }
+        logPlaying(candidate, of: available, crossfade: false)
+        return true
+    }
+
+    /// `loadEntry`'s walk, run on `compileQueue`, landing back on the main
+    /// thread as one `install`.
+    ///
+    /// Until it lands, the look already on screen keeps playing — unless it is
+    /// one that must not (`fadingOutAllowed` false: it has left the rotation),
+    /// in which case frames are held rather than drawn, which is what the
+    /// synchronous version did for the length of its compile. A request that
+    /// comes back after a newer one, or after a direct `show`, is dropped.
+    private func requestEntry(after current: LerpRotationEntry?, offset: Int,
+                              in order: [LerpRotationEntry], from available: [LerpShader],
+                              fadingOutAllowed: Bool) {
+        switchToken &+= 1
+        let token = switchToken
+        holdingFrame = !fadingOutAllowed
+        let library = self.library
+        let format = metalLayer.pixelFormat
+        // A switch somebody is waiting on runs at user-initiated priority; the
+        // queue's own utility QoS is for prefetches, which nobody is.
+        Self.compileQueue.async(qos: .userInitiated, flags: .enforceQoS) { [weak self] in
+            var failures: [(shader: String, error: String)] = []
+            var found: (candidate: LerpRotationEntry, entry: LerpRotationEntry,
+                        shader: LerpShader, pipeline: MTLRenderPipelineState)?
+            _ = ShaderLibrary.firstStep(in: order, after: current, offset: offset) { candidate in
+                guard let look = Self.resolve(candidate, from: available,
+                                              allowingDefaultsFallback: false)
+                else { return false }
+                do {
+                    let pipeline = try library.pipeline(for: look.shader)
+                    _ = try library.dataProvider(for: look.shader)
+                    found = (candidate, look.entry, look.shader, pipeline)
+                    return true
+                } catch {
+                    failures.append((look.shader.name, String(describing: error)))
+                    return false
+                }
+            }
+            if found != nil, fadingOutAllowed {
+                LerpCrossfade.prepare(device: library.device, pixelFormat: format)
+            }
+            let (result, errors) = (found, failures)
+            DispatchQueue.main.async {
+                guard let self, token == self.switchToken else { return }
+                self.holdingFrame = false
+                self.pendingBrowse = nil
+                for failure in errors { self.onCompileError?(failure.shader, failure.error) }
+                // Nothing built: whatever is on screen stays, as it always has.
+                guard let found = result else { return }
+                let faded = self.install(found.entry, of: found.shader, pipeline: found.pipeline,
+                                         allowFade: fadingOutAllowed)
+                self.logPlaying(found.candidate, of: available, crossfade: faded)
+            }
+        }
+    }
+
+    private func logPlaying(_ candidate: LerpRotationEntry, of available: [LerpShader],
+                            crossfade: Bool) {
         // The one fact that settles "why is that look on my screen?".
         // Everything else about the rotation is inspectable at rest -- the
         // defaults on disk, the tests, `rotationNow` -- but which entry actually
@@ -564,11 +718,14 @@ public final class LerpMetalView: NSView {
         // exact moments nobody is at a terminal, so a diagnostic that only
         // survives a few minutes is no diagnostic at all -- it read as "the
         // saver never ran".
+        //
+        // `verify-rotation.py` matches the text up to the closing parenthesis;
+        // anything after it is free.
         Self.log.notice("""
             playing \(candidate.key, privacy: .public) \
-            (\(self.shuffleOrder.count) in rotation of \(available.rotationEntries().count) discovered)
+            (\(self.shuffleOrder.count) in rotation of \(available.rotationEntries().count) discovered)\
+            \(crossfade ? " crossfade" : "", privacy: .public)
             """)
-        return true
     }
 
     /// Compiles the entry's shader and puts it in the entry's preset.
@@ -589,20 +746,33 @@ public final class LerpMetalView: NSView {
     @discardableResult
     private func setEntry(_ entry: LerpRotationEntry, from available: [LerpShader],
                           allowingDefaultsFallback: Bool = false) -> Bool {
-        guard let shader = available.named(entry.shader) else { return false }
+        guard let look = Self.resolve(entry, from: available,
+                                      allowingDefaultsFallback: allowingDefaultsFallback)
+        else { return false }
+        return show(look.entry, of: look.shader)
+    }
+
+    /// `setEntry`'s decision without its side effect, so `requestEntry` and
+    /// `prefetch` can make it off the main thread and reach the same answer.
+    private static func resolve(_ entry: LerpRotationEntry, from available: [LerpShader],
+                                allowingDefaultsFallback: Bool)
+        -> (entry: LerpRotationEntry, shader: LerpShader)? {
+        guard let shader = available.named(entry.shader) else { return nil }
         let preset = entry.preset.flatMap { shader.preset(named: $0) }
-        if entry.preset != nil, preset == nil, !allowingDefaultsFallback { return false }
+        if entry.preset != nil, preset == nil, !allowingDefaultsFallback { return nil }
         // The look as this file can still render it. A preset name the shader
         // no longer declares has by now been either refused (shuffling) or
         // forgiven (pinned), and forgiving it means the defaults look — so hand
         // `show` the defaults look, rather than one that names a preset which
         // will not be on screen.
-        return show(LerpRotationEntry(shader: shader.name, preset: preset?.name), of: shader)
+        return (LerpRotationEntry(shader: shader.name, preset: preset?.name), shader)
     }
 
-    /// Puts one complete look on screen.
+    /// Puts one complete look on screen, at once, with no fade: a host that
+    /// points the view at a look (a hovered tile, the editor, a hot reload)
+    /// wants to see that look now. Overrides any switch still resolving.
     ///
-    /// The only place `pipeline`, `dataProvider`, `parameterValues`,
+    /// `install` is the only place `pipeline`, `dataProvider`, `parameterValues`,
     /// `currentShaderName` and `currentEntry` are assigned. They are five facts
     /// about one look, and writing them anywhere else is what let half a look
     /// exist: this used to be `setShader`, which reset the parameters to the
@@ -622,16 +792,63 @@ public final class LerpMetalView: NSView {
         // `show`, which is the one path where the schedule is the host.
         followsSchedule = false
         do {
-            pipeline = try library.pipeline(for: shader)
-            dataProvider = try library.dataProvider(for: shader)
-            parameterValues = shader.parameterValues(for: entry)
-            currentShaderName = shader.name
-            currentEntry = entry
+            let compiled = try library.pipeline(for: shader)
+            _ = try library.dataProvider(for: shader)
+            switchToken &+= 1
+            holdingFrame = false
+            pendingBrowse = nil
+            install(entry, of: shader, pipeline: compiled, allowFade: false)
             return true
         } catch {
             onCompileError?(shader.name, String(describing: error))
             return false
         }
+    }
+
+    /// Writes the five facts of one look, from an already-compiled pipeline,
+    /// and either starts a crossfade from the look it replaces or cuts.
+    /// Returns whether it is fading.
+    ///
+    /// A fade needs a look worth fading from — one that has actually been
+    /// drawn, that is not the incoming look itself, and that the caller says
+    /// may still be seen — and the composite pipeline, which is built off the
+    /// main thread beside the incoming look and is never waited for here.
+    @discardableResult
+    private func install(_ entry: LerpRotationEntry, of shader: LerpShader,
+                         pipeline compiled: MTLRenderPipelineState, allowFade: Bool) -> Bool {
+        let fade = allowFade && drewCurrentLook && entry != currentEntry
+            && LerpCrossfade.pipeline(device: renderer.device,
+                                      pixelFormat: metalLayer.pixelFormat) != nil
+        var data = try? library.dataProvider(for: shader)    // cached by now
+        if fade, let outgoing = pipeline {
+            fadingOut = Look(pipeline: outgoing, data: dataProvider, params: parameterValues)
+            fadeStart = time
+            if let shared = data, shared === dataProvider, let name = shader.dataProviderName {
+                data = spareProvider(named: name) ?? shared
+            }
+        } else {
+            endCrossfade()
+        }
+        pipeline = compiled
+        dataProvider = data
+        parameterValues = shader.parameterValues(for: entry)
+        currentShaderName = shader.name
+        currentEntry = entry
+        drewCurrentLook = false
+        return fade
+    }
+
+    /// A second provider of this name, made on first need and kept per view.
+    private func spareProvider(named name: String) -> LerpDataProvider? {
+        if let spare = spareProviders[name] { return spare }
+        let made = LerpDataProviders.make(named: name, device: renderer.device)
+        spareProviders[name] = made
+        return made
+    }
+
+    private func endCrossfade() {
+        fadingOut = nil
+        fadeScratch = nil
     }
 
     /// The shader at its declared defaults — which is a look in its own right,
@@ -655,10 +872,20 @@ public final class LerpMetalView: NSView {
     /// shader, skipping any that fail to compile. Shader-level on purpose: this
     /// is the ←/→ keys, which walk the shader list at its defaults rather than
     /// the shuffle's much longer (shader, preset) rotation.
+    ///
+    /// Crossfades like the rotation does, and like it never compiles on the
+    /// main thread once something is on screen.
     public func showNextShader(_ direction: Int = 1) {
         let available = library.discover()
-        loadEntry(after: LerpRotationEntry(shader: currentShaderName), offset: direction,
-                  in: available.map { LerpRotationEntry(shader: $0.name) }, from: available)
+        let order = available.map { LerpRotationEntry(shader: $0.name) }
+        let from = pendingBrowse ?? LerpRotationEntry(shader: currentShaderName)
+        if pipeline != nil {
+            // What `show` would have done: a key press is a host choosing.
+            followsSchedule = false
+            pendingBrowse = ShaderLibrary.step(in: order, after: from, offset: direction)
+        }
+        loadEntry(after: from, offset: direction, in: order, from: available,
+                  fadingOutAllowed: true)
     }
 
     // MARK: - Display link
@@ -731,6 +958,7 @@ public final class LerpMetalView: NSView {
             // clears `frozen`.
             cancelShuffleTimer()
             tearDownDisplayLink()   // hold the last presented frame, GPU idle
+            endCrossfade()
             return
         }
 
@@ -742,7 +970,9 @@ public final class LerpMetalView: NSView {
     }
 
     private func drawFrame(at time: CFTimeInterval) {
-        guard let pipeline else { return }
+        // Held: the look on screen has left the rotation and its replacement
+        // is still compiling. Not drawing keeps it from animating on.
+        guard let pipeline, !holdingFrame else { return }
         // Counted here rather than in `tick`, so the readout tells the truth
         // about a parked view too: parked, the display link is gone and the
         // host draws by hand, and an FPS frozen at the rate it used to run is
@@ -768,8 +998,44 @@ public final class LerpMetalView: NSView {
                                          Float(metalLayer.drawableSize.height)),
                 time: Float(time),
                 seed: seed)
+            let overlay = encodeOutgoing(at: time, like: drawable.texture)
             renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms,
-                          params: parameterValues, data: dataProvider)
+                          params: parameterValues, data: dataProvider, overlay: overlay)
+            drewCurrentLook = true
         }
+    }
+
+    /// Mid-fade: renders the outgoing look into the scratch texture, in its
+    /// own command buffer ahead of the frame's, and returns it as the overlay
+    /// for `renderer.draw`. nil — and the fade over — once it has run its
+    /// length, or if the clock has been put back before it began.
+    ///
+    /// The outgoing look gets uniforms of its own, built exactly as the
+    /// incoming look's are, so it keeps animating on the same clock and seed
+    /// it was playing on rather than freezing on its last frame.
+    private func encodeOutgoing(at time: CFTimeInterval,
+                                like target: MTLTexture) -> LerpCrossfade.Overlay? {
+        guard let outgoing = fadingOut else { return nil }
+        let progress = (time - fadeStart) / LerpCrossfade.duration
+        guard progress >= 0, progress < 1,
+              let composite = LerpCrossfade.pipeline(device: renderer.device,
+                                                     pixelFormat: target.pixelFormat)
+        else { endCrossfade(); return nil }
+        if fadeScratch?.width != target.width || fadeScratch?.height != target.height
+            || fadeScratch?.pixelFormat != target.pixelFormat {
+            fadeScratch = LerpCrossfade.makeScratch(device: renderer.device, like: target)
+        }
+        let uniforms = LerpUniforms(resolution: SIMD2<Float>(Float(target.width),
+                                                             Float(target.height)),
+                                    time: Float(time), seed: seed)
+        guard let scratch = fadeScratch,
+              let commandBuffer = renderer.encodePass(target: scratch, pipeline: outgoing.pipeline,
+                                                      uniforms: uniforms, params: outgoing.params,
+                                                      data: outgoing.data)
+        else { endCrossfade(); return nil }
+        commandBuffer.label = "Lerping/crossfade.outgoing"
+        commandBuffer.commit()
+        return LerpCrossfade.Overlay(texture: scratch, pipeline: composite,
+                                     opacity: Float(1 - LerpCrossfade.weight(at: progress)))
     }
 }
