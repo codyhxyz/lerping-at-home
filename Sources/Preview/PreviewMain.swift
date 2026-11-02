@@ -221,8 +221,12 @@ enum PreviewMain {
     static func bakeThumbnails(into bundle: URL) {
         let resources = bundle.appendingPathComponent("Contents/Resources")
         let shaderDir = resources.appendingPathComponent("Shaders")
+        // Same `// lerp-requires:` rule as `discover()`: a look this GPU cannot
+        // run gets no still here, and is not offered by the gallery either.
+        let device = MTLCreateSystemDefaultDevice()
         let shaders = ShaderLocations.metalFiles(in: shaderDir)
             .compactMap { LerpShader(contentsOf: $0, isBuiltIn: true) }
+            .filter { shader in device.map { shader.isSupported(on: $0) } ?? true }
         guard !shaders.isEmpty else {
             fail("no .metal files in \(shaderDir.path) — is that a Lerping@Home.saver bundle?")
         }

@@ -94,6 +94,28 @@ public struct LerpShader: Sendable {
         }
         return nil
     }
+
+    /// Whether this machine can run the shader, from an optional comment among
+    /// its first lines:
+    ///
+    ///     // lerp-requires: metal4
+    ///
+    /// `metal4` means macOS 26+ on a GPU in the `.metal4` family — what Metal 4
+    /// tensors and shader ML need. `ShaderLibrary.discover()` leaves out a
+    /// shader that answers false, so on an older system it is simply absent
+    /// from the rotation, the gallery and the pickers rather than present as a
+    /// compile error. A file with no such line, or a requirement this build
+    /// does not know, is always supported: an unrecognised word must not make a
+    /// custom shader vanish without explanation.
+    public func isSupported(on device: MTLDevice) -> Bool {
+        for raw in source.split(separator: "\n", omittingEmptySubsequences: false).prefix(40) {
+            guard let value = LerpParamParser.directiveBody(raw, "lerp-requires:") else { continue }
+            guard value.lowercased() == "metal4" else { return true }
+            if #available(macOS 26.0, *) { return device.supportsFamily(.metal4) }
+            return false
+        }
+        return true
+    }
 }
 
 /// One stop in the shuffle rotation: a shader, optionally wearing one of its
@@ -327,7 +349,9 @@ public final class ShaderLibrary: @unchecked Sendable {
         return dirs
     }
 
-    /// All available shaders. Custom shaders with the same file stem override built-ins.
+    /// All available shaders. Custom shaders with the same file stem override
+    /// built-ins. A shader this device cannot run (`// lerp-requires:`) is left
+    /// out, judged on whichever file won the shadowing.
     public func discover() -> [LerpShader] {
         var byName: [String: LerpShader] = [:]
         for (dir, isBuiltIn) in searchDirectories() {
@@ -336,7 +360,7 @@ public final class ShaderLibrary: @unchecked Sendable {
                 byName[shader.name] = shader
             }
         }
-        return byName.values.sorted { $0.name < $1.name }
+        return byName.values.filter { $0.isSupported(on: device) }.sorted { $0.name < $1.name }
     }
 
     public func shader(named name: String) -> LerpShader? {
