@@ -40,6 +40,13 @@ public final class LerpMetalView: NSView {
         /// Stop rendering after this many seconds and hold the last frame
         /// (GPU drops to zero). 0 = never. Resets each start().
         public var freezeAfter: TimeInterval
+        /// Ask for EDR output: highlights lifted above SDR white into the
+        /// screen's headroom. A request, not a guarantee — `isEDRActive` says
+        /// whether it is engaged. Off unless a host turns it on.
+        public var extendedDynamicRange = false
+        /// The most the highlights are lifted, as a multiple of SDR white,
+        /// further capped by what the screen offers. 0 = no cap of our own.
+        public var edrPeak: Float = LerpEDR.defaultPeak
 
         public init(shaderName: String? = nil,
                     presetName: String? = nil,
@@ -89,6 +96,7 @@ public final class LerpMetalView: NSView {
         didSet {
             if config.framesPerSecond != oldValue.framesPerSecond { applyFrameRate() }
             if config.renderScale != oldValue.renderScale { updateDrawableSize() }
+            if config.extendedDynamicRange != oldValue.extendedDynamicRange { refreshDynamicRange(force: true) }
             if config.enabledEntries != oldValue.enabledEntries
                 || config.shaderName != oldValue.shaderName
                 || config.presetName != oldValue.presetName {
@@ -142,6 +150,72 @@ public final class LerpMetalView: NSView {
     /// Per-launch random seed handed to shaders as `u.seed`. Settable so a host
     /// (the playground) can re-roll it; the screensaver never touches it.
     public var seed = Float.random(in: 0..<1)
+
+    // MARK: EDR state — see `LerpEDR`
+
+    /// Whether EDR output is engaged right now: `config.extendedDynamicRange`
+    /// asked for it and `LerpEDR.blocker(on:)` found nothing against it at the
+    /// last check. That is not the same as the request: unplugging, Low Power
+    /// Mode or moving to an SDR screen drops back to the 8-bit path, and
+    /// undoing it comes back, within one `LerpEDR.recheckInterval`.
+    public private(set) var isEDRActive = false
+    /// The headroom the last EDR frame actually used, for a host's readout.
+    /// 1.0 while EDR is not active.
+    public private(set) var edrHeadroomInUse: Float = 1.0
+    /// The look on screen, kept so a range switch can recompile *this* source
+    /// for the other pixel format — the playground's draft is not on disk.
+    private var currentShader: LerpShader?
+    private var edrPostPipeline: MTLRenderPipelineState?
+    private var edrSource: MTLTexture?
+    private var edrCheckedAt: CFTimeInterval = 0
+    private var edrLoggedHeadroom: Float = 0
+    /// The format the current look is compiled for. A host that pre-compiles a
+    /// draft to check it passes this, so the view's own compile is a cache hit.
+    public var shaderPixelFormat: MTLPixelFormat {
+        isEDRActive ? LerpEDR.shaderPixelFormat : .bgra8Unorm
+    }
+
+    /// Re-decides `isEDRActive`, at most once per `LerpEDR.recheckInterval`
+    /// unless forced. Polled from `drawFrame` rather than driven by power and
+    /// screen notifications: one cheap check covers every reason the answer
+    /// can change, including ones with no notification at all.
+    private func refreshDynamicRange(force: Bool = false) {
+        let now = CACurrentMediaTime()
+        // No window, no screen to ask: decide when there is one.
+        guard let window, force || now - edrCheckedAt >= LerpEDR.recheckInterval else { return }
+        let first = edrCheckedAt == 0
+        edrCheckedAt = now
+        var blocker = config.extendedDynamicRange ? LerpEDR.blocker(on: window.screen) : "not requested"
+        if blocker == nil, edrPostPipeline == nil {
+            do {
+                edrPostPipeline = try LerpEDR.makePostPipeline(device: renderer.device)
+            } catch {
+                blocker = "post pass failed to compile: \(error)"
+            }
+        }
+        let active = blocker == nil
+        if active != isEDRActive {
+            isEDRActive = active
+            LerpEDR.configure(metalLayer, edr: active)
+            edrSource = nil
+            edrHeadroomInUse = 1.0
+            edrLoggedHeadroom = 0
+            if let shader = currentShader {
+                // The pipeline must match the layer, so a failure leaves none
+                // rather than one for the wrong format.
+                pipeline = try? library.pipeline(for: shader, pixelFormat: shaderPixelFormat)
+            }
+        } else if !force, !first {
+            return
+        }
+        Self.log.notice("""
+            edr: active=\(active, privacy: .public) \
+            why=\(blocker ?? "requested and allowed", privacy: .public) \
+            potential=\(LerpEDR.potentialHeadroom(of: window.screen), privacy: .public) \
+            current=\(LerpEDR.currentHeadroom(of: window.screen), privacy: .public) \
+            peak=\(self.config.edrPeak, privacy: .public)
+            """)
+    }
     private var elapsed: CFTimeInterval = 0
     private var resumeStamp: CFTimeInterval = 0
     private var running = false
@@ -201,8 +275,7 @@ public final class LerpMetalView: NSView {
     public override func makeBackingLayer() -> CALayer {
         let layer = CAMetalLayer()
         layer.device = renderer.device
-        layer.pixelFormat = .bgra8Unorm
-        layer.framebufferOnly = true
+        LerpEDR.configure(layer, edr: false)
         layer.isOpaque = true
         return layer
     }
@@ -252,6 +325,8 @@ public final class LerpMetalView: NSView {
         freezeBaseline = elapsed
         resumeClock()
         fpsWindowStart = resumeStamp
+        // Before the first look compiles, so it compiles once, for the right format.
+        refreshDynamicRange(force: true)
 
         if pipeline == nil {
             selectInitialShader()
@@ -331,6 +406,7 @@ public final class LerpMetalView: NSView {
                                                name: NSWindow.didChangeOcclusionStateNotification,
                                                object: window)
         updateDrawableSize()
+        refreshDynamicRange(force: true)
         if running { installDisplayLink() }
     }
 
@@ -622,8 +698,9 @@ public final class LerpMetalView: NSView {
         // `show`, which is the one path where the schedule is the host.
         followsSchedule = false
         do {
-            pipeline = try library.pipeline(for: shader)
+            pipeline = try library.pipeline(for: shader, pixelFormat: shaderPixelFormat)
             dataProvider = try library.dataProvider(for: shader)
+            currentShader = shader
             parameterValues = shader.parameterValues(for: entry)
             currentShaderName = shader.name
             currentEntry = entry
@@ -742,6 +819,7 @@ public final class LerpMetalView: NSView {
     }
 
     private func drawFrame(at time: CFTimeInterval) {
+        refreshDynamicRange()
         guard let pipeline else { return }
         // Counted here rather than in `tick`, so the readout tells the truth
         // about a parked view too: parked, the display link is gone and the
@@ -768,8 +846,45 @@ public final class LerpMetalView: NSView {
                                          Float(metalLayer.drawableSize.height)),
                 time: Float(time),
                 seed: seed)
-            renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms,
-                          params: parameterValues, data: dataProvider)
+            if isEDRActive, let post = edrPostPipeline {
+                drawEDR(drawable: drawable, pipeline: pipeline, post: post, uniforms: uniforms)
+            } else {
+                renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms,
+                              params: parameterValues, data: dataProvider)
+            }
         }
+    }
+
+    /// Shader into an rgba16Float scratch texture, then `LerpEDR`'s expand pass
+    /// into the drawable, on one command buffer.
+    private func drawEDR(drawable: CAMetalDrawable, pipeline: MTLRenderPipelineState,
+                         post: MTLRenderPipelineState, uniforms: LerpUniforms) {
+        let target = drawable.texture
+        if edrSource?.width != target.width || edrSource?.height != target.height {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: LerpEDR.shaderPixelFormat,
+                width: target.width, height: target.height, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .private
+            edrSource = renderer.device.makeTexture(descriptor: descriptor)
+        }
+        guard let source = edrSource,
+              let commandBuffer = renderer.encodePass(target: source, pipeline: pipeline,
+                                                      uniforms: uniforms,
+                                                      params: parameterValues,
+                                                      data: dataProvider) else { return }
+        // Read every frame: macOS ramps the headroom up after EDR content
+        // appears and moves it with the brightness slider.
+        let available = LerpEDR.currentHeadroom(of: window?.screen)
+        let headroom = config.edrPeak > 0 ? min(config.edrPeak, available) : available
+        edrHeadroomInUse = headroom
+        if abs(headroom - edrLoggedHeadroom) >= 0.5 {
+            edrLoggedHeadroom = headroom
+            Self.log.notice("edr: headroom in use=\(headroom, privacy: .public) available=\(available, privacy: .public)")
+        }
+        LerpEDR.encodeExpand(into: commandBuffer, source: source, target: target,
+                             pipeline: post, params: LerpEDR.Params(headroom: headroom))
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
     }
 }

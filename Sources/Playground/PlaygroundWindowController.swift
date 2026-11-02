@@ -101,6 +101,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private let pager = NSSegmentedControl()
     private let scalePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private let fpsLabel = NSTextField(labelWithString: "— fps")
+    /// Matches the saver: on by default, and engaged only where `LerpEDR.blocker`
+    /// allows, so what you tune here is what the screensaver will show.
+    private let edrCheckbox = NSButton(checkboxWithTitle: "HDR", target: nil, action: nil)
+    private let edrPeakSlider = NSSlider(value: Double(LerpEDR.defaultPeak), minValue: 1, maxValue: 16,
+                                         target: nil, action: nil)
 
     let inspector = ParameterPanel(frame: NSRect(x: 0, y: 0, width: 320, height: 700))
     let midiPanel = MIDIPanel(frame: .zero)
@@ -351,17 +356,29 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         fpsLabel.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
         fpsLabel.textColor = EditorTheme.dim
         fpsLabel.alignment = .right
-        fpsLabel.widthAnchor.constraint(equalToConstant: 78).isActive = true
+        fpsLabel.widthAnchor.constraint(equalToConstant: 150).isActive = true
+
+        edrCheckbox.controlSize = .small
+        edrCheckbox.font = .systemFont(ofSize: 11)
+        edrCheckbox.state = .on
+        edrCheckbox.target = self
+        edrCheckbox.action = #selector(edrChanged)
+        edrPeakSlider.controlSize = .small
+        edrPeakSlider.target = self
+        edrPeakSlider.action = #selector(edrChanged)
+        edrPeakSlider.widthAnchor.constraint(equalToConstant: 90).isActive = true
 
         metalView.config = LerpMetalView.Config(shaderName: nil, framesPerSecond: 60,
                                                 renderScale: 1.0, shuffleInterval: .infinity)
+        metalView.config.extendedDynamicRange = true
+        updateEDRTips()
         metalView.onCompileError = { name, message in
             FileHandle.standardError.write(Data("compile error in \(name):\n\(message)\n".utf8))
         }
         metalView.setContentHuggingPriority(.init(1), for: .vertical)
 
         syncTransport()
-        return Chrome.pane([Chrome.bar([seedButton, scalePopUp,
+        return Chrome.pane([Chrome.bar([seedButton, scalePopUp, edrCheckbox, edrPeakSlider,
                                         Chrome.flexible(), fpsLabel]),
                             metalView,
                             Chrome.bar([playButton, pager, timeField, timeSlider, windowLabel],
@@ -583,7 +600,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         do {
             // Compile *before* handing the shader to the view: a throw here
             // leaves the view's existing pipeline untouched.
-            _ = try library.pipeline(for: draft)
+            _ = try library.pipeline(for: draft, pixelFormat: metalView.shaderPixelFormat)
             metalView.setShader(draft)         // cache hit, cannot fail
             compiled = draft
             syncParameters(draft)
@@ -1434,6 +1451,21 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if isPaused { metalView.renderOnce() }
     }
 
+    @objc private func edrChanged() {
+        metalView.config.extendedDynamicRange = edrCheckbox.state == .on
+        metalView.config.edrPeak = Float(edrPeakSlider.doubleValue)
+        edrPeakSlider.isEnabled = edrCheckbox.state == .on
+        updateEDRTips()
+        if isPaused { metalView.renderOnce() }
+    }
+
+    private func updateEDRTips() {
+        edrCheckbox.toolTip = "Lift the brightest highlights above SDR white on an HDR screen, "
+            + "as the screensaver does. Held back on battery, in Low Power Mode and on SDR screens."
+        edrPeakSlider.toolTip = String(format: "Highlight peak: %.1f× SDR white "
+            + "(further capped by what the screen offers)", edrPeakSlider.doubleValue)
+    }
+
     // MARK: - Chrome and polling
 
     /// Which checkout this window is editing, in the title — but only for a copy
@@ -1470,6 +1502,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             syncTransport()
             fpsLabel.stringValue = metalView.statusText
+                + (metalView.isEDRActive ? String(format: " · EDR %.1fx", metalView.edrHeadroomInUse) : "")
         })
 
         // Pick up shaders added or edited outside the app (another editor, or

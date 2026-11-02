@@ -46,6 +46,7 @@ public final class RotationThumbnails {
     /// Everything that goes into a still besides the shader itself. `version`
     /// exists so a change to how stills are made can invalidate the cache
     /// without anyone having to find and delete it.
+    /// v2: stills are tagged Display P3, matching the live layer, not sRGB.
     public struct Recipe {
         public var width = 240
         public var height = 360
@@ -53,7 +54,7 @@ public final class RotationThumbnails {
         public var time: Float = 6
         /// Fixed, so a tile is the same picture on every launch.
         public var seed: Float = 0.37
-        public var version = 1
+        public var version = 2
 
         public init() {}
 

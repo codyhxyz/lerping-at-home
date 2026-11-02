@@ -9,6 +9,9 @@ import Metal
 ///   LerpPreview --snapshot DIR      render every shader to PNG in DIR
 ///       [--size WxH] [--time T] [--seed S] [--shader NAME]
 ///       [--preset NAME] [--param name=value ...]
+///       [--hdr [--hdr-format exr|heic|avif|png] [--edr-peak P]]
+///                                   extended-range stills through the EDR
+///                                   path (default exr, peak 4× SDR white)
 ///   LerpPreview --thumbnails SAVER  bake the Options… gallery's stills into
 ///                                   a .saver bundle
 ///
@@ -64,7 +67,7 @@ enum PreviewMain {
             return
         }
 
-        runApp(extraSearch: extraSearch)
+        runApp(extraSearch: extraSearch, args: args)
     }
 
     static func fail(_ message: String) -> Never {
@@ -165,6 +168,10 @@ enum PreviewMain {
         let time = Float(flagValue(args, "--time") ?? "3.0") ?? 3.0
         let seed = Float(flagValue(args, "--seed") ?? "0.5") ?? 0.5
         let only = flagValue(args, "--shader")
+        // `--hdr` writes extended-range stills through the EDR path instead.
+        let hdrPeak: Float? = args.contains("--hdr")
+            ? Float(flagValue(args, "--edr-peak") ?? "") ?? LerpEDR.defaultPeak : nil
+        let ext = hdrPeak == nil ? "png" : (flagValue(args, "--hdr-format") ?? "exr")
 
         let outURL = URL(fileURLWithPath: outDir)
         try? FileManager.default.createDirectory(at: outURL, withIntermediateDirectories: true)
@@ -175,17 +182,20 @@ enum PreviewMain {
 
         var failed = false
         for shader in shaders {
-            let url = outURL.appendingPathComponent(shader.name + ".png")
+            let url = outURL.appendingPathComponent(shader.name + "." + ext)
             let result = LerpSnapshot.render(shader: shader, library: library, renderer: renderer,
                                             width: width, height: height,
                                             time: time, seed: seed,
                                             params: parameterValues(for: shader, args: args),
+                                            hdrPeak: hdrPeak,
                                             to: url)
             if let error = result.error {
                 failed = true
                 print("FAIL  \(shader.name): \(error)")
             } else {
-                print(String(format: "OK    %-16s luma=%.3f  %@", (shader.name as NSString).utf8String!, result.meanLuminance, url.path))
+                let peak = hdrPeak == nil ? "" : String(format: " peak=%.2f", result.peak)
+                print(String(format: "OK    %-16s luma=%.3f%@  %@", (shader.name as NSString).utf8String!,
+                             result.meanLuminance, peak, url.path))
             }
         }
         exit(failed ? 1 : 0)
@@ -233,10 +243,10 @@ enum PreviewMain {
 
     // MARK: - Live preview app
 
-    static func runApp(extraSearch: [URL]) {
+    static func runApp(extraSearch: [URL], args: [String]) {
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
-        let delegate = PreviewAppDelegate(extraSearch: extraSearch)
+        let delegate = PreviewAppDelegate(extraSearch: extraSearch, args: args)
         app.delegate = delegate
         app.run()
     }
@@ -247,34 +257,73 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
     private var metalView: LerpMetalView?
     private var titleTimer: Timer?
     private let extraSearch: [URL]
+    private let args: [String]
 
-    init(extraSearch: [URL]) {
+    init(extraSearch: [URL], args: [String]) {
         self.extraSearch = extraSearch
+        self.args = args
     }
 
+    /// Live-window flags, for side-by-side comparisons between two processes:
+    ///   --shader NAME     pin a shader (default: first discovered)
+    ///   --seed S          fixed u.seed
+    ///   --time T          start the shader clock at T
+    ///   --epoch E         with --time: clock = T + (now - E), E in Unix
+    ///                     seconds, so two windows launched apart stay in sync
+    ///   --frame X,Y,W,H   window content rect in screen points
+    ///   --label TEXT      prefix for the titlebar
+    ///   --edr [--edr-peak P]  EDR output, highlights lifted to at most P×
+    ///                     SDR white (default 4; 0 = all the screen offers)
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let view = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 960, height: 600),
+        let flag = { PreviewMain.flagValue(self.args, $0) }
+        let rect = flag("--frame").map { $0.split(separator: ",").compactMap { Double($0) } }
+            .flatMap { $0.count == 4 ? NSRect(x: $0[0], y: $0[1], width: $0[2], height: $0[3]) : nil }
+        guard let view = LerpMetalView(frame: NSRect(origin: .zero, size: rect?.size ?? NSSize(width: 960, height: 600)),
                                       extraSearchURLs: extraSearch) else {
             PreviewMain.fail("no Metal device")
         }
-        view.config = LerpMetalView.Config(shaderName: nil, framesPerSecond: 60,
+        view.config = LerpMetalView.Config(shaderName: flag("--shader"), framesPerSecond: 60,
                                           renderScale: 1.0, shuffleInterval: .infinity)
         view.onCompileError = { name, error in
             print("compile error in \(name):\n\(error)")
         }
+        if args.contains("--edr") {
+            view.config.extendedDynamicRange = true
+            if let peak = flag("--edr-peak").flatMap(Float.init) { view.config.edrPeak = max(0, peak) }
+        }
+        if let seed = flag("--seed").flatMap(Float.init) { view.seed = seed }
+        let label = flag("--label").map { $0 + " — " } ?? ""
 
         let window = NSWindow(contentRect: view.frame,
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
-        window.title = "Lerping@Home Preview"
+        window.title = label + "Lerping@Home Preview"
         window.contentView = view
-        window.center()
+        if let rect { window.setFrameOrigin(rect.origin) } else { window.center() }
         window.makeKeyAndOrderFront(nil)
+        // A comparison window launched from a script should be seen, not stacked
+        // behind whatever app has focus — but without taking the keyboard from it.
+        if rect != nil { window.orderFrontRegardless() }
         window.isReleasedWhenClosed = false
 
         self.window = window
         self.metalView = view
+        if let name = flag("--shader") {
+            guard let shader = view.shaderLibrary.shader(named: name) else { PreviewMain.fail("no shader named \(name)") }
+            view.setShader(shader)
+        }
         view.start()
+        let start = flag("--time").flatMap(Double.init)
+        let epoch = flag("--epoch").flatMap(Double.init)
+        if let start { view.time = start + (epoch.map { Date().timeIntervalSince1970 - $0 } ?? 0) }
+        // Occlusion pauses each window's clock separately, so two synced
+        // windows drift apart whenever one is covered. Re-pin to the shared
+        // epoch whenever that has happened.
+        let resync = { [weak view] in
+            guard let view, let start, let epoch, view.isRunning else { return }
+            let due = start + Date().timeIntervalSince1970 - epoch
+            if abs(view.time - due) > 0.05 { view.time = due }
+        }
 
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleKey(event) == true ? nil : event
@@ -282,7 +331,14 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
 
         titleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self, let view = self.metalView else { return }
-            self.window?.title = "Lerping@Home Preview — \(view.currentShaderName) (\(view.statusText))"
+            resync()
+            let range = view.isEDRActive
+                ? String(format: "EDR %.1fx of %.1fx", view.edrHeadroomInUse,
+                         LerpEDR.potentialHeadroom(of: self.window?.screen))
+                : view.config.extendedDynamicRange
+                    ? "SDR, EDR held back: \(LerpEDR.blocker(on: self.window?.screen) ?? "pending")"
+                    : "SDR"
+            self.window?.title = label + "\(view.currentShaderName) · \(range) (\(view.statusText))"
         }
 
         NSApp.activate(ignoringOtherApps: true)

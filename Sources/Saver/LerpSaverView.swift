@@ -63,6 +63,7 @@ public final class LerpSaverView: ScreenSaverView {
     private var presetPopup: NSPopUpButton?
     private var fpsPopup: NSPopUpButton?
     private var scalePopup: NSPopUpButton?
+    private var hdrCheckbox: NSButton?
     private var freezePopup: NSPopUpButton?
 
     /// True between a screensaver start notification and the matching stop.
@@ -606,6 +607,13 @@ public final class LerpSaverView: ScreenSaverView {
         Chrome.fill(scalePopup, with: Self.renderScales,
                     selecting: settings.renderScale, default: 0)
 
+        // Says what it does rather than how: on an SDR screen, on battery or in
+        // Low Power Mode it quietly does nothing (see `LerpEDR.blocker`).
+        let hdrCheckbox = NSButton(checkboxWithTitle: "HDR highlights", target: nil, action: nil)
+        hdrCheckbox.state = settings.hdr ? .on : .off
+        hdrCheckbox.toolTip = "On an HDR screen, lift the brightest highlights above SDR white. "
+            + "Off on battery, in Low Power Mode, and on screens without HDR headroom."
+
         let freezePopup = NSPopUpButton(frame: .zero, pullsDown: false)
         Chrome.fill(freezePopup, with: Self.freezeChoices,
                     selecting: settings.freezeMinutes, default: 3)
@@ -622,7 +630,7 @@ public final class LerpSaverView: ScreenSaverView {
         let grid = NSGridView(views: [
             [label("Shader:"), shaderPopup, label("Frame rate:"), fpsPopup],
             [label("Preset:"), presetPopup, label("Render scale:"), scalePopup],
-            [label("Still image:"), freezePopup, NSGridCell.emptyContentView, NSGridCell.emptyContentView],
+            [label("Still image:"), freezePopup, NSGridCell.emptyContentView, hdrCheckbox],
         ])
         grid.column(at: 0).width = 92
         grid.column(at: 2).leadingPadding = 26
@@ -668,6 +676,7 @@ public final class LerpSaverView: ScreenSaverView {
         self.presetPopup = presetPopup
         self.fpsPopup = fpsPopup
         self.scalePopup = scalePopup
+        self.hdrCheckbox = hdrCheckbox
         self.freezePopup = freezePopup
         reloadPresetPopup(selecting: settings.preset)
         updateRotationControls()
@@ -779,6 +788,7 @@ public final class LerpSaverView: ScreenSaverView {
             settings.fps = Int(fpsPopup?.titleOfSelectedItem ?? "30") ?? 30
             settings.renderScale = Chrome.value(of: scalePopup, in: Self.renderScales, default: 0)
             settings.freezeMinutes = Chrome.value(of: freezePopup, in: Self.freezeChoices, default: 3)
+            settings.hdr = (hdrCheckbox?.state ?? .on) == .on
             settings.save(to: defaults)
         }
         metalView?.config = currentConfig()
@@ -828,6 +838,7 @@ private struct Settings {
     private static let renderScaleKey = "renderScale"
     private static let shuffleMinutesKey = "shuffleMinutes"
     private static let freezeMinutesKey = "freezeAfterMinutes"
+    private static let hdrKey = "hdrHighlights"
 
     /// `shuffleTitle`, or the name of the single pinned shader.
     var shader = shuffleTitle
@@ -838,6 +849,9 @@ private struct Settings {
     /// No UI offers this one; it is read but never written back.
     var shuffleMinutes = 5.0
     var freezeMinutes = 30.0
+    /// EDR highlights, on by default. Engages only where `LerpEDR.blocker`
+    /// allows it, so "on" costs nothing on an SDR screen or a laptop on battery.
+    var hdr = true
     /// The shuffle rotation. Not loaded from here and never saved from here:
     /// `LerpSaverView.savedRotation` reads it out of the ByHost plist the
     /// playground writes. Set by `currentConfig` after this struct is built.
@@ -852,6 +866,7 @@ private struct Settings {
         settings.renderScale = (defaults.object(forKey: renderScaleKey) as? Double) ?? settings.renderScale
         settings.shuffleMinutes = (defaults.object(forKey: shuffleMinutesKey) as? Double) ?? settings.shuffleMinutes
         settings.freezeMinutes = (defaults.object(forKey: freezeMinutesKey) as? Double) ?? settings.freezeMinutes
+        settings.hdr = (defaults.object(forKey: hdrKey) as? Bool) ?? settings.hdr
         return settings
     }
 
@@ -868,8 +883,9 @@ private struct Settings {
         defaults.set(fps, forKey: Self.fpsKey)
         defaults.set(renderScale, forKey: Self.renderScaleKey)
         defaults.set(freezeMinutes, forKey: Self.freezeMinutesKey)
+        defaults.set(hdr, forKey: Self.hdrKey)
         defaults.synchronize()
-        LerpSaverView.log.notice("options: saved pinned=\(shader, privacy: .public) fps=\(fps)")
+        LerpSaverView.log.notice("options: saved pinned=\(shader, privacy: .public) fps=\(fps) hdr=\(hdr)")
     }
 
     /// What these settings ask the view to render.
@@ -883,6 +899,7 @@ private struct Settings {
             shuffleInterval: shuffleMinutes * 60,
             freezeAfter: freezeMinutes * 60)
         config.enabledEntries = enabledEntries
+        config.extendedDynamicRange = hdr
         return config
     }
 
