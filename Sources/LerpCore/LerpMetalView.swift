@@ -104,6 +104,11 @@ public final class LerpMetalView: NSView {
     /// not rendering.
     public private(set) var currentEntry: LerpRotationEntry?
     public var onCompileError: ((String, String) -> Void)?
+    /// Polled once per drawn frame for the `audio*` uniforms. Nil — the saver,
+    /// and the playground until its toggle is turned on — means every frame
+    /// renders with `.silent`, byte-for-byte what it rendered before the
+    /// fields existed.
+    public var audioLevels: (() -> LerpAudioLevels)?
 
     private let renderer: LerpRenderer
     private let library: ShaderLibrary
@@ -767,7 +772,8 @@ public final class LerpMetalView: NSView {
                 resolution: SIMD2<Float>(Float(metalLayer.drawableSize.width),
                                          Float(metalLayer.drawableSize.height)),
                 time: Float(time),
-                seed: seed)
+                seed: seed,
+                audio: audioLevels?() ?? .silent)
             renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms,
                           params: parameterValues, data: dataProvider)
         }

@@ -64,6 +64,7 @@ enum ShaderScaffold {
         // Sources/LerpCore/Prelude.swift declares (prefix file-local helpers).
         //
         // Uniforms:  u.resolution (px)  u.time (s)  u.seed ([0,1), per launch)
+        //            u.audioLevel/audioBass/audioMid/audioTreble (~0..1; 0 unless audio is on)
         // Prelude:   lerpUV, lerpScreenUV, rotate, hash11/21/22, valueNoise,
         //            snoise, glmod/2/3, lerpDither, PI, TWO_PI
 

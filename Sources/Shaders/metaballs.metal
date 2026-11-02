@@ -7,6 +7,11 @@
 // variable-length `colors` array (max 8); this port fixes five tunable slots,
 // cycled across the balls exactly as upstream does.
 //
+// Audio-reactive (not upstream): with the playground's "React to System Audio"
+// on, each ball swells with one band in turn — bass, mid, treble — scaled by
+// `audio`. Every audio uniform is 0 in the saver, in --snapshot and with the
+// toggle off, and then `ballSize` is exactly `size`: the look is unchanged.
+//
 // lerp-param: color1    color     = (0.431, 0.200, 0.800, 1.0) "Deep violet"
 // lerp-param: color2    color     = (1.000, 0.333, 0.000, 1.0) "Ember orange"
 // lerp-param: color3    color     = (1.000, 0.757, 0.020, 1.0) "Amber"
@@ -16,6 +21,7 @@
 // lerp-param: count     int 1 20  = 10   "Ball count"
 // lerp-param: size      float 0 1 = 0.83 "Size"
 // lerp-param: speed     float 0 2 = 0.5  "Speed"
+// lerp-param: audio     float 0 1 = 0.6  "Audio response"
 //
 // Upstream presets, speed scaled to this port's ambience (upstream × 0.5).
 // lerp-preset: "Ink Drops" colorBack=#ffffff, color1=#000000, color2=#000000
@@ -37,6 +43,7 @@ static float mbBallShape(float2 uv, float2 c, float p) {
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
     float4 colors[MB_COLOR_COUNT] = { u.color1, u.color2, u.color3, u.color4, u.color5 };
+    float bands[3] = { u.audioBass, u.audioMid, u.audioTreble };
 
     float2 shapeUV = lerpUV(pos, u.resolution) * 0.5 + 0.5;
 
@@ -65,8 +72,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         int safeIndex = i % MB_COLOR_COUNT;
         float4 ballColor = colors[safeIndex];
 
-        float shape = mbBallShape(shapeUV, c, 45.0 - 30.0 * u.size);
-        shape *= pow(u.size, 0.2);
+        // Silent: clamp(u.size) == u.size, since `size` is declared 0…1.
+        float ballSize = clamp(u.size + 0.3 * u.audio * bands[i % 3], 0.0, 1.25);
+        float shape = mbBallShape(shapeUV, c, 45.0 - 30.0 * ballSize);
+        shape *= pow(ballSize, 0.2);
         shape = smoothstep(0.0, 1.0, shape);
 
         totalColor += ballColor.rgb * shape;

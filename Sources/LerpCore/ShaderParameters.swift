@@ -195,18 +195,25 @@ public struct LerpParamError: Error, Sendable, Equatable, CustomStringConvertibl
 
 // MARK: - Uniform-block layout
 
-/// Byte layout of the fragment buffer 0 payload: the fixed 16-byte
+/// Byte layout of the fragment buffer 0 payload: the fixed 32-byte
 /// `LerpUniforms` header followed by the shader's declared parameters.
 ///
 /// Fields are emitted colours first (`float4`, 16-byte aligned, and the header
-/// is exactly 16 bytes so the first one lands flush), then every scalar
+/// is exactly 32 bytes so the first one lands flush), then every scalar
 /// (`float`/`int`, 4 bytes each) in declaration order. Fixing the order this
 /// way makes the offsets computable with two multiplications and keeps the
 /// Swift packer and the generated MSL struct trivially in step.
 public enum LerpParamLayout {
+    /// Members of the fixed header, which a `// lerp-param:` may not reuse.
+    public static let builtInFields: Set<String> = [
+        "resolution", "time", "seed", "audioLevel", "audioBass", "audioMid", "audioTreble",
+    ]
+
     public static let headerSize: Int = {
         let stride = MemoryLayout<LerpUniforms>.stride
-        precondition(stride == 16, "Swift LerpUniforms must match Metal's 16-byte fixed header")
+        // A multiple of 16 is what lets the first `float4` parameter sit
+        // flush against the header; growing the head means padding it to one.
+        precondition(stride == 32, "Swift LerpUniforms must match Metal's 32-byte fixed header")
         return stride
     }()
 
@@ -215,7 +222,7 @@ public enum LerpParamLayout {
         params.filter(\.type.isColor) + params.filter { !$0.type.isColor }
     }
 
-    /// Size in bytes of the parameter block that follows the 16-byte header,
+    /// Size in bytes of the parameter block that follows the 32-byte header,
     /// rounded up to a multiple of 16 (the alignment `float4` forces).
     public static func tailSize(_ params: [LerpParam]) -> Int {
         guard !params.isEmpty else { return 0 }
@@ -226,7 +233,7 @@ public enum LerpParamLayout {
     }
 
     /// Offset of each parameter measured from the start of the tail (i.e. from
-    /// byte 16 of the buffer).
+    /// byte `headerSize` of the buffer).
     public static func tailOffsets(_ params: [LerpParam]) -> [String: Int] {
         var offsets: [String: Int] = [:]
         var cursor = 0
@@ -256,7 +263,7 @@ public enum LerpParamLayout {
 public struct LerpParameterValues: Sendable {
     public let parameters: [LerpParam]
     public private(set) var values: [String: LerpParamValue]
-    /// Bytes that follow the 16-byte `LerpUniforms` header. Empty when the
+    /// Bytes that follow the 32-byte `LerpUniforms` header. Empty when the
     /// shader declares no parameters — the renderer then takes the old path.
     public private(set) var packedTail: [UInt8]
 
@@ -372,7 +379,7 @@ public enum LerpParamParser {
             if let text = directiveBody(raw, paramDirective) {
                 do {
                     let param = try parseParam(text, line: line)
-                    if param.name == "resolution" || param.name == "time" || param.name == "seed" {
+                    if LerpParamLayout.builtInFields.contains(param.name) {
                         throw fail(line, text, "`\(param.name)` is a built-in uniform field and cannot be a parameter name")
                     }
                     if out.parameters.contains(where: { $0.name == param.name }) {

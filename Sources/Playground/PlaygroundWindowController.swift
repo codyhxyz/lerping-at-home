@@ -139,6 +139,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private var firstErrorLine: Int?
     private var compileWork: DispatchWorkItem?
     private var timers: [Timer] = []
+    /// The `SystemAudioTap` feeding the `audio*` uniforms, while Shader › React
+    /// to System Audio is on. Typed loosely only because the class is 14.2+.
+    /// Off at every launch and never persisted: listening to what the Mac is
+    /// playing is something you turn on, each time.
+    private var audioTap: AnyObject?
 
     private static let windowAutosave = "LerpPlaygroundWindow"
     /// Bumped when the inspector added a third pane: an autosaved two-subview
@@ -1434,6 +1439,39 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if isPaused { metalView.renderOnce() }
     }
 
+    // MARK: - System audio
+
+    @objc func toggleSystemAudio(_ sender: Any?) {
+        guard #available(macOS 14.2, *) else {
+            return setStatus("System audio needs macOS 14.2 or later", tint: EditorTheme.error)
+        }
+        if audioTap != nil { return stopSystemAudio(nil) }
+        let tap = SystemAudioTap()
+        do {
+            try tap.start()
+        } catch {
+            return setStatus("System audio unavailable: \(error)", tint: EditorTheme.error)
+        }
+        tap.onRestart = { [weak self] error in
+            if let error { self?.stopSystemAudio("System audio stopped: \(error)") }
+        }
+        audioTap = tap
+        let levels = tap.levels
+        metalView.audioLevels = { levels.current }
+        // A denied or not-yet-answered prompt is not an error here: the tap
+        // runs and hands back silence, so the uniforms simply stay at 0.
+        setStatus("Listening to system audio (u.audioLevel / audioBass / audioMid / audioTreble)",
+                  tint: EditorTheme.dim)
+    }
+
+    private func stopSystemAudio(_ reason: String?) {
+        if #available(macOS 14.2, *) { (audioTap as? SystemAudioTap)?.stop() }
+        audioTap = nil
+        metalView.audioLevels = nil
+        if isPaused { metalView.renderOnce() }
+        setStatus(reason ?? "System audio off", tint: reason == nil ? EditorTheme.dim : EditorTheme.error)
+    }
+
     // MARK: - Chrome and polling
 
     /// Which checkout this window is editing, in the title — but only for a copy
@@ -1593,6 +1631,9 @@ extension PlaygroundWindowController: NSMenuItemValidation {
         switch item.action {
         case #selector(saveShader(_:)): return saveButton.isEnabled
         case #selector(revertShader(_:)): return revertButton.isEnabled
+        case #selector(toggleSystemAudio(_:)):
+            item.state = audioTap == nil ? .off : .on
+            if #available(macOS 14.2, *) { return true } else { return false }
         default: return true
         }
     }

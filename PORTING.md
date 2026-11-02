@@ -14,8 +14,8 @@ signature above unchanged.)
 
 Every file gets `Sources/LerpCore/Prelude.swift`'s Metal prelude prepended
 before compilation. Read that file first — it defines `LerpUniforms`
-(`u.resolution` pixels, `u.time` seconds, `u.seed` random [0,1) per launch),
-`lerpUV` (centered UV, [-1,1] short axis, y up), `lerpScreenUV` (0..1, y down),
+(`u.resolution` pixels, `u.time` seconds, `u.seed` random [0,1) per launch,
+and the four audio levels described under "Audio-reactive shaders"), `lerpUV` (centered UV, [-1,1] short axis, y up), `lerpScreenUV` (0..1, y down),
 `rotate`, `hash11/21/22`, `valueNoise`, `snoise` (2D simplex), `glmod/2/3`,
 `lerpDither`, `PI`, `TWO_PI`. **Do not redefine any prelude symbol** — name
 your file-local helpers with a shader-specific prefix (e.g. `mbShape` for
@@ -63,8 +63,9 @@ Grammar, one declaration per comment line, anywhere in the file:
 // lerp-param: NAME TYPE [MIN MAX] = DEFAULT ["Label"]
 ```
 
-- **NAME** — a valid MSL identifier, unique in the file, and not `resolution`,
-  `time` or `seed`.
+- **NAME** — a valid MSL identifier, unique in the file, and not one of the
+  built-in fields: `resolution`, `time`, `seed`, `audioLevel`, `audioBass`,
+  `audioMid`, `audioTreble`.
 - **TYPE** — `float`, `int`, `bool` or `color`.
 - **MIN MAX** — required for `float` and `int`, rejected for `bool` and
   `color`. The default has to fall inside the range.
@@ -130,6 +131,45 @@ Inspect and drive them from the CLI:
 Parameters are part of the purity contract: a frame stays a pure function of
 (shader, time, seed, parameters). Values are re-packed from scratch on every
 change and bound per frame; nothing accumulates.
+
+## Audio-reactive shaders
+
+`LerpUniforms` carries four smoothed levels of whatever the Mac is playing,
+each roughly 0…1:
+
+| Field | What it measures |
+|---|---|
+| `u.audioLevel` | broadband loudness (RMS) |
+| `u.audioBass` | ~20–250 Hz |
+| `u.audioMid` | ~250–4000 Hz |
+| `u.audioTreble` | ~4–16 kHz |
+
+They are fed **only** by the playground, and only while **Shader › React to
+System Audio** is on (off at every launch). Everywhere else they are exactly
+0: the screensaver, `--snapshot`, the rotation gallery's stills, the web
+gallery. That is not a missing feature in the saver — Apple's
+`legacyScreenSaver` host, which the saver runs inside, has no
+`NSAudioCaptureUsageDescription`, and TCC refuses system-audio capture to a
+process without one, so the tap there only ever delivers silence.
+
+Two rules follow:
+
+- **Silence must be the original look.** Use the levels as offsets that vanish
+  at 0 (`size + 0.3 * u.audioBass`, not `size * u.audioBass`), so a shader
+  looks identical in the saver and in every snapshot. `metaballs` is the worked
+  example: each ball swells with one band, scaled by its `audio` parameter.
+- **Never feed them into time.** Warping `u.time` by loudness makes motion
+  stutter and breaks scrubbing; modulate shape, size or brightness instead.
+
+The levels are live input, the one thing a frame may depend on outside
+(shader, time, seed, parameters). Nothing records them, which is why every
+frame anything persists — snapshots, thumbnails, the desktop handoff — is still
+a pure function of that tuple.
+
+Capture is a Core Audio process tap on every process's output (macOS 14.2+),
+analysed with a 1024-point vDSP FFT on a background queue, with a fast-attack,
+slow-release envelope (~25 ms up, ~300 ms down). See
+`Sources/Playground/SystemAudio.swift`.
 
 ## Shaders that need CPU-computed data
 

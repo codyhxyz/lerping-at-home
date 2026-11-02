@@ -33,6 +33,12 @@
 	<true/>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
+	<!-- Shown by the System Audio Recording prompt the first time Shader ›
+	     React to System Audio is turned on. Without it TCC refuses process
+	     taps outright, which is also why the saver cannot have this: its host,
+	     Apple's legacyScreenSaver, carries no such key. -->
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>LerpPlayground listens to the audio your Mac is playing so shaders can react to it. Only loudness levels are computed; nothing is recorded or saved.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
