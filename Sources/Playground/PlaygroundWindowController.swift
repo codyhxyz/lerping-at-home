@@ -190,6 +190,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             setStatus("No shaders found. Use New… to create one.", tint: EditorTheme.error)
         }
         startTimers()
+        NotificationCenter.default.addObserver(self, selector: #selector(rotationChangedElsewhere(_:)),
+                                               name: RotationStore.changedElsewhere, object: nil)
 
         // Assigning contentViewController resizes the window to the split view's
         // fitting size, so pick the real size afterwards. Clamped to the screen
@@ -1076,6 +1078,17 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         let entries = metalView.shaderLibrary.discover().rotationEntries()
         RotationStore.save(enabled, entries: entries, to: rotationDefaults)
         rotation?.showEnabled(enabled)
+    }
+
+    /// A Shortcuts action wrote the rotation (see `RotationIntents.swift`).
+    /// Both grids hold the selection in memory, so each is handed what is now
+    /// on disk — otherwise the next click in either would save its stale copy
+    /// straight over the action's change.
+    @objc private func rotationChangedElsewhere(_ note: Notification) {
+        let entries = metalView.shaderLibrary.discover().rotationEntries()
+        let enabled = RotationStore.resolved(discovered: entries, from: rotationDefaults)
+        rotation?.showEnabled(enabled)
+        picker?.showEnabled(enabled)
     }
 
     /// A shader was saved, or changed on disk. Both grids key their stills on

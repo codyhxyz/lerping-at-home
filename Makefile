@@ -35,6 +35,64 @@ PLAYGROUND_LEGACY_BUILD_ID  := com.hergenroeder.lerping.playground
 LEGACY_PLAYGROUND_APP       := $(BUILD)/LerpPlayground.app
 BUNDLE_VERSION      := $(shell date +%Y%m%d%H%M%S)
 
+# Shortcuts / Spotlight actions (Sources/Playground/RotationIntents.swift).
+#
+# App Intents are declared in Swift but discovered from a build product:
+# `Contents/Resources/Metadata.appintents`, which Xcode makes by running
+# `appintentsmetadataprocessor` over the compiler's constant-value dump. There
+# is no Xcode project here, so the playground rule does those steps itself:
+#
+# - `-emit-const-values-path`, with the protocol list below, makes swiftc write
+#   the literal titles, phrases and parameters of every conforming type. It is
+#   only emitted for a whole-module build, hence `-wmo`.
+# - `-dependency_info` is the linker's record of what it linked. The processor
+#   reads it to confirm AppIntents.framework is a dependency and does nothing
+#   without it.
+# - The processor then writes Metadata.appintents into the bundle, before the
+#   bundle is signed. The metadata holds no bundle identifier, so the staging,
+#   installed and release identifiers all share it.
+#
+# The protocol list is Xcode's own `SWIFT_EMIT_CONST_VALUE_PROTOCOLS` default.
+# The processor ships with Xcode, not the command line tools; without it the
+# app still builds and runs, it just has no Shortcuts actions, and the rule
+# says so.
+INTENTS_DIR          := $(BUILD)/playground-intents
+APPINTENTS_PROTOCOLS := AppIntent EntityQuery AppEntity TransientEntity AppEnum \
+                        AppShortcutProviding AppShortcutsProvider AnyResolverProviding \
+                        AppIntentsPackage DynamicOptionsProvider _IntentValueRepresentable \
+                        _AssistantIntentsProvider _GenerativeFunctionExtractable \
+                        IntentValueQuery Resolver
+define EXTRACT_APPINTENTS
+	@set -e; \
+	if ! processor="$$(xcrun --find appintentsmetadataprocessor 2>/dev/null)"; then \
+		echo "playground: appintentsmetadataprocessor not found (it ships with Xcode, not the"; \
+		echo "  command line tools). Built without Shortcuts actions."; \
+		exit 0; \
+	fi; \
+	swiftc="$$(xcrun --find swiftc)"; \
+	toolchain="$${swiftc%/usr/bin/swiftc}"; \
+	xcode="$$(/usr/libexec/PlistBuddy -c 'Print ProductBuildVersion' \
+		"$$(xcode-select -p)/../version.plist" 2>/dev/null || echo unknown)"; \
+	printf '%s\n' $(abspath $(CORE) $(PLAYGROUND)) > $(INTENTS_DIR)/sources.txt; \
+	printf '%s\n' $(abspath $(INTENTS_DIR)/LerpPlayground.swiftconstvalues) > $(INTENTS_DIR)/constvalues.txt; \
+	rm -rf $(PLAYGROUND_APP)/Contents/Resources/Metadata.appintents; \
+	"$$processor" --toolchain-dir "$$toolchain" --module-name LerpPlayground \
+		--sdk-root $(SDK) --xcode-version "$$xcode" --platform-family macOS \
+		--deployment-target $(patsubst arm64-apple-macos%,%,$(TARGET)) --target-triple $(TARGET) \
+		--bundle-identifier $(PLAYGROUND_BUILD_ID) \
+		--output $(PLAYGROUND_APP)/Contents/Resources \
+		--binary-file $(PLAYGROUND_BIN) \
+		--dependency-file $(INTENTS_DIR)/LerpPlayground_dependency_info.dat \
+		--stringsdata-file $(INTENTS_DIR)/ExtractedAppShortcutsMetadata.stringsdata \
+		--source-file-list $(INTENTS_DIR)/sources.txt \
+		--swift-const-vals-list $(INTENTS_DIR)/constvalues.txt \
+		--compile-time-extraction --deployment-aware-processing \
+		--no-app-shortcuts-localization \
+		2>&1 | grep -v -e 'Starting App Intents metadata extraction' -e 'Metadata root:' || true; \
+	test -f $(PLAYGROUND_APP)/Contents/Resources/Metadata.appintents/extract.actionsdata || { \
+		echo "playground: appintentsmetadataprocessor produced no Metadata.appintents"; exit 1; }
+endef
+
 # Which commit each bundle was built from, stamped into its Info.plist as
 # `LerpBuild` and logged by the running saver on every init.
 #
@@ -171,9 +229,15 @@ playground-build: $(PLAYGROUND_BIN)
 $(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/Playground/Info.plist LICENSE NOTICE.txt
 	@$(LSREGISTER) -u $(LEGACY_PLAYGROUND_APP) 2>/dev/null || true
 	rm -rf $(LEGACY_PLAYGROUND_APP)
-	@mkdir -p $(PLAYGROUND_APP)/Contents/MacOS $(PLAYGROUND_APP)/Contents/Resources
-	swiftc -O -parse-as-library -target $(TARGET) \
+	@mkdir -p $(PLAYGROUND_APP)/Contents/MacOS $(PLAYGROUND_APP)/Contents/Resources $(INTENTS_DIR)
+	@printf '%s\n' $(APPINTENTS_PROTOCOLS) | sed 's/.*/"&"/' | paste -sd, - | sed 's/.*/[&]/' \
+		> $(INTENTS_DIR)/protocols.json
+	swiftc -O -wmo -parse-as-library -target $(TARGET) -module-name LerpPlayground \
+		-emit-const-values-path $(INTENTS_DIR)/LerpPlayground.swiftconstvalues \
+		-Xfrontend -const-gather-protocols-file -Xfrontend $(INTENTS_DIR)/protocols.json \
+		-Xlinker -dependency_info -Xlinker $(INTENTS_DIR)/LerpPlayground_dependency_info.dat \
 		-o $@ $(CORE) $(PLAYGROUND) $(PLAYGROUND_FW) $(MIDI_FLAGS)
+	$(EXTRACT_APPINTENTS)
 	cp Sources/Playground/Info.plist $(PLAYGROUND_APP)/Contents/Info.plist
 	plutil -replace CFBundleIdentifier -string $(PLAYGROUND_BUILD_ID) $(PLAYGROUND_APP)/Contents/Info.plist
 	plutil -replace CFBundleName -string LerpPlaygroundStaging $(PLAYGROUND_APP)/Contents/Info.plist

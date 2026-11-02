@@ -107,4 +107,44 @@ enum RotationStore {
         LerpRotation.write(enabled: enabled, discovered: entries,
                            writer: writerName, to: defaults)
     }
+
+    // MARK: - One look at a time
+
+    /// Posted after a write that did not come from a grid — a Shortcuts action
+    /// — so the gallery window and the picker popover, which hold the rotation
+    /// in memory, show what is on disk instead of saving their stale copy over
+    /// it on the next click.
+    static let changedElsewhere = Notification.Name("LerpRotationChangedElsewhere")
+
+    /// Puts one look in or out of the rotation, the way clicking its tile does:
+    /// read what is saved, change that one look, `save` the result. Returns
+    /// whether anything changed; asking for the state a look is already in
+    /// writes nothing.
+    ///
+    /// The gallery's floor holds here too: the last look in the rotation
+    /// cannot be switched off, because `Config.rotation` takes an empty set
+    /// literally and the screensaver would have nothing to show.
+    @discardableResult
+    static func setLook(_ entry: LerpRotationEntry, enabled: Bool,
+                        discovered: [LerpRotationEntry] = LookCatalog.discovered(),
+                        defaults: UserDefaults? = saverDefaults()) throws -> Bool {
+        guard !discovered.isEmpty else { throw LookIntentError.noLooks }
+        guard discovered.contains(entry) else { throw LookIntentError.unknownLook(entry.key) }
+        var picked = resolved(discovered: discovered, from: defaults)
+        guard picked.contains(entry) != enabled else { return false }
+        if enabled {
+            picked.insert(entry)
+        } else {
+            guard picked.count > 1 else { throw LookIntentError.lastLook(entry.key) }
+            picked.remove(entry)
+        }
+        // `write` can decline (no defaults, or the production guard in
+        // `LerpDefaults`) and hands back what is on disk instead. Say so rather
+        // than reporting a change that did not happen.
+        let written = save(picked, entries: discovered, to: defaults)
+        let nowIn = LerpRotation.enabled(discovered: discovered, in: written)?.contains(entry) ?? true
+        guard nowIn == enabled else { throw LookIntentError.notSaved(entry.key) }
+        NotificationCenter.default.post(name: changedElsewhere, object: nil)
+        return true
+    }
 }

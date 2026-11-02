@@ -275,6 +275,17 @@ make playground
 - The rotation gallery window opens from **Shader → Screensaver Rotation…**
   (`⌥⌘R`). The toolbar has no button for it. It holds Select All, Deselect All,
   and a wider grid than the popover.
+- **Shortcuts and Spotlight** get three LerpPlayground actions: **Add Look to
+  Rotation**, **Remove Look from Rotation** and **List Looks** (all, in the
+  rotation, or switched off). A *Look* is a shader plus one of its presets, or
+  its Defaults. The actions run inside the playground, launching it if needed,
+  and write through the same path a gallery click does, so the playground is
+  still the rotation's only writer; open grids update straight away. Removing
+  the last look is refused, as it is in the gallery. There is no pin action:
+  the pin belongs to the saver's Options… sheet. The actions need the full
+  Xcode to build, because `appintentsmetadataprocessor` ships with Xcode and
+  not with the command line tools. Without it the app builds the same, minus
+  the actions. See `Sources/Playground/RotationIntents.swift`.
 - **Save** (`⌘S`) overwrites the look that is open, and never asks anything. The
   window changes two things — the text and the values — and both live in the same
   `.metal` file, so one command writes both: with a preset on, the values go back
