@@ -273,17 +273,37 @@ enum LerpBundleResources {
 /// Discovers shader files and compiles them into render pipelines at runtime.
 /// Runtime compilation keeps built-in and custom shaders on one code path and
 /// means no Metal toolchain is needed to build or extend the project.
-public final class ShaderLibrary {
+///
+/// Thread-safe: `pipeline(for:)` and `dataProvider(for:)` may be called from any
+/// queue, e.g. to compile the next look in the background while this one plays.
+/// The compile itself runs outside the lock, through the device's shared
+/// `LerpPipelineCompiler`, so two different shaders compile in parallel and two
+/// requests for the same one (two displays, or a prefetch racing the main
+/// thread) compile once.
+public final class ShaderLibrary: @unchecked Sendable {
     public let device: MTLDevice
+    private let compiler: LerpPipelineCompiler
+    private let lock = NSLock()
     private var pipelineCache: [String: MTLRenderPipelineState] = [:]
     private var dataProviders: [String: LerpDataProvider] = [:]
     private let extraSearchURLs: [URL]
 
-    public private(set) var compileErrors: [String: String] = [:]
+    private var errors: [String: String] = [:]
+    public var compileErrors: [String: String] { locked { errors } }
 
     public init(device: MTLDevice, extraSearchURLs: [URL] = []) {
         self.device = device
+        self.compiler = LerpPipelineCompiler.shared(for: device)
         self.extraSearchURLs = extraSearchURLs
+    }
+
+    /// Which compiler new pipelines go through: `mtl4` or `classic`.
+    public var compilerBackend: String { compiler.backendName }
+
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
     }
 
     /// Built-in shaders ship as .metal source files in the host bundle's Resources/Shaders.
@@ -372,7 +392,7 @@ public final class ShaderLibrary {
     /// refusal in here goes through this, so `compileErrors` cannot disagree
     /// with what the caller was handed.
     private func fail(_ shader: LerpShader, _ code: Int, _ message: String) throws -> Never {
-        compileErrors[shader.name] = message
+        locked { errors[shader.name] = message }
         throw NSError(domain: "LerpingAtHome", code: code,
                       userInfo: [NSLocalizedDescriptionKey: message])
     }
@@ -381,7 +401,7 @@ public final class ShaderLibrary {
     /// over and over (the playground's hot reload keys the cache on the edited
     /// source, so every keystroke would add an entry) call this to bound memory.
     public func clearPipelineCache() {
-        pipelineCache.removeAll()
+        locked { pipelineCache.removeAll() }
     }
 
     /// The `LerpDataProvider` a shader asked for, or nil if it asked for none.
@@ -390,19 +410,29 @@ public final class ShaderLibrary {
     /// not registered.
     public func dataProvider(for shader: LerpShader) throws -> LerpDataProvider? {
         guard let name = shader.dataProviderName else { return nil }
-        if let cached = dataProviders[name] { return cached }
-        guard let provider = LerpDataProviders.make(named: name, device: device) else {
+        let provider = locked { () -> LerpDataProvider? in
+            if let cached = dataProviders[name] { return cached }
+            let made = LerpDataProviders.make(named: name, device: device)
+            dataProviders[name] = made
+            return made
+        }
+        guard let provider else {
             try fail(shader, 2, "shader '\(shader.name)' declares `// lerp-data: \(name)` but no such data provider is registered (known: \(LerpDataProviders.registeredNames.joined(separator: ", ")))")
         }
-        dataProviders[name] = provider
         return provider
     }
 
-    /// Compiles (or returns a cached) pipeline for a shader. Throws with the
-    /// Metal compiler's diagnostics on failure.
+    /// Compiles (or returns a cached) pipeline for a shader, for a `.bgra8Unorm`
+    /// target. Throws with the Metal compiler's diagnostics on failure.
     public func pipeline(for shader: LerpShader) throws -> MTLRenderPipelineState {
-        let cacheKey = shader.name + "|" + String(shader.source.hashValue)
-        if let cached = pipelineCache[cacheKey] { return cached }
+        try pipeline(for: shader, pixelFormat: .bgra8Unorm)
+    }
+
+    /// `pipeline(for:)` for a render target of any pixel format. Each format is
+    /// its own pipeline and its own cache entry.
+    public func pipeline(for shader: LerpShader, pixelFormat: MTLPixelFormat) throws -> MTLRenderPipelineState {
+        let cacheKey = shader.name + "|" + String(shader.source.hashValue) + "|" + String(pixelFormat.rawValue)
+        if let cached = locked({ pipelineCache[cacheKey] }) { return cached }
 
         if !shader.parameterErrors.isEmpty {
             try fail(shader, 3, "shader '\(shader.name)' has malformed parameter declarations:\n"
@@ -410,33 +440,40 @@ public final class ShaderLibrary {
                 + "\n  syntax: // lerp-param: NAME TYPE [MIN MAX] = DEFAULT \"Label\"")
         }
 
-        let options = MTLCompileOptions()
-        if #available(macOS 15.0, *) {
-            options.mathMode = .fast
-        }
         let prelude = LerpPrelude.source(parameters: shader.parameters,
                                          extra: try dataProvider(for: shader)?.metalPrelude ?? "")
-        let library: MTLLibrary
+        let pipeline: MTLRenderPipelineState
         do {
-            library = try device.makeLibrary(source: prelude + shader.source, options: options)
+            pipeline = try compiler.pipeline(source: prelude + shader.source,
+                                             label: "Lerping/" + shader.name,
+                                             pixelFormat: pixelFormat)
+        } catch is LerpPipelineCompiler.MissingEntryPoint {
+            try fail(shader, 1, "shader '\(shader.name)' must define `fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]])`")
         } catch {
-            compileErrors[shader.name] = String(describing: error)
+            locked { errors[shader.name] = String(describing: error) }
             throw error
         }
-        guard let vertexFn = library.makeFunction(name: "lerpVertex"),
-              let fragmentFn = library.makeFunction(name: "lerpMain") else {
-            try fail(shader, 1, "shader '\(shader.name)' must define `fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]])`")
+
+        locked {
+            errors[shader.name] = nil
+            pipelineCache[cacheKey] = pipeline
         }
-
-        let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.label = "Lerping/" + shader.name
-        descriptor.vertexFunction = vertexFn
-        descriptor.fragmentFunction = fragmentFn
-        descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-
-        let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
-        compileErrors[shader.name] = nil
-        pipelineCache[cacheKey] = pipeline
         return pipeline
+    }
+
+    /// `pipeline(for:pixelFormat:)` on a background queue, for compiling a look
+    /// before it is needed. `completion` runs on `queue`. The result lands in
+    /// the same cache a synchronous call fills, so a later `pipeline(for:)`
+    /// returns at once, and one that arrives while this compile is still
+    /// running waits for it instead of starting a second.
+    public func pipeline(for shader: LerpShader,
+                         pixelFormat: MTLPixelFormat = .bgra8Unorm,
+                         qos: DispatchQoS.QoSClass = .utility,
+                         queue: DispatchQueue = .main,
+                         completion: @escaping (Result<MTLRenderPipelineState, Error>) -> Void) {
+        DispatchQueue.global(qos: qos).async { [self] in
+            let result = Result { try pipeline(for: shader, pixelFormat: pixelFormat) }
+            queue.async { completion(result) }
+        }
     }
 }

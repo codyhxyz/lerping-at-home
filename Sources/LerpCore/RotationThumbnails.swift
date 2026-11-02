@@ -385,9 +385,10 @@ public final class RotationThumbnails {
     }
 
     /// Renders the misses across a small pool. Each worker owns its own library
-    /// and renderer — `ShaderLibrary` caches pipelines in a plain dictionary and
-    /// `LerpRenderer` owns a command queue, so neither may be shared — while the
-    /// `MTLDevice` underneath them is shared and thread-safe.
+    /// and renderer — a library's data providers keep per-frame scratch buffers
+    /// and `LerpRenderer` owns a command queue, so neither is shared — while the
+    /// `MTLDevice` and the per-device `LerpPipelineCompiler` underneath them are
+    /// shared and thread-safe, so a pipeline is still compiled only once.
     private func render(_ jobs: [Job], run: Int,
                         deliver: (LerpRotationEntry, NSImage) -> Void) {
         guard !jobs.isEmpty else { return }
