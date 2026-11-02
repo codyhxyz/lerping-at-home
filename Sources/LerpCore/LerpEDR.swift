@@ -1,5 +1,4 @@
 import AppKit
-import IOKit.ps
 import Metal
 import QuartzCore
 
@@ -70,19 +69,12 @@ public enum LerpEDR {
     ///   the wrong trade.
     public static func blocker(on screen: NSScreen?) -> String? {
         if potentialHeadroom(of: screen) <= 1.0 { return "screen has no EDR headroom" }
-        if ProcessInfo.processInfo.isLowPowerModeEnabled { return "Low Power Mode" }
-        if isOnBattery { return "on battery" }
+        // One reader of the power state per process: LerpPowerMonitor, which
+        // also sets the frame-rate cap and logs every change.
+        let power = LerpPowerMonitor.shared.state
+        if power.lowPowerMode { return "Low Power Mode" }
+        if power.onBattery { return "on battery" }
         return nil
-    }
-
-    /// True when the Mac is running from its battery. False on a desktop, or
-    /// if the power-source query fails — the check is a power saving, not a
-    /// correctness guard, so an unknown answer must not take EDR away.
-    public static var isOnBattery: Bool {
-        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
-              let type = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue()
-        else { return false }
-        return (type as String) == kIOPSBatteryPowerValue
     }
 
     /// Layout matches `EDRParams` in `postSource`.
