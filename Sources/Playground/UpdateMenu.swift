@@ -71,6 +71,7 @@ final class UpdateStatusItem: NSObject {
         checkTimer = Timer.scheduledTimer(withTimeInterval: 4 * 3600, repeats: true) {
             [weak self] _ in self?.performCheck(announce: false)
         }
+        checkTimer?.tolerance = 10 * 60
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15) { [weak self] in
             self?.performCheck(announce: false)
         }

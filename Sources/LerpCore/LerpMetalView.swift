@@ -4,8 +4,10 @@ import os
 import QuartzCore
 
 /// CAMetalLayer-backed view that renders one Lerping@Home shader with strict power
-/// discipline: capped frame rate, full pause when the window is occluded,
-/// optional reduced internal resolution, and a frozen clock while paused.
+/// discipline: capped frame rate (lowered further by `LerpPowerMonitor`), full
+/// pause when the window is occluded or the view hidden, double-buffered
+/// drawables, optional reduced internal resolution, and a frozen clock while
+/// paused.
 public final class LerpMetalView: NSView {
 
     /// Same subsystem the saver logs under, so one `log show` predicate covers
@@ -147,6 +149,20 @@ public final class LerpMetalView: NSView {
     private var running = false
     private var frozen = false
     private var parked = false
+    /// Whether the window has *told* us it is covered, and whether the view
+    /// has been told it is hidden. Both are learned only from the event, never
+    /// by reading `occlusionState` or `isHidden` up front: the screensaver host
+    /// that is visibly on screen reports its own window as not visible for the
+    /// whole session (see "Hosts that are never shown" in LerpSaverView), so a
+    /// view that asked would black out the real screensaver.
+    private var occluded = false
+    private var toldHidden = false
+    private var canBeSeen: Bool { !occluded && !toldHidden }
+    /// The clock has been banked by `visibilityChanged` and must be resumed,
+    /// exactly once, before it advances again. Without it a second "not
+    /// visible" — or a `stop()` while covered — banked the same interval twice
+    /// and the animation jumped forward on return.
+    private var clockHeld = false
     private var freezeBaseline: CFTimeInterval = 0
 
     /// When a frame this view drew was last actually scanned out to a display,
@@ -190,10 +206,22 @@ public final class LerpMetalView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
+        // Two drawables, not the default three. Measured on a 2704x1756
+        // drawable (M5, 120 Hz panel): the layer only allocates a third when a
+        // frame is still in flight as the next is requested, so whether it
+        // does depends on load: some runs never did, but three paired runs of
+        // `heatmap` at 60 fps cost 30, 24 and 18 MB more footprint with three
+        // than with two — more in a 16-bit format, and once per display — for
+        // queue depth a screensaver has no use for. Two caps that. Cadence was
+        // unchanged: no late frames at 30 or 60 fps with either count, and the
+        // worst `nextDrawable()` wait with two was a single 18 ms stall at
+        // 60 fps on the heaviest shader. Set here rather than in
+        // `makeBackingLayer` because `wantsLayer` has already built the layer.
+        (layer as? CAMetalLayer)?.maximumDrawableCount = 2
         NotificationCenter.default.addObserver(self,
                                                selector: #selector(powerStateChanged),
-                                               name: .NSProcessInfoPowerStateDidChange,
-                                               object: nil)
+                                               name: LerpPowerMonitor.didChange,
+                                               object: LerpPowerMonitor.shared)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -217,7 +245,7 @@ public final class LerpMetalView: NSView {
     }
 
     public var time: CFTimeInterval {
-        get { running ? runningTime(at: CACurrentMediaTime()) : elapsed }
+        get { running && !clockHeld ? runningTime(at: CACurrentMediaTime()) : elapsed }
         set {
             elapsed = newValue
             resumeStamp = CACurrentMediaTime()
@@ -249,6 +277,7 @@ public final class LerpMetalView: NSView {
         running = true
         frozen = false
         parked = false
+        clockHeld = false
         freezeBaseline = elapsed
         resumeClock()
         fpsWindowStart = resumeStamp
@@ -272,14 +301,17 @@ public final class LerpMetalView: NSView {
             playScheduledEntry()
         }
         guard window != nil else { return }
-        installDisplayLink()
+        // Started while covered or hidden: hold the clock where it is and
+        // leave the link down until the event that says otherwise.
+        visibilityChanged()
     }
 
     public func stop() {
         guard running else { return }
         running = false
         parked = false
-        pauseClock()
+        if !clockHeld { pauseClock() }
+        clockHeld = false
         cancelShuffleTimer()
         tearDownDisplayLink()
     }
@@ -331,7 +363,21 @@ public final class LerpMetalView: NSView {
                                                name: NSWindow.didChangeOcclusionStateNotification,
                                                object: window)
         updateDrawableSize()
-        if running { installDisplayLink() }
+        // What the last window said about itself says nothing about this one.
+        occluded = false
+        visibilityChanged()
+    }
+
+    public override func viewDidHide() {
+        super.viewDidHide()
+        toldHidden = true
+        visibilityChanged()
+    }
+
+    public override func viewDidUnhide() {
+        super.viewDidUnhide()
+        toldHidden = false
+        visibilityChanged()
     }
 
     public override func viewDidChangeBackingProperties() {
@@ -467,6 +513,11 @@ public final class LerpMetalView: NSView {
         let timer = Timer(fire: next, interval: 0, repeats: false) { [weak self] _ in
             self?.playScheduledEntry()
         }
+        // A timer only ever fires late, never early, and the schedule asks the
+        // clock what is due when it does — so a second of slack lets the
+        // system coalesce this wake-up with others at no cost to which look
+        // plays.
+        timer.tolerance = 1
         RunLoop.main.add(timer, forMode: .common)
         shuffleTimer = timer
     }
@@ -664,7 +715,7 @@ public final class LerpMetalView: NSView {
     // MARK: - Display link
 
     private func installDisplayLink() {
-        guard displayLink == nil, window != nil, !frozen, !parked else { return }
+        guard displayLink == nil, window != nil, !frozen, !parked, canBeSeen else { return }
         let link = self.displayLink(target: self, selector: #selector(tick(_:)))
         displayLink = link
         applyFrameRate()
@@ -676,34 +727,58 @@ public final class LerpMetalView: NSView {
         displayLink = nil
     }
 
+    /// The host's frame rate, clamped by `LerpPowerMonitor`, as a range the
+    /// display link can pace against.
+    ///
+    /// `NSView.displayLink` rather than `CAMetalDisplayLink`, on purpose. Both
+    /// are display-synced and take a `preferredFrameRateRange`, and this one
+    /// already follows the view from screen to screen. What
+    /// `CAMetalDisplayLink` adds is drawables handed to the callback against a
+    /// presentation deadline — a latency tool — and it takes drawable
+    /// acquisition away from the layer, which `renderOnce()` needs: the parked
+    /// saver, the paused playground and every scrub draw by hand, outside any
+    /// display-link callback. Measured cadence with this link at a 30 fps cap
+    /// on a 120 Hz panel: 33.33 ms mean, 0.02 ms standard deviation.
+    ///
+    /// The range lets the system drop a few frames below the cap under load
+    /// rather than skip to a half rate; the preferred rate is the cap itself.
     private func applyFrameRate() {
-        var fps = Float(max(1, min(config.framesPerSecond, 120)))
-        if ProcessInfo.processInfo.isLowPowerModeEnabled {
-            fps = min(fps, 20)
-        }
+        let requested = max(1, min(config.framesPerSecond, 120))
+        let fps = Float(LerpPowerMonitor.shared.state.frameRate(for: requested))
         displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: min(max(10, fps - 6), fps),
                                                                 maximum: fps,
                                                                 preferred: fps)
     }
 
+    /// Posted on the main queue by `LerpPowerMonitor`, which also logs it.
     @objc private func powerStateChanged(_ note: Notification) {
-        DispatchQueue.main.async { [weak self] in
-            self?.applyFrameRate()
-        }
+        applyFrameRate()
     }
 
-    /// Occlusion pauses the clock and the display link but deliberately leaves
-    /// `running` set: the view is still animating as far as its host is
-    /// concerned, it just has nothing to draw to.
     @objc private func occlusionChanged(_ note: Notification) {
+        occluded = !(window?.occlusionState.contains(.visible) ?? false)
+        visibilityChanged()
+    }
+
+    /// Covered or hidden pauses the clock and takes the display link away —
+    /// a hard zero frames, not a slow rate — but deliberately leaves `running`
+    /// set: the view is still animating as far as its host is concerned, it
+    /// just has nothing to draw to. Unlike `park()`, the clock holds too, so
+    /// the animation picks up where the user last saw it.
+    private func visibilityChanged() {
         guard running else { return }
-        let visible = window?.occlusionState.contains(.visible) ?? false
-        if visible {
-            resumeClock()
+        if canBeSeen {
+            if clockHeld {
+                clockHeld = false
+                resumeClock()
+            }
             installDisplayLink()
         } else {
-            pauseClock()
-            tearDownDisplayLink()   // hard 0 fps while covered
+            if !clockHeld {
+                clockHeld = true
+                pauseClock()
+            }
+            tearDownDisplayLink()
         }
     }
 

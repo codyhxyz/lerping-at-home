@@ -1477,6 +1477,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         timers.append(.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             self?.pollDisk()
         })
+        // Status readouts and a disk poll: none of it is due at an exact
+        // instant, so let the system coalesce the wake-ups (Apple's guidance
+        // is about a tenth of the interval).
+        timers.forEach { $0.tolerance = $0.timeInterval / 10 }
     }
 
     func pollDisk() {

@@ -29,8 +29,9 @@ import ScreenSaver
 ///   as preview. Preview instances keep the classic startAnimation/stopAnimation
 ///   contract and ignore all of the above, so a real screensaver cycle cannot
 ///   freeze the System Settings thumbnail and no verdict can slow it down.
-/// - We ignore `animateOneFrame` entirely; LerpMetalView drives its own
-///   CADisplayLink with a capped frame rate.
+/// - We ignore `animateOneFrame` entirely, and slow its timer to once a
+///   second; LerpMetalView drives its own display link with a capped frame
+///   rate, clamped further on battery, in Low Power Mode and when hot.
 @objc(LerpSaverView)
 public final class LerpSaverView: ScreenSaverView {
 
@@ -123,6 +124,14 @@ public final class LerpSaverView: ScreenSaverView {
 
     public override init?(frame: NSRect, isPreview: Bool) {
         super.init(frame: frame, isPreview: isPreview)
+        // `animateOneFrame` is empty — LerpMetalView's display link draws — but
+        // ScreenSaverView still runs its own timer to call it, at 1/30 s by
+        // default. Measured in a plain host: 30.7 calls/s and 56 wake-ups/s
+        // at the default, 1.3 calls/s and 2.7 wake-ups/s at one second, all
+        // of it on top of the display link. Whether legacyScreenSaver drives
+        // `animateOneFrame` through this same timer is not observable from
+        // here; if it does, this is the same saving there.
+        animationTimeInterval = 1
         effectiveIsPreview = isPreview || frame.width < 600
         wantsLayer = true
         setUpMetalView()
@@ -342,6 +351,9 @@ public final class LerpSaverView: ScreenSaverView {
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             self?.checkWhetherAnyoneCanSeeThis()
         }
+        // Every threshold it checks is in whole seconds, so a quarter of one
+        // of slack changes no verdict and lets the wake-up coalesce.
+        timer.tolerance = 0.25
         RunLoop.main.add(timer, forMode: .common)
         hostWatch = timer
     }

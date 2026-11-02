@@ -284,6 +284,7 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
             guard let self, let view = self.metalView else { return }
             self.window?.title = "Lerping@Home Preview — \(view.currentShaderName) (\(view.statusText))"
         }
+        titleTimer?.tolerance = 0.5
 
         NSApp.activate(ignoringOtherApps: true)
     }
