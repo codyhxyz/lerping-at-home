@@ -238,6 +238,13 @@ in `LerpDataProviders`, and give the shader a matching `// lerp-data:` line.
   under the caching rule above, because its key is the whole input. See
   `Sources/LerpCore/LifeData.swift`.
 
+- **Simulations can step on the GPU.** A provider may implement
+  `encodeCompute(into:uniforms:params:)`, called on the frame's command buffer
+  before the render pass, and hand its kernels to `LerpGPUSimulation`, which
+  keeps the same bounded-epoch, keyed-catch-up contract with ping-pong
+  textures. `SandpileData.swift` is the worked example;
+  `docs/metal-capabilities.md` has the kernel rules that keep it deterministic.
+
 - **Parameters.** `bind(to:uniforms:)` does not receive the shader's
   `// lerp-param:` values. A provider that needs them — `life` takes its cell
   size and generation rate from `size` and `speed` — implements the `params`

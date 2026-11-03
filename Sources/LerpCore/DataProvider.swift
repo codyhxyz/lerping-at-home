@@ -41,6 +41,19 @@ public protocol LerpDataProvider: AnyObject {
     func bind(to encoder: MTLRenderCommandEncoder,
               uniforms: LerpUniforms,
               params: LerpParameterValues?)
+
+    /// Called once per frame *before* the render pass opens, on the same
+    /// command buffer, so a provider can run GPU work whose results the
+    /// fragment shader then reads — compute kernels stepping a simulation, via
+    /// `LerpGPUSimulation`. Whatever this encodes is ordered ahead of the
+    /// `bind` that follows. Same purity contract: derive from
+    /// `(uniforms, params)`, never accumulate.
+    ///
+    /// Defaulted to do nothing, so providers that only bind encode exactly as
+    /// they always did.
+    func encodeCompute(into commandBuffer: MTLCommandBuffer,
+                       uniforms: LerpUniforms,
+                       params: LerpParameterValues?)
 }
 
 public extension LerpDataProvider {
@@ -49,6 +62,10 @@ public extension LerpDataProvider {
               params: LerpParameterValues?) {
         bind(to: encoder, uniforms: uniforms)
     }
+
+    func encodeCompute(into commandBuffer: MTLCommandBuffer,
+                       uniforms: LerpUniforms,
+                       params: LerpParameterValues?) {}
 }
 
 /// Name → provider registry. Built-ins are registered here; a host can add more
@@ -62,6 +79,7 @@ public enum LerpDataProviders {
         "neural-field": { NeuralFieldData(device: $0) },
         "pipes": { PipesData(device: $0) },
         "reaction-diffusion": { ReactionDiffusionData(device: $0) },
+        "sandpile": { SandpileData(device: $0) },
         "string-art": { StringArtData(device: $0) },
     ]
     private static let lock = NSLock()
