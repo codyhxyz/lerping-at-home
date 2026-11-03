@@ -1,0 +1,115 @@
+// Castle To Castle — ported from "castle to castle -r6-" by Yohei Nishitsuji (MIT)
+// https://fragcoord.xyz/s/cltuv8os
+// Copyright (c) 2026 @YoheiNishitsuji. SPDX-License-Identifier: MIT
+// Licence statement: the source carries "SPDX-License-Identifier: MIT /
+// Copyright (c) 2026 @YoheiNishitsuji / [LICENSE] https://opensource.org/
+// licenses/MIT", FragCoord lists it as MIT, and the author's X profile
+// (https://x.com/YoheiNishitsuji) reads "My code shared @x is MIT Licensed".
+// Full MIT text: https://opensource.org/licenses/MIT
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions: The above copyright
+// notice and this permission notice shall be included in all copies or
+// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
+//
+// The author's readable FragCoord version of one of his #つぶやきGLSL pieces.
+// A perspective march into a folding IFS: seven times over, space is turned
+// a quarter-turn about an axis whose tilt breathes with time, then mirror-
+// folded with abs(2p) - 2, and the folded point is measured against a
+// slanted torus. The result is a carved, self-similar ivory architecture —
+// keyholes, rosettes and lattices of tori — that slowly tumbles about the x
+// axis and reorganises itself as the fold axis swings. Light is a sharp
+// exp(-2000 e) glow gathered at every step, so surfaces read as lit stone and
+// the depth falls away into black.
+//
+// Port changes: time is slowed and offset by u.seed (house style). `speed`
+// and `tint` are this port's own parameters; upstream has neither. Upstream
+// is pure white, and when the camera drifts up against a large face the
+// frame goes almost entirely white (mean luma ~0.75), so the default tint
+// is a dimmer warm ivory; the "Upstream" preset restores white. Upstream
+// divides by the resolution's height; this uses the short axis so portrait
+// screens see the same framing (identical on landscape).
+//
+// GPU cost: upstream marches 100 steps of 7 rotate-and-fold passes, ~5x
+// fractal-multiverse. The march is a heavily under-relaxed sphere trace
+// (the folds scale space by 2^7 = 128 and the step divides by 800, so each
+// step covers 0.16 of the true distance), which is what makes a cap cheap
+// here: `steps` takes 20 steps by default, each 100/20 = 5x as long (0.8 of
+// the true distance, still short of overshooting). Surfaces land in the same
+// place; with the light weight below, the capped march differs from upstream
+// by a mean ~12/255 per pixel (shading on the far layers, not structure).
+// Exact savings on top: the ray is linear in its depth, so the per-step
+// tumble becomes a per-pixel origin and direction, and the 2x of each fold
+// is folded into its rotation matrix. The "Upstream" preset restores 100
+// steps. LerpPreview --bench, Apple M5, best of 6 in one quiet window:
+// ~8.3 ms/frame at 3840x2160 (0.94x fractal-multiverse's 8.8 ms), ~0.93 ms
+// at 1200x750; Upstream ~42 ms at 3840x2160.
+//
+// lerp-param: speed float 0 2   = 0.5 "Speed"
+// lerp-param: steps int 20 100  = 20  "March steps"
+// lerp-param: tint  color       = (0.86, 0.81, 0.72) "Tint"
+//
+// lerp-preset: Upstream  speed=1.0, steps=100, tint=(1.0, 1.0, 1.0)
+// lerp-preset: Moonstone tint=(0.58, 0.70, 0.86)
+
+// twigl's rotate3D(): Rodrigues rotation by `angle` about `axis`, built in
+// the same column order as the GLSL mat3 constructor.
+static inline float3x3 ccRotate3D(float angle, float3 axis) {
+    float3 a = normalize(axis);
+    float s = sin(angle), c = cos(angle), r = 1.0 - c;
+    return float3x3(float3(a.x * a.x * r + c,       a.y * a.x * r + a.z * s, a.z * a.x * r - a.y * s),
+                    float3(a.x * a.y * r - a.z * s, a.y * a.y * r + c,       a.z * a.y * r + a.x * s),
+                    float3(a.x * a.z * r + a.y * s, a.y * a.z * r - a.x * s, a.z * a.z * r + c));
+}
+
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+    float2 r = u.resolution;
+    float2 fc = float2(pos.x, r.y - pos.y);           // GLSL gl_FragCoord (y up)
+    float t = u.speed * u.time + u.seed * 60.0;
+
+    // The fold: a quarter turn about (1, tilt, 0), tilt breathing between
+    // -0.5 and 1.0, then abs(p + p) - 2. GLSL p *= M is row-vector times
+    // matrix; the 2x is folded into the matrix (exact).
+    float tilt = 1.5 * smoothstep(-1.0, 1.0, sin(t * 0.4)) - 0.5;
+    float3x3 fold = 2.0 * ccRotate3D(1.57, float3(1.0, tilt, 0.0));
+
+    // Upstream samples p = (uv * g, g - 4.3) and turns its zy plane by t*0.2.
+    // That is linear in the depth g, so p = origin + g * dir.
+    float2 uv = (fc - 0.5 * r) / min(r.x, r.y);
+    float c = cos(t * 0.2), s = sin(t * 0.2);
+    float2x2 tumble = float2x2(float2(c, -s), float2(s, c));
+    float3 origin = float3(0.0, 0.0, -4.3);
+    float3 dir = float3(uv, 1.0);
+    origin.zy = origin.zy * tumble;
+    dir.zy = dir.zy * tumble;
+
+    // Fewer, longer, brighter steps when capped (stride 1 at 100 steps).
+    int steps = u.steps;
+    float stride = 100.0 / float(steps);
+    // A longer step lands more samples on a surface, so its light is scaled
+    // by stride^0.78 rather than stride: calibrated so a capped march matches
+    // upstream's mean brightness (exactly 1 at 100 steps).
+    float weight = pow(stride, 0.78);
+
+    float glow = 0.0;
+    float g = 0.0;   // depth along the ray
+    for (int i = 0; i < steps; i++) {
+        float3 p = origin + g * dir;
+        for (int j = 0; j < 7; j++) p = abs(p * fold) - 2.0;
+
+        // Distance to a slanted torus in the folded space (scaled by 128 from
+        // the folds; /800 makes the step a fraction of the true distance).
+        float e = (length(float2(length(p.xz) - 2.0, (p.y - p.x) * 0.7)) - 0.6) / 8e2;
+        g += e * stride;
+        glow += weight * exp(-e * 2e3) / 4e1;
+    }
+
+    float3 color = glow * u.tint.rgb;
+    color = lerpDither(max(color, 0.0), pos);
+    return half4(half3(color), 1.0h);
+}
