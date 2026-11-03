@@ -75,6 +75,7 @@ public enum LerpDataProviders {
 
     nonisolated(unsafe) private static var factories: [String: Factory] = [
         "heatmap": { HeatmapData(device: $0) },
+        "ink-fluid": { InkFluidData(device: $0) },
         "life": { LifeData(device: $0) },
         "neural-field": { NeuralFieldData(device: $0) },
         "physarum": { PhysarumData(device: $0) },
