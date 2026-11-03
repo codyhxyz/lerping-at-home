@@ -10,27 +10,26 @@
 // turns, eased stops only at dead ends) instead of step-stop-rotate; the
 // bricks, flagstones and ceiling boards are procedural and filtered to the
 // pixel footprint, so nothing shimmers at a distance; the walls are slabs
-// with real thickness rather than paper-thin quads; light comes from a
-// lantern the walker carries, with ambient occlusion in every corner; and the
-// goal is a lit gem whose glow you can see spilling round the last corners.
+// with real thickness. Light is plain and even: one soft light at the eye,
+// a touch of shading where walls meet, and corridors dimming with distance.
+//
+// Every maze is built from its own masonry — red brick, cream brick, dark
+// Flemish-bond brick, or dressed stone — and never the same one twice
+// running. A few walls beside the walker's route are feature walls: a glazed
+// tile panel, or an old doorway bricked up inside a stone arch. They are only
+// placed where the walk passes, so none is wasted.
 //
 // lerp-param: size        int 4 40     = 12      "Maze size"
 // lerp-param: speed       float 0.25 4 = 1.3     "Walk speed (cells/s)"
 // lerp-param: flips       bool         = true    "Flip polyhedra"
-// lerp-param: colorBrick  color        = #8e3b25 "Brick"
-// lerp-param: colorMortar color        = #8c8273 "Mortar"
+// lerp-param: style       int 0 4      = 0       "Walls (0 = new each maze)"
 // lerp-param: colorFloor  color        = #6b625a "Floor"
 // lerp-param: colorCeil   color        = #4a3b2e "Ceiling"
 // lerp-param: colorGoal   color        = #ffbf5a "Goal"
-// lerp-param: lantern     float 0 2    = 1       "Lantern"
-// lerp-param: ambient     float 0 1    = 0.12    "Ambient light"
+// lerp-param: light       float 0 2    = 1       "Brightness"
 //
-// lerp-preset: "Brick Maze" size=12
-// lerp-preset: Catacombs colorBrick=#6d6a63, colorMortar=#3d3934, colorFloor=#4a4540
-// lerp-preset: Catacombs colorCeil=#2a2724, colorGoal=#9fd4ff, lantern=0.85, ambient=0.08
-// lerp-preset: Catacombs speed=1.0, size=16
-// lerp-preset: Sandstone colorBrick=#c99a62, colorMortar=#e3d3b5, colorFloor=#8f7a5f
-// lerp-preset: Sandstone colorCeil=#6e5640, colorGoal=#ff7a45, lantern=0.7, ambient=0.6
+// lerp-preset: Maze size=12
+// lerp-preset: "Red Brick" style=1
 // lerp-preset: Labyrinth size=28, speed=2.2, colorGoal=#7dffb0
 
 // --- Geometry, in cell widths.
@@ -39,10 +38,6 @@ constant float MZ_EYE    = 0.52;    // eye height
 constant float MZ_HALF_T = 0.07;    // half the wall thickness
 constant float MZ_FOCAL  = 1.3;     // ~75° vertical field of view
 
-// --- Bricks: 16 courses, running bond.
-constant float MZ_BH = 1.2 / 16.0;
-constant float MZ_BW = 0.24;
-constant float MZ_MORTAR = 0.0065;  // half the joint width
 
 constant float MZ_OBJ_R  = 0.15;    // polyhedron size
 constant float MZ_GEM_R  = 0.1;
@@ -183,51 +178,139 @@ static inline bool mzSolid(float3 ro, float3 rd, float3 c, float r, float spin, 
 // Surfaces. Each returns linear albedo and perturbs `n`; `fw` is the pixel
 // footprint in world units, which every pattern fades out against.
 
-static inline float3 mzBricks(float u, float v, float face, float fw, float3 brick, float3 mortar,
-                              float3 tangent, thread float3& n) {
-    float row = floor(v / MZ_BH);
-    float x = u + (fmod(abs(row), 2.0) * 0.5 + face * 0.31) * MZ_BW;
-    float col = floor(x / MZ_BW);
-    float fx = x / MZ_BW - col, fy = v / MZ_BH - row;
-    float ex = min(fx, 1.0 - fx) * MZ_BW, ey = min(fy, 1.0 - fy) * MZ_BH;
-    float e = min(ex, ey);
+// Masonry. Each maze is built from one of four, and consecutive mazes never
+// repeat one (MazeData.swift picks; the `style` parameter can pin it).
+struct MzStyle {
+    float h, w;         // course height, unit length
+    float joint;        // half the joint width
+    float spread;       // unit-to-unit value variation
+    int   flemish;      // 0 running bond, 1 Flemish bond (headers between stretchers)
+    float3 unit, mortar;
+};
 
-    float aa = max(fw * 0.5, 1e-4);
-    float body = smoothstep(MZ_MORTAR - aa, MZ_MORTAR + aa, e);
-
-    // Per-brick colour: value, a little hue, and the odd scorched one.
-    float h1 = hash21(float2(col, row) + face * 41.3);
-    float h2 = hash21(float2(row, col) * 1.37 + 7.1 + face);
-    float3 b = brick * (0.68 + 0.5 * h1);
-    b *= float3(1.0 + 0.16 * (h2 - 0.5), 1.0, 1.0 - 0.14 * (h2 - 0.5));
-    if (h2 > 0.93) b *= 0.55;
-
-    float detail = 1.0 - smoothstep(0.003, 0.02, fw);
-    float speck = valueNoise(float2(u, v) * 55.0);
-    b *= mix(1.0, 0.82 + 0.36 * speck, detail);
-    float3 m = mortar * mix(1.0, 0.8 + 0.35 * valueNoise(float2(u, v) * 31.0 + 5.0), detail);
-    m *= 0.78;   // recessed joints catch less light
-
-    float3 alb = mix(m, b, body);
-
-    // Bevelled brick edges: tilt the normal toward the nearest joint.
-    float bevel = 1.0 - smoothstep(MZ_MORTAR, MZ_MORTAR + 0.011, e);
-    float2 toward = ex < ey ? float2(sign(fx - 0.5), 0.0) : float2(0.0, sign(fy - 0.5));
-    float k = 0.55 * bevel * body * (1.0 - smoothstep(0.004, 0.025, fw));
-    n = normalize(n + k * (toward.x * tangent + toward.y * float3(0.0, 1.0, 0.0)));
-
-    // Far away the pattern averages out rather than aliasing.
-    float far = smoothstep(MZ_BH * 0.12, MZ_BH * 0.45, fw);
-    float joint = 2.0 * MZ_MORTAR / MZ_BH + 2.0 * MZ_MORTAR / MZ_BW;
-    alb = mix(alb, mix(brick * 0.93, mortar * 0.78, joint), far);
-
-    // Grime: low-frequency staining, heavier near the floor.
-    float g = valueNoise(float2(u * 1.7 + face * 9.0, v * 2.6));
-    alb *= (0.78 + 0.34 * g) * mix(0.62, 1.0, smoothstep(0.0, 0.4, v));
-    return alb;
+static inline MzStyle mzStyleOf(uint i) {
+    MzStyle s;
+    switch (i & 3u) {
+    case 0u:   // red brick, running bond
+        s.h = 1.2 / 16.0; s.w = 0.24;  s.joint = 0.005;  s.spread = 0.28;
+        s.flemish = 0; s.unit = float3(0.557, 0.231, 0.145); s.mortar = float3(0.549, 0.510, 0.451);
+        break;
+    case 1u:   // cream stock brick, running bond
+        s.h = 1.2 / 17.0; s.w = 0.23;  s.joint = 0.0047; s.spread = 0.22;
+        s.flemish = 0; s.unit = float3(0.70, 0.585, 0.41); s.mortar = float3(0.81, 0.77, 0.68);
+        break;
+    case 2u:   // dark brick, Flemish bond with burnt headers
+        s.h = 1.2 / 16.0; s.w = 0.24;  s.joint = 0.005;  s.spread = 0.24;
+        s.flemish = 1; s.unit = float3(0.42, 0.22, 0.18); s.mortar = float3(0.50, 0.48, 0.45);
+        break;
+    default:   // dressed stone blocks
+        s.h = 0.2;        s.w = 0.46;  s.joint = 0.004;  s.spread = 0.16;
+        s.flemish = 0; s.unit = float3(0.56, 0.54, 0.49); s.mortar = float3(0.36, 0.345, 0.315);
+        break;
+    }
+    s.unit = pow(s.unit, 2.2);
+    s.mortar = pow(s.mortar, 2.2);
+    return s;
 }
 
-static inline float3 mzFlagstones(float2 p, float fw, float3 stone, thread float& gloss) {
+static inline float3 mzMasonry(float u, float v, float face, float fw, MzStyle st) {
+    float row = floor(v / st.h);
+    float odd = fmod(abs(row), 2.0);
+    float x = u + face * 0.37 * st.w;
+    float lo, len, id;
+    bool header = false;
+    if (st.flemish != 0) {
+        float period = 1.5 * st.w;
+        x += odd * 0.75 * st.w;
+        float k = floor(x / period);
+        float m = x - k * period;
+        header = m >= st.w;
+        lo = k * period + (header ? st.w : 0.0);
+        len = header ? 0.5 * st.w : st.w;
+        id = k * 2.0 + (header ? 1.0 : 0.0);
+    } else {
+        x += odd * 0.5 * st.w;
+        id = floor(x / st.w);
+        lo = id * st.w;
+        len = st.w;
+    }
+    float fx = (x - lo) / len, fy = v / st.h - row;
+    float e = min(min(fx, 1.0 - fx) * len, min(fy, 1.0 - fy) * st.h);
+    float aa = max(fw * 0.5, 1e-4);
+    float body = smoothstep(st.joint - aa, st.joint + aa, e);
+
+    // Each unit a slightly different tone, nothing more.
+    float h1 = hash21(float2(id, row) + face * 41.3);
+    float h2 = hash21(float2(row, id) * 1.37 + 7.1 + face);
+    float3 b = st.unit * (1.0 - 0.5 * st.spread + st.spread * h1);
+    b *= float3(1.0 + 0.08 * (h2 - 0.5), 1.0, 1.0 - 0.08 * (h2 - 0.5));
+    if (header) b *= float3(0.7, 0.72, 0.78);   // Flemish bond's darker header ends
+
+    float3 alb = mix(st.mortar * 0.8, b, body);   // joints sit back from the face
+    // Far away the pattern averages out rather than aliasing.
+    float far = smoothstep(st.h * 0.12, st.h * 0.45, fw);
+    float jointFrac = 2.0 * st.joint / st.h + 2.0 * st.joint / st.w;
+    return mix(alb, mix(st.unit, st.mortar * 0.8, jointFrac), far);
+}
+
+// --- Feature walls. Only on walls beside the walker's route; `lu` runs 0..1
+// along the wall from one grid vertex to the next, so both faces agree.
+
+// A glazed tile panel with a cream border course.
+static inline float3 mzTiles(float lu, float v, float fw, float pick, thread bool& inside) {
+    const float x0 = 0.13, x1 = 0.87, y0 = 0.1, y1 = 0.96;
+    inside = lu > x0 && lu < x1 && v > y0 && v < y1;
+    if (!inside) return float3(0.0);
+    const float G = 0.004;
+    float2 q = float2((lu - x0) / (x1 - x0) * 8.0, (v - y0) / (y1 - y0) * 9.0);
+    float2 c = floor(q), f = q - c;
+    float2 sz = float2((x1 - x0) / 8.0, (y1 - y0) / 9.0);
+    float e = min(min(f.x, 1.0 - f.x) * sz.x, min(f.y, 1.0 - f.y) * sz.y);
+    float aa = max(fw * 0.5, 1e-4);
+    float body = smoothstep(G - aa, G + aa, e);
+
+    const float3 glazes[4] = { float3(0.137, 0.314, 0.561), float3(0.118, 0.455, 0.408),
+                               float3(0.486, 0.149, 0.20),  float3(0.725, 0.541, 0.18) };
+    bool border = c.x < 0.5 || c.x > 6.5 || c.y < 0.5 || c.y > 7.5;
+    float3 glaze = border ? float3(0.867, 0.827, 0.733) : glazes[int(pick * 4.0) & 3];
+    float3 tile = pow(glaze, 2.2) * (0.92 + 0.12 * hash21(c + pick * 31.0));
+    float3 grout = pow(float3(0.72, 0.69, 0.62), 2.2);
+    float3 alb = mix(grout, tile, body);
+    return mix(alb, mix(tile, grout, 0.1), smoothstep(sz.y * 0.15, sz.y * 0.5, fw));
+}
+
+// A bricked-up arched doorway: a ring of dressed stone with a keystone, and
+// slightly darker infill inside it.
+static inline float3 mzArch(float lu, float v, float face, float fw, MzStyle st,
+                            thread bool& inside) {
+    const float A = 0.24, S = 0.6, R = 0.06;       // half-width, springing height, ring width
+    float2 rel = float2(lu - 0.5, v - S);
+    float d = v < S ? abs(rel.x) - A : length(rel) - A;
+    inside = d < R;
+    if (!inside) return float3(0.0);
+    if (d < 0.0) return mzMasonry(lu + 3.1, v, face + 5.0, fw, st) * 0.8;
+
+    // Ring stones: jamb blocks below the springing line, nine voussoirs above.
+    float seg, ej;
+    if (v < S) {
+        float k = v / 0.12;
+        seg = floor(k) + (rel.x > 0.0 ? 50.0 : 0.0);
+        ej = min(fract(k), 1.0 - fract(k)) * 0.12;
+    } else {
+        const float step = PI / 9.0;
+        float k = atan2(rel.y, rel.x) / step;
+        seg = floor(k) + 100.0;
+        ej = min(fract(k), 1.0 - fract(k)) * step * (A + d);
+    }
+    float e = min(ej, min(d, R - d));
+    float aa = max(fw * 0.5, 1e-4);
+    float body = smoothstep(st.joint - aa, st.joint + aa, e);
+    float3 stone = pow(float3(0.74, 0.69, 0.60), 2.2) * (0.9 + 0.12 * hash21(float2(seg, face)));
+    if (seg == 104.0) stone *= 1.08;   // keystone
+    return mix(st.mortar * 0.8, stone, body);
+}
+
+static inline float3 mzFlagstones(float2 p, float fw, float3 stone) {
     const float S = 0.5, G = 0.006;
     float2 c = floor(p / S);
     float2 f = p / S - c;
@@ -236,13 +319,8 @@ static inline float3 mzFlagstones(float2 p, float fw, float3 stone, thread float
     float aa = max(fw * 0.5, 1e-4);
     float body = smoothstep(G - aa, G + aa, e);
     float h = hash21(c + 3.7);
-    float detail = 1.0 - smoothstep(0.003, 0.02, fw);
-    float3 s = stone * (0.72 + 0.42 * h) * mix(1.0, 0.85 + 0.3 * valueNoise(p * 23.0 + h * 10.0), detail);
-    float3 alb = mix(stone * 0.35, s, body);
-    alb = mix(alb, stone * 0.9, smoothstep(0.03, 0.15, fw));
-    alb *= 0.8 + 0.3 * valueNoise(p * 1.3 + 11.0);
-    gloss = body * (0.55 + 0.45 * h);
-    return alb;
+    float3 alb = mix(stone * 0.5, stone * (0.86 + 0.2 * h), body);
+    return mix(alb, stone * 0.9, smoothstep(0.03, 0.15, fw));
 }
 
 static inline float3 mzBoards(float2 p, float fw, float3 wood) {
@@ -255,10 +333,7 @@ static inline float3 mzBoards(float2 p, float fw, float3 wood) {
     float aa = max(fw * 0.5, 1e-4);
     float body = smoothstep(0.004 - aa, 0.004 + aa, e);
     float h = hash21(float2(row, plank));
-    float detail = 1.0 - smoothstep(0.003, 0.02, fw);
-    float grain = valueNoise(float2(x * 3.0, p.y * 70.0 + h * 13.0));
-    float3 alb = wood * (0.7 + 0.45 * h) * mix(1.0, 0.8 + 0.4 * grain, detail);
-    alb = mix(wood * 0.3, alb, body);
+    float3 alb = mix(wood * 0.45, wood * (0.84 + 0.24 * h), body);
     return mix(alb, wood * 0.85, smoothstep(0.02, 0.1, fw));
 }
 
@@ -303,40 +378,30 @@ static inline float3 mzScene(float3 ro, float3 rd, float3 right, float3 up, floa
     float pulse = 0.75 + 0.25 * sin(now * 2.1) + 1.5 * F.goal.w;
     float3 col;
 
-    // Lantern: carried just right of and above the eye, so it rolls with you.
-    float flicker = 1.0 + 0.035 * sin(now * 13.0) * sin(now * 7.3 + 1.0);
-    float3 lanternPos = ro + right * 0.14 + up * 0.08 - fwd * 0.05;
-    float3 lanternCol = float3(1.0, 0.8, 0.58) * 3.2 * u.lantern * flicker;
-    float3 ambientCol = float3(0.55, 0.62, 0.75) * u.ambient;
+    // One soft, neutral light at the eye. Surfaces facing you are lit fully,
+    // grazing ones a little less, and nothing goes black.
+    float3 lightCol = float3(1.0, 0.97, 0.92) * 1.25 * u.light;
 
     if (solid >= 0) {
         float3 n = sN;
-        float3 L = normalize(lanternPos - P);
-        float3 V = -rd;
+        float3 L = -rd;
         float3 R = reflect(rd, n);
         if (solid == 8) {
-            // The goal: a lit gem, faceted by its own light.
-            // Each face catches the lantern differently; edges glow hotter.
-            float facet = pow(max(dot(n, L), 0.0), 3.0);
-            float rim = pow(1.0 - max(dot(n, V), 0.0), 2.0);
-            col = goalCol * (0.35 + 0.9 * facet) * (0.6 + 0.4 * pulse)
-                + goalCol * goalCol * rim * 1.6 * pulse
-                + pow(max(dot(R, L), 0.0), 60.0) * 1.5;
+            // The goal: a faceted gem with a slow glow.
+            float facet = pow(max(dot(n, L), 0.0), 2.0);
+            col = goalCol * (0.45 + 0.75 * facet) * (0.7 + 0.3 * pulse);
         } else {
-            // Polyhedra: polished silver with a cold inner light.
+            // Polyhedra: polished silver.
             float3 env = mix(mzLinear(u.colorFloor), mzLinear(u.colorCeil) * 1.3, R.y * 0.5 + 0.5);
             float diff = max(dot(n, L), 0.0);
-            float spec = pow(max(dot(R, L), 0.0), 60.0);
-            col = float3(0.62, 0.66, 0.72) * (0.25 * diff * lanternCol + env * 0.35)
-                + spec * lanternCol * 0.9
-                + float3(0.25, 0.45, 0.9) * 0.35 * pow(1.0 - max(dot(n, V), 0.0), 2.0);
+            col = float3(0.62, 0.66, 0.72) * (0.45 * diff * lightCol + env * 0.4)
+                + pow(max(dot(R, L), 0.0), 60.0) * lightCol * 0.6;
         }
     } else if (t > 1e8) {
         col = float3(0.0);   // never seen: the outer wall is closed
     } else {
         float3 n;
         float3 alb;
-        float gloss = 0.0;
         float ao;
         float fw;
         if (wall) {
@@ -346,71 +411,56 @@ static inline float3 mzScene(float3 ro, float3 rd, float3 right, float3 up, floa
             bool alongX = abs(n.z) > 0.5;          // face normal ±z: bricks run along x
             float uu = alongX ? P.x : P.z;
             float face = alongX ? (n.z > 0.0 ? 1.0 : 2.0) : (n.x > 0.0 ? 3.0 : 4.0);
-            float3 tangent = alongX ? float3(1.0, 0.0, 0.0) : float3(0.0, 0.0, 1.0);
-            alb = mzBricks(uu, P.y, face, fw, mzLinear(u.colorBrick), mzLinear(u.colorMortar), tangent, n);
+            MzStyle st = mzStyleOf(u.style > 0 ? uint(u.style - 1) : F.dim.w);
+
+            // Which wall this is: the one from grid vertex `vtx` along +x or +z.
+            float along = alongX ? P.x : P.z;
+            float lineC = alongX ? round(P.z) : round(P.x);
+            float ei = floor(along);
+            float lu = along - ei;
+            int2 vtx = alongX ? int2(int(ei), int(lineC)) : int2(int(lineC), int(ei));
+            bool feature = (mzRecord(verts, vtx, cells) & (alongX ? 16u : 32u)) != 0u;
+
+            bool done = false;
+            if (feature) {
+                float pick = hash21(float2(vtx) * 1.731 + (alongX ? 0.37 : 0.71) + F.goal.z * 17.0);
+                if (pick < 0.5) alb = mzTiles(lu, P.y, fw, pick * 2.0, done);
+                else            alb = mzArch(lu, P.y, face, fw, st, done);
+            }
+            if (!done) alb = mzMasonry(uu, P.y, face, fw, st);
+
+            // A little shading where walls meet the floor, the ceiling and each other.
             float aoV = min(P.y, MZ_WALL_H - P.y);
-            float aoC = mzWallDist(P.xz + n2 * 0.3, verts, cells);
-            ao = mix(0.45, 1.0, sqrt(saturate(aoV / 0.32))) * mix(0.4, 1.0, sqrt(saturate(aoC / 0.3)));
+            float aoC = mzWallDist(P.xz + n2 * 0.2, verts, cells);
+            ao = mix(0.8, 1.0, saturate(aoV / 0.2)) * mix(0.75, 1.0, saturate(aoC / 0.2));
         } else {
             bool isFloor = rd.y < 0.0;
             n = float3(0.0, isFloor ? 1.0 : -1.0, 0.0);
             fw = t * pxAngle / max(abs(rd.y), 0.06);
             if (isFloor) {
-                alb = mzFlagstones(P.xz, fw, mzLinear(u.colorFloor), gloss);
+                alb = mzFlagstones(P.xz, fw, mzLinear(u.colorFloor));
             } else {
                 alb = mzBoards(P.xz, fw, mzLinear(u.colorCeil));
             }
             float d = mzWallDist(P.xz, verts, cells);
-            ao = mix(0.35, 1.0, sqrt(saturate(d / 0.35)));
+            ao = mix(0.75, 1.0, saturate(d / 0.2));
         }
 
-        float3 V = -rd;
-        float3 Lv = lanternPos - P;
-        float dl = length(Lv);
-        float3 L = Lv / dl;
-        float atten = 1.0 / (1.0 + 1.2 * dl * dl);
-        float diff = max(dot(n, L), 0.0);
-        float3 H = normalize(L + V);
-        float spec = pow(max(dot(n, H), 0.0), mix(16.0, 70.0, gloss)) * mix(0.05, 0.45, gloss);
-        col = alb * (lanternCol * diff * atten + ambientCol * ao) + lanternCol * spec * atten * ao;
-
-        // Light from the goal gem, where it can see the surface.
-        float3 Lg = gemC - P;
-        float dg = length(Lg);
-        if (dg < 4.0) {
-            float2 nn;
-            float2 from = P.xz + n.xz * 0.002;
-            float blocked = mzTrace(from, gemC.xz - from, 0.999, verts, cells, nn);
-            if (blocked > 1e8) {
-                float gd = max(dot(n, Lg / dg), 0.0);
-                float ga = 1.0 / (1.0 + 2.5 * dg * dg) * (1.0 - smoothstep(3.0, 4.0, dg));
-                col += alb * goalCol * gd * ga * 1.6 * pulse * mix(0.6, 1.0, ao);
-            }
-        }
+        float diff = max(dot(n, -rd), 0.0);
+        col = alb * lightCol * (0.4 + 0.6 * diff) * ao;
+        // Corridors dim gently with distance.
+        col *= 1.0 / (1.0 + 0.045 * t * t);
     }
 
-    // Halos: the gem, and a faint one round each polyhedron.
+    // A soft halo round the goal.
     {
         float tc = dot(gemC - ro, rd);
         if (tc > 0.0 && tc < t + MZ_GEM_R) {
             float d = length(ro + rd * tc - gemC);
-            col += goalCol * pulse * 0.0025 / (d * d + 0.01);
-        }
-        for (uint i = 0; i < min(F.dim.z, 8u); ++i) {
-            float4 o = F.objects[i];
-            if (o.z <= 0.0) continue;
-            float3 c = float3(o.x, MZ_EYE, o.y);
-            float tco = dot(c - ro, rd);
-            if (tco > 0.0 && tco < t + MZ_OBJ_R) {
-                float d = length(ro + rd * tco - c);
-                col += float3(0.3, 0.5, 1.0) * o.z * 0.0012 / (d * d + 0.006);
-            }
+            col += goalCol * pulse * 0.0012 / (d * d + 0.01);
         }
     }
 
-    // Depth haze: corridors fall away into a dark, faintly warm murk.
-    float haze = exp(-0.16 * t);
-    col = mix(float3(0.006, 0.005, 0.004) + ambientCol * 0.04, col, haze);
     return col;
 }
 
@@ -421,10 +471,9 @@ fragment half4 lerpMain(float4 pos [[position]],
     float minRes = min(u.resolution.x, u.resolution.y);
     float pxAngle = 2.0 / (minRes * MZ_FOCAL);
 
-    // Camera. Walking bob: two footfalls per cell, scaled down when standing.
+    // Camera: level, at eye height, no bob.
     float yaw = F.camera.z, roll = F.camera.w;
-    float bob = 0.009 * sin(F.motion.y * TWO_PI / 0.5);
-    float3 ro = float3(F.camera.x, MZ_EYE + bob, F.camera.y);
+    float3 ro = float3(F.camera.x, MZ_EYE, F.camera.y);
     float3 fwd = float3(cos(yaw), 0.0, sin(yaw));
     float3 right0 = float3(-fwd.z, 0.0, fwd.x);
     float3 up0 = float3(0.0, 1.0, 0.0);
