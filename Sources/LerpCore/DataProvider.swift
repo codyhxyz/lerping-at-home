@@ -61,6 +61,7 @@ public enum LerpDataProviders {
         "life": { LifeData(device: $0) },
         "neural-field": { NeuralFieldData(device: $0) },
         "pipes": { PipesData(device: $0) },
+        "string-art": { StringArtData(device: $0) },
     ]
     private static let lock = NSLock()
 
