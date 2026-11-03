@@ -50,6 +50,7 @@
 // lerp-param: scale   float 0.4 2.5 = 1.0                "Cell density"
 // lerp-param: twist   float 0 1     = 0.5                "Twist"
 // lerp-param: warp    float 0 1     = 0.4                "Warp"
+// lerp-animate: warp  0.25 0.6 period=170
 // lerp-param: membrane float 0 1  = 0.15               "Membrane"
 // lerp-param: bands   float 0 3     = 0.0                "Iso-bands"
 //

@@ -1008,6 +1008,28 @@ public final class LerpMetalView: NSView {
         parameterValues?.set(name, value) ?? false
     }
 
+    /// Starts or stops one parameter's `// lerp-animate:` drift. False when the
+    /// look on screen gives it none.
+    @discardableResult
+    public func setParameterAnimating(_ name: String, _ on: Bool) -> Bool {
+        parameterValues?.setAnimating(name, on) ?? false
+    }
+
+    /// Gives one parameter `animation` as its drift and starts it. How a host
+    /// puts back a worn preset's `name=animate(…)` after `setShader` has reset
+    /// the view to the shader's defaults.
+    @discardableResult
+    public func animateParameter(_ name: String, with animation: LerpParamAnimation) -> Bool {
+        parameterValues?.animate(name, with: animation) ?? false
+    }
+
+    /// The parameter values as the frame at the current clock draws them —
+    /// animated parameters at their place on the curve. What a host's
+    /// controls should show; `parameterValues` is what they hold.
+    public var liveParameterValues: LerpParameterValues? {
+        parameterValues?.resolved(time: Float(time), seed: seed)
+    }
+
     /// Steps to the next (or, for a negative `direction`, previous) discovered
     /// shader, skipping any that fail to compile. Shader-level on purpose: this
     /// is the ←/→ keys, which walk the shader list at its defaults rather than

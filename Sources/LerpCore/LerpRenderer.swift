@@ -67,14 +67,22 @@ public final class LerpRenderer {
     /// straight after the 32-byte uniform head. `data` is the optional
     /// `LerpDataProvider` the shader declared, binding fragment indices 1 and
     /// up. A shader with neither encodes byte-for-byte as it always did.
+    ///
+    /// Animated parameters (`// lerp-animate:`) are resolved here and nowhere
+    /// else, from this frame's own `uniforms.time` and `uniforms.seed`: every
+    /// host — the saver, the playground, `--snapshot`, the gallery stills, the
+    /// crossfade's outgoing look — draws through this, so all of them agree on
+    /// the value at a given (time, seed), and the data provider below is handed
+    /// the same resolved values the fragment shader is.
     @discardableResult
     public func encodePass(target: MTLTexture,
                            pipeline: MTLRenderPipelineState,
                            uniforms: LerpUniforms,
-                           params: LerpParameterValues? = nil,
+                           params held: LerpParameterValues? = nil,
                            data: LerpDataProvider? = nil) -> MTLCommandBuffer? {
         let signpost = LerpSignposts.frames.beginInterval("encode")
         defer { LerpSignposts.frames.endInterval("encode", signpost) }
+        let params = held?.resolved(time: uniforms.time, seed: uniforms.seed)
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
         gpuCost.attach(to: commandBuffer, width: target.width, height: target.height)
         // Compute work a provider needs finished before the fragment shader

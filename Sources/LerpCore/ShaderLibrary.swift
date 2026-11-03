@@ -271,9 +271,12 @@ public extension Collection where Element == LerpShader {
     func rotationEntries() -> [LerpRotationEntry] {
         flatMap { shader in
             let named = shader.presets.map { LerpRotationEntry(shader: shader.name, preset: $0.name) }
-            let defaults = shader.defaultParameterValues().packedTail
+            // Compared as looks, not bytes: a preset that only pins an
+            // animated parameter at its default packs the same tail and still
+            // draws different frames.
+            let defaults = shader.defaultParameterValues()
             let namedDefault = named.contains {
-                shader.parameterValues(for: $0).packedTail == defaults
+                shader.parameterValues(for: $0).rendersSameLook(as: defaults)
             }
             return (namedDefault ? [] : [LerpRotationEntry(shader: shader.name)]) + named
         }
@@ -464,7 +467,8 @@ public final class ShaderLibrary: @unchecked Sendable {
         if !shader.parameterErrors.isEmpty {
             try fail(shader, 3, "shader '\(shader.name)' has malformed parameter declarations:\n"
                 + shader.parameterErrors.map { "  \($0)" }.joined(separator: "\n")
-                + "\n  syntax: // lerp-param: NAME TYPE [MIN MAX] = DEFAULT \"Label\"")
+                + "\n  syntax: // lerp-param: NAME TYPE [MIN MAX] = DEFAULT \"Label\""
+                + "\n          // lerp-animate: NAME LOW HIGH [period=SECONDS]")
         }
 
         let prelude = LerpPrelude.source(parameters: shader.parameters,

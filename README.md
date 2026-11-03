@@ -458,6 +458,13 @@ its parameters and presets wherever the file goes.
 - The playground writes this form for you — **Shader → Save Look as Preset…**
   turns the values on screen into a new named block in the file. See "Shader
   playground".
+- `// lerp-animate: NAME LOW HIGH [period=SECONDS]` makes a `float` or `color`
+  parameter drift slowly between two bounds, computed from (time, seed) every
+  frame so snapshots and scrubbing still reproduce. A preset that sets the
+  parameter pins it; `name=animate(LOW, HIGH, period=S)` re-bounds it. In the
+  playground its slider moves on its own, a small waveform toggle shows it is
+  drifting, and dragging the slider (or turning a MIDI knob bound to it) takes
+  control until the toggle hands it back. Details in `PORTING.md`.
 - A malformed declaration is a compile error naming the line.
 - 28 of the 31 built-in shaders declare parameters mirroring the upstream
   paper-design props, with defaults set to this project's current look and the

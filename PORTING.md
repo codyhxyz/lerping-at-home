@@ -132,6 +132,103 @@ Parameters are part of the purity contract: a frame stays a pure function of
 (shader, time, seed, parameters). Values are re-packed from scratch on every
 change and bound per frame; nothing accumulates.
 
+### Animated parameters
+
+A `float` or `color` parameter can drift on its own, slowly, between two
+bounds. Declare it next to its `// lerp-param:`:
+
+```metal
+// lerp-param:   foldRotation float 0 1 = 0.4 "Fold rotation"
+// lerp-animate: foldRotation 0.2 0.6 period=180
+```
+
+```
+// lerp-animate: NAME LOW HIGH [period=SECONDS]
+```
+
+- **NAME** — a `// lerp-param:` in the same file, above or below. Only
+  `float` and `color` animate: an `int` would step and a `bool` would
+  flicker, so both are errors.
+- **LOW HIGH** — numbers inside the parameter's declared range for a float,
+  two colours (`#RRGGBB` or `(r, g, b[, a])`) for a colour, and not equal.
+  They are an *envelope*: the value is the weighted sum of two sines —
+  the second φ ≈ 1.618 times faster and a quarter of the weight — so the
+  main swing covers the middle three quarters, the extremes are touched
+  only when both waves agree, and the motion never exactly repeats.
+- **period=SECONDS** — one swing of the main wave. Optional (120 s);
+  `180s` is accepted; under 10 s is an error, because that is motion, and
+  motion belongs in the shader against `u.time`.
+- The phase comes from `u.seed` and the parameter's name, so every
+  activation starts somewhere different and two parameters with the same
+  period do not move in step.
+- The declared default is still the parameter's value when something pins
+  it, and what Save writes, so keep it inside the bounds.
+
+Anything malformed — an unknown name, a bound out of range, a duplicate
+line, a stray option — is a hard error naming the line, like the rest of
+the grammar.
+
+**Presets.** A `// lerp-animate:` is part of the declaration, so it is part
+of every look that does not override it — a preset that never mentions the
+parameter keeps the drift. A preset that **sets a value pins it** there:
+a value is a statement of what the parameter is. To drift differently:
+
+```metal
+// lerp-preset: Still    foldRotation=0.4
+// lerp-preset: Restless foldRotation=animate(0.1, 0.9, period=60)
+// lerp-preset: Slower   foldRotation=animate(period=300)
+// lerp-preset: Back     foldRotation=animate
+```
+
+Still pins it at 0.4; Restless re-bounds it; Slower keeps the declared bounds
+at a new period; Back drifts exactly as declared (useful only to undo an
+earlier assignment of the same preset). `animate(…)` takes the bounds as a pair or not at all, and `period=`; what
+it leaves out comes from the file's `// lerp-animate:`, so a bare
+`animate` on a parameter with no declaration is an error. It also works on a
+parameter the file holds still, which then drifts only in that look. If a
+preset names a parameter twice, the later assignment wins.
+
+**Purity.** The animated value is computed from (time, seed, declaration)
+for every frame, never stepped or accumulated, in exactly one place:
+`LerpRenderer.encodePass`, from the very `LerpUniforms` the frame is drawn
+with. So `--snapshot --time T`, the time scrubber, the gallery's stills, the
+crossfade and the desktop handoff all land on the same value at T, and a data
+provider's `params` overload is handed the animated value too. A provider that
+caches by a parameter (`life`'s board size) rebuilds whenever it changes, so
+do not animate a parameter a provider keys a simulation or cache on.
+
+**In the playground** an animated parameter's slider (or colour well) moves as
+it plays, and a small waveform toggle beside it is lit while it drifts.
+Dragging the slider, typing a value, or a MIDI knob bound to it takes control:
+the drift stops for that parameter, holding the value you gave it, until you
+click the toggle again. Clicking the toggle off holds the value on screen, so
+nothing jumps. `⌘S` / `⇧⌘S` save what you see: a held parameter is written as
+`name=value` (which pins it, even at its default), a re-bounded drift as
+`name=animate(…)`, and one drifting as declared is not written at all. Saving
+the Defaults look cannot pin a parameter — its drift *is* the
+`// lerp-animate:` line — so the status line says so; save a preset, or delete
+the line.
+
+**From the CLI**, `--params NAME` prints each drift under its parameter
+(`animate 0.2 0.6 period=180`) and in presets (`name=animate(…)`).
+`--snapshot` renders the value at `--time`; `--param name=0.4` pins it and
+`--param 'name=animate(0.1, 0.3, period=60)'` re-bounds it.
+`LerpPreview --animate-selftest` checks the grammar, the curve, purity
+(cold / warm / scrubbed back, and what a provider is handed), preset
+overrides and the Save round trip.
+
+**House style.** Drift is seasoning, not the dish.
+
+- Slow: periods of 60–300 s. If you can watch it move, it is too fast.
+- Modest: a fraction of the range, chosen so every point inside the bounds is
+  a look you would ship on its own. Check the two ends with `--param`.
+- Only parameters whose *motion* looks good — a fold angle, a scale, a warp
+  amount. Not a palette count, not a march step count, not anything that
+  makes the image pop or re-layout, and not anything the shader already
+  animates against `u.time` (that is two clocks fighting).
+- One or two per shader. Several things drifting at once reads as unsteady.
+- `topologica-gyroid`'s `warp` is the worked example.
+
 ## Audio-reactive shaders
 
 `LerpUniforms` carries four smoothed levels of whatever the Mac is playing,

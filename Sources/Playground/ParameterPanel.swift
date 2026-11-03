@@ -39,6 +39,9 @@ final class ParameterPanel: NSView {
     /// A row's MIDI menu was used. The component is nil for everything that is
     /// not a colour, and names the axis for the ones that are.
     var onMIDICommand: ((String, ColorComponent?, MIDICommand) -> Void)?
+    /// A row's animation toggle was clicked: true to let the parameter drift
+    /// again, false to hold it where it is on screen.
+    var onAnimate: ((String, Bool) -> Void)?
 
     enum MIDICommand {
         case learn
@@ -76,12 +79,16 @@ final class ParameterPanel: NSView {
         let control: NSControl
         let field: NSTextField?
         let midi: NSPopUpButton?
+        /// The `// lerp-animate:` toggle: lit while the parameter drifts,
+        /// dim while it is held. Hidden when the look gives it no drift, and
+        /// absent on the types that cannot have one.
+        let animate: NSButton?
         let view: NSView
         var bindings: [MIDIBinding] = []
         init(param: LerpParam, control: NSControl, field: NSTextField?,
-             midi: NSPopUpButton?, view: NSView) {
+             midi: NSPopUpButton?, animate: NSButton?, view: NSView) {
             self.param = param; self.control = control; self.field = field
-            self.midi = midi; self.view = view
+            self.midi = midi; self.animate = animate; self.view = view
         }
     }
 
@@ -216,15 +223,37 @@ final class ParameterPanel: NSView {
         midi.identifier = control.identifier
         midi.widthAnchor.constraint(equalToConstant: 68).isActive = true
 
+        // Only the types `// lerp-animate:` accepts get one. It starts hidden;
+        // `show(values:)` reveals it when the look on screen gives this
+        // parameter a drift, which a preset can do for a parameter the file
+        // itself holds still.
+        var animate: NSButton?
+        if param.type == .float || param.type == .color {
+            let toggle = NSButton(image: NSImage(systemSymbolName: "waveform.path",
+                                                 accessibilityDescription: "Animate \(param.label)")
+                                      ?? NSImage(),
+                                  target: self, action: #selector(animateToggled))
+            toggle.setButtonType(.toggle)
+            toggle.isBordered = false
+            toggle.imageScaling = .scaleProportionallyDown
+            toggle.identifier = control.identifier
+            toggle.isHidden = true
+            toggle.widthAnchor.constraint(equalToConstant: 16).isActive = true
+            animate = toggle
+        }
+
         let views: [NSView] = [name, control, field,
-                               param.type == .color ? Chrome.flexible() : nil, midi]
+                               param.type == .color ? Chrome.flexible() : nil, animate, midi]
             .compactMap { $0 }
         let stack = NSStackView(views: views)
         stack.spacing = 6
         stack.alignment = .centerY
         stack.distribution = .fill
+        // A hidden toggle must not leave a gap where it would be.
+        stack.detachesHiddenViews = true
         control.setContentHuggingPriority(.init(1), for: .horizontal)
-        let row = Row(param: param, control: control, field: field, midi: midi, view: stack)
+        let row = Row(param: param, control: control, field: field, midi: midi,
+                      animate: animate, view: stack)
         rows[param.name] = row          // `setBinding` looks the row up to read its colour
         setBinding([], for: param.name)
         return row
@@ -238,23 +267,64 @@ final class ParameterPanel: NSView {
 
     /// Pushes `values` into the controls without reporting them as edits. This
     /// is how preset application, defaults and inbound MIDI all reach the UI.
+    ///
+    /// Pass the *live* values (`LerpMetalView.liveParameterValues`), so an
+    /// animating parameter's control shows where it is on its curve and its
+    /// toggle shows that it is drifting.
     func show(values: LerpParameterValues?) {
         isPushing = true
         defer { isPushing = false }
         for (name, row) in rows {
-            let value = (values?[name] ?? nil) ?? row.param.defaultValue
-            switch (row.param.type, value) {
-            case (.color, .color(let c)):
-                (row.control as? NSColorWell)?.color = NSColor(lerp: c)
-            case (.bool, .scalar(let v)):
-                (row.control as? NSSwitch)?.state = v != 0 ? .on : .off
-            case (_, .scalar(let v)):
-                row.control.doubleValue = v
-                row.field?.stringValue = format(v, row.param)
-            default:
-                break
-            }
+            push((values?[name] ?? nil) ?? row.param.defaultValue, into: row)
+            showAnimation(of: row, in: values)
         }
+    }
+
+    /// The per-frame half of `show(values:)`: moves only the controls of
+    /// parameters that are drifting, so the sliders visibly follow the
+    /// animation. A row being typed into is left alone.
+    func showLive(values: LerpParameterValues?) {
+        guard let values, !values.activeAnimations.isEmpty else { return }
+        isPushing = true
+        defer { isPushing = false }
+        for (name, row) in rows where values.isAnimating(name) {
+            guard row.field?.currentEditor() == nil, let value = values[name] else { continue }
+            push(value, into: row)
+        }
+    }
+
+    private func push(_ value: LerpParamValue, into row: Row) {
+        switch (row.param.type, value) {
+        case (.color, .color(let c)):
+            (row.control as? NSColorWell)?.color = NSColor(lerp: c)
+        case (.bool, .scalar(let v)):
+            (row.control as? NSSwitch)?.state = v != 0 ? .on : .off
+        case (_, .scalar(let v)):
+            row.control.doubleValue = v
+            row.field?.stringValue = format(v, row.param)
+        default:
+            break
+        }
+    }
+
+    /// The toggle's visibility, lit/dim state and the words that explain it.
+    private func showAnimation(of row: Row, in values: LerpParameterValues?) {
+        guard let toggle = row.animate else { return }
+        let name = row.param.name
+        guard let animation = values?.animations[name] else {
+            toggle.isHidden = true
+            return
+        }
+        let on = values?.isAnimating(name) == true
+        toggle.isHidden = false
+        toggle.state = on ? .on : .off
+        toggle.contentTintColor = on ? .controlAccentColor : .tertiaryLabelColor
+        let range = "\(animation.low.literal)–\(animation.high.literal) over "
+            + "\(LerpParamValue.scalar(animation.period).literal) s"
+        toggle.toolTip = on
+            ? "Animating \(range). Click to hold it where it is — moving the control, "
+                + "or a MIDI knob bound to it, takes control too."
+            : "Held. Click to let it drift \(range) again."
     }
 
     /// Puts the popup on `name` without applying anything — the display half of
@@ -434,6 +504,14 @@ final class ParameterPanel: NSView {
         row.control.doubleValue = v
         sender.stringValue = format(v, row.param)
         onChange?(name, clamped)
+    }
+
+    @objc private func animateToggled(_ sender: NSButton) {
+        guard let name = sender.identifier?.rawValue, rows[name] != nil else { return }
+        // A borderless button flips its own state on click; the controller
+        // pushes the result back through `show(values:)`, tint and tooltip
+        // included.
+        onAnimate?(name, sender.state == .on)
     }
 
     @objc private func presetChanged() {

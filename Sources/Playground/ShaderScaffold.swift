@@ -171,7 +171,8 @@ enum PresetScaffold {
     /// written today is what a rename tomorrow gets aligned against, and
     /// appending is the one edit that leaves every existing index where it was.
     ///
-    /// With no presets yet it goes after the last `// lerp-param:` line with a
+    /// With no presets yet it goes after the last `// lerp-param:` (or
+    /// `// lerp-animate:`) line with a
     /// `//` spacer between, which is the shape every shader in the tree has:
     /// the parameters, a blank comment, then the presets. With neither — a file
     /// declaring nothing, which cannot have produced any values worth saving —
@@ -189,7 +190,8 @@ enum PresetScaffold {
 
         if let index = lastLine(carrying: LerpParamParser.presetDirective) {
             text.insert(contentsOf: lines, at: index + 1)
-        } else if let index = lastLine(carrying: LerpParamParser.paramDirective) {
+        } else if let index = [lastLine(carrying: LerpParamParser.paramDirective),
+                               lastLine(carrying: LerpParamParser.animateDirective)].compactMap({ $0 }).max() {
             text.insert(contentsOf: ["//"] + lines, at: index + 1)
         } else {
             let end = text.last?.isEmpty == true ? text.count - 1 : text.count

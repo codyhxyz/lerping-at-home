@@ -71,9 +71,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Measured against `compiled` rather than `current`, because the values on
     /// screen are values *of* the parameters the buffer declares; a slider the
     /// file on disk has never heard of is still a slider that has moved.
+    ///
+    /// Compared as looks (`rendersSameLook`), so taking control of an animated
+    /// parameter is a change, and handing it back undoes the change whatever
+    /// the slider was left at.
     private var parametersMoved: Bool {
         guard let compiled, let live = metalView.parameterValues else { return false }
-        return live.values != compiled.parameterValues(for: currentEntry).values
+        return !live.rendersSameLook(as: compiled.parameterValues(for: currentEntry))
     }
     /// What Save writes, and therefore what the Save button and ⌘S report. One
     /// predicate so an enabled control and a working command cannot disagree.
@@ -116,6 +120,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// `setShader`, which resets the view's copy — without this, typing one
     /// character in the editor would snap every slider back.
     private var parameterState: [String: LerpParamValue] = [:]
+    /// Which animated parameters the user has taken control of (false) or
+    /// handed back (true), for the same reason `parameterState` exists. Only
+    /// the *choice* is kept: the drift itself is re-read from the buffer on
+    /// every compile, so editing a `// lerp-animate:` line shows at once.
+    /// Empty means every parameter does what the worn look says.
+    private var animationState: [String: Bool] = [:]
     /// What the inspector currently has controls for.
     private var shownParameters: [LerpParam] = []
     /// What the inspector's preset popup currently lists. Tracked beside the
@@ -465,6 +475,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func inspectorPane() -> NSView {
         inspector.onChange = { [weak self] name, value in self?.setParameter(name, value) }
         inspector.onPreset = { [weak self] name in self?.applyPreset(name) }
+        inspector.onAnimate = { [weak self] name, on in self?.setAnimating(name, on) }
         inspector.onMIDICommand = { [weak self] name, component, command in
             self?.midiCommand(name, component, command)
         }
@@ -538,6 +549,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func open(_ shader: LerpShader, preset: String? = nil) {
         current = shader
         parameterState.removeAll()      // a new shader starts at its own defaults
+        animationState.removeAll()
         currentPreset = nil
         editor.setText(shader.source)
         metalView.config.shaderName = shader.name
@@ -659,6 +671,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             shownPresets = shader.presets
             let declared = Set(shader.parameters.map(\.name))
             parameterState = parameterState.filter { declared.contains($0.key) }
+            animationState = animationState.filter { declared.contains($0.key) }
             inspector.rebuild(shader: shader)
             // A rebuild leaves the popup on "Defaults"; the look on screen has
             // not changed, so put the label back on it rather than letting the
@@ -668,16 +681,46 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             refreshBindingLabels()
         }
         for (name, value) in parameterState { metalView.setParameter(name, value) }
-        inspector.show(values: metalView.parameterValues)
+        // Pushing the values back pinned every animated one (a set value is a
+        // held value), and `setShader` dropped the worn preset's own drifts.
+        // Both come back from the buffer — the look's drift, as the text now
+        // declares it — and then the user's own take-control choices on top.
+        let look = shader.parameterValues(for: currentEntry)
+        for (name, animation) in look.animations {
+            metalView.animateParameter(name, with: animation)
+            metalView.setParameterAnimating(name, animationState[name] ?? look.isAnimating(name))
+        }
+        inspector.show(values: metalView.liveParameterValues)
     }
 
     /// The one place a parameter changes, whatever moved it — mouse, typed
-    /// number, preset or knob.
+    /// number, preset or knob. On a parameter that is animating this takes
+    /// control of it: the drift stops for it until its toggle hands it back.
     func setParameter(_ name: String, _ value: LerpParamValue) {
         parameterState[name] = value
         metalView.setParameter(name, value)
+        if metalView.parameterValues?.animations[name] != nil {
+            animationState[name] = false
+            inspector.show(values: metalView.liveParameterValues)
+        }
         // A moved value is an unsaved change to the look, so Save has to light
         // up on it exactly as it does on a keystroke in the editor.
+        updateChrome()
+        if isPaused { metalView.renderOnce() }
+    }
+
+    /// The inspector's animation toggle. Holding a parameter holds it where
+    /// it is on screen *now* — the value on its curve, not the declared
+    /// default it was drifting away from — so nothing jumps.
+    func setAnimating(_ name: String, _ on: Bool) {
+        if on {
+            metalView.setParameterAnimating(name, true)
+        } else if let here = metalView.liveParameterValues?[name] {
+            parameterState[name] = here
+            metalView.setParameter(name, here)
+        }
+        animationState[name] = on
+        inspector.show(values: metalView.liveParameterValues)
         updateChrome()
         if isPaused { metalView.renderOnce() }
     }
@@ -700,7 +743,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Takes whatever the view now holds as the user's chosen state.
     private func adoptViewValues() {
         parameterState = metalView.parameterValues?.values ?? [:]
-        inspector.show(values: metalView.parameterValues)
+        animationState.removeAll()      // the look's own drifts, untouched
+        inspector.show(values: metalView.liveParameterValues)
         if isPaused { metalView.renderOnce() }
     }
 
@@ -814,8 +858,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         guard let routed = router.route(channel: message.channel, cc: message.cc, value: message.value),
               let param = shownParameters.first(where: { $0.name == routed.binding.paramID }),
               let value = resolve(routed.update, for: param, binding: routed.binding) else { return }
+        // A knob is a hand on the control: bound to an animated parameter, it
+        // takes control of it exactly as dragging the slider does.
         setParameter(param.name, value)
-        inspector.show(values: metalView.parameterValues)
+        inspector.show(values: metalView.liveParameterValues)
         midiPanel.showStatus("\(routed.binding.shortLabel) → \(param.name) = \(value.literal)")
     }
 
@@ -831,8 +877,15 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func currentColor(of param: LerpParam) -> SIMD4<Float> {
-        (parameterState[param.name] ?? param.defaultValue).colorValue
+        currentValue(of: param).colorValue
             ?? param.defaultValue.colorValue ?? SIMD4<Float>(0, 0, 0, 1)
+    }
+
+    /// What `param` is on screen now — for an animating parameter, its place
+    /// on the curve, so a relative knob or a toggle picks up from where the
+    /// drift had taken it instead of jumping back to the held value.
+    private func currentValue(of param: LerpParam) -> LerpParamValue {
+        metalView.liveParameterValues?[param.name] ?? parameterState[param.name] ?? param.defaultValue
     }
 
     /// Turns "the knob did this" into a value for this particular parameter.
@@ -861,7 +914,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             return param.clamp(.color(ColorProjection.apply(component, position: position,
                                                             to: current, base: base)))
         }
-        let current = (parameterState[param.name] ?? param.defaultValue).scalarValue ?? 0
+        let current = currentValue(of: param).scalarValue ?? 0
         let span = param.max - param.min
         let scaledLow = param.min + low * span, scaledHigh = param.min + high * span
         switch update {
@@ -1206,7 +1259,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// rotation entry keeps the same key, so its enabled/disabled choice stays
     /// intact while its values change.
     @objc func savePreset(_ sender: Any?) {
-        let overrides: [(param: LerpParam, value: LerpParamValue)]
+        let overrides: LookOverrides
         switch liveValues() {
         case .ready(let values): overrides = values
         case .unavailable: return NSSound.beep()
@@ -1245,8 +1298,18 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// editor that will not save your typing because the shader does not compile
     /// yet is an editor with a bug in it — so it writes the text either way and
     /// keeps the reason to a status line.
+    /// What the look on screen says that its file does not: held values
+    /// (`name=value`, which also pins an animated parameter) and drifts other
+    /// than the declared one (`name=animate(…)`). See `LerpPresetWriter`.
+    struct LookOverrides {
+        var values: [(param: LerpParam, value: LerpParamValue)]
+        var animations: [(param: LerpParam, animation: LerpParamAnimation)]
+        var count: Int { values.count + animations.count }
+        var isEmpty: Bool { values.isEmpty && animations.isEmpty }
+    }
+
     private enum LiveValues {
-        case ready([(param: LerpParam, value: LerpParamValue)])
+        case ready(LookOverrides)
         /// The compile on screen is not of the text in the editor: a race, not
         /// a decision anybody made, and nothing worth a sentence.
         case unavailable
@@ -1274,7 +1337,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // Both of these would come back from the parser as `preset … sets
         // nothing`, so they are refused here, where the reason can be said in
         // words rather than as a compile error on a line the user never typed.
-        let overrides = LerpPresetWriter.overrides(in: values)
+        let overrides = LookOverrides(values: LerpPresetWriter.overrides(in: values),
+                                      animations: LerpPresetWriter.animationOverrides(in: values))
         guard !overrides.isEmpty else {
             return .cannot(title: "Nothing to save as a preset", detail: compiled.parameters.isEmpty
                 ? "\(current.name) declares no `// lerp-param:` parameters, so there is nothing a "
@@ -1300,18 +1364,28 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// editing the declaration by hand does, and it is what saving the Defaults
     /// look can honestly mean; the status line says how many lines moved, and
     /// ⌘Z takes the buffer back.
+    ///
+    /// The one thing it cannot save is a parameter you took control of from
+    /// its `// lerp-animate:`. The Defaults look's drift *is* that line, and
+    /// rewriting someone's declarations to delete it is not what Save is for —
+    /// so the held value becomes the default, the drift resumes, and the status
+    /// line says so and names the two ways to keep it still.
     @discardableResult
-    private func writeDefaults(_ overrides: [(param: LerpParam, value: LerpParamValue)]) -> Bool {
+    private func writeDefaults(_ overrides: LookOverrides) -> Bool {
         let declared = compiled?.parameters.count ?? overrides.count
-        editor.replaceTextAsEdit(ParamScaffold.settingDefaults(overrides, in: editor.text))
+        let stillDrifting = overrides.values.filter { $0.param.animation != nil }.map(\.param.name)
+        editor.replaceTextAsEdit(ParamScaffold.settingDefaults(overrides.values, in: editor.text))
         guard writeBuffer() else { return false }
         // The round trip in public, as in `writePreset`: the file has been
         // re-read and recompiled, and this puts the freshly declared defaults
         // on screen — so a write that did not take cannot look like one that did.
         applyPreset(nil)
-        setStatus("✓  saved \(overrides.count) of \(declared)"
-                    + " parameter\(declared == 1 ? "" : "s") as \(current.name)'s defaults",
-                  tint: EditorTheme.text)
+        setStatus("✓  saved \(overrides.values.count) of \(declared)"
+                    + " parameter\(declared == 1 ? "" : "s") as \(current.name)'s defaults"
+                    + (stillDrifting.isEmpty ? "" : " — \(stillDrifting.joined(separator: ", ")) still "
+                        + "animate\(stillDrifting.count == 1 ? "s" : ""): delete the `// lerp-animate:` line, "
+                        + "or save a preset (⇧⌘S), to keep \(stillDrifting.count == 1 ? "it" : "them") still"),
+                  tint: stillDrifting.isEmpty ? EditorTheme.text : EditorTheme.dim)
         return true
     }
 
@@ -1321,10 +1395,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// same route and report it in the same words.
     @discardableResult
     private func writePreset(named name: String,
-                             _ overrides: [(param: LerpParam, value: LerpParamValue)],
+                             _ overrides: LookOverrides,
                              replacing existing: LerpPreset?) -> Bool {
         let declared = compiled?.parameters.count ?? overrides.count
-        let declaration = LerpPresetWriter.declaration(name: name, overrides: overrides)
+        let declaration = LerpPresetWriter.declaration(name: name, overrides: overrides.values,
+                                                       animations: overrides.animations)
 
         // Reported as an edit rather than pushed in silently: this is exactly
         // the block you would have typed, ⌘Z still undoes it, and the file that
@@ -1359,6 +1434,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         current = LerpShader(name: current.name, source: text, isBuiltIn: current.isBuiltIn, url: url)
         editor.setText(text)
         parameterState.removeAll()      // else `syncParameters` pushes the moved values straight back
+        animationState.removeAll()
         compileNow(force: true)
         applyPreset(currentPreset)      // reloads the look, and updates the chrome on its way out
     }
@@ -1554,6 +1630,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             syncTransport()
             fpsLabel.stringValue = metalView.statusText
                 + (metalView.isEDRActive ? String(format: " · EDR %.1fx", metalView.edrHeadroomInUse) : "")
+        })
+
+        // Animated parameters' controls follow the drift. A no-op unless
+        // something is animating; the drift is slow, so 20 Hz is smooth.
+        timers.append(.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self, inspector.window?.isVisible == true else { return }
+            inspector.showLive(values: metalView.liveParameterValues)
         })
 
         // Pick up shaders added or edited outside the app (another editor, or

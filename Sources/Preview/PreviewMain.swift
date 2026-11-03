@@ -5,7 +5,8 @@ import Metal
 ///
 ///   LerpPreview                     open a live preview window
 ///   LerpPreview --list              list discovered shaders
-///   LerpPreview --params [NAME]     print declared parameters and presets
+///   LerpPreview --params [NAME]     print declared parameters, animations and presets
+///   LerpPreview --animate-selftest  check the `// lerp-animate:` contract
 ///   LerpPreview --snapshot DIR      render every shader to PNG in DIR
 ///       [--size WxH] [--time T] [--seed S] [--shader NAME]
 ///       [--preset NAME] [--param name=value ...]
@@ -40,6 +41,11 @@ enum PreviewMain {
                   (try? library.pipeline(for: shader)) != nil
             else { fail("Game of Life must compile and expose exactly ten distinct stories") }
             print("OK    Game of Life rules, canonical patterns, and 10-story rotation")
+            return
+        }
+
+        if args.contains("--animate-selftest") {
+            AnimateSelfTest.run(extraSearch)
             return
         }
 
@@ -177,10 +183,15 @@ enum PreviewMain {
             let range = param.type == .float || param.type == .int
                 ? String(format: "  [%g … %g]", param.min, param.max) : ""
             print("  \(param.name)  \(param.type.rawValue) = \(param.defaultValue.literal)\(range)  \"\(param.label)\"")
+            if let animation = param.animation {
+                print("    animate \(animation.declarationLiteral)")
+            }
         }
         for preset in shader.presets {
-            let body = preset.values.keys.sorted()
-                .map { "\($0)=\(preset.values[$0]!.literal)" }.joined(separator: ", ")
+            let body = (preset.values.map { ($0.key, $0.value.literal) }
+                        + preset.animations.map { ($0.key, $0.value.presetLiteral) })
+                .sorted { $0.0 < $1.0 }
+                .map { "\($0.0)=\($0.1)" }.joined(separator: ", ")
             print("  preset \(preset.name): \(body)")
         }
         print("")
@@ -205,6 +216,21 @@ enum PreviewMain {
                      + (shader.parameters.isEmpty ? "" : " (has: \(shader.parameters.map(\.name).joined(separator: ", ")))"))
             }
             let raw = parts[1]
+            // `name=animate(…)` sets it drifting, exactly as in a preset; a
+            // plain value pins it, exactly as in a preset.
+            if raw.lowercased().hasPrefix("animate") {
+                do {
+                    guard case .animate(let spec) = try LerpParamParser.parseSetting(raw, line: 0, text: override)
+                    else { fail("'\(raw)' is not animate or animate(LOW, HIGH[, period=S])") }
+                    let animation = try LerpParamParser.resolveAnimation(spec, for: param,
+                                                                         fallback: values.animations[param.name]
+                                                                             ?? param.animation)
+                    values.animate(param.name, with: animation)
+                } catch {
+                    fail("--param \(override): \(error)")
+                }
+                continue
+            }
             if param.type == .color {
                 guard case .color(let color)? = try? LerpParamParser.parseColor(raw, line: 0, text: override) else {
                     fail("'\(raw)' is not a colour (use #RRGGBB, #RRGGBBAA or (r,g,b[,a]))")
