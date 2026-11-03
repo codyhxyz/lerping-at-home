@@ -12,7 +12,8 @@ import simd
 /// left by: a straight run is a line, a turn is a quarter circle round the
 /// inside corner, and a dead end is the only place the walker stops, easing in
 /// to the cell centre, turning round on the spot and easing back out. Speed is
-/// continuous everywhere, including into and out of every stop.
+/// continuous everywhere, including into and out of every stop. The camera
+/// stays level at eye height: no head bob.
 ///
 /// The original's spinning polyhedra are kept, and so is what they did: walk
 /// through one and the world turns upside down until you walk through another.
@@ -38,6 +39,12 @@ import simd
 ///     bit 1   wall arm toward −x
 ///     bit 2   wall arm toward +z
 ///     bit 3   wall arm toward −z
+///     bit 4   the whole wall from this vertex to the next one along +x is a
+///             feature wall (tiles or a bricked-up arch)
+///     bit 5   likewise for the wall along +z
+///
+/// Feature walls are only ever placed on walls bordering a cell the walker
+/// passes through, so every one of them is seen.
 public final class MazeData: LerpDataProvider {
 
     // MARK: - Tunables
@@ -57,17 +64,15 @@ public final class MazeData: LerpDataProvider {
     /// Time the view takes to roll over after touching a polyhedron.
     static let flipSeconds: Float = 1.3
     static let maxObjects = 8
-    /// Head bob: two steps per cell.
-    static let strideCells: Float = 0.5
 
     // MARK: - GPU-visible frame block (fragment buffer 1)
 
     /// Must match `LerpMazeFrame` in `metalSource`.
     struct Frame {
-        var dim = SIMD4<UInt32>(repeating: 0)        // x, y = cells; z = object count
+        var dim = SIMD4<UInt32>(repeating: 0)        // x, y = cells; z = object count; w = style
         var camera = SIMD4<Float>(repeating: 0)      // x, z, yaw, roll
         var motion = SIMD4<Float>(repeating: 0)      // fade, distance walked, goal approach, time in maze
-        var goal = SIMD4<Float>(repeating: 0)        // x, z, facing yaw, flash
+        var goal = SIMD4<Float>(repeating: 0)        // x, z, per-maze salt, outro progress
         var objects: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
                       SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>)
             = (.zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero)
@@ -88,11 +93,26 @@ public final class MazeData: LerpDataProvider {
         var vwall: [Bool]
         /// Wall on grid line z between x and x+1; w × (h+1), index x * (h+1) + z.
         var hwall: [Bool]
+        /// Feature walls, same layout as `vwall` / `hwall`.
+        var vfeat: [Bool]
+        var hfeat: [Bool]
 
         init(w: Int, h: Int) {
             self.w = w; self.h = h
             vwall = [Bool](repeating: true, count: (w + 1) * h)
             hwall = [Bool](repeating: true, count: w * (h + 1))
+            vfeat = [Bool](repeating: false, count: (w + 1) * h)
+            hfeat = [Bool](repeating: false, count: w * (h + 1))
+        }
+
+        /// Marks the wall on side `k` of cell (x, z) as a feature wall.
+        mutating func feature(_ x: Int, _ z: Int, _ k: Int) {
+            switch k & 3 {
+            case 0: vfeat[(x + 1) * h + z] = true
+            case 1: hfeat[x * (h + 1) + z + 1] = true
+            case 2: vfeat[x * h + z] = true
+            default: hfeat[x * (h + 1) + z] = true
+            }
         }
 
         func open(_ x: Int, _ z: Int, _ k: Int) -> Bool {
@@ -119,9 +139,15 @@ public final class MazeData: LerpDataProvider {
             for j in 0...h {
                 for i in 0...w {
                     var r: UInt32 = 0
-                    if i < w, hwall[i * (h + 1) + j] { r |= 1 }
+                    if i < w, hwall[i * (h + 1) + j] {
+                        r |= 1
+                        if hfeat[i * (h + 1) + j] { r |= 16 }
+                    }
                     if i > 0, hwall[(i - 1) * (h + 1) + j] { r |= 2 }
-                    if j < h, vwall[i * h + j] { r |= 4 }
+                    if j < h, vwall[i * h + j] {
+                        r |= 4
+                        if vfeat[i * h + j] { r |= 32 }
+                    }
                     if j > 0, vwall[i * h + j - 1] { r |= 8 }
                     out[j * vw + i] = r
                 }
@@ -189,6 +215,8 @@ public final class MazeData: LerpDataProvider {
 
     struct Walk {
         var segments: [Segment] = []
+        /// Every cell the walker passes through, in order, revisits included.
+        var route: [(Int, Int)] = []
         var flips: [Flip] = []
         var goal = SIMD2<Float>(0, 0)
         var goalYaw: Float = 0
@@ -245,6 +273,7 @@ public final class MazeData: LerpDataProvider {
 
         // 2. Segments.
         var w = Walk()
+        w.route = cells
         var t: Float = 0, s: Float = 0
         let half: Float = 0.5
         func centre(_ c: (Int, Int)) -> SIMD2<Float> { SIMD2(Float(c.0) + 0.5, Float(c.1) + 0.5) }
@@ -351,7 +380,16 @@ public final class MazeData: LerpDataProvider {
         var index: Int
         var maze: Maze
         var walk: Walk
+        /// Which masonry this maze is built from, 0…3.
+        var style: Int
+        /// Per-maze salt in [0, 1) for the shader's feature-wall choices.
+        var salt: Float
     }
+
+    /// Masonry styles; consecutive mazes always differ.
+    static let styleCount = 4
+    /// Chance that a wall beside the walker's route is a feature wall.
+    static let featureChance = 0.08
 
     private var key: Key?
     /// Start time of maze n, for every n built so far; `starts.count - 1`
@@ -378,7 +416,20 @@ public final class MazeData: LerpDataProvider {
         let budget = key.flips ? min(maxObjects, max(1, n * n / 48)) : 0
         let walk = solve(maze, start: start, goal: goal, speed: key.speed,
                         flipBudget: budget, rng: &rng)
-        return Built(index: index, maze: maze, walk: walk)
+
+        // Feature walls, only where the walker will see them. Skip the start
+        // and goal cells, and give each cell at most one.
+        var maze2 = maze
+        var seen = Set<Int>()
+        for cell in walk.route.dropFirst().dropLast() where seen.insert(cell.0 * n + cell.1).inserted {
+            for k in 0..<4 where !maze.open(cell.0, cell.1, k) {
+                if rng.unit() < featureChance { maze2.feature(cell.0, cell.1, k); break }
+            }
+        }
+
+        let style = (Int(key.seed % UInt32(styleCount)) + index) % styleCount
+        let salt = Float(rng.next() >> 40) / Float(1 << 24)
+        return Built(index: index, maze: maze2, walk: walk, style: style, salt: salt)
     }
 
     /// Which maze is playing at `t`, and how far into it.
@@ -463,10 +514,10 @@ public final class MazeData: LerpDataProvider {
         let flash = max(0, local - walk.arrival) / MazeData.outroSeconds
 
         var frame = Frame()
-        frame.dim = SIMD4(UInt32(size), UInt32(size), UInt32(walk.flips.count), 0)
+        frame.dim = SIMD4(UInt32(size), UInt32(size), UInt32(walk.flips.count), UInt32(built.style))
         frame.camera = SIMD4(pose.position.x, pose.position.y, pose.yaw, roll)
         frame.motion = SIMD4(fade, pose.walked, approach, local)
-        frame.goal = SIMD4(walk.goal.x, walk.goal.y, walk.goalYaw, min(1, flash))
+        frame.goal = SIMD4(walk.goal.x, walk.goal.y, built.salt, min(1, flash))
         withUnsafeMutableBytes(of: &frame.objects) { raw in
             let slots = raw.bindMemory(to: SIMD4<Float>.self)
             for (i, flip) in walk.flips.prefix(MazeData.maxObjects).enumerated() {
@@ -498,12 +549,13 @@ public final class MazeData: LerpDataProvider {
     // World space: cell (i, j) spans [i, i+1] x [j, j+1] in (x, z); y is up,
     // floor at 0. Walls are slabs centred on grid lines. Vertex (i, j) sits at
     // (i, j) and owns the square [i-0.5, i+0.5] x [j-0.5, j+0.5]: a post plus
-    // up to four half-length arms, bit 0 +x, 1 -x, 2 +z, 3 -z.
+    // up to four half-length arms, bit 0 +x, 1 -x, 2 +z, 3 -z. Bit 4 / 5: the
+    // whole wall from this vertex along +x / +z is a feature wall.
     struct LerpMazeFrame {
-        uint4  dim;         // x, y = cells across / deep; z = polyhedron count
+        uint4  dim;         // x, y = cells across / deep; z = polyhedron count; w = masonry style
         float4 camera;      // x, z, yaw (forward = (cos, sin) in xz), roll
         float4 motion;      // fade, distance walked, goal approach 0..1, seconds into maze
-        float4 goal;        // x, z, walker's final yaw, outro progress 0..1
+        float4 goal;        // x, z, per-maze salt 0..1, outro progress 0..1
         float4 objects[8];  // x, z, scale (0 = touched), spin phase
     };
     """

@@ -14,23 +14,24 @@
 // lantern the walker carries, with ambient occlusion in every corner; and the
 // goal is a lit gem whose glow you can see spilling round the last corners.
 //
+// Every maze is built from its own masonry — red brick, cream brick, dark
+// Flemish-bond brick, or dressed stone — and never the same one twice
+// running. A few walls beside the walker's route are feature walls: a glazed
+// tile panel, or an old doorway bricked up inside a stone arch. They are only
+// placed where the walk passes, so none is wasted.
+//
 // lerp-param: size        int 4 40     = 12      "Maze size"
 // lerp-param: speed       float 0.25 4 = 1.3     "Walk speed (cells/s)"
 // lerp-param: flips       bool         = true    "Flip polyhedra"
-// lerp-param: colorBrick  color        = #8e3b25 "Brick"
-// lerp-param: colorMortar color        = #8c8273 "Mortar"
+// lerp-param: style       int 0 4      = 0       "Walls (0 = new each maze)"
 // lerp-param: colorFloor  color        = #6b625a "Floor"
 // lerp-param: colorCeil   color        = #4a3b2e "Ceiling"
 // lerp-param: colorGoal   color        = #ffbf5a "Goal"
 // lerp-param: lantern     float 0 2    = 1       "Lantern"
 // lerp-param: ambient     float 0 1    = 0.12    "Ambient light"
 //
-// lerp-preset: "Brick Maze" size=12
-// lerp-preset: Catacombs colorBrick=#6d6a63, colorMortar=#3d3934, colorFloor=#4a4540
-// lerp-preset: Catacombs colorCeil=#2a2724, colorGoal=#9fd4ff, lantern=0.85, ambient=0.08
-// lerp-preset: Catacombs speed=1.0, size=16
-// lerp-preset: Sandstone colorBrick=#c99a62, colorMortar=#e3d3b5, colorFloor=#8f7a5f
-// lerp-preset: Sandstone colorCeil=#6e5640, colorGoal=#ff7a45, lantern=0.7, ambient=0.6
+// lerp-preset: Maze size=12
+// lerp-preset: "Red Brick" style=1
 // lerp-preset: Labyrinth size=28, speed=2.2, colorGoal=#7dffb0
 
 // --- Geometry, in cell widths.
@@ -39,10 +40,6 @@ constant float MZ_EYE    = 0.52;    // eye height
 constant float MZ_HALF_T = 0.07;    // half the wall thickness
 constant float MZ_FOCAL  = 1.3;     // ~75° vertical field of view
 
-// --- Bricks: 16 courses, running bond.
-constant float MZ_BH = 1.2 / 16.0;
-constant float MZ_BW = 0.24;
-constant float MZ_MORTAR = 0.0065;  // half the joint width
 
 constant float MZ_OBJ_R  = 0.15;    // polyhedron size
 constant float MZ_GEM_R  = 0.1;
@@ -183,48 +180,196 @@ static inline bool mzSolid(float3 ro, float3 rd, float3 c, float r, float spin, 
 // Surfaces. Each returns linear albedo and perturbs `n`; `fw` is the pixel
 // footprint in world units, which every pattern fades out against.
 
-static inline float3 mzBricks(float u, float v, float face, float fw, float3 brick, float3 mortar,
-                              float3 tangent, thread float3& n) {
-    float row = floor(v / MZ_BH);
-    float x = u + (fmod(abs(row), 2.0) * 0.5 + face * 0.31) * MZ_BW;
-    float col = floor(x / MZ_BW);
-    float fx = x / MZ_BW - col, fy = v / MZ_BH - row;
-    float ex = min(fx, 1.0 - fx) * MZ_BW, ey = min(fy, 1.0 - fy) * MZ_BH;
+// Masonry. Each maze is built from one of four, and consecutive mazes never
+// repeat one (MazeData.swift picks; the `style` parameter can pin it).
+struct MzStyle {
+    float h, w;         // course height, unit length
+    float joint;        // half the joint width
+    float bevel;        // width of the rounded arris
+    float spread;       // unit-to-unit value variation
+    int   flemish;      // 0 running bond, 1 Flemish bond (headers between stretchers)
+    float3 unit, mortar;
+};
+
+static inline MzStyle mzStyleOf(uint i) {
+    MzStyle s;
+    switch (i & 3u) {
+    case 0u:   // red brick, running bond
+        s.h = 1.2 / 16.0; s.w = 0.24;  s.joint = 0.0065; s.bevel = 0.011; s.spread = 0.5;
+        s.flemish = 0; s.unit = float3(0.557, 0.231, 0.145); s.mortar = float3(0.549, 0.510, 0.451);
+        break;
+    case 1u:   // cream stock brick, running bond
+        s.h = 1.2 / 17.0; s.w = 0.23;  s.joint = 0.006;  s.bevel = 0.01;  s.spread = 0.38;
+        s.flemish = 0; s.unit = float3(0.70, 0.585, 0.41); s.mortar = float3(0.81, 0.77, 0.68);
+        break;
+    case 2u:   // dark brick, Flemish bond with burnt headers
+        s.h = 1.2 / 16.0; s.w = 0.24;  s.joint = 0.0065; s.bevel = 0.011; s.spread = 0.4;
+        s.flemish = 1; s.unit = float3(0.42, 0.22, 0.18); s.mortar = float3(0.50, 0.48, 0.45);
+        break;
+    default:   // dressed stone blocks
+        s.h = 0.2;        s.w = 0.46;  s.joint = 0.004;  s.bevel = 0.02;  s.spread = 0.3;
+        s.flemish = 0; s.unit = float3(0.56, 0.54, 0.49); s.mortar = float3(0.36, 0.345, 0.315);
+        break;
+    }
+    s.unit = pow(s.unit, 2.2);
+    s.mortar = pow(s.mortar, 2.2);
+    return s;
+}
+
+// Tilts n toward the nearest joint: the rounded edge of a brick, tile or stone.
+static inline float3 mzArris(float3 n, float3 tangent, float2 toward, float e, float joint,
+                             float bevel, float body, float fw) {
+    float b = 1.0 - smoothstep(joint, joint + bevel, e);
+    float k = 0.55 * b * body * (1.0 - smoothstep(0.004, 0.025, fw));
+    return normalize(n + k * (toward.x * tangent + toward.y * float3(0.0, 1.0, 0.0)));
+}
+
+static inline float3 mzMasonry(float u, float v, float face, float fw, MzStyle st,
+                               float3 tangent, thread float3& n) {
+    float row = floor(v / st.h);
+    float odd = fmod(abs(row), 2.0);
+    float x = u + face * 0.37 * st.w;
+    float lo, len, id;
+    bool header = false;
+    if (st.flemish != 0) {
+        float period = 1.5 * st.w;
+        x += odd * 0.75 * st.w;
+        float k = floor(x / period);
+        float m = x - k * period;
+        header = m >= st.w;
+        lo = k * period + (header ? st.w : 0.0);
+        len = header ? 0.5 * st.w : st.w;
+        id = k * 2.0 + (header ? 1.0 : 0.0);
+    } else {
+        x += odd * 0.5 * st.w;
+        id = floor(x / st.w);
+        lo = id * st.w;
+        len = st.w;
+    }
+    float fx = (x - lo) / len, fy = v / st.h - row;
+    float ex = min(fx, 1.0 - fx) * len, ey = min(fy, 1.0 - fy) * st.h;
     float e = min(ex, ey);
 
     float aa = max(fw * 0.5, 1e-4);
-    float body = smoothstep(MZ_MORTAR - aa, MZ_MORTAR + aa, e);
+    float body = smoothstep(st.joint - aa, st.joint + aa, e);
 
-    // Per-brick colour: value, a little hue, and the odd scorched one.
-    float h1 = hash21(float2(col, row) + face * 41.3);
-    float h2 = hash21(float2(row, col) * 1.37 + 7.1 + face);
-    float3 b = brick * (0.68 + 0.5 * h1);
+    // Per-unit colour: value, a little hue, and the odd scorched one.
+    float h1 = hash21(float2(id, row) + face * 41.3);
+    float h2 = hash21(float2(row, id) * 1.37 + 7.1 + face);
+    float3 b = st.unit * (1.0 - 0.5 * st.spread + st.spread * h1);
     b *= float3(1.0 + 0.16 * (h2 - 0.5), 1.0, 1.0 - 0.14 * (h2 - 0.5));
-    if (h2 > 0.93) b *= 0.55;
+    if (h2 > 0.93) b *= 0.6;
+    if (header) b *= float3(0.62, 0.64, 0.72);   // vitrified header ends
 
     float detail = 1.0 - smoothstep(0.003, 0.02, fw);
     float speck = valueNoise(float2(u, v) * 55.0);
-    b *= mix(1.0, 0.82 + 0.36 * speck, detail);
-    float3 m = mortar * mix(1.0, 0.8 + 0.35 * valueNoise(float2(u, v) * 31.0 + 5.0), detail);
+    float grain = valueNoise(float2(u, v) * 14.0 + h1 * 9.0);
+    b *= mix(1.0, (0.82 + 0.36 * speck) * (0.9 + 0.2 * grain), detail);
+    float3 m = st.mortar * mix(1.0, 0.8 + 0.35 * valueNoise(float2(u, v) * 31.0 + 5.0), detail);
     m *= 0.78;   // recessed joints catch less light
 
     float3 alb = mix(m, b, body);
-
-    // Bevelled brick edges: tilt the normal toward the nearest joint.
-    float bevel = 1.0 - smoothstep(MZ_MORTAR, MZ_MORTAR + 0.011, e);
     float2 toward = ex < ey ? float2(sign(fx - 0.5), 0.0) : float2(0.0, sign(fy - 0.5));
-    float k = 0.55 * bevel * body * (1.0 - smoothstep(0.004, 0.025, fw));
-    n = normalize(n + k * (toward.x * tangent + toward.y * float3(0.0, 1.0, 0.0)));
+    n = mzArris(n, tangent, toward, e, st.joint, st.bevel, body, fw);
 
     // Far away the pattern averages out rather than aliasing.
-    float far = smoothstep(MZ_BH * 0.12, MZ_BH * 0.45, fw);
-    float joint = 2.0 * MZ_MORTAR / MZ_BH + 2.0 * MZ_MORTAR / MZ_BW;
-    alb = mix(alb, mix(brick * 0.93, mortar * 0.78, joint), far);
+    float far = smoothstep(st.h * 0.12, st.h * 0.45, fw);
+    float jointFrac = 2.0 * st.joint / st.h + 2.0 * st.joint / st.w;
+    alb = mix(alb, mix(st.unit * 0.93, st.mortar * 0.78, jointFrac), far);
 
     // Grime: low-frequency staining, heavier near the floor.
     float g = valueNoise(float2(u * 1.7 + face * 9.0, v * 2.6));
     alb *= (0.78 + 0.34 * g) * mix(0.62, 1.0, smoothstep(0.0, 0.4, v));
     return alb;
+}
+
+// --- Feature walls. Only on walls beside the walker's route; `lu` runs 0..1
+// along the wall from one grid vertex to the next, so both faces agree.
+
+// A glazed tile panel with a cream border course.
+static inline float3 mzTiles(float lu, float v, float fw, float pick, float3 tangent,
+                             thread float3& n, thread float& gloss, thread bool& inside) {
+    const float x0 = 0.13, x1 = 0.87, y0 = 0.1, y1 = 0.96;
+    inside = lu > x0 && lu < x1 && v > y0 && v < y1;
+    if (!inside) return float3(0.0);
+    const float G = 0.004;
+    float2 q = float2((lu - x0) / (x1 - x0) * 8.0, (v - y0) / (y1 - y0) * 9.0);
+    float2 c = floor(q), f = q - c;
+    float2 sz = float2((x1 - x0) / 8.0, (y1 - y0) / 9.0);
+    float ex = min(f.x, 1.0 - f.x) * sz.x, ey = min(f.y, 1.0 - f.y) * sz.y;
+    float e = min(ex, ey);
+    float aa = max(fw * 0.5, 1e-4);
+    float body = smoothstep(G - aa, G + aa, e);
+
+    const float3 glazes[4] = { float3(0.137, 0.314, 0.561), float3(0.118, 0.455, 0.408),
+                               float3(0.486, 0.149, 0.20),  float3(0.725, 0.541, 0.18) };
+    bool border = c.x < 0.5 || c.x > 6.5 || c.y < 0.5 || c.y > 7.5;
+    float3 glaze = border ? float3(0.867, 0.827, 0.733) : glazes[int(pick * 4.0) & 3];
+    float h = hash21(c + pick * 31.0);
+    float3 tile = pow(glaze, 2.2) * (0.86 + 0.24 * h);
+    float3 grout = pow(float3(0.72, 0.69, 0.62), 2.2) * 0.7;
+    float3 alb = mix(grout, tile, body);
+    alb = mix(alb, mix(tile, grout, 0.1), smoothstep(sz.y * 0.15, sz.y * 0.5, fw));
+    gloss = body;
+    float2 toward = ex < ey ? float2(sign(f.x - 0.5), 0.0) : float2(0.0, sign(f.y - 0.5));
+    n = mzArris(n, tangent, toward, e, G, 0.006, body, fw);
+    return alb;
+}
+
+// A bricked-up arched doorway: a ring of dressed stone with a keystone, and
+// darker, newer infill set back inside it.
+static inline float3 mzArch(float lu, float v, float face, float fw, MzStyle st, float3 tangent,
+                            thread float3& n, thread float& aoMul, thread bool& inside) {
+    const float A = 0.24, S = 0.6, R = 0.06;       // half-width, springing height, ring width
+    float2 rel = float2(lu - 0.5, v - S);
+    float d;
+    float2 grad;
+    if (v < S) { d = abs(rel.x) - A; grad = float2(sign(rel.x), 0.0); }
+    else       { float r = length(rel); d = r - A; grad = rel / max(r, 1e-4); }
+    inside = d < R;
+    if (!inside) return float3(0.0);
+
+    if (d < 0.0) {
+        // Infill: the maze's own masonry, laid later in darker, harder units.
+        float3 alb = mzMasonry(lu + 3.1, v, face + 5.0, fw, st, tangent, n) * 0.62;
+        aoMul = mix(0.5, 1.0, smoothstep(0.0, 0.06, -d));
+        return alb;
+    }
+
+    // Ring stones: jamb blocks below the springing line, nine voussoirs above.
+    float seg, e, fseg;
+    float2 toward;
+    float edgeIn = d, edgeOut = R - d;
+    if (v < S) {
+        float k = v / 0.12;
+        seg = floor(k) + (rel.x > 0.0 ? 50.0 : 0.0);
+        fseg = fract(k);
+        float ej = min(fseg, 1.0 - fseg) * 0.12;
+        e = min(ej, min(edgeIn, edgeOut));
+        toward = ej < min(edgeIn, edgeOut) ? float2(0.0, sign(fseg - 0.5))
+               : (edgeIn < edgeOut ? -grad : grad);
+    } else {
+        const float step = PI / 9.0;
+        float th = atan2(rel.y, rel.x);
+        float k = th / step;
+        seg = floor(k) + 100.0;
+        fseg = fract(k);
+        float ej = min(fseg, 1.0 - fseg) * step * (A + d);
+        e = min(ej, min(edgeIn, edgeOut));
+        float2 tdir = float2(-grad.y, grad.x) * sign(fseg - 0.5);
+        toward = ej < min(edgeIn, edgeOut) ? tdir : (edgeIn < edgeOut ? -grad : grad);
+    }
+    float aa = max(fw * 0.5, 1e-4);
+    float body = smoothstep(st.joint - aa, st.joint + aa, e);
+    float h = hash21(float2(seg, face));
+    float3 stone = pow(float3(0.74, 0.69, 0.60), 2.2) * (0.82 + 0.26 * h);
+    if (seg == 104.0) stone *= 1.15;   // keystone
+    float detail = 1.0 - smoothstep(0.003, 0.02, fw);
+    stone *= mix(1.0, 0.86 + 0.28 * valueNoise(float2(lu, v) * 40.0 + h * 7.0), detail);
+    float3 alb = mix(st.mortar * 0.78, stone, body);
+    n = mzArris(n, tangent, toward, e, st.joint, 0.012, body, fw);
+    float g = valueNoise(float2(lu * 1.7 + face * 9.0, v * 2.6));
+    return alb * (0.82 + 0.3 * g) * mix(0.7, 1.0, smoothstep(0.0, 0.4, v));
 }
 
 static inline float3 mzFlagstones(float2 p, float fw, float3 stone, thread float& gloss) {
@@ -347,10 +492,28 @@ static inline float3 mzScene(float3 ro, float3 rd, float3 right, float3 up, floa
             float uu = alongX ? P.x : P.z;
             float face = alongX ? (n.z > 0.0 ? 1.0 : 2.0) : (n.x > 0.0 ? 3.0 : 4.0);
             float3 tangent = alongX ? float3(1.0, 0.0, 0.0) : float3(0.0, 0.0, 1.0);
-            alb = mzBricks(uu, P.y, face, fw, mzLinear(u.colorBrick), mzLinear(u.colorMortar), tangent, n);
+            MzStyle st = mzStyleOf(u.style > 0 ? uint(u.style - 1) : F.dim.w);
+
+            // Which wall this is: the one from grid vertex `vtx` along +x or +z.
+            float along = alongX ? P.x : P.z;
+            float lineC = alongX ? round(P.z) : round(P.x);
+            float ei = floor(along);
+            float lu = along - ei;
+            int2 vtx = alongX ? int2(int(ei), int(lineC)) : int2(int(lineC), int(ei));
+            bool feature = (mzRecord(verts, vtx, cells) & (alongX ? 16u : 32u)) != 0u;
+
+            float aoF = 1.0;
+            bool done = false;
+            if (feature) {
+                float pick = hash21(float2(vtx) * 1.731 + (alongX ? 0.37 : 0.71) + F.goal.z * 17.0);
+                if (pick < 0.5) alb = mzTiles(lu, P.y, fw, pick * 2.0, tangent, n, gloss, done);
+                else            alb = mzArch(lu, P.y, face, fw, st, tangent, n, aoF, done);
+            }
+            if (!done) alb = mzMasonry(uu, P.y, face, fw, st, tangent, n);
+
             float aoV = min(P.y, MZ_WALL_H - P.y);
             float aoC = mzWallDist(P.xz + n2 * 0.3, verts, cells);
-            ao = mix(0.45, 1.0, sqrt(saturate(aoV / 0.32))) * mix(0.4, 1.0, sqrt(saturate(aoC / 0.3)));
+            ao = aoF * mix(0.45, 1.0, sqrt(saturate(aoV / 0.32))) * mix(0.4, 1.0, sqrt(saturate(aoC / 0.3)));
         } else {
             bool isFloor = rd.y < 0.0;
             n = float3(0.0, isFloor ? 1.0 : -1.0, 0.0);
@@ -421,10 +584,9 @@ fragment half4 lerpMain(float4 pos [[position]],
     float minRes = min(u.resolution.x, u.resolution.y);
     float pxAngle = 2.0 / (minRes * MZ_FOCAL);
 
-    // Camera. Walking bob: two footfalls per cell, scaled down when standing.
+    // Camera: level, at eye height, no bob.
     float yaw = F.camera.z, roll = F.camera.w;
-    float bob = 0.009 * sin(F.motion.y * TWO_PI / 0.5);
-    float3 ro = float3(F.camera.x, MZ_EYE + bob, F.camera.y);
+    float3 ro = float3(F.camera.x, MZ_EYE, F.camera.y);
     float3 fwd = float3(cos(yaw), 0.0, sin(yaw));
     float3 right0 = float3(-fwd.z, 0.0, fwd.x);
     float3 up0 = float3(0.0, 1.0, 0.0);
