@@ -17,6 +17,7 @@
 // lerp-param: softness        float 0 1    = 1.0  "Softness"
 // lerp-param: shapeScale      float 0 1    = 0.1  "Shape scale"
 // lerp-param: distortion      float 0 1    = 0.25 "Distortion"
+// lerp-animate: distortion      0.15 0.35 period=180
 // lerp-param: swirl           float 0 1    = 0.8  "Swirl"
 // lerp-param: swirlIterations int 1 20     = 10   "Swirl iterations"
 // lerp-param: speed           float 0 20   = 0.5  "Speed"

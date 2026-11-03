@@ -41,6 +41,7 @@
 // lerp-param: iterations int 4 24      = 14     "Iterations"
 // lerp-param: volsteps   int 4 24      = 14     "Volume steps"
 // lerp-param: formuparam float 0.4 0.65 = 0.53  "Formula param"
+// lerp-animate: formuparam 0.52 0.54 period=300
 // lerp-param: stepsize   float 0.05 0.2 = 0.1   "Step size"
 // lerp-param: zoom       float 0.3 2    = 0.8   "Zoom"
 // lerp-param: tile       float 0.5 1.2  = 0.85  "Tile"

@@ -13,6 +13,7 @@
 // lerp-param: color5     color     = (0.180, 0.251, 0.341) "Slate indigo"
 // lerp-param: distortion float 0 1 = 0.8  "Distortion"
 // lerp-param: swirl      float 0 1 = 0.35 "Swirl"
+// lerp-animate: swirl      0.2 0.5 period=200
 // lerp-param: speed      float 0 2 = 0.22 "Speed"
 //
 // Upstream presets, speed scaled to this port's ambience (upstream × 0.22).

@@ -47,6 +47,7 @@
 //
 // lerp-param: mode     int   0 3 = 0    "Fractal"
 // lerp-param: shape    float 0 1 = 0.5  "Shape"
+// lerp-animate: shape    0.3 0.7 period=220
 // lerp-param: speed    float 0 3 = 1.0  "Speed"
 // lerp-param: material float 0 1 = 0.25 "Bone / iridescent"
 // lerp-param: hue      float 0 1 = 0.0  "Hue"

@@ -38,6 +38,7 @@
 // bounded however long the look stays on screen.
 //
 // lerp-param: timeOfDay  float 0 1 = 0.30 "Time of day"
+// lerp-animate: timeOfDay  0.22 0.4 period=300
 // lerp-param: palette    float 0 1 = 0.0  "Palette"
 // lerp-param: speed      float 0 3 = 1.0  "Camera speed"
 // lerp-param: cloudCover float 0 1 = 0.45 "Cloud cover"

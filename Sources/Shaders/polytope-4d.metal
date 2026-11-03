@@ -32,6 +32,7 @@
 // lerp-param: speed         float 0 2    = 0.5   "Speed"
 // lerp-param: twist         float 0 2    = 0.62  "3D spin / 4D spin"
 // lerp-param: eye4          float 1.2 6  = 2.4   "4D eye distance"
+// lerp-animate: eye4          2.0 3.0 period=150
 // lerp-param: zoom          float 0.4 2  = 1.0   "Zoom"
 // lerp-param: tube          float 0.001 0.04 = 0.011 "Edge thickness"
 // lerp-param: node          float 0 0.08 = 0.026 "Vertex size"

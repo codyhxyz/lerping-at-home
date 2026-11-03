@@ -73,6 +73,7 @@
 // lerp-param: gain     float 10 3000    = 800              "Glow gain"
 // lerp-param: width    float 0.002 0.04 = 0.006            "Filament width"
 // lerp-param: slab     float 0.02 0.5   = 0.15             "Slice thickness"
+// lerp-animate: slab     0.1 0.22 period=190
 // lerp-param: cells    float 0.3 3      = 1.0              "Lattice density"
 // lerp-param: tilt     float 0 1.2      = 0.45             "Slice tilt"
 // lerp-param: drift    float 0 1        = 0.3              "Slice drift"
