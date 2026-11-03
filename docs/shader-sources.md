@@ -103,6 +103,7 @@ every CC BY piece without crawling.
 |---|---|---|
 | reaction-diffusion, physarum, ink-fluid, curl-flow | Technique (simulation) | Karl Sims, Jones / Jenson, Stam, Bridson |
 | dusk-terrain, agate, cutout-shadows | Technique (fundamentals) | iq articles, Book of Shaders, Ronja (CC BY 4.0) |
+| multiverse-cathedral, multiverse-coral, multiverse-lattice | Original, in the Fractal Multiverse idiom | Mandelbox, Apollonian, KIFS + Kaliset |
 | sandpile | Metal capability | GPU compute path, see `docs/metal-capabilities.md` |
 | star-nest, topologica, sea-and-moon | Shadertoy | MIT, CC0, CC0 |
 | halo, fractal-multiverse, simulated-reality, torque, axes | Twigl / FragCoord | CC BY 4.0, MIT, MIT, CC BY 4.0, CC BY 4.0 |
