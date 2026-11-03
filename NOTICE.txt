@@ -20,7 +20,7 @@ This project includes shaders ported from Paper Shaders
 licensed under the Apache License, Version 2.0
 (http://www.apache.org/licenses/LICENSE-2.0).
 
-Ported shaders (Sources/Shaders/), 28 of the 48 shipped:
+Ported shaders (Sources/Shaders/), 28 of the 59 shipped:
 
   Color Panels, Dithering, Dot Grid, Dot Orbit, Fluted Glass,
   Gem Smoke, God Rays, Grain Gradient, Halftone CMYK, Halftone Dots,
@@ -189,6 +189,69 @@ and "stringart" (https://www.vertexshaderart.com/art/EgLk7JDok4GhxPeMH) by gman
 "gman" is CC0" (https://github.com/greggman/vertexshaderart.com, LICENSE.md).
 The originals are WebGL vertex shaders; the ports re-express them as a
 per-pixel inverse evaluation and as a CPU evaluation binned into screen tiles.
+
+Fractal and 4D geometry (original work implementing published mathematics;
+no code from the cited articles or from any Shadertoy shader is included):
+
+Menger Sponge (Sources/Shaders/menger-sponge.metal) renders the Menger sponge
+(Karl Menger, 1926) and the Jerusalem cube (Eric Baird, 2011), with distance
+estimation by folding space as described in Inigo Quilez's "Menger Fractal"
+article and Mikael Hvidtfeldt Christensen's (Syntopia) "Distance Estimated 3D
+Fractals" series, including Knighty's kaleidoscopic IFS.
+
+Fractal Pyramids (Sources/Shaders/sierpinski-pyramid.metal) was written from
+Knighty's kaleidoscopic IFS (fractalforums.com, 2010) and Christensen's
+"Distance Estimated 3D Fractals (III): Folding Space". Its icosahedral fold
+was derived for this project from the H3 reflection group.
+
+Mandelbulb (Sources/Shaders/mandelbulb.metal) implements the Mandelbulb
+formula of Daniel White and Paul Nylander (2009) with the running-derivative
+distance estimator of Hart, Sandin and Kauffman ("Ray tracing deterministic
+3-D fractals", SIGGRAPH 1989), as explained by Inigo Quilez and in
+Christensen's "(V): The Mandelbulb", with over-relaxed sphere tracing from
+Keinert et al., "Enhanced Sphere Tracing" (2014).
+
+Mandelbox (Sources/Shaders/mandelbox.metal) renders Tom Lowe's Mandelbox
+(fractalforums.com, 2010) with the scalar running-derivative distance
+estimate as explained in Christensen's "(VI): The Mandelbox", marched with
+Keinert et al.'s over-relaxed sphere tracing. Its camera routes were computed
+offline for this project.
+
+Quaternion Julia (Sources/Shaders/quaternion-julia.metal) raymarches 3D
+slices of 4D quaternion Julia sets (q^2 + c and q^3 + c) with the distance
+estimator of Hart, Sandin and Kauffman (1989), slicing and morphing the set as
+described in Inigo Quilez's article "3D Julia sets".
+
+Kleinian (Sources/Shaders/kleinian.metal) implements the sphere-inversion
+Apollonian construction described by Inigo Quilez; Knighty's pseudo-Kleinian
+fractal (fractalforums.com, 2011); the Maskit-slice Kleinian group from
+Mumford, Series and Wright, "Indra's Pearls" (2002), extended to three
+dimensions after Jos Leys' renderings; and Keinert et al.'s over-relaxed
+sphere tracing.
+
+Polytope 4D (Sources/Shaders/polytope-4d.metal,
+Sources/LerpCore/Polytope4DData.swift) renders the regular convex 4-polytopes
+(8-, 16-, 24-, 120- and 600-cell) and p,q-duoprisms from their standard vertex
+coordinates (the 24 Hurwitz units, the 120 unit icosians, and the classical
+600-vertex set of the 120-cell) under a double rotation, with perspective or
+stereographic projection from S^3.
+
+Topologica remixes (each a remix of "Topologica" by Otavio Good,
+https://www.shadertoy.com/view/4djXzz, dedicated to the public domain under
+CC0 1.0; each keeps upstream's orbiting volumetric glow and colouring and
+replaces its noise lattice):
+
+Topologica Gyroid (Sources/Shaders/topologica-gyroid.metal): blended triply
+periodic minimal surfaces (gyroid, Schwarz P, Schwarz D, Neovius), drawing the
+curves where two of them intersect, integrated exactly along each march step.
+
+Topologica Fractal (Sources/Shaders/topologica-fractal.metal): a
+kaleidoscopic-IFS wire network written from Knighty's technique as described
+by Christensen, with a seamless self-similar zoom.
+
+Topologica 4D (Sources/Shaders/topologica-4d.metal): sliced tesseractic and
+24-cell honeycombs, the Hopf fibration and torus knots in S^3, with
+closed-form glow integration.
 
 Paper Shaders itself is pinned as a reference submodule at
 third_party/paper-shaders (Apache-2.0); nothing is built from it.
