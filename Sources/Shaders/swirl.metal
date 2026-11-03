@@ -11,6 +11,7 @@
 // lerp-param: colorBack      color     = (0.012, 0.024, 0.043) "Background"
 // lerp-param: bandCount      int 0 15  = 4     "Band count"
 // lerp-param: twist          float 0 1 = 0.25  "Twist"
+// lerp-animate: twist          0.18 0.32 period=200
 // lerp-param: center         float 0 1 = 0.3   "Center"
 // lerp-param: proportion     float 0 1 = 0.5   "Proportion"
 // lerp-param: softness       float 0 1 = 0.55  "Softness"

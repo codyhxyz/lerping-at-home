@@ -21,6 +21,12 @@
 //   2 Slab  — low flight over an endless horizontal cut through tiled boxes.
 // `breathe` swings the scale slowly: ±0.1 in the halls (the verified range),
 // ±6% for box and slab, whose cameras follow the cube as it changes size.
+// The two Box presets instead let `scale` itself drift (`animate(…)` in
+// their presets), slowly and within a range that keeps each look's character.
+// Halls ignores `scale` (its breathing is `breathe`, held to the verified
+// 3 ± 0.1), and Slab's flight distance is proportional to the cube's size, so
+// a drifting scale would make that camera lurch; Endless Slab holds still.
+// `breathe` stays 0 wherever `scale` drifts: one clock per parameter.
 //
 // Camera safety. Box and Slab are safe by construction: the camera stays
 // outside the bounding cube (half-width 2(s+1)/(s-1) for s > 1, 2 for s < -1),
@@ -54,8 +60,8 @@
 // lerp-param: lamp    color          = (1.00, 0.80, 0.58) "Light"
 // lerp-param: haze    color          = (0.020, 0.026, 0.036) "Fog colour"
 //
-// lerp-preset: "Outer Box"            form=1, scale=2.0
-// lerp-preset: "Minus One and a Half" form=1, scale=-1.5, metal=0.65
+// lerp-preset: "Outer Box"            form=1, scale=animate(1.75, 2.0, period=240)
+// lerp-preset: "Minus One and a Half" form=1, scale=animate(-1.62, -1.42, period=260), metal=0.65
 // lerp-preset: "Minus One and a Half" stone=(0.62, 0.50, 0.38)
 // lerp-preset: "Breathing Halls"      breathe=1.0, fog=0.65, lamp=(0.78, 0.86, 1.00)
 // lerp-preset: "Breathing Halls"      stone=(0.50, 0.50, 0.52)

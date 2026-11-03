@@ -58,6 +58,7 @@
 // however long the look stays on screen.
 //
 // lerp-param: shape      float 0 1   = 0.0  "Menger to Jerusalem"
+// lerp-animate: shape      0 0.25 period=240
 // lerp-param: twist      float 0 1   = 0.0  "Fold twist"
 // lerp-param: tunnel     bool        = false "Infinite tunnel"
 // lerp-param: iterations int   2 6   = 5    "Detail levels"
@@ -67,7 +68,8 @@
 // lerp-param: fog        float 0 1   = 0.4  "Fog"
 //
 // lerp-preset: "Jerusalem Cube"   shape=1.0, palette=0.62, metal=0.55, fog=0.35
-// lerp-preset: "Folded Cube"      twist=0.6, iterations=3, palette=0.5, metal=0.85, speed=0.8
+// lerp-preset: "Folded Cube"      twist=animate(0.4, 0.8, period=200), shape=0, iterations=3
+// lerp-preset: "Folded Cube"      palette=0.5, metal=0.85, speed=0.8
 // lerp-preset: "Corridor"         tunnel=true, palette=1.0, metal=0.7, fog=0.55
 // lerp-preset: "Jerusalem Halls"  tunnel=true, shape=1.0, palette=0.0, fog=0.5
 // lerp-preset: "Jerusalem Halls"  metal=0.9, speed=0.7, iterations=4

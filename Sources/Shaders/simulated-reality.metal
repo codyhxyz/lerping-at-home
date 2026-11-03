@@ -47,6 +47,7 @@
 //
 // lerp-param: speed   float 0 2  = 0.35 "Speed"
 // lerp-param: sunTint float 0 1  = 0.0  "Sun warm/cool"
+// lerp-animate: sunTint 0 0.3 period=240
 // lerp-param: steps   int 32 89  = 64   "March steps"
 //
 // lerp-preset: Upstream  speed=1.0, steps=89

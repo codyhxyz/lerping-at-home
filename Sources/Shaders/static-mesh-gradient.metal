@@ -18,6 +18,7 @@
 // lerp-param: color6       color         = (0.769, 0.596, 0.396) "Dim gold"
 // lerp-param: positions    float 0 100   = 25.0 "Positions"
 // lerp-param: waveX        float 0 1     = 0.45 "Wave X"
+// lerp-animate: waveX        0.3 0.6 period=240
 // lerp-param: waveXShift   float 0 1     = 0.15 "Wave X shift"
 // lerp-param: waveY        float 0 1     = 0.35 "Wave Y"
 // lerp-param: waveYShift   float 0 1     = 0.60 "Wave Y shift"
