@@ -20,7 +20,7 @@ This project includes shaders ported from Paper Shaders
 licensed under the Apache License, Version 2.0
 (http://www.apache.org/licenses/LICENSE-2.0).
 
-Ported shaders (Sources/Shaders/), 28 of the 59 shipped:
+Ported shaders (Sources/Shaders/), 28 of the 61 shipped:
 
   Color Panels, Dithering, Dot Grid, Dot Orbit, Fluted Glass,
   Gem Smoke, God Rays, Grain Gradient, Halftone CMYK, Halftone Dots,
@@ -172,6 +172,14 @@ Halo (Sources/Shaders/halo.metal) is a modified port of "Halo" by Xor
 licensed under Creative Commons Attribution 4.0 International. Translated from
 FragCoord's golf dialect to Metal, with time slowed and seeded, a speed
 parameter added, and short-axis scaling. Not endorsed by the author.
+
+Torque (Sources/Shaders/torque.metal) and Axes (Sources/Shaders/axes.metal)
+are modified ports of "Torque" (https://fragcoord.xyz/s/t4e02wdx) and "Axes"
+(https://fragcoord.xyz/s/a340ofb0) by Xor (@XorDev), Copyright (c) 2026 @Xor,
+licensed under Creative Commons Attribution 4.0 International. Translated
+from FragCoord's golf dialect to Metal, with time slowed and seeded, speed
+(and, for Torque, drift) parameters added, and short-axis scaling. Not
+endorsed by the author.
 
 Fractal Multiverse (Sources/Shaders/fractal-multiverse.metal) and Simulated
 Reality (Sources/Shaders/simulated-reality.metal) are ports of "fractal, the

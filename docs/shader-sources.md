@@ -87,11 +87,15 @@ reply granting CC0 or MIT makes them portable.
 | Galaxy (Guillitte) | https://glslsandbox.com/e#24643 | CC BY-NC-SA |
 | Xor's tweet shaders | x.com/XorDev | No licence on the tweets; he says to assume CC BY-NC-SA 4.0 |
 | galaxy zone (Yohei Nishitsuji) | https://fragcoord.xyz/s/g5r8ukbb | MIT and portable, but ~15 ms at 1200x750 |
+| "My first FragCoord.xyz shader" (mrange) | https://fragcoord.xyz/s/mkrtrrk7 | CC0, a gorgeous 4D inversion-fractal glow, but ~65 ms at 4K; goes black below ~40 steps |
+| Fractal Loop, Wicked Fractal Flight (diatribes) | https://fragcoord.xyz/s/f3m87afg | MIT, but 80+ ms at 4K |
 
 Clean spares nobody has ported yet: Spiral galaxy (mrange, CC0,
 https://www.shadertoy.com/view/wsBBWD), DragonEye II (mrange, CC0,
 https://glslsandbox.com/e#99585), Xor's CC BY 4.0 pieces on FragCoord
-(https://fragcoord.xyz/s/stpng88o, /s/gwznloxf, /s/pwh32upa).
+/s/stpng88o, /s/gwznloxf and /s/pwh32upa were checked and turned down for
+looking too much like halo. FragCoord has a `cc-by-4.0` tag search that lists
+every CC BY piece without crawling.
 
 ## Where the November 2026 shaders came from
 
@@ -101,7 +105,7 @@ https://glslsandbox.com/e#99585), Xor's CC BY 4.0 pieces on FragCoord
 | dusk-terrain, agate, cutout-shadows | Technique (fundamentals) | iq articles, Book of Shaders, Ronja (CC BY 4.0) |
 | sandpile | Metal capability | GPU compute path, see `docs/metal-capabilities.md` |
 | star-nest, topologica, sea-and-moon | Shadertoy | MIT, CC0, CC0 |
-| halo, fractal-multiverse, simulated-reality | Twigl / FragCoord | CC BY 4.0, MIT, MIT |
+| halo, fractal-multiverse, simulated-reality, torque, axes | Twigl / FragCoord | CC BY 4.0, MIT, MIT, CC BY 4.0, CC BY 4.0 |
 | pulse-rings, string-art | Vertex Shader Art | CC0 (gman) |
 
 glslSandbox turned up the same three Shadertoy shaders, reposted. Its own
