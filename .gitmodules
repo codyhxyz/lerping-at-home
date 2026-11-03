@@ -1,0 +1,3 @@
+[submodule "third_party/paper-shaders"]
+	path = third_party/paper-shaders
+	url = https://github.com/paper-design/shaders
