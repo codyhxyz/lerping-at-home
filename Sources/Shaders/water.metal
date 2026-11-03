@@ -25,7 +25,7 @@
 // this port's ambience (upstream × 0.22).
 // lerp-preset: "Slow-mo"  highlights=0.4, layering=0, waves=0, caustic=0.2, size=3.5, speed=0.022
 // lerp-preset: Abstract   highlights=0, layering=0, waves=1, caustic=0.4, size=0.75, speed=0.22
-// lerp-preset: Streaming  highlights=0, layering=0, waves=0.5, caustic=0, size=2.5, speed=0.44
+// lerp-preset: Streaming  highlights=0.2, layering=0, waves=0.5, caustic=0.3, size=2.5, speed=0.44
 
 static float wtCausticNoise(float2 uv, float t, float scale) {
     float2 n = float2(0.1);

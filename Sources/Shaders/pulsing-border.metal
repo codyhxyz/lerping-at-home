@@ -39,7 +39,7 @@
 // lerp-preset: "Solid line" colorBack=#000000, color1=#81adec, color2=#81adec
 // lerp-preset: "Solid line" color3=#81adec, color4=#81adec, roundness=0, thickness=0.05
 // lerp-preset: "Solid line" softness=0, intensity=0, bloom=0.15, spots=4, spotSize=1
-// lerp-preset: "Solid line" pulse=0, smoke=0, smokeSize=0, margin=0, speed=0.22
+// lerp-preset: "Solid line" pulse=0, smoke=0.25, smokeSize=0.4, margin=0, speed=0.22
 
 constant int SPB_COLOR_COUNT = 4;
 

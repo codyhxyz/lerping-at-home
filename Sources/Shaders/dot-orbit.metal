@@ -28,7 +28,7 @@
 // lerp-preset: Bubbles size=0.9, sizeRange=0.7, spreading=1, scale=9.2, speed=0.147
 // lerp-preset: Shine   color1=#ffffff, color2=#006aff, color3=#fff675, color4=#ffffff
 // lerp-preset: Shine   color5=#006aff, colorBack=#000000, stepsPerColor=4
-// lerp-preset: Shine   size=0.3, sizeRange=0.2, spreading=1, scale=2.24, speed=0.037
+// lerp-preset: Shine   size=0.3, sizeRange=0.2, spreading=1, scale=2.24, speed=0.074
 // lerp-preset: Hallucinatory color1=#000000, color2=#000000, color3=#000000
 // lerp-preset: Hallucinatory color4=#000000, color5=#000000, colorBack=#ffe500
 // lerp-preset: Hallucinatory stepsPerColor=2, size=0.65, sizeRange=0, spreading=0.3

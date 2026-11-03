@@ -24,10 +24,10 @@
 // lerp-preset: "Nintendo Water" persistence=0.55, lacunarity=1.8, speed=0.0144
 // lerp-preset: Moss  colorBack=#05ff4a, colorFront=#262626, scale=1
 // lerp-preset: Moss  proportion=0.65, softness=0.35, octaveCount=6
-// lerp-preset: Moss  persistence=1, lacunarity=2.55, speed=0.00072
+// lerp-preset: Moss  persistence=1, lacunarity=2.55, speed=0.006
 // lerp-preset: Worms colorBack=#ffffff, colorFront=#595959, scale=0.144
 // lerp-preset: Worms proportion=0.5, softness=0, octaveCount=1
-// lerp-preset: Worms persistence=1, lacunarity=1.5, speed=0
+// lerp-preset: Worms persistence=1, lacunarity=1.5, speed=0.012
 
 static float pnHash31(float3 p) {
     p = fract(p * 0.3183099) + 0.1;

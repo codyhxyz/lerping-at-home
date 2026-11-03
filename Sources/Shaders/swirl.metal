@@ -21,7 +21,7 @@
 //
 // Upstream presets, speed scaled to this port's ambience (upstream × 0.15).
 // lerp-preset: 007     colorBack=#e9e7da, color1=#000000, color2=#000000, color3=#000000
-// lerp-preset: 007     color4=#000000, bandCount=5, twist=0.3, center=0, proportion=0
+// lerp-preset: 007     color4=#000000, bandCount=5, twist=0.3, center=0, proportion=0.33
 // lerp-preset: 007     softness=0, noiseFrequency=0.5, noise=0, speed=0.15
 // lerp-preset: Opening colorBack=#ff8b61, color1=#fefff0, color2=#ffd8bd, color3=#ff8b61
 // lerp-preset: Opening color4=#fefff0, bandCount=2, twist=0.3, center=0.2, proportion=0.5

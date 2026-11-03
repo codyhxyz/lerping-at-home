@@ -36,7 +36,7 @@
 // lerp-preset: Linear offsetX=0.2, offsetY=-0.8, colorBack=#000000, colorBloom=#eeeeee
 // lerp-preset: Linear color1=#ffffff1f, color2=#ffffff3d, color3=#ffffff29, color4=#ffffff1f
 // lerp-preset: Linear density=2.46, spotty=1.625, midSize=1, midIntensity=0.75
-// lerp-preset: Linear intensity=7.9, bloom=1, speed=0.054
+// lerp-preset: Linear intensity=7.9, bloom=1, speed=0.107
 // lerp-preset: Ether  offsetX=-0.6, colorBack=#090f1d, colorBloom=#ffffff
 // lerp-preset: Ether  color1=#148effa6, color2=#c4dffebe, color3=#232a47, color4=#148effa6
 // lerp-preset: Ether  density=0.18, spotty=5.005, midSize=1, midIntensity=0.6
