@@ -43,6 +43,11 @@ enum PreviewMain {
             return
         }
 
+        if args.contains("--rd-selftest") {
+            reactionDiffusionSelfTest(extraSearch)
+            return
+        }
+
         if args.contains("--list") {
             for shader in makeLibrary(extraSearch).library.discover() {
                 print("\(shader.name)\(shader.isBuiltIn ? "" : "  (custom)")  \(shader.url?.path ?? "")")
@@ -80,6 +85,51 @@ enum PreviewMain {
         }
 
         runApp(extraSearch: extraSearch, args: args)
+    }
+
+    /// `reaction-diffusion` is a stateful simulation behind the purity rule, so
+    /// check the rule where it is visible: the PNG for t = 60 must be the same
+    /// bytes cold, after every earlier frame was rendered through the same
+    /// (cached) provider, and after scrubbing back from later in the epoch.
+    static func reactionDiffusionSelfTest(_ extraSearch: [URL]) {
+        if let failure = ReactionDiffusionData.selfTest() { fail("reaction-diffusion: \(failure)") }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lerp-rd-selftest-\(getpid())")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        func still(after times: [Float], name: String) -> Data {
+            let (renderer, library) = makeLibrary(extraSearch)
+            guard let shader = library.shader(named: "reaction-diffusion") else {
+                fail("reaction-diffusion shader not found")
+            }
+            let url = dir.appendingPathComponent(name + ".png")
+            for time in times {
+                let result = LerpSnapshot.render(shader: shader, library: library, renderer: renderer,
+                                                 width: 1200, height: 750, time: time, seed: 0.31,
+                                                 to: url)
+                if let error = result.error { fail("reaction-diffusion: \(error)") }
+            }
+            guard let data = try? Data(contentsOf: url) else { fail("unreadable still \(url.path)") }
+            return data
+        }
+        let cold = still(after: [60], name: "cold")
+        let warm = still(after: stride(from: 0, to: 60, by: 0.5).map { Float($0) } + [60], name: "warm")
+        let back = still(after: [200, 60], name: "back")
+        guard cold == warm else { fail("reaction-diffusion: t=60 changed after rendering t=0…59.5 first") }
+        guard cold == back else { fail("reaction-diffusion: t=60 changed after scrubbing back from t=200") }
+        print("OK    reaction-diffusion: blocked step == plain step; t=60 identical cold, warm, and scrubbed back")
+
+        for (w, h) in [(1200, 750), (3840, 2160), (5120, 1440)] {
+            let resolution = SIMD2<Float>(Float(w), Float(h))
+            let (cols, rows) = ReactionDiffusionData.dimensions(for: resolution)
+            let worst = ReactionDiffusionData.worstCaseCatchUp(resolution: resolution) * 1000
+            let steady = ReactionDiffusionData.steadyFrameCost(
+                device: makeLibrary(extraSearch).renderer.device, resolution: resolution, params: nil)
+            print(String(format: "      %dx%d grid %dx%d: worst cold frame %.0f ms (%d steps), "
+                         + "steady frame mean %.3f ms / max %.3f ms CPU",
+                         w, h, cols, rows, worst, ReactionDiffusionData.epochSteps, steady.mean, steady.max))
+        }
     }
 
     static func fail(_ message: String) -> Never {
