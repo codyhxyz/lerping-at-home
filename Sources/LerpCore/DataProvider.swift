@@ -77,6 +77,7 @@ public enum LerpDataProviders {
         "heatmap": { HeatmapData(device: $0) },
         "life": { LifeData(device: $0) },
         "neural-field": { NeuralFieldData(device: $0) },
+        "physarum": { PhysarumData(device: $0) },
         "pipes": { PipesData(device: $0) },
         "reaction-diffusion": { ReactionDiffusionData(device: $0) },
         "sandpile": { SandpileData(device: $0) },

@@ -48,6 +48,12 @@ enum PreviewMain {
             return
         }
 
+        if args.contains("--physarum-selftest") {
+            if let failure = PhysarumData.selfTest() { fail("physarum self-test: \(failure)") }
+            print("OK    physarum: warm == cold at t=60 and after scrubbing back; 1, 7, 16 workers agree")
+            return
+        }
+
         if args.contains("--list") {
             for shader in makeLibrary(extraSearch).library.discover() {
                 print("\(shader.name)\(shader.isBuiltIn ? "" : "  (custom)")  \(shader.url?.path ?? "")")
