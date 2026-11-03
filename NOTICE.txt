@@ -20,7 +20,7 @@ This project includes shaders ported from Paper Shaders
 licensed under the Apache License, Version 2.0
 (http://www.apache.org/licenses/LICENSE-2.0).
 
-Ported shaders (Sources/Shaders/), 28 of the 31 shipped:
+Ported shaders (Sources/Shaders/), 28 of the 48 shipped:
 
   Color Panels, Dithering, Dot Grid, Dot Orbit, Fluted Glass,
   Gem Smoke, God Rays, Grain Gradient, Halftone CMYK, Halftone Dots,
@@ -83,6 +83,107 @@ copper, gold, silver, and assorted plastics and rubbers), a set of ambient,
 diffuse, specular and shininess values long published in OpenGL sample code
 and reference material. Facts and measurements are not themselves
 copyrightable, but note the provenance if you redistribute.
+
+
+SHADERS ADDED NOVEMBER 2026
+---------------------------
+
+Original work, implementing published methods (algorithms, models and
+published parameter values are not themselves copyrightable; no code from
+the cited sources is used unless stated):
+
+Reaction-Diffusion (Sources/Shaders/reaction-diffusion.metal,
+Sources/LerpCore/ReactionDiffusionData.swift) simulates the Gray-Scott model
+(P. Gray and S. K. Scott, 1983-84), implemented from Karl Sims'
+Reaction-Diffusion Tutorial (https://www.karlsims.com/rd.html), using his
+diffusion rates, 3x3 Laplacian weights, and coral and mitosis parameters. The
+fingerprint and worm parameters are points from J. E. Pearson's map ("Complex
+Patterns in a Simple System", Science 261, 1993) as charted by Robert Munafo.
+
+Physarum (Sources/Shaders/physarum.metal, Sources/LerpCore/PhysarumData.swift)
+implements Jeff Jones' agent model of Physarum polycephalum transport networks
+(Artificial Life 16(2), 2010) in the synchronous form described by Sage Jenson
+(https://cargocollective.com/sagejenson/physarum).
+
+Ink Fluid (Sources/Shaders/ink-fluid.metal, Sources/LerpCore/InkFluidSolver.swift,
+Sources/LerpCore/InkFluidData.swift) implements Jos Stam's stable-fluids method
+("Real-Time Fluid Dynamics for Games", GDC 2003) with vorticity confinement
+from Fedkiw, Stam and Jensen, "Visual Simulation of Smoke" (SIGGRAPH 2001).
+
+Curl Flow (Sources/Shaders/curl-flow.metal) implements Bridson, Hourihan and
+Nordenstam, "Curl-Noise for Procedural Fluid Flow" (SIGGRAPH 2007). Its look
+is inspired by Tyler Hobbs' essay "Flow Fields" (2020). The potential is the
+prelude's simplex noise (Paper Shaders, Apache-2.0, above).
+
+Dusk Terrain (Sources/Shaders/dusk-terrain.metal) implements techniques
+described in Inigo Quilez's articles (https://iquilezles.org/articles): value
+noise with analytic derivatives, heightfield raymarching, penumbra soft
+shadows, analytic fog and cosine palettes. No code from those articles or any
+Shadertoy shader is included. Its lattice hash applies the first round of
+Chris Wellons' "lowbias32" integer mix (hash-prospector, public domain /
+Unlicense).
+
+Agate (Sources/Shaders/agate.metal) was written from The Book of Shaders by
+Patricio Gonzalez Vivo and Jen Lowe, chapters "Cellular Noise"
+(https://thebookofshaders.com/12/) and "Fractal Brownian Motion"
+(https://thebookofshaders.com/13/). None of the book's example code is copied.
+
+Sandpile (Sources/Shaders/sandpile.metal, Sources/LerpCore/SandpileData.swift,
+Sources/LerpCore/GPUSimulation.swift) implements the Abelian sandpile model of
+Bak, Tang and Wiesenfeld (1987), stepped on the GPU.
+
+Cutout Shadows (Sources/Shaders/cutout-shadows.metal) adapts code from Ronja
+Böhringer's shader tutorials (https://www.ronja-tutorials.com, source at
+https://github.com/ronja-tutorials/ShaderTutorials), licensed under Creative
+Commons Attribution 4.0 International
+(https://creativecommons.org/licenses/by/4.0/). Adapted, translated from HLSL
+to MSL and modified: the round union from "2D SDF Combination", the
+soft-shadow march from "2D SDF Shadows", radial repetition from "2D SDF Space
+Manipulation", the rectangle distance from "2D SDF Basics", and the threshold
+dither from "Dithering". Its interleaved-gradient-noise dither follows Jorge
+Jimenez (SIGGRAPH 2014) and its R2 dither follows Martin Roberts (2018).
+
+Ports (each file header carries the full upstream notice):
+
+Star Nest (Sources/Shaders/star-nest.metal) is ported from "Star Nest" by
+Pablo Roman Andrioli (Kali), https://www.shadertoy.com/view/XlfGRj,
+Copyright (c) 2013 Pablo Roman Andrioli, licensed under the MIT License.
+
+Topologica (Sources/Shaders/topologica.metal) is ported from "Topologica" by
+Otavio Good, https://www.shadertoy.com/view/4djXzz, dedicated to the public
+domain under CC0 1.0. The port changes the march step count, lattice hash and
+glow gain.
+
+Sea and Moon (Sources/Shaders/sea-and-moon.metal) is ported from "Sea and
+moon" by mrange (Mårten Rånge), https://www.shadertoy.com/view/csfXzN,
+dedicated to the public domain under CC0 1.0. Upstream's tanh_approx helper,
+marked "License: Unknown", is not included.
+
+Halo (Sources/Shaders/halo.metal) is a modified port of "Halo" by Xor
+(@XorDev), https://fragcoord.xyz/s/hp79nubv, Copyright (c) 2026 @Xor,
+licensed under Creative Commons Attribution 4.0 International. Translated from
+FragCoord's golf dialect to Metal, with time slowed and seeded, a speed
+parameter added, and short-axis scaling. Not endorsed by the author.
+
+Fractal Multiverse (Sources/Shaders/fractal-multiverse.metal) and Simulated
+Reality (Sources/Shaders/simulated-reality.metal) are ports of "fractal, the
+multiverse" (https://fragcoord.xyz/s/ftisi70e) and "simulated reality -w-"
+(https://fragcoord.xyz/s/sa07o47u) by Yohei Nishitsuji (@YoheiNishitsuji),
+Copyright (c) 2026 @YoheiNishitsuji, licensed under the MIT License. Simulated
+Reality caps its march at 64 steps by default (89 upstream, available as the
+"Upstream" preset) and replaces the mouse-driven sun colour with a parameter.
+
+Pulse Rings (Sources/Shaders/pulse-rings.metal) and String Art
+(Sources/Shaders/string-art.metal, Sources/LerpCore/VertexShaderArtData.swift)
+are ported from "pulse" (https://www.vertexshaderart.com/art/JnRaHZcXYv7WBhq5b)
+and "stringart" (https://www.vertexshaderart.com/art/EgLk7JDok4GhxPeMH) by gman
+(Gregg Tavares), dedicated to the public domain under CC0 1.0: "Any art by
+"gman" is CC0" (https://github.com/greggman/vertexshaderart.com, LICENSE.md).
+The originals are WebGL vertex shaders; the ports re-express them as a
+per-pixel inverse evaluation and as a CPU evaluation binned into screen tiles.
+
+Paper Shaders itself is pinned as a reference submodule at
+third_party/paper-shaders (Apache-2.0); nothing is built from it.
 
 
 The playground links orchetect/swift-midi (https://github.com/orchetect/swift-midi),

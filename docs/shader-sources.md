@@ -79,4 +79,32 @@ of screensavers. Look, then make something different.
 Good shaders that were skipped only for licence reasons. Ask the author; a
 reply granting CC0 or MIT makes them portable.
 
-<!-- filled in below as porting rounds report -->
+| Shader | Where | Problem |
+|---|---|---|
+| Mandala flowers (mrange) | https://www.shadertoy.com/view/NlcSRB | CC0, but has "License: Unknown" snippets (one by Martijn Steinrucken) |
+| Stars and galaxy (mrange) | https://www.shadertoy.com/view/stBcW1 | CC0, but has a snippet by nmz marked "License: Unknown" |
+| Seascape, Wet stone (TDM) | Shadertoy / glslSandbox | CC BY-NC-SA |
+| Galaxy (Guillitte) | https://glslsandbox.com/e#24643 | CC BY-NC-SA |
+| Xor's tweet shaders | x.com/XorDev | No licence on the tweets; he says to assume CC BY-NC-SA 4.0 |
+| galaxy zone (Yohei Nishitsuji) | https://fragcoord.xyz/s/g5r8ukbb | MIT and portable, but ~15 ms at 1200x750 |
+
+Clean spares nobody has ported yet: Spiral galaxy (mrange, CC0,
+https://www.shadertoy.com/view/wsBBWD), DragonEye II (mrange, CC0,
+https://glslsandbox.com/e#99585), Xor's CC BY 4.0 pieces on FragCoord
+(https://fragcoord.xyz/s/stpng88o, /s/gwznloxf, /s/pwh32upa).
+
+## Where the November 2026 shaders came from
+
+| Shader | Category | Source |
+|---|---|---|
+| reaction-diffusion, physarum, ink-fluid, curl-flow | Technique (simulation) | Karl Sims, Jones / Jenson, Stam, Bridson |
+| dusk-terrain, agate, cutout-shadows | Technique (fundamentals) | iq articles, Book of Shaders, Ronja (CC BY 4.0) |
+| sandpile | Metal capability | GPU compute path, see `docs/metal-capabilities.md` |
+| star-nest, topologica, sea-and-moon | Shadertoy | MIT, CC0, CC0 |
+| halo, fractal-multiverse, simulated-reality | Twigl / FragCoord | CC BY 4.0, MIT, MIT |
+| pulse-rings, string-art | Vertex Shader Art | CC0 (gman) |
+
+glslSandbox turned up the same three Shadertoy shaders, reposted. Its own
+entries are almost all unlicensed, and much of its database is now spam. Be
+gentle with it: one crawl at ~96 parallel requests coincided with the site
+going down. Keep scrapers to a few requests at a time.
