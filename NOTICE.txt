@@ -84,6 +84,14 @@ diffuse, specular and shininess values long published in OpenGL sample code
 and reference material. Facts and measurements are not themselves
 copyrightable, but note the provenance if you redistribute.
 
+Maze (Sources/Shaders/maze.metal, Sources/LerpCore/MazeData.swift) is
+original work: an analytic ray caster over a procedurally carved maze, with
+procedural brick, flagstone and board textures. It shares no code, textures
+or artwork with anything it references. It is an homage to Microsoft's 3D
+Maze screensaver (ssmaze, Copyright (c) Microsoft Corporation), and borrows
+only its premise: a first-person, hand-on-the-wall walk through brick
+corridors, with spinning polyhedra that turn the view upside down.
+
 
 SHADERS ADDED NOVEMBER 2026
 ---------------------------

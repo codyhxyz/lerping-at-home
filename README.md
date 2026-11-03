@@ -502,7 +502,7 @@ its parameters and presets wherever the file goes.
   field with membrane lighting, birth pulses, and death glow; the underlying
   automaton remains exact. The cached board's key is its whole input, so
   stepping it forward lands on the bytes a cold rebuild would produce.
-- `heatmap`, `life` and `pipes` use one. Every other shader keeps the plain
+- `heatmap`, `life`, `maze` and `pipes` use one. Every other shader keeps the plain
   `fragment half4 lerpMain(float4, constant LerpUniforms&)` signature.
 - Protocol and registry: `Sources/LerpCore/DataProvider.swift`. Worked examples:
   `Sources/LerpCore/PipesData.swift` (derive every frame),
@@ -674,6 +674,7 @@ even before `make saver` bakes it into the bundle.
 - [paper-design/shaders](https://github.com/paper-design/shaders) — Apache-2.0. 28 of the 31 shaders are ports of it; the prelude's hashes, value noise, simplex noise and banding fix derive from it. Per-shader attribution in `NOTICE.txt`.
 - Neuro Noise — original GLSL algorithm by [@zozuar](https://github.com/zozuar), via Paper Shaders.
 - Microsoft 3D Pipes (`sspipes`, Copyright (c) 1994-1995 Microsoft Corporation) — `Sources/Shaders/pipes.metal` is an original raymarched SDF sharing no code with it, and reuses its published numeric constants. See `NOTICE.txt`.
+- Microsoft 3D Maze (`ssmaze`) — `Sources/Shaders/maze.metal` is an original ray-cast homage sharing no code, textures or artwork with it. See `NOTICE.txt`.
 - The OpenGL "teapot" material table (emerald, jade, pearl, ruby, turquoise, brass, bronze, copper, gold, silver, plastics, rubbers) — long-published values used by `pipes`.
 - [orchetect/swift-midi](https://github.com/orchetect/swift-midi) — MIT. MIDI I/O for the playground, linked statically via `Sources/MIDIDeps`. Formerly named MIDIKit.
 - [MIKMIDI](https://github.com/mixedinkey-opensource/MIKMIDI) — MIT. The MIDI mapping model (per-device bindings, MIDI learn, named banks) follows its design. No MIKMIDI code is used and it is not a dependency.
