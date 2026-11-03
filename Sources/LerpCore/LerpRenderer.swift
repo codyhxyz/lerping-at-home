@@ -77,13 +77,23 @@ public final class LerpRenderer {
         defer { LerpSignposts.frames.endInterval("encode", signpost) }
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
         gpuCost.attach(to: commandBuffer, width: target.width, height: target.height)
+        // Compute work a provider needs finished before the fragment shader
+        // reads it (`LerpGPUSimulation`). A no-op for every other provider, so
+        // their command buffers are unchanged.
+        data?.encodeCompute(into: commandBuffer, uniforms: uniforms, params: params)
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
 
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+            // The provider has already counted its compute steps as done;
+            // run them, or its cached generation would describe bytes that
+            // were never written.
+            if data != nil { commandBuffer.commit() }
+            return nil
+        }
         encoder.setRenderPipelineState(pipeline)
         let headerSize = LerpParamLayout.headerSize
         if let tail = params?.packedTail, !tail.isEmpty {
