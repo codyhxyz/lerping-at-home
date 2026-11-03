@@ -151,10 +151,10 @@
 // lerp-preset: "Stone Dodecahedron" form=3, scale=2.5, metal=0.0, gloss=0.2, zoom=0.5
 // lerp-preset: "Stone Dodecahedron" colorA=(0.62, 0.56, 0.48), colorB=(0.20, 0.16, 0.13)
 // lerp-preset: "Stone Dodecahedron" colorRim=(1.0, 0.70, 0.45), colorBack=(0.085, 0.078, 0.070)
-// lerp-preset: "Crystal Bloom"     form=3, scale=2.2, twist=0.3, bloom=0.8, detail=0.2
+// lerp-preset: "Crystal Bloom"     form=3, scale=2.2, twist=animate(0.18, 0.3, period=240), bloom=0.8, detail=0.2
 // lerp-preset: "Crystal Bloom"     metal=0.6, gloss=0.95, colorA=(0.45, 0.70, 0.92), colorB=(0.03, 0.10, 0.26)
 // lerp-preset: "Crystal Bloom"     colorRim=(1.0, 0.62, 0.38), colorBack=(0.045, 0.058, 0.090)
-// lerp-preset: "Rose Quartz Spiral" form=0, scale=1.8, twist=0.3, bloom=0.8, detail=0.2
+// lerp-preset: "Rose Quartz Spiral" form=0, scale=1.8, twist=animate(0.18, 0.3, period=220), bloom=0.8, detail=0.2
 // lerp-preset: "Rose Quartz Spiral" metal=0.1, gloss=0.85, colorA=(0.95, 0.62, 0.66), colorB=(0.45, 0.12, 0.22)
 // lerp-preset: "Rose Quartz Spiral" colorRim=(0.55, 0.80, 1.0), colorBack=(0.080, 0.050, 0.070)
 

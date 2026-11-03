@@ -86,7 +86,7 @@ reply granting CC0 or MIT makes them portable.
 | Seascape, Wet stone (TDM) | Shadertoy / glslSandbox | CC BY-NC-SA |
 | Galaxy (Guillitte) | https://glslsandbox.com/e#24643 | CC BY-NC-SA |
 | Xor's tweet shaders | x.com/XorDev | No licence on the tweets; he says to assume CC BY-NC-SA 4.0 |
-| galaxy zone (Yohei Nishitsuji) | https://fragcoord.xyz/s/g5r8ukbb | MIT and portable, but ~15 ms at 1200x750 |
+| galaxy zone, microbe -o-, deep galaxy r13, geomertic play -oo- (Yohei Nishitsuji) | https://fragcoord.xyz/s/g5r8ukbb, /s/mbs7vchx, /s/dkonsnwg, /s/glzs27pc | MIT and portable, but 8-18x fractal-multiverse; capping changes the picture |
 | "My first FragCoord.xyz shader" (mrange) | https://fragcoord.xyz/s/mkrtrrk7 | CC0, a gorgeous 4D inversion-fractal glow, but ~65 ms at 4K; goes black below ~40 steps |
 | Fractal Loop, Wicked Fractal Flight (diatribes) | https://fragcoord.xyz/s/f3m87afg | MIT, but 80+ ms at 4K |
 
@@ -106,7 +106,7 @@ every CC BY piece without crawling.
 | multiverse-cathedral, multiverse-coral, multiverse-lattice | Original, in the Fractal Multiverse idiom | Mandelbox, Apollonian, KIFS + Kaliset |
 | sandpile | Metal capability | GPU compute path, see `docs/metal-capabilities.md` |
 | star-nest, topologica, sea-and-moon | Shadertoy | MIT, CC0, CC0 |
-| halo, fractal-multiverse, simulated-reality, torque, axes | Twigl / FragCoord | CC BY 4.0, MIT, MIT, CC BY 4.0, CC BY 4.0 |
+| halo, fractal-multiverse, simulated-reality, torque, axes, castle-to-castle, fractal-d | Twigl / FragCoord | CC BY 4.0, MIT, MIT, CC BY 4.0, CC BY 4.0, MIT, MIT |
 | pulse-rings, string-art | Vertex Shader Art | CC0 (gman) |
 
 glslSandbox turned up the same three Shadertoy shaders, reposted. Its own

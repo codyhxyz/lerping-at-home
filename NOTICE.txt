@@ -20,7 +20,7 @@ This project includes shaders ported from Paper Shaders
 licensed under the Apache License, Version 2.0
 (http://www.apache.org/licenses/LICENSE-2.0).
 
-Ported shaders (Sources/Shaders/), 28 of the 64 shipped:
+Ported shaders (Sources/Shaders/), 28 of the 66 shipped:
 
   Color Panels, Dithering, Dot Grid, Dot Orbit, Fluted Glass,
   Gem Smoke, God Rays, Grain Gradient, Halftone CMYK, Halftone Dots,
@@ -185,6 +185,16 @@ kaleidoscopic IFS octahedral fold (2010) and Kali's (Pablo Roman Andrioli)
 |p|/p.p - c inversion (the Kaliset, 2010), combined in Multiverse Lattice with
 a four-dimensional double rotation; and orbit-trap colouring.
 
+Castle To Castle (Sources/Shaders/castle-to-castle.metal) and Fractal D
+(Sources/Shaders/fractal-d.metal) are ports of "castle to castle -r6-"
+(https://fragcoord.xyz/s/cltuv8os) and "fractal -d-"
+(https://fragcoord.xyz/s/fo2g251b) by Yohei Nishitsuji (@YoheiNishitsuji),
+Copyright (c) 2026 @YoheiNishitsuji, licensed under the MIT License. Castle To
+Castle marches 20 longer steps by default (100 upstream) and adds a tint;
+Fractal D marches 24 by default (100 upstream), uses a polynomial atan2, and
+slowly drifts upstream's fixed ring offset. The "Upstream" preset of each
+restores the original step count.
+
 Torque (Sources/Shaders/torque.metal) and Axes (Sources/Shaders/axes.metal)
 are modified ports of "Torque" (https://fragcoord.xyz/s/t4e02wdx) and "Axes"
 (https://fragcoord.xyz/s/a340ofb0) by Xor (@XorDev), Copyright (c) 2026 @Xor,
@@ -222,7 +232,9 @@ Fractals" series, including Knighty's kaleidoscopic IFS.
 Fractal Pyramids (Sources/Shaders/sierpinski-pyramid.metal) was written from
 Knighty's kaleidoscopic IFS (fractalforums.com, 2010) and Christensen's
 "Distance Estimated 3D Fractals (III): Folding Space". Its icosahedral fold
-was derived for this project from the H3 reflection group.
+was derived for this project from the H3 reflection group. Its fly-through
+uses over-relaxed sphere tracing after Keinert et al., "Enhanced Sphere
+Tracing" (STAG 2014), along camera routes computed offline for this project.
 
 Mandelbulb (Sources/Shaders/mandelbulb.metal) implements the Mandelbulb
 formula of Daniel White and Paul Nylander (2009) with the running-derivative

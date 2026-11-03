@@ -86,6 +86,7 @@
 // lerp-param: twist  float 0 1.6     = 1.0   "Twist"
 // lerp-param: morph  float 0 1       = 0.5   "Morph"
 // lerp-param: slice  float 0 1       = 0.5   "4D slice tilt"
+// lerp-animate: slice 0.35 0.65 period=240
 // lerp-param: cut    float 0 1       = 0.0   "Cut"
 // lerp-param: glass  float 0 1       = 0.0   "Glass"
 // lerp-param: metal  float 0 1       = 0.0   "Metal"
@@ -95,7 +96,7 @@
 // lerp-param: colorBack color        = (0.012, 0.014, 0.024) "Background"
 //
 // lerp-preset: Cubic        power=3, twist=0.5, cReal=-0.25, cImag=0.71, hue=0.5
-// lerp-preset: Intersected  cReal=-0.69, cImag=0.27, cut=0.5, hue=1.0, zoom=1.1
+// lerp-preset: Intersected  cReal=-0.69, cImag=0.27, cut=0.5, hue=1.0, zoom=1.1, slice=animate(0.25, 0.45, period=240)
 // lerp-preset: Glass        glass=1.0, twist=0.5, cReal=-0.76, cImag=0.09, hue=0.88, zoom=1.15
 // lerp-preset: Bronze       cReal=-0.72, cImag=0.08, metal=0.8, veins=0.3, zoom=1.15
 
