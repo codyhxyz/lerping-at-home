@@ -17,7 +17,13 @@
 //     +1 drops out of the derivative
 //   - over-relaxed sphere tracing with a fallback step (Keinert et al.,
 //     "Enhanced Sphere Tracing", 2014)
-//   - orbit-trap colouring (the orbit's closest approach to the origin)
+//   - orbit-trap colouring (the orbit's closest approach to the origin and to
+//     the coordinate planes)
+//   - tetrahedral-difference normals and multi-scale occlusion probes along
+//     the normal, as in Inigo Quilez's articles on normals for SDFs and on
+//     distance-field ambient occlusion
+//   - Schlick's Fresnel approximation, and a two-beam thin-film interference
+//     tint for the shell material
 //
 // Breathing without a seam: a non-integer power taken literally cuts the bulb
 // along the half-plane where atan2 wraps. Here only the polar exponent (θ,
@@ -27,20 +33,52 @@
 // off and a whole-number power (the Classic preset) the polar part is a
 // polynomial too, the trig-free form of the formula.
 //
-// Cost control, because this runs full-screen for hours:
+// Surface detail. Each iteration of z -> z^n + c multiplies the running
+// derivative by about n, so iteration k resolves features about n^-k across.
+// The iteration cap is set per sample from the pixel footprint at that
+// distance, log(1 / footprint) / log(n) plus a margin, and is fractional: the
+// estimate (and the orbit trap) blends floor and floor + 1 iterations, so
+// detail fades in as the camera nears instead of popping. Points a pixel off
+// the surface escape after about that many iterations anyway, so the cap
+// costs little; what it buys is that hits and normals are never cut short.
+// (An earlier version used four iterations everywhere and a hit tolerance no
+// finer than a 900-px view: power 4 and the Julia bulb read as smooth clay,
+// and the four-iteration level set laid false ripples over the buds.)
+//
+// Cost control, because this runs full-screen for hours. Nearly all the work
+// is fractal iterations on samples within a few pixels of the surface, so
+// what matters is how close the march gets and how many probes follow it:
 //   - a bounding sphere fitted to the measured extent of the set per power;
 //     rays that miss it cost almost nothing.
-//   - four fractal iterations while marching: the set barely changes past
-//     that at screen scale, and most samples escape in one or two anyway.
-//   - the surface tolerance is a pixel cone, but no finer than a 900-px-tall
-//     view's, and it widens with every step so grazing rays stop crawling.
-//   - over-relaxed steps; shading reuses the hit sample (3 more taps for the
-//     normal, 2 for the soft shadow).
+//   - the hit tolerance is a 1.25-px cone, from the real pixel size down to
+//     a 1280-px-tall view's (finer drawables do not march deeper; 4K tested
+//     indistinguishable from a 2160-px cap at a quarter less work), and it
+//     widens a little with every step so grazing rays stop crawling along
+//     silhouettes. Escape radius 2.5, not 4: one iteration fewer per sample,
+//     no visible change.
+//   - over-relaxed steps with a fallback. (Marching with fewer iterations to
+//     an outer hull and refining from there was tried: since the cap rarely
+//     binds it saved nothing and cost a re-evaluation per hit.)
+//   - acos by polynomial (A&S 4.4.46) rather than the library call, ~10%.
+//   - shading reuses the hit sample's distance and orbit trap: normal 3
+//     taps, occlusion 2, soft shadow 2.
 //   (A 2x2-quad shared march like dusk-terrain's was tried and cost more:
 //   rays converge on the bulb head-on, so speculative strides rarely land.)
 // GPU cost, LerpPreview --bench --looks at 3840x2160, Apple M5, mean ms per
-// frame (same run: fractal-multiverse 8.5, paper-texture 12.5): defaults
-// 9.0, Classic 7.0, Organic 9.5, Julia Bulb 10.0, Surface Flight 12.3.
+// frame, best of interleaved runs on a shared GPU scaled to fractal-multiverse
+// = 8.7: defaults 9.7, Classic 8.7, Organic 10.6, Julia Bulb 13.1, Surface
+// Flight 13.0 (the four-iteration version: 8.8, 6.7, 9.4, 9.5, 11.7).
+//
+// Julia bulb: contact sheets over |c|, latitude, azimuth and power showed
+// smooth lumpy balls below |c| ~ 0.6 and rings and cages of buds past ~0.9;
+// in between, at powers 3-8, the set is porous and ridged all over, and at
+// low powers it adds swirling folds. The preset runs power 4 there.
+//
+// Materials, picked by `palette` (0 → 1 slides through all four):
+//   0     oxidised bronze — metallic, warm on the ridges, verdigris in creases
+//   1/3   celadon glaze — glassy clear coat, the glaze pooling darker in creases
+//   2/3   iridescent shell — nacre, thin-film colour shifting with view angle
+//   1     coral — warm bone on the buds, deep red in the crevices, translucent
 //
 // lerp-param: power    float 2 12  = 8.0  "Power"
 // lerp-param: breathe  float 0 3   = 2.0  "Power breathing"
@@ -50,16 +88,19 @@
 // lerp-param: palette  float 0 1   = 0.0  "Palette"
 // lerp-param: glow     float 0 1   = 0.5  "Glow"
 //
-// lerp-preset: Classic   breathe=0.0, distance=0.7, palette=0.5, glow=0.6
-// lerp-preset: Organic   power=4.0, breathe=0.5, distance=0.72, palette=1.0, glow=0.8
-// lerp-preset: "Surface Flight" distance=0.0, breathe=1.0, palette=0.1, glow=0.6
-// lerp-preset: "Julia Bulb" julia=1.0, breathe=1.0, distance=0.6, palette=0.75
+// lerp-preset: Classic   breathe=0.0, distance=0.7, palette=0.333, glow=0.6
+// lerp-preset: Organic   power=5.0, breathe=0.6, distance=0.65, palette=1.0, glow=0.8
+// lerp-preset: "Surface Flight" distance=0.0, breathe=1.0, palette=0.0, glow=0.6
+// lerp-preset: "Julia Bulb" julia=1.0, power=4.0, breathe=0.8, distance=0.6, palette=0.667
 
-constant int   MB_ITERS   = 4;      // fractal iterations per distance estimate
-constant int   MB_STEPS   = 44;     // march steps per pixel
-constant float MB_BAIL    = 4.0;    // escape radius
+constant int   MB_ITERS   = 13;     // loop bound on fractal iterations
+constant float MB_LOD_MIN = 3.0;    // fewest iterations any sample gets
+constant float MB_LOD_ADD = 1.5;    // iterations past the footprint estimate
+constant float MB_TOL     = 1.25;   // hit tolerance, in pixels
+constant int   MB_STEPS   = 72;     // march steps per pixel
+constant float MB_BAIL    = 2.5;    // escape radius
 constant float MB_FOCAL   = 1.9;    // ~55 degree vertical field of view
-constant float MB_REF_PX  = 900.0;  // finest surface tolerance: a view this many px tall
+constant float MB_REF_PX  = 1280.0; // finest tolerance: a view this many px tall
 
 struct MbBulb {
     float n;        // radial / polar exponent (breathes)
@@ -67,6 +108,8 @@ struct MbBulb {
     bool  whole;    // n == m: the polar part is a polynomial too
     float3 c;       // Julia constant
     float jul;      // 0 Mandelbulb … 1 Julia bulb
+    float lodK;     // 1 / log2(n)
+    float lodAdd;   // iterations past the footprint estimate
 };
 
 // The unit complex number b = (cos a, sin a) raised to an integer power
@@ -80,16 +123,43 @@ static inline float2 mbCPow(float2 b, int m) {
     return w;
 }
 
-// Distance estimate at p, with the orbit trap (min |x|, |y|, |z|, |z|^2).
-static inline float mbDE(float3 p, MbBulb B, thread float4& trap) {
+// acos to ~2e-8 rad without the library call: Abramowitz & Stegun 4.4.46,
+// mirrored for negative x (a0 is pi/2 to float precision, so no seam at 0).
+static inline float mbAcos(float x) {
+    float a = abs(x);
+    float p = -0.0012624911;
+    p = fma(p, a, 0.0066700901);
+    p = fma(p, a, -0.0170881256);
+    p = fma(p, a, 0.0308918810);
+    p = fma(p, a, -0.0501743046);
+    p = fma(p, a, 0.0889789874);
+    p = fma(p, a, -0.2145988016);
+    p = fma(p, a, 1.5707963050);
+    p *= sqrt(max(1.0 - a, 0.0));
+    return x < 0.0 ? PI - p : p;
+}
+
+// Iterations wanted where one pixel is `foot` world units across.
+static inline float mbLod(MbBulb B, float foot) {
+    float l = -log2(max(foot, 1e-7)) * B.lodK + B.lodAdd;
+    return clamp(l, MB_LOD_MIN, float(MB_ITERS) - 1.001);
+}
+
+// Distance estimate at p after `lod` iterations, blended between floor(lod)
+// and floor(lod) + 1; the orbit trap (min |x|, |y|, |z|, |z|^2) likewise.
+static inline float mbDE(float3 p, MbBulb B, float lod, thread float4& trap) {
     float3 z = p;
     float dr = 1.0;
     float r2 = dot(z, z);
-    trap = float4(abs(z), r2);
+    float4 tr = float4(abs(z), r2);
     float3 cc = mix(p, B.c, B.jul);
     float plus = 1.0 - B.jul;
+    int kf = int(lod);
+    float r2f = r2, drf = dr;
+    float4 trf = tr;
     for (int i = 0; i < MB_ITERS; i++) {
-        if (r2 > MB_BAIL * MB_BAIL) break;
+        if (i <= kf) { r2f = r2; drf = dr; trf = tr; }
+        if (i > kf || r2 > MB_BAIL * MB_BAIL) break;
         float ir = rsqrt(r2);
         float r = r2 * ir;
         float rho2 = max(z.x * z.x + z.z * z.z, 1e-14);
@@ -100,19 +170,22 @@ static inline float mbDE(float3 p, MbBulb B, thread float4& trap) {
             float2 pz = mbCPow(float2(z.y, rho2 * irho) * ir, B.m);  // (cos nθ, sin nθ)
             cth = pz.x; sth = pz.y;
         } else {
-            sth = sincos(B.n * acos(clamp(z.y * ir, -1.0, 1.0)), cth);
+            sth = sincos(B.n * mbAcos(clamp(z.y * ir, -1.0, 1.0)), cth);
         }
         float rn1 = exp2((B.n - 1.0) * log2(r));               // r^(n-1)
         dr = B.n * rn1 * dr + plus;
         z = (rn1 * r) * float3(sth * az.x, cth, sth * az.y) + cc;
         r2 = dot(z, z);
-        trap = min(trap, float4(abs(z), r2));
+        tr = min(tr, float4(abs(z), r2));
     }
-    float r = sqrt(r2);
-    return 0.5 * log(r) * r / dr;
+    float w = lod - float(kf);
+    trap = mix(trf, tr, w);
+    float df = 0.25 * log(r2f) * sqrt(r2f) / drf;
+    float dc = 0.25 * log(r2) * sqrt(r2) / dr;
+    return mix(df, dc, w);
 }
 
-static inline float mbMap(float3 p, MbBulb B) { float4 t; return mbDE(p, B, t); }
+static inline float mbMap(float3 p, MbBulb B, float lod) { float4 t; return mbDE(p, B, lod, t); }
 
 // Ray / sphere: entry and exit distances, or (-1, -1) for a miss.
 static inline float2 mbSphere(float3 ro, float3 rd, float rad) {
@@ -124,20 +197,49 @@ static inline float2 mbSphere(float3 ro, float3 rd, float rad) {
     return float2(-b - h, -b + h);
 }
 
-// Surface colour for an orbit-trap value k in [0, 1] — folds, body, bud tips —
-// and the glow colour. `sel` slides Bronze (0) → Ice (0.5) → Orchid (1).
-static inline float3 mbSurface(float k, float sel, thread float3& glow) {
-    const float3 lo[3]  = { float3(0.30, 0.11, 0.05), float3(0.08, 0.20, 0.34), float3(0.26, 0.07, 0.30) };
-    const float3 mid[3] = { float3(0.76, 0.52, 0.32), float3(0.52, 0.66, 0.78), float3(0.68, 0.44, 0.76) };
-    const float3 hi[3]  = { float3(0.93, 0.78, 0.55), float3(0.74, 0.88, 0.97), float3(0.95, 0.74, 0.86) };
-    const float3 gl[3]  = { float3(1.00, 0.42, 0.10), float3(0.18, 0.58, 1.00), float3(0.86, 0.24, 0.96) };
-    float x = clamp(sel, 0.0, 1.0) * 2.0;
-    int i = min(int(x), 1);
+// --- Materials -------------------------------------------------------------
+struct MbMat {
+    float3 lo, mid, hi;  // albedo ramp over the orbit trap (display-referred)
+    float3 cav;          // what collects in the creases
+    float3 glow;         // glow / rim colour
+    float metal;         // specular tinted by the albedo
+    float gloss;         // Blinn-Phong exponent
+    float coat;          // clear-coat / Fresnel rim strength
+    float irid;          // thin-film iridescence
+    float sss;           // light leaking through thin buds
+};
+
+constant MbMat MB_MATS[4] = {
+    // Oxidised bronze
+    { float3(0.22, 0.10, 0.045), float3(0.62, 0.38, 0.18), float3(0.95, 0.74, 0.44),
+      float3(0.10, 0.40, 0.33), float3(1.00, 0.42, 0.10), 0.85, 36.0, 0.20, 0.0, 0.0 },
+    // Celadon glaze
+    { float3(0.10, 0.24, 0.21), float3(0.47, 0.68, 0.57), float3(0.80, 0.93, 0.83),
+      float3(0.04, 0.21, 0.18), float3(0.25, 0.80, 0.70), 0.0, 160.0, 1.00, 0.0, 0.15 },
+    // Iridescent shell
+    { float3(0.36, 0.32, 0.42), float3(0.78, 0.74, 0.80), float3(0.98, 0.95, 0.94),
+      float3(0.12, 0.08, 0.24), float3(0.55, 0.40, 1.00), 0.15, 80.0, 0.85, 1.0, 0.10 },
+    // Coral
+    { float3(0.40, 0.08, 0.06), float3(0.86, 0.44, 0.30), float3(0.98, 0.86, 0.72),
+      float3(0.24, 0.02, 0.04), float3(1.00, 0.28, 0.22), 0.0, 18.0, 0.30, 0.0, 0.55 },
+};
+
+static inline MbMat mbMaterial(float sel) {
+    float x = clamp(sel, 0.0, 1.0) * 3.0;
+    int i = min(int(x), 2);
     float w = x - float(i);
-    float3 l = mix(lo[i], lo[i + 1], w), m = mix(mid[i], mid[i + 1], w), h = mix(hi[i], hi[i + 1], w);
-    glow = mix(gl[i], gl[i + 1], w);
+    MbMat a = MB_MATS[i], b = MB_MATS[i + 1], m;
+    m.lo = mix(a.lo, b.lo, w);       m.mid = mix(a.mid, b.mid, w);
+    m.hi = mix(a.hi, b.hi, w);       m.cav = mix(a.cav, b.cav, w);
+    m.glow = mix(a.glow, b.glow, w); m.metal = mix(a.metal, b.metal, w);
+    m.gloss = mix(a.gloss, b.gloss, w); m.coat = mix(a.coat, b.coat, w);
+    m.irid = mix(a.irid, b.irid, w); m.sss = mix(a.sss, b.sss, w);
+    return m;
+}
+
+static inline float3 mbRamp(MbMat M, float k) {
     k = clamp(k, 0.0, 1.0);
-    return k < 0.5 ? mix(l, m, smoothstep(0.0, 0.5, k)) : mix(m, h, smoothstep(0.5, 1.0, k));
+    return k < 0.5 ? mix(M.lo, M.mid, smoothstep(0.0, 0.5, k)) : mix(M.mid, M.hi, smoothstep(0.5, 1.0, k));
 }
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
@@ -151,13 +253,15 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     B.jul = u.julia;
     B.whole = u.breathe == 0.0 && fract(u.power) == 0.0;
     if (B.whole) B.n = float(B.m);
-    // The Julia constant wanders slowly over a sphere of radius ~1, where
-    // the set breaks into cages and rings of buds rather than a solid ball.
+    B.lodK = 1.0 / log2(max(B.n, 1.5));
+    B.lodAdd = MB_LOD_ADD + 1.0 * B.jul;
+    // The Julia constant wanders slowly through the shell |c| = 0.72-0.86,
+    // within ~22 degrees of the equator: the porous, ridged band (header).
     float ca = 0.011 * T + u.seed * 17.0;
-    float cb = 0.45 * sin(0.0077 * T + u.seed * 23.0);
-    B.c = (1.0 + 0.06 * sin(0.013 * T)) * float3(cos(ca) * cos(cb), sin(cb), sin(ca) * cos(cb));
-    // Bounding sphere: measured extents of the 4-iteration set (1.10 at
-    // power 8, 1.24 at 4, 1.54 at 2.5) plus a margin for the glow.
+    float cb = 0.38 * sin(0.0077 * T + u.seed * 23.0);
+    B.c = (0.79 + 0.07 * sin(0.013 * T + u.seed * 5.0)) * float3(cos(ca) * cos(cb), sin(cb), sin(ca) * cos(cb));
+    // Bounding sphere: measured extents of the set (1.10 at power 8, 1.24
+    // at 4, 1.54 at 2.5) plus a margin for the glow.
     float bound = mix(1.0 + 1.5 / max(u.power - u.breathe, 1.5), 1.5, B.jul);
 
     // --- Camera: a slow orbit that drifts in and out. Close in, it turns to
@@ -175,27 +279,28 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 up = cross(fwd, right);
     float3 rd = normalize(uv.x * right + uv.y * up + MB_FOCAL * fwd);
 
-    float3 glowCol;
-    mbSurface(0.0, u.palette, glowCol);
+    MbMat M = mbMaterial(u.palette);
+    float3 glowCol = M.glow;
     float3 bg = mix(float3(0.003, 0.004, 0.008), float3(0.012, 0.012, 0.024), 0.5 + 0.5 * uv.y);
     bg += glowCol * 0.012 * exp(-2.0 * dot(uv, uv));   // faint light behind the bulb
     float3 col = bg;
 
-    // Surface tolerance: a pixel cone, but never finer than a MB_REF_PX-tall
-    // view's, so a 5K frame does not march deeper than a small one.
-    float px = 1.6 / (MB_FOCAL * min(min(u.resolution.x, u.resolution.y), MB_REF_PX));
+    // One pixel's angular size, from the real drawable down to MB_REF_PX.
+    float pa = 2.0 / (MB_FOCAL * min(min(u.resolution.x, u.resolution.y), MB_REF_PX));
     float2 bs = mbSphere(ro, rd, bound);
     if (bs.y > 0.0) {
         float t = max(bs.x, 0.0);
         float tEnd = bs.y;
         bool hit = false;
-        int steps = 0;
         float glowAcc = 0.0;
         float d = 1.0;
         float4 trap = float4(1.0);
+        float lod = MB_LOD_MIN;
         float w = 1.3, stepLen = 0.0, prevD = 0.0;
         for (int i = 0; i < MB_STEPS; i++) {
-            d = mbDE(ro + rd * t, B, trap);
+            float foot = pa * t;
+            lod = mbLod(B, foot);
+            d = mbDE(ro + rd * t, B, lod, trap);
             if (w > 1.0 && d + prevD < stepLen) {
                 // The relaxed step overshot: back up to the plain step.
                 t += prevD - stepLen;
@@ -206,57 +311,115 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
             glowAcc += 1.0 / (1.0 + 4000.0 * d * d);
             // The tolerance widens a little with every step, so rays that
             // graze a silhouette give up instead of crawling along it.
-            if (d < px * t * (1.0 + 0.10 * float(i))) { hit = true; break; }
+            if (d < MB_TOL * foot * (1.0 + 0.06 * float(i))) { hit = true; break; }
             stepLen = d * w;
             prevD = d;
             t += stepLen;
-            steps = i + 1;
             if (t > tEnd) break;
         }
         if (hit) {
             float3 p = ro + rd * t;
-            // Forward differences off the hit sample's own distance; the
-            // trap is that sample's too.
-            float e = max(px * t * 0.5, 1e-4);
-            float3 nor = normalize(float3(mbMap(p + float3(e, 0.0, 0.0), B),
-                                          mbMap(p + float3(0.0, e, 0.0), B),
-                                          mbMap(p + float3(0.0, 0.0, e), B)) - d);
+            float foot = pa * t;
+            // Forward differences at about one pixel, off the hit sample's
+            // own distance (same point, same iteration count).
+            float e = max(0.7 * foot, 1e-5);
+            float3 grad = float3(mbMap(p + float3(e, 0.0, 0.0), B, lod),
+                                 mbMap(p + float3(0.0, e, 0.0), B, lod),
+                                 mbMap(p + float3(0.0, 0.0, e), B, lod)) - d;
+            float3 nor = normalize(grad);
+            // The estimate runs below true distance by a factor that varies
+            // over the set; its local slope calibrates the probes below.
+            float slope = clamp(length(grad) / e, 0.05, 1.0);
+
+            // Two-scale occlusion: probes along the normal at 3 and 30
+            // pixel-ish radii (with a world-space floor). The near one sees
+            // the creases between buds, the far one the big folds.
+            float h0 = max(3.0 * foot, 0.0012);
+            float cav = 0.0, ao = 0.0;
+            float h = h0;
+            for (int j = 0; j < 2; j++) {
+                float dj = mbMap(p + nor * h, B, mbLod(B, max(foot, h * 0.25)));
+                float o = clamp(1.0 - (dj - d) / (slope * h), 0.0, 1.0);
+                cav = j == 0 ? o : cav;
+                ao += o * (j == 0 ? 0.3 : 0.65);
+                h *= 10.0;
+            }
+            ao = clamp(1.0 - ao, 0.0, 1.0);
+            cav = smoothstep(0.1, 0.8, cav);
 
             // Orbit-trap colouring: how close the orbit came to the origin
-            // picks the colour; buds (orbits that stay out) read lighter.
+            // picks the base tone (buds whose orbits stay out read lighter),
+            // and the planar traps lay fine bands across it.
             float tr = clamp(trap.w, 0.0, 1.0);
-            float3 g;
-            float3 alb = mbSurface(0.15 + 0.7 * sqrt(tr) + 0.25 * trap.x, u.palette, g);
-            alb *= alb;                                             // to linear
+            float kTone = 0.12 + 0.75 * sqrt(tr) + 0.20 * trap.x;
+            float band = 0.5 + 0.5 * cos(TWO_PI * (2.2 * sqrt(trap.y) + 1.4 * trap.z));
+            float3 base = mbRamp(M, kTone + 0.14 * (band - 0.5));
+            base *= base;                                           // to linear
+            float3 cavCol = M.cav * M.cav;
+            float3 alb = mix(base, cavCol, cav * 0.9);
+            // What fills the creases is matte: patina, pooled glaze, pigment.
+            float metal = M.metal * (1.0 - cav);
 
-            // Occlusion: orbits that sink deep are in folds, and so are hits
-            // that took many steps to reach.
-            float occ = clamp(0.3 + 0.9 * sqrt(tr), 0.0, 1.0) * clamp(1.15 - float(steps) / 40.0, 0.2, 1.0);
             float3 L = normalize(right * -0.55 + up * 0.75 - fwd * 0.45);
             float dif = max(dot(nor, L), 0.0);
             // Soft shadow from two taps toward the light: how much of each
             // tap's free radius the surface leaves open.
             float sh = 1.0;
             if (dif > 0.0) {
-                float3 q = p + nor * e * 2.0;
-                sh = min(sh, mbMap(q + L * 0.05, B) / 0.05);
-                sh = min(sh, mbMap(q + L * 0.20, B) / 0.20);
-                sh = smoothstep(0.0, 1.0, clamp(sh * 1.4, 0.0, 1.0));
+                float3 q = p + nor * h0;
+                float ls = max(lod - 2.5, MB_LOD_MIN);
+                sh = min(sh, mbMap(q + L * 0.04, B, ls) / 0.04);
+                sh = min(sh, mbMap(q + L * 0.16, B, ls) / 0.16);
+                sh = smoothstep(0.0, 1.0, clamp(sh * 1.3, 0.0, 1.0));
             }
-            float fre = clamp(1.0 + dot(rd, nor), 0.0, 1.0);
+            float nv = clamp(-dot(rd, nor), 0.0, 1.0);
+            float fre = pow(1.0 - nv, 5.0);
             float3 H = normalize(L - rd);
-            float spe = pow(clamp(dot(nor, H), 0.0, 1.0), 28.0) * dif * sh;
+            float nh = clamp(dot(nor, H), 0.0, 1.0);
             float sky = 0.5 + 0.5 * dot(nor, up);
-            float3 lin = float3(1.00, 0.86, 0.70) * 2.2 * dif * sh
-                       + float3(0.16, 0.20, 0.32) * 0.55 * sky * occ
-                       + glowCol * 0.35 * clamp(dot(nor, -L), 0.0, 1.0) * occ;   // coloured bounce
-            col = alb * lin + float3(1.0, 0.9, 0.8) * 0.25 * spe * (0.3 + 0.7 * tr);
+            float3 R = reflect(rd, nor);
+
+            // Thin film: the path difference grows with the trap, so each
+            // bud has its own colour cycle as the view angle sweeps.
+            float film = 0.8 + 1.1 * sqrt(tr);
+            float3 irc = 0.5 + 0.5 * cos(TWO_PI * (film * (0.35 + 0.65 * nv) + float3(0.0, 0.33, 0.67)));
+
+            alb = mix(alb, alb * (0.4 + 1.2 * irc), 0.45 * M.irid * (1.0 - cav));
+
+            // Diffuse: key light, cool sky, a bounce in the glow colour.
+            float3 lin = float3(1.00, 0.87, 0.72) * 2.6 * dif * sh
+                       + float3(0.14, 0.18, 0.30) * 0.55 * sky * ao
+                       + glowCol * 0.22 * clamp(dot(nor, -L), 0.0, 1.0) * ao;
+            col = alb * (1.0 - 0.75 * metal) * lin * mix(1.0, ao, 0.4);
+            // Light through thin buds: back-lit grazing edges glow in the
+            // albedo's own colour.
+            col += M.sss * sqrt(alb) * glowCol * pow(clamp(dot(rd, L) * 0.5 + 0.5, 0.0, 1.0), 2.0)
+                 * (1.0 - nv) * ao * 0.4;
+
+            // Specular. A metal reflects in its own colour at every angle; a
+            // glaze or shell reflects white, mostly at grazing angles (the
+            // Fresnel rim); the shell's reflection is coloured by the film.
+            float3 f0 = mix(float3(0.04), sqrt(base) * 0.9, metal);
+            float3 F = f0 + (1.0 - f0) * fre;
+            F *= mix(float3(1.0), 0.35 + 1.4 * irc, M.irid);
+            float reflAmt = max(metal, M.coat);
+            // The environment: a dim cool dome, dark below, a soft warm
+            // window where the key light is.
+            float up_ = dot(R, up);
+            float3 env = mix(float3(0.010, 0.010, 0.016), float3(0.22, 0.27, 0.38), smoothstep(-0.2, 0.9, up_));
+            env += float3(1.0, 0.86, 0.66) * 2.0 * pow(clamp(dot(R, L), 0.0, 1.0), 6.0) * sh;
+            env += glowCol * 0.10 * smoothstep(0.3, -0.7, up_);
+            col += env * F * reflAmt * ao;
+            float gl = M.gloss;
+            float spe = pow(nh, gl) * (gl + 8.0) / 25.0 * dif * sh;
+            col += F * float3(1.0, 0.92, 0.80) * spe * (0.5 + reflAmt) * (1.0 - 0.8 * cav);
+
             // Subsurface-ish glow: light seems to well up from inside the
             // folds and leak through grazing edges.
-            col += glowCol * u.glow * (0.30 * pow(1.0 - occ, 2.0) + 0.22 * pow(fre, 3.0) * occ);
+            col += glowCol * u.glow * (0.20 * pow(1.0 - ao, 2.0) + 0.12 * pow(1.0 - nv, 3.0) * ao);
             // Depth fog from the near side of the bulb backwards.
-            float fog = 1.0 - exp(-0.55 * max(t - (length(ro) - 1.0), 0.0));
-            col = mix(col, bg, fog);
+            float fogA = 1.0 - exp(-0.55 * max(t - (length(ro) - 1.0), 0.0));
+            col = mix(col, bg, fogA);
         }
         col += glowCol * glowAcc * 0.0012 * u.glow;
     }
