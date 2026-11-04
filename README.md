@@ -68,8 +68,10 @@ installer asks about automatic checks too (`--with-auto-update` /
 `--without-auto-update`), defaulting to on.
 
 Releases are cut by hand, on the Mac: `scripts/publish-release.sh [tag]`
-builds the saver from a clean checkout, stamps it with the tag (default
-`vYYYY.MM.DD.HHMM`), and uploads it with the `gh` CLI. Run it whenever there
+builds from a clean checkout, stamps the saver with the tag (default
+`vYYYY.MM.DD.HHMM`), signs and notarizes the saver zip and the installer DMG
+(see [Build a release image](#build-a-release-image)), and uploads them with the
+`gh` CLI. It refuses to run without the Developer ID identities. Run it whenever there
 is something worth shipping — until the first release exists, the updater
 reports "no releases published yet". The playground itself is never updated
 unattended: replacing it could discard unsaved editor state.
@@ -186,12 +188,23 @@ certificates, plus a `notarytool` keychain profile. Build and notarize it with:
 make release RELEASE_VERSION=0.1.0 \
   APP_SIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)" \
   INSTALLER_SIGN_IDENTITY="Developer ID Installer: YOUR NAME (TEAMID)" \
-  NOTARY_PROFILE=lerping-notary
+  NOTARY_PROFILE=lerping
 ```
 
 The target signs both bundles and the inner PKG, notarizes and staples the PKG,
 then signs, notarizes, staples, and checks the final DMG. It writes a SHA-256
-file beside the DMG. Publish the DMG and checksum in a tagged GitHub Release.
+file beside the DMG. `scripts/publish-release.sh` runs it for you, finding the
+identities in the keychain, and publishes the result.
+
+One-time setup:
+
+- Only the team's Account Holder can create Developer ID certificates; the App
+  Store Connect API refuses. In Xcode, open Settings → Accounts → Manage
+  Certificates, click +, and add both **Developer ID Application** and
+  **Developer ID Installer**.
+- Store the notary profile from an App Store Connect API key; no Apple ID
+  password is needed:
+  `xcrun notarytool store-credentials lerping --key AuthKey_X.p8 --key-id X --issuer ISSUER`.
 
 ## Live shader development
 
