@@ -4,7 +4,7 @@
 
 - Screensaver for macOS that renders procedural shaders with Metal.
 - Shaders are single `.metal` files compiled at runtime via `MTLDevice.makeLibrary(source:)`.
-- 31 built-in shaders: aurora, color-panels, dithering, dot-grid, dot-orbit, fluted-glass, game-of-life, gem-smoke, god-rays, grain-gradient, halftone-cmyk, halftone-dots, heatmap, liquid-metal, mesh-gradient, metaballs, neuro-noise, paper-texture, perlin-noise, pipes, pulsing-border, simplex-noise, smoke-ring, spiral, static-mesh-gradient, static-radial-gradient, swirl, voronoi, warp, water, waves.
+- 68 built-in shaders in `Sources/Shaders/`: all 30 of Paper Shaders' looks ported to Metal, raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
 - Custom `.metal` files are supported without rebuilding the engine.
 - No Xcode project. Builds with `swiftc` through a Makefile.
 - No build-time Metal toolchain and no precompiled shader archive.
@@ -87,8 +87,8 @@ unattended: replacing it could discard unsaved editor state.
 - Options… also has an **In rotation** gallery: pick which *looks* Shuffle draws
   from, by looking at them. Shuffle rotates over (shader, preset) pairs, not just
   shaders — defaults plus each distinct `// lerp-preset:` look, with a useful
-  preset name replacing an identical “Defaults” tile. That is 123 looks across
-  the 31 shaders rather than 31. Every look is a portrait still of itself; click
+  preset name replacing an identical “Defaults” tile. That is about 270 looks
+  across the 68 shaders rather than 68. Every look is a portrait still of itself; click
   a tile to put it in or take it out. They are grouped under a shader heading
   whose checkbox turns the
   whole group on or off and carries an *n/m* count, and there is a search field,
@@ -479,9 +479,9 @@ its parameters and presets wherever the file goes.
   drifting, and dragging the slider (or turning a MIDI knob bound to it) takes
   control until the toggle hands it back. Details in `PORTING.md`.
 - A malformed declaration is a compile error naming the line.
-- 28 of the 31 built-in shaders declare parameters mirroring the upstream
-  paper-design props, with defaults set to this project's current look and the
-  upstream looks available as presets.
+- 67 of the 68 built-in shaders declare parameters (all but `pipes`). The 30
+  Paper Shaders ports mirror the upstream props, with defaults set to this
+  project's current look and the upstream looks available as presets.
 - Inspect and drive them from the CLI:
 
 ```sh
@@ -691,7 +691,7 @@ even before `make saver` bakes it into the bundle.
 
 ## Sources
 
-- [paper-design/shaders](https://github.com/paper-design/shaders) — Apache-2.0. 28 of the 31 shaders are ports of it; the prelude's hashes, value noise, simplex noise and banding fix derive from it. Per-shader attribution in `NOTICE.txt`.
+- [paper-design/shaders](https://github.com/paper-design/shaders) — Apache-2.0. 30 of the 68 shaders are ports of it; the prelude's hashes, value noise, simplex noise and banding fix derive from it. Per-shader attribution in `NOTICE.txt`.
 - Neuro Noise — original GLSL algorithm by [@zozuar](https://github.com/zozuar), via Paper Shaders.
 - Microsoft 3D Pipes (`sspipes`, Copyright (c) 1994-1995 Microsoft Corporation) — `Sources/Shaders/pipes.metal` is an original raymarched SDF sharing no code with it, and reuses its published numeric constants. See `NOTICE.txt`.
 - Microsoft 3D Maze (`ssmaze`) — `Sources/Shaders/maze.metal` is an original ray-cast homage sharing no code, textures or artwork with it. See `NOTICE.txt`.
