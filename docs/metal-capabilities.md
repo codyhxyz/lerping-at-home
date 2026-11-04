@@ -30,9 +30,8 @@ byte-identical before and after, at two (time, seed) pairs.
   every cold catch-up (`--snapshot --time T`, the scrubber, a look switch
   mid-epoch, the desktop handoff). On the GPU a 330×220 step costs about as
   much as one dispatch: ~9 µs.
-- None of the alternatives below removes a real bottleneck today except
-  MetalFX upscaling, and that one trades image quality for a frame budget
-  only a few looks exceed (see the table at the end).
+- None of the alternatives below removes a real bottleneck today. MetalFX
+  upscaling was tried and rejected (see below).
 
 ### How the purity contract survives
 
@@ -180,7 +179,15 @@ comparable to `game-of-life`'s R-pentomino catch-up on the CPU.
 
 ## Assessed, not built
 
-### MetalFX spatial upscaling, for heavy looks at 5K (recommend: next, opt-in)
+### MetalFX spatial upscaling, for heavy looks at 5K (tried, rejected)
+
+Built on branch `worktree-agent-a9a23c33306835482` (b26c42d, November 2026)
+and not merged: a failed experiment. Measured on an M5 at 3024x1964, the
+scale plus the blit it forces (MetalFX needs private-storage output, so the
+drawable stops being framebuffer-only) cost about 1.0 ms GPU per frame —
+as much as rendering most of the library at native resolution. Do not
+retry it without a look whose native cost dwarfs that. The assessment that
+led to it is kept below for the numbers.
 
 `LerpPreview --bench --size 5120x2880` on an M5, mean GPU ms per frame:
 paper-texture 23.5 (141% of a 60 fps budget), pipes 13.7, halftone-cmyk 12.8,

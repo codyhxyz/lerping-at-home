@@ -20,12 +20,13 @@ This project includes shaders ported from Paper Shaders
 licensed under the Apache License, Version 2.0
 (http://www.apache.org/licenses/LICENSE-2.0).
 
-Ported shaders (Sources/Shaders/), 28 of the 66 shipped:
+Ported shaders (Sources/Shaders/), 30 of the 68 shipped:
 
   Color Panels, Dithering, Dot Grid, Dot Orbit, Fluted Glass,
   Gem Smoke, God Rays, Grain Gradient, Halftone CMYK, Halftone Dots,
-  Heatmap, Liquid Metal, Mesh Gradient, Metaballs, Neuro Noise
-  (original algorithm by @zozuar), Paper Texture, Perlin Noise,
+  Heatmap, Image Dithering, Lens Distortion, Liquid Metal, Mesh
+  Gradient, Metaballs, Neuro Noise (original algorithm by @zozuar),
+  Paper Texture, Perlin Noise,
   Pulsing Border, Simplex Noise, Smoke Ring, Spiral, Static Mesh
   Gradient, Static Radial Gradient, Swirl, Voronoi, Warp, Water, Waves.
 
@@ -37,7 +38,8 @@ texture-based randomizers with procedural hashes.
 
 Several upstream shaders operate on a supplied image (u_image). Those ports
 substitute a procedural source for the sampler, keeping the upstream
-algorithm: Water, Fluted Glass, Halftone Dots, Halftone CMYK, Heatmap. Each
+algorithm: Water, Fluted Glass, Halftone Dots, Halftone CMYK, Heatmap,
+Image Dithering, Lens Distortion. Each
 affected file documents its substitution in a header comment.
 
 Heatmap additionally ports upstream's CPU pre-pass. Upstream does not hand

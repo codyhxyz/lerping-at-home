@@ -30,7 +30,7 @@ and add a paragraph to `NOTICE.txt`.
 
 | Library | Where | Licence | Use |
 |---|---|---|---|
-| [Paper Shaders](https://github.com/paper-design/shaders) | `third_party/paper-shaders` (git submodule, pinned) | Apache-2.0 | Upstream of 28 shipped ports. The GLSL is in template strings in `packages/shaders/src/shaders/*.ts`. Nothing builds from it, so `scripts/install.sh`'s plain clone doesn't need it. |
+| [Paper Shaders](https://github.com/paper-design/shaders) | `third_party/paper-shaders` (git submodule, pinned) | Apache-2.0 | Upstream of 30 shipped ports: every shader in the library. The image filters (`u_image`) are ported with a procedural scene in place of the picture; each file's header says what stands in. The GLSL is in template strings in `packages/shaders/src/shaders/*.ts`. Nothing builds from it, so `scripts/install.sh`'s plain clone doesn't need it. |
 | [lygia](https://github.com/patriciogonzalezvivo/lygia) | `~/Documents/shader-refs/lygia` (plain clone, outside the repo) | Prosperity 3.0.0 (non-commercial) | Read to learn a technique, then write your own. Never copy from it into this repo. |
 
 After cloning, `git submodule update --init` fetches Paper Shaders. To move
