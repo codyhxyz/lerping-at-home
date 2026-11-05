@@ -100,8 +100,8 @@ final class VertexShaderArtLines {
         let ty = max(1, min(Int(UInt16.max), Int((min(max(1, resolution.y), 65536) / Float(ts)).rounded(.up))))
         let tileCount = tx * ty
 
-        // Reach of a line's coverage past its centreline: half-width plus one
-        // pixel of antialiasing.
+        // Reach of a line's coverage past its centreline: half-width plus the
+        // 1-px radius of the antialiasing tent (`lerpVsaProfile`).
         let reach = halfWidth + 1.0
 
         spans.removeAll(keepingCapacity: true)
@@ -234,6 +234,24 @@ final class VertexShaderArtLines {
         float4 color1;     // rgb at p1
     };
 
+    // Integral of the unit tent of radius 1 from -inf to x (a C1 ramp).
+    static inline float lerpVsaTentCdf(float x) {
+        float a = saturate(1.0 - abs(x));
+        return x < 0.0 ? 0.5 * a * a : 1.0 - 0.5 * a * a;
+    }
+
+    // Coverage profile of a line of half-width hw at distance d: the line's
+    // box cross-section filtered by a radius-1-px tent (box * tent, i.e. a
+    // quadratic B-spline for a 1-px line). The tent sums to exactly 1 over
+    // any row of pixel centres, so a line delivers 2 * hw of light per pixel
+    // of length wherever it sits between rows: no brightness crawl as it
+    // moves. The plain box filter it replaces (saturate(hw + 0.5 - d)) put a
+    // 1-px line at 1.0 on one row or 0.5 + 0.5 on two, which beads shallow
+    // lines into stair steps and makes them crawl as they move.
+    static inline float lerpVsaProfile(float d, float hw) {
+        return lerpVsaTentCdf(d + hw) - lerpVsaTentCdf(d - hw);
+    }
+
     // Composites every line in this pixel's tile front to back in draw order
     // (vertexshaderart's depth test LESS at z = 0 keeps the first-drawn
     // fragment). Returns premultiplied rgb in .rgb and coverage in .a.
@@ -245,9 +263,7 @@ final class VertexShaderArtLines {
         uint2 tc = min(uint2(max(p, 0.0)) / F.tileSize, F.tiles - 1u);
         uint2 h = tiles[tc.y * F.tiles.x + tc.x];
         float hw = F.halfWidth;
-        // Thinner than a pixel: keep a 1-px footprint, fade by the width.
-        float thin = min(1.0, 2.0 * hw);
-        float edge = max(hw, 0.5) + 0.5;
+        float reach = hw + 1.0;   // where the profile reaches zero
         float3 acc = float3(0.0);
         float alpha = 0.0;
         for (uint i = 0u; i < h.y; i++) {
@@ -256,8 +272,8 @@ final class VertexShaderArtLines {
             float2 pa = p - a, ba = b - a;
             float t = saturate(dot(pa, ba) / max(dot(ba, ba), 1e-6));
             float d = length(pa - ba * t);
-            float cov = saturate(edge - d) * thin;
-            if (cov <= 0.0) continue;
+            if (d >= reach) continue;
+            float cov = lerpVsaProfile(d, hw);
             float3 col = saturate(mix(s.color0.rgb, s.color1.rgb, t));
             acc += (1.0 - alpha) * cov * col;
             alpha += (1.0 - alpha) * cov;

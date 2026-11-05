@@ -21,6 +21,18 @@
 // *first-drawn* line covering a pixel wins. Lines composite front to back in
 // that order, antialiased.
 //
+// Antialiasing (lerpVsaProfile in VertexShaderArtData.swift): coverage is the
+// line's cross-section filtered by a 1-px-radius tent, not a pixel box. A box
+// put a 1-px line at full brightness on one row of pixels but at half on
+// each of two rows, so shallow lines beaded into stair steps, the dense fan
+// beat into moire, and both crawled as the lines moved. The tent sums to 1
+// over any row of pixel centres, so each line keeps the same light per pixel
+// of length wherever it falls; peak brightness swings 0.75-0.5 instead of
+// 1-0.5 at 1 px wide, and barely at all at the 1.76-px width of a 2704x1756
+// screen. Measured at 1352x878: mean luminance within 1% of a 16x
+// supersampled render; ssaa.py flicker ratio 1.07x -> 0.96x (default) and
+// 1.11x -> 1.03x (Upstream).
+//
 // Pixels: vertexshaderart sizes its canvas in CSS pixels, so upstream's 1-px
 // lines are 2 physical pixels on a Retina screen. The port takes one CSS pixel
 // as max(1, short side / 1000) framebuffer pixels (VertexShaderArtLines.cssPixel).

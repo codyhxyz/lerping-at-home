@@ -10,7 +10,9 @@
 // engine has only a fullscreen fragment function, so the point set is
 // evaluated in reverse, per pixel: a ring can only reach radius rho if
 // count*0.02 lies in [rho - 0.2 - size, rho + size], so each pixel visits ~13
-// of the 99 rings, and on each ring only the three points nearest it in angle.
+// of the 99 rings, and on each ring only the points near it in angle: the
+// nearest and one either side out where points are far apart, more in the
+// middle where the squares overlap their neighbours.
 // Cost is bounded per pixel and independent of the 10000-point count.
 //
 // Kept from upstream: the ring/point layout and its doubled vertices (each of
@@ -46,6 +48,12 @@ static inline float3 prHsv2rgb(float3 c) {
     float4 K = float4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
     float3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
     return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// Ring 98 is cut short by the 10000-vertex count: only points 0, 1, 5, 6.
+static inline bool prOnLastRing(float k) {
+    float km = glmod(k, PR_SEGMENTS);
+    return km == 0.0 || km == 1.0 || km == 5.0 || km == 6.0;
 }
 
 // Box-filter coverage of the pixel [px-0.5, px+0.5]^2 by an axis-aligned
@@ -100,21 +108,34 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         float base = tRot - count * 0.02;
         float k0 = round((phi - base) / angStep);
         float a0 = base + k0 * angStep;
+        // A point can touch this pixel only within `reach` px of it, so at
+        // most asin(reach / (radius * s)) rad from phi; k0 is up to half a
+        // spacing off phi, so walk floor(that / angStep + 0.5) neighbours
+        // each way (ceil for slack), and the whole ring (25 either side of
+        // k0 is all 51) once reach exceeds the ring's radius. At the rim that
+        // is one each way, as before. Near the middle the squares are wider
+        // than the gaps between them (ring 1 at rest: 1.7-px spacing, 2.3-px
+        // squares), and checking only k0 +/- 1 there cut corners off squares
+        // in the inner two rings: up to 12/255 against a brute-force render
+        // of all 5049 squares, which this now matches to 1/255 everywhere.
+        float reach = hp * 1.4143 + 1.0;
+        float ratio = reach / max(radius * s, 1e-3);
+        int nSide = ratio >= 1.0 ? 25 : int(min(25.0, ceil(asin(ratio) / angStep + 0.5)));
         // One sincos for the nearest point; its neighbours are that vector
-        // turned by -/+ one point spacing.
+        // turned by -/+ one point spacing at a time.
         float2 d0 = float2(cos(a0), sin(a0));
-        float2 dm = float2(d0.x * PR_COS_STEP + d0.y * PR_SIN_STEP, d0.y * PR_COS_STEP - d0.x * PR_SIN_STEP);
-        float2 dp = float2(d0.x * PR_COS_STEP - d0.y * PR_SIN_STEP, d0.y * PR_COS_STEP + d0.x * PR_SIN_STEP);
-        float2 dirs[3] = { dm, d0, dp };
+        float2 c0 = centre + float2(d0.x, -d0.y) * (radius * s);
+        bool lastRing = count == PR_LAST_RING;
         float cov = 0.0;
-        for (int dk = -1; dk <= 1; dk++) {
-            if (count == PR_LAST_RING) {
-                float km = glmod(k0 + float(dk), PR_SEGMENTS);
-                if (!(km == 0.0 || km == 1.0 || km == 5.0 || km == 6.0)) continue;
-            }
-            float2 dir = dirs[dk + 1];
-            float2 c = centre + float2(dir.x, -dir.y) * (radius * s);
-            cov = max(cov, prSquareCoverage(pos.xy, c, hp));
+        if (!lastRing || prOnLastRing(k0)) cov = prSquareCoverage(pos.xy, c0, hp);
+        float2 dm = d0, dp = d0;
+        for (int j = 1; j <= nSide; j++) {
+            dm = float2(dm.x * PR_COS_STEP + dm.y * PR_SIN_STEP, dm.y * PR_COS_STEP - dm.x * PR_SIN_STEP);
+            dp = float2(dp.x * PR_COS_STEP - dp.y * PR_SIN_STEP, dp.y * PR_COS_STEP + dp.x * PR_SIN_STEP);
+            if (!lastRing || prOnLastRing(k0 - float(j)))
+                cov = max(cov, prSquareCoverage(pos.xy, centre + float2(dm.x, -dm.y) * (radius * s), hp));
+            if (!lastRing || prOnLastRing(k0 + float(j)))
+                cov = max(cov, prSquareCoverage(pos.xy, centre + float2(dp.x, -dp.y) * (radius * s), hp));
         }
         if (cov <= 0.0) continue;
 
