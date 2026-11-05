@@ -180,73 +180,100 @@ static inline bool mzSolid(float3 ro, float3 rd, float3 c, float r, float spin, 
 
 // Masonry. Each maze is built from one of four, and consecutive mazes never
 // repeat one (MazeData.swift picks; the `style` parameter can pin it).
+//
+// The bond is laid out from the grid, not from world x: every unit length
+// divides a cell exactly (4 bricks, 3 Flemish periods or 2 stones per cell),
+// and one course in two has a joint at each post face (vertex ± MZ_HALF_T),
+// the other is offset by half a unit. So every wall end and corner meets the
+// same joints, and `mzMasonry` is told where the face it is drawing stops:
+// a joint that would fall within MZ_SLIVER of that edge is dropped and the
+// sliver joins its neighbour, and the edge itself gets no mortar. Before
+// this, joints landed wherever world x put them, and about one wall end or
+// corner in three showed a 1-4 mm brick sliver beside the arris (the end
+// caps are only 0.14 wide, narrower than one brick).
 struct MzStyle {
-    float h, w;         // course height, unit length
+    float h;            // course height
+    float w;            // stretcher length (running bond: the period too)
+    float period;       // pattern period along the wall; divides 1
     float joint;        // half the joint width
     float spread;       // unit-to-unit value variation
     int   flemish;      // 0 running bond, 1 Flemish bond (headers between stretchers)
     float3 unit, mortar;
 };
 
+constant float MZ_SLIVER = 0.045;   // shortest piece left beside a corner
+
 static inline MzStyle mzStyleOf(uint i) {
     MzStyle s;
     switch (i & 3u) {
     case 0u:   // red brick, running bond
-        s.h = 1.2 / 16.0; s.w = 0.24;  s.joint = 0.005;  s.spread = 0.28;
+        s.h = 1.2 / 16.0; s.w = 0.25;  s.joint = 0.005;  s.spread = 0.28;
         s.flemish = 0; s.unit = float3(0.557, 0.231, 0.145); s.mortar = float3(0.549, 0.510, 0.451);
         break;
     case 1u:   // cream stock brick, running bond
-        s.h = 1.2 / 17.0; s.w = 0.23;  s.joint = 0.0047; s.spread = 0.22;
+        s.h = 1.2 / 17.0; s.w = 0.25;  s.joint = 0.0047; s.spread = 0.22;
         s.flemish = 0; s.unit = float3(0.70, 0.585, 0.41); s.mortar = float3(0.81, 0.77, 0.68);
         break;
-    case 2u:   // dark brick, Flemish bond with burnt headers
-        s.h = 1.2 / 16.0; s.w = 0.24;  s.joint = 0.005;  s.spread = 0.24;
+    case 2u:   // dark brick, Flemish bond with burnt headers: 3 periods a cell
+        s.h = 1.2 / 16.0; s.w = 2.0 / 9.0; s.joint = 0.005; s.spread = 0.24;
         s.flemish = 1; s.unit = float3(0.42, 0.22, 0.18); s.mortar = float3(0.50, 0.48, 0.45);
         break;
     default:   // dressed stone blocks
-        s.h = 0.2;        s.w = 0.46;  s.joint = 0.004;  s.spread = 0.16;
+        s.h = 0.2;        s.w = 0.5;   s.joint = 0.004;  s.spread = 0.16;
         s.flemish = 0; s.unit = float3(0.56, 0.54, 0.49); s.mortar = float3(0.36, 0.345, 0.315);
         break;
     }
+    s.period = s.flemish != 0 ? 1.5 * s.w : s.w;
     s.unit = pow(s.unit, 2.2);
     s.mortar = pow(s.mortar, 2.2);
     return s;
 }
 
-static inline float3 mzMasonry(float u, float v, float face, float fw, MzStyle st) {
+// The unit of the bond containing x (already shifted for its course):
+// (start, end, id). Flemish ids are even for stretchers, odd for headers.
+static inline float3 mzUnitAt(float x, MzStyle st) {
+    float k = floor(x / st.period);
+    if (st.flemish == 0) return float3(k * st.w, k * st.w + st.w, k);
+    float m = x - k * st.period;
+    bool header = m >= st.w;
+    float a = k * st.period + (header ? st.w : 0.0);
+    return float3(a, header ? k * st.period + st.period : a + st.w, k * 2.0 + (header ? 1.0 : 0.0));
+}
+
+// u runs along the wall in world units; [lo, hi] is the face's extent along u
+// near this point (±1e9 where it runs on); `phase` flips which courses carry
+// the joints at post faces, so that at a corner one face shows a whole brick
+// where the other shows a short one, course by course.
+static inline float3 mzMasonry(float u, float v, float face, float fw, MzStyle st,
+                               float lo, float hi, float phase) {
     float row = floor(v / st.h);
-    float odd = fmod(abs(row), 2.0);
-    float x = u + face * 0.37 * st.w;
-    float lo, len, id;
-    bool header = false;
-    if (st.flemish != 0) {
-        float period = 1.5 * st.w;
-        x += odd * 0.75 * st.w;
-        float k = floor(x / period);
-        float m = x - k * period;
-        header = m >= st.w;
-        lo = k * period + (header ? st.w : 0.0);
-        len = header ? 0.5 * st.w : st.w;
-        id = k * 2.0 + (header ? 1.0 : 0.0);
-    } else {
-        x += odd * 0.5 * st.w;
-        id = floor(x / st.w);
-        lo = id * st.w;
-        len = st.w;
-    }
-    float fx = (x - lo) / len, fy = v / st.h - row;
-    float e = min(min(fx, 1.0 - fx) * len, min(fy, 1.0 - fy) * st.h);
+    float odd = fmod(abs(row) + phase, 2.0);
+    float shift = MZ_HALF_T + odd * 0.5 * st.period;
+    float x = u - shift, elo = lo - shift, ehi = hi - shift;
+
+    float3 b = mzUnitAt(x, st);
+    // Pieces shorter than MZ_SLIVER at either edge join the unit next door,
+    // which keeps its colour; units overhanging an edge are cut at it.
+    if (b.y < elo + MZ_SLIVER) { float3 n = mzUnitAt(b.y + 1e-4, st); b.y = n.y; b.z = n.z; }
+    if (b.x > ehi - MZ_SLIVER) { float3 n = mzUnitAt(b.x - 1e-4, st); b.x = n.x; b.z = n.z; }
+    bool openL = b.x < elo + MZ_SLIVER, openR = b.y > ehi - MZ_SLIVER;   // no joint at an arris
+    bool header = st.flemish != 0 && fmod(abs(b.z), 2.0) > 0.5;
+
+    float fy = v / st.h - row;
+    float ex = min(openL ? 1e9 : x - b.x, openR ? 1e9 : b.y - x);
+    float e = min(ex, min(fy, 1.0 - fy) * st.h);
     float aa = max(fw * 0.5, 1e-4);
     float body = smoothstep(st.joint - aa, st.joint + aa, e);
 
     // Each unit a slightly different tone, nothing more.
+    float id = b.z;
     float h1 = hash21(float2(id, row) + face * 41.3);
     float h2 = hash21(float2(row, id) * 1.37 + 7.1 + face);
-    float3 b = st.unit * (1.0 - 0.5 * st.spread + st.spread * h1);
-    b *= float3(1.0 + 0.08 * (h2 - 0.5), 1.0, 1.0 - 0.08 * (h2 - 0.5));
-    if (header) b *= float3(0.7, 0.72, 0.78);   // Flemish bond's darker header ends
+    float3 c = st.unit * (1.0 - 0.5 * st.spread + st.spread * h1);
+    c *= float3(1.0 + 0.08 * (h2 - 0.5), 1.0, 1.0 - 0.08 * (h2 - 0.5));
+    if (header) c *= float3(0.7, 0.72, 0.78);   // Flemish bond's darker header ends
 
-    float3 alb = mix(st.mortar * 0.8, b, body);   // joints sit back from the face
+    float3 alb = mix(st.mortar * 0.8, c, body);   // joints sit back from the face
     // Far away the pattern averages out rather than aliasing.
     float far = smoothstep(st.h * 0.12, st.h * 0.45, fw);
     float jointFrac = 2.0 * st.joint / st.h + 2.0 * st.joint / st.w;
@@ -288,7 +315,7 @@ static inline float3 mzArch(float lu, float v, float face, float fw, MzStyle st,
     float d = v < S ? abs(rel.x) - A : length(rel) - A;
     inside = d < R;
     if (!inside) return float3(0.0);
-    if (d < 0.0) return mzMasonry(lu + 3.1, v, face + 5.0, fw, st) * 0.8;
+    if (d < 0.0) return mzMasonry(lu + 3.1, v, face + 5.0, fw, st, -1e9, 1e9, 0.0) * 0.8;
 
     // Ring stones: jamb blocks below the springing line, nine voussoirs above.
     float seg, ej;
@@ -427,7 +454,29 @@ static inline float3 mzScene(float3 ro, float3 rd, float3 right, float3 up, floa
                 if (pick < 0.5) alb = mzTiles(lu, P.y, fw, pick * 2.0, done);
                 else            alb = mzArch(lu, P.y, face, fw, st, done);
             }
-            if (!done) alb = mzMasonry(uu, P.y, face, fw, st);
+            if (!done) {
+                // Where this face stops near here: at a wall end or outside
+                // corner (vertex ± MZ_HALF_T where an arm is missing), or an
+                // inside corner (where a wall leaves on the face's own side).
+                uint plusA = alongX ? 1u : 4u, minusA = alongX ? 2u : 8u;
+                uint own = alongX ? (n.z > 0.0 ? 4u : 8u) : (n.x > 0.0 ? 1u : 2u);
+                float lo = -1e9, hi = 1e9;
+                for (int k = 0; k < 2; ++k) {
+                    float vk = ei + float(k);
+                    int2 vv = alongX ? int2(int(vk), int(lineC)) : int2(int(lineC), int(vk));
+                    uint r = mzRecord(verts, vv, cells);
+                    float eL, eR;
+                    if (r & own) { eL = vk + MZ_HALF_T; eR = vk - MZ_HALF_T; }
+                    else {
+                        eL = (r & minusA) ? -1e9 : vk - MZ_HALF_T;
+                        eR = (r & plusA)  ?  1e9 : vk + MZ_HALF_T;
+                    }
+                    if (eL <= uu + 1e-3) lo = max(lo, eL);
+                    if (eR >= uu - 1e-3) hi = min(hi, eR);
+                }
+                float phase = (n.z < -0.5 || n.x > 0.5) ? 1.0 : 0.0;
+                alb = mzMasonry(uu, P.y, face, fw, st, lo, hi, phase);
+            }
 
             // A little shading where walls meet the floor, the ceiling and each other.
             float aoV = min(P.y, MZ_WALL_H - P.y);

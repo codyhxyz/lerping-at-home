@@ -12,8 +12,10 @@ import simd
 /// left by: a straight run is a line, a turn is a quarter circle round the
 /// inside corner, and a dead end is the only place the walker stops, easing in
 /// to the cell centre, turning round on the spot and easing back out. Speed is
-/// continuous everywhere, including into and out of every stop. The camera
-/// stays level at eye height: no head bob.
+/// continuous everywhere, including into and out of every stop, and so is the
+/// rate of turn: the camera looks along a lightly filtered heading
+/// (`Walk.heading(at:)`) rather than snapping into each quarter circle. The
+/// camera stays level at eye height: no head bob.
 ///
 /// The original's spinning polyhedra are kept, and so is what they did: walk
 /// through one and the world turns upside down until you walk through another.
@@ -63,6 +65,8 @@ public final class MazeData: LerpDataProvider {
     static let uTurnSeconds: Float = 1.7
     /// Time the view takes to roll over after touching a polyhedron.
     static let flipSeconds: Float = 1.3
+    /// Half-width of the heading filter; see `Walk.heading(at:)`.
+    static let headLead: Float = 0.18
     static let maxObjects = 8
 
     // MARK: - GPU-visible frame block (fragment buffer 1)
@@ -244,6 +248,28 @@ public final class MazeData: LerpDataProvider {
                 position = s.a + (s.b - s.a) * e
             }
             return Pose(position: position, yaw: yaw, walked: s.s0 + s.length * e)
+        }
+
+        /// The heading the camera looks along: the path's own heading, tent-
+        /// filtered over ±`headLead` seconds. On the path itself the turn
+        /// rate steps from 0 to 2·speed rad/s the instant a quarter circle
+        /// begins (4.4 rad/s for Labyrinth, a visible kick at every corner);
+        /// filtered, it ramps up over 2·headLead and the head starts into a
+        /// turn a moment before the feet do, as a walker's does. Yaw is kept
+        /// unwrapped by `solve`, so averaging angles is safe. 256 midpoint
+        /// samples put the quadrature error under 0.005 px at 2704 wide
+        /// (48 samples: 0.13 px, which would show as a faint wobble).
+        func heading(at t: Float) -> Float {
+            let n = 256
+            let centre = pose(at: t).yaw
+            var sum: Float = 0, weights: Float = 0
+            for i in 0..<n {
+                let x = (Float(i) + 0.5) / Float(n) * 2 - 1
+                let w = 1 - abs(x)
+                sum += w * (pose(at: t + x * MazeData.headLead).yaw - centre)
+                weights += w
+            }
+            return centre + sum / weights
         }
     }
 
@@ -515,7 +541,7 @@ public final class MazeData: LerpDataProvider {
 
         var frame = Frame()
         frame.dim = SIMD4(UInt32(size), UInt32(size), UInt32(walk.flips.count), UInt32(built.style))
-        frame.camera = SIMD4(pose.position.x, pose.position.y, pose.yaw, roll)
+        frame.camera = SIMD4(pose.position.x, pose.position.y, walk.heading(at: local), roll)
         frame.motion = SIMD4(fade, pose.walked, approach, local)
         frame.goal = SIMD4(walk.goal.x, walk.goal.y, built.salt, min(1, flash))
         withUnsafeMutableBytes(of: &frame.objects) { raw in
