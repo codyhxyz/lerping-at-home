@@ -389,6 +389,12 @@ enum PreviewMain {
                 return LerpGPUCost.busyMs(start: buffer.gpuStartTime, end: buffer.gpuEndTime,
                                           previousEnd: previousEnd)
             }.dropFirst(warmup)
+            // `--samples`: every frame's time, in order, so a p95 far above the
+            // mean can be told apart as a trend, a period or a few outliers.
+            if args.contains("--samples") {
+                print("samples \(look.entry.key): "
+                      + samples.map { String(format: "%.2f", $0) }.joined(separator: " "))
+            }
             rows.append((LerpGPUCost.summarize(look: look.entry.key, samplesMs: Array(samples),
                                                width: width, height: height, seconds: 0),
                          compileMs))

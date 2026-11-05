@@ -18,13 +18,15 @@
 // published by Chris Wellons (hash-prospector, public domain / Unlicense).
 //
 // Cost control, because this runs full-screen for hours on laptops (about
-// 1.4x paper-texture's GPU time on an M5; numbers in the commit message):
+// 13 ms a frame at 2704x1756 on an M5, inside a 60 fps frame):
 //   - the 2x2 pixel quad crosses empty space together: each lane samples a
 //     different stride along the quad's centre ray, so the shared part of the
 //     march costs a quarter as much (see dtMarch).
 //   - fBm octave count is a continuous function of distance (no LOD seams);
-//     the march uses 2–3.5 octaves behind a two-octave envelope test, shading
-//     normals up to 9, shadow rays 2 (only on slopes that face the sun).
+//     the silhouette carries every octave taller than about a pixel (so
+//     distant ridges are the real ridges, not blobs that morph as they near),
+//     behind envelope tests after octaves 2, 4 and 6; shading normals up to 9,
+//     shadow rays 2 (only on slopes that face the sun).
 //   - the march starts at the top of the terrain's bounding slab, quits as soon
 //     as the ray leaves it upward, and below the cloud sea only marches as deep
 //     as the cloud can still be seen through.
@@ -62,7 +64,7 @@ constant float DT_FAR    = 38.0;   // far clip; fog is total well before it
 constant int   DT_STEPS  = 64;     // per-pixel march iterations
 constant int   DT_QUAD_ITERS = 20; // shared 2x2 iterations, four strides each
 constant float DT_QUAD_SLACK = 0.6; // how far a shared stride may outrun a sample's own
-constant int   DT_SHADOW_STEPS = 12;
+constant int   DT_SHADOW_STEPS = 10;
 constant int   DT_MAX_OCT = 9;
 constant float DT_GAIN   = 0.47;   // per-octave amplitude
 constant float DT_SEG    = 540.0;  // seconds per route before it re-rolls
@@ -145,11 +147,16 @@ static inline float dtTerrain(float2 xz, float lod, uint salt) {
     return DT_H * s.h;
 }
 
-// Octaves worth evaluating at distance t: an octave stops at roughly four
+// Octaves worth evaluating at distance t: an octave stops at roughly six
 // pixel footprints of a 1600-px-tall view. Fixed, not per-drawable, so cost
 // scales with pixel count only.
-static inline float dtShadeLod(float t) { return clamp(11.2 - log2(t + 0.3), 3.0, float(DT_MAX_OCT)); }
-static inline float dtMarchLod(float t) { return clamp(dtShadeLod(t) - 6.0, 2.0, 3.5); }
+static inline float dtShadeLod(float t) { return clamp(10.7 - log2(t + 0.3), 3.0, float(DT_MAX_OCT)); }
+// The silhouette gets the same detail less 1.5 octaves. It used to stop at
+// 2-3.5 octaves: the distant range drew as smooth stand-in blobs whose crags
+// (octaves 3-5, 20-30 px tall at 5-15 units) only grew in as the camera
+// approached, so every far mountain visibly morphed. The octave that fades
+// with distance now is about 2 px tall wherever it fades.
+static inline float dtMarchLod(float t) { return clamp(dtShadeLod(t) - 1.5, 2.0, float(DT_MAX_OCT) - 1.5); }
 
 // ---------------------------------------------------------------------------
 // Ray functions
@@ -158,17 +165,26 @@ static inline float dtMarchLod(float t) { return clamp(dtShadeLod(t) - 6.0, 2.0,
 // everything above them is bounded by the sum of their amplitudes (each octave
 // is |n| ≤ 1 over a divisor ≥ 1), so while the ray clears that envelope by
 // `near` the remaining octaves are skipped and the envelope clearance returned.
+// The same test repeats after octaves 4 and 6 against what is left, so a ray
+// passing a few pixels over a ridge pays for its coarse octaves only.
+static inline float dtRest(int i0, float lod) {
+    return DT_H * pow(DT_GAIN, float(i0)) * (1.0 - pow(DT_GAIN, max(lod - float(i0), 0.0))) / (1.0 - DT_GAIN);
+}
+
 static inline float dtClearance(float3 p, float t, float near, uint salt) {
     float lod = dtMarchLod(t);
     DtFbm s = dtFbmStart(p.xz);
     dtOctaves(s, 0, 2.0, salt);
-    float rest = DT_H * (DT_GAIN * DT_GAIN) * (clamp(lod - 2.0, 0.0, 1.0) + DT_GAIN * clamp(lod - 3.0, 0.0, 1.0));
-    float dy = p.y - DT_H * s.h - 0.75 * rest;
-    if (dy < near) {
-        dtOctaves(s, 2, lod, salt);
-        dy = p.y - DT_H * s.h;
-    }
-    return dy;
+    float dy = p.y - DT_H * s.h - 0.75 * dtRest(2, lod);
+    if (dy >= near) return dy;
+    dtOctaves(s, 2, min(lod, 4.0), salt);
+    dy = p.y - DT_H * s.h - 0.75 * dtRest(4, lod);
+    if (dy >= near) return dy;
+    dtOctaves(s, 4, min(lod, 6.0), salt);
+    dy = p.y - DT_H * s.h - 0.75 * dtRest(6, lod);
+    if (dy >= near) return dy;
+    dtOctaves(s, 6, lod, salt);
+    return p.y - DT_H * s.h;
 }
 
 // Stride for a clearance dy: vertical clearance over a slope bound, so a
@@ -176,7 +192,7 @@ static inline float dtClearance(float3 p, float t, float near, uint salt) {
 // detail there is sub-pixel and fogged anyway.
 static inline float dtStride(float dy, float t, float rdy) {
     float k = min(0.6 + 0.035 * t, 1.1) * 1.4 / max(1.4 - rdy, 0.7);
-    return max(dy * k, 0.015 + 0.007 * t);
+    return max(dy * k, 0.018 + 0.0085 * t);
 }
 
 // Distance to the terrain along the ray, or -1 for a miss before tmax.
@@ -236,7 +252,7 @@ static float dtMarch(float3 ro, float3 rd, float tmax, float px, uint salt) {
     for (int i = 0; i < DT_STEPS; i++) {
         if (t > tmax) break;
         float dy = dtClearance(ro + rd * t, t, 0.0015 * t + 0.02, salt);
-        if (dy < 0.0015 * t) {
+        if (dy < 0.002 * t) {
             // Refine between the last sample above and this one.
             return (i == 0) ? t : mix(lastT, t, lastDy / max(lastDy - dy, 1e-5));
         }
