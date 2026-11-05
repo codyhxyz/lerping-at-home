@@ -7,6 +7,13 @@
 // LerpGPUSimulation; this file only colours its state. Every frame is still a
 // pure function of (time, seed, parameters): each epoch replays from nothing.
 //
+// Once the pile has settled, the camera pushes in on it about a focus near
+// the centre (to 1.4x, easing in from 60% of the story); see Plan.camera.
+// Settled sand is otherwise perfectly still, and the hold used to show 0% of
+// pixels changing for ~24 s of every 100 s story. Because the grid now moves
+// under the pixels, each pixel box-filters the (at most) 2x2 cells it covers;
+// nearest-cell sampling stepped every cell edge a whole pixel at a time.
+//
 // lerp-data: sandpile
 // lerp-param: cells     int   96 400  = 220  "Cells (short side)"
 // lerp-param: speed     float 0 960   = 240  "Steps per second"
@@ -57,30 +64,44 @@ fragment half4 lerpMain(float4 pos [[position]],
     }
 
     // The grid's rows span the height; its columns are centred on the width.
+    // The camera magnifies about F.focus (cells from the centre).
     float2 size = float2(grid.get_width(), grid.get_height());
-    float cellsPerPixel = size.y / u.resolution.y;
-    float2 cellPos = float2((pos.x - 0.5 * u.resolution.x) * cellsPerPixel + 0.5 * size.x,
-                            pos.y * cellsPerPixel);
-    int2 cell = int2(floor(cellPos));
-    float3 color = back;
-    if (cell.x >= 0 && cell.y >= 0 && cell.x < int(size.x) && cell.y < int(size.y)) {
-        uint4 s = grid.read(uint2(cell));
-        color = spColor(s.r, u);
+    float cellsPerPixel = size.y / (u.resolution.y * F.zoom);
+    float2 centre = 0.5 * size + F.focus;
+    float2 cellPos = (pos.xy - 0.5 * u.resolution) * cellsPerPixel + centre;
 
-        // Avalanche glow: settled cells that toppled recently, fading over
-        // ~20 steps, so the fronts sparkle across the finished pattern.
-        if (s.g > 0u && s.r < 4u) {
-            float age = float(F.generation - s.g);
-            color += u.glow * 0.55 * exp(-age / 20.0) * u.colorHot.rgb;
+    // Box-filter the pixel over the cells it covers (at most two a side when
+    // a cell is at least a pixel wide), so the push-in glides instead of
+    // stepping cell edges a whole pixel at a time.
+    float2 b = floor(cellPos + 0.5);
+    float2 t = saturate((cellPos - b) / cellsPerPixel + 0.5);
+    float3 color = 0.0;
+    for (int k = 0; k < 4; ++k) {
+        int2 o = int2(k & 1, k >> 1);
+        int2 cell = int2(b) - 1 + o;
+        float2 w2 = mix(1.0 - t, t, float2(o));
+        float w = w2.x * w2.y;
+        float3 c = back;
+        if (w > 0.0 && cell.x >= 0 && cell.y >= 0 && cell.x < int(size.x) && cell.y < int(size.y)) {
+            uint4 s = grid.read(uint2(cell));
+            c = spColor(s.r, u);
+            // Avalanche glow: settled cells that toppled recently, fading
+            // over ~20 steps, so the fronts sparkle across the pattern.
+            if (s.g > 0u && s.r < 4u) {
+                float age = float(F.generation - s.g);
+                c += u.glow * 0.55 * exp(-age / 20.0) * u.colorHot.rgb;
+            }
         }
-
-        // Once a cell is several pixels wide, round it off a little so the
-        // pattern reads as grains rather than as an upscaled bitmap.
-        float pixelsPerCell = 1.0 / cellsPerPixel;
-        float2 f = abs(fract(cellPos) - 0.5);
-        float edge = smoothstep(0.5 - 1.5 / pixelsPerCell, 0.5, max(f.x, f.y));
-        color *= 1.0 - 0.22 * edge * smoothstep(3.0, 8.0, pixelsPerCell);
+        color += w * c;
     }
+
+    // Once a cell is several pixels wide, round it off a little so the
+    // pattern reads as grains rather than as an upscaled bitmap.
+    float pixelsPerCell = 1.0 / cellsPerPixel;
+    float2 f = abs(fract(cellPos) - 0.5);
+    float edge = smoothstep(0.5 - 1.5 / pixelsPerCell, 0.5, max(f.x, f.y));
+    bool onGrid = all(cellPos >= 0.0) && all(cellPos < size);
+    color *= 1.0 - (onGrid ? 0.22 : 0.0) * edge * smoothstep(3.0, 8.0, pixelsPerCell);
 
     color = mix(back, color, F.fade);
     return half4(half3(lerpDither(color, pos)), 1.0h);
