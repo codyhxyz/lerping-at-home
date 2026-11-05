@@ -75,17 +75,23 @@ fragment half4 lerpMain(float4 pos [[position]],
         float threshold = (float(v) + 0.5) / 64.0;
         color = lum > threshold ? paper : ink;
     } else {
-        // Fluted glass: vertical flutes, each a cylinder lens that squeezes and
-        // shifts what is behind it, with a highlight down each ridge.
+        // Fluted glass: vertical flutes, each a shallow cylinder lens. The
+        // view through one is squeezed toward its centre and softened, so the
+        // grape repeats faintly flute to flute rather than in hard slices.
         float w = cell * 2.0;
-        float f = fract(pos.x / w) - 0.5;
-        float lens = f * 2.0;
-        float2 offset = float2(-lens * w * 0.9, 0.0);
-        float3 a = printSource(splat, pos.xy + offset * 1.00, res, paper * 0.12);
-        float3 b = printSource(splat, pos.xy + offset * 1.06, res, paper * 0.12);
-        color = mix(a, b, 0.5);
-        color *= 0.82 + 0.18 * cos(lens * 1.5708);
-        color += 0.10 * smoothstep(0.35, 0.5, abs(f));
+        float f = fract(pos.x / w) - 0.5;          // -0.5 … 0.5 across a flute
+        float bend = sin(f * 3.14159) * 0.5;       // smooth, zero at the centre
+        float2 shift = float2(-bend * w * 0.55, 0.0);
+        float3 dark = paper * 0.10;
+        float3 c = float3(0.0);
+        for (int k = -2; k <= 2; k++) {
+            float2 o = shift + float2(float(k) * w * 0.06, 0.0);
+            c += printSource(splat, pos.xy + o, res, dark);
+        }
+        color = c / 5.0;
+        color *= 0.86 + 0.14 * cos(f * 3.14159);   // flutes darken toward their edges
+        color += 0.05 * pow(1.0 - abs(f) * 2.0, 6.0); // a thin highlight down each ridge centre
+        color += 0.04 * smoothstep(0.44, 0.5, abs(f));
     }
     return half4(half3(lerpDither(color, pos)), 1.0h);
 }

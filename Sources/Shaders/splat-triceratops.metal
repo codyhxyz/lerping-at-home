@@ -8,9 +8,9 @@
 // lerp-data: splat:orbit:triceratops
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"
-// lerp-param: period     float 10 300  = 80  "Seconds a turn"
-// lerp-param: angle      float -360 360 = 0  "Start angle"
-// lerp-param: arc        float 0 360   = 360  "Arc swept (360 = full turn)"
+// lerp-param: period     float 10 300  = 110  "Seconds there and back"
+// lerp-param: angle      float -360 360 = 90  "Start angle"
+// lerp-param: arc        float 0 360   = 200  "Arc swept (360 = full turn)"
 // lerp-param: distance   float 0.5 10  = 4.8  "Distance"
 // lerp-param: height     float -2 4    = 0.7  "Camera height"
 // lerp-param: lookHeight float -1 2    = 0  "Look-at height"
