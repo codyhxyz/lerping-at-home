@@ -92,7 +92,7 @@ public final class LerpSaverView: ScreenSaverView {
     // Rotation state, live only while the configure sheet is open.
     private var rotationShaders: [LerpShader] = []
     private var rotationEntries: [LerpRotationEntry] = []
-    private var rotationEnabled: Set<LerpRotationEntry> = []
+    private var rotationSelection = LerpRotationSelection(discovered: [])
     private var rotationGallery: RotationGalleryView?
     private var rotationLabel: NSTextField?
 
@@ -573,8 +573,8 @@ public final class LerpSaverView: ScreenSaverView {
         shaderPopup.target = self
         shaderPopup.action = #selector(shaderModeChanged)
 
-        // Pinning is (shader, preset) too, so a pin can reach any of the 123
-        // looks and not just the 31 sets of defaults.
+        // Pinning is (shader, preset) too, so a pin can reach any look and not
+        // just each shader's defaults.
         let presetPopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
         // Rotation subset. Unset defaults mean "everything", so an upgrade (or a
@@ -582,8 +582,7 @@ public final class LerpSaverView: ScreenSaverView {
         rotationShaders = shaders
         rotationEntries = entries
         let state = Self.savedRotation(discovered: entries)
-        rotationEnabled = Set(LerpMetalView.Config.rotation(
-            of: LerpRotation.enabled(discovered: entries, in: state), from: entries))
+        rotationSelection = LerpRotation.selection(discovered: entries, in: state)
 
         // The gallery, showing what is in the rotation and not editing it.
         //
@@ -607,7 +606,7 @@ public final class LerpSaverView: ScreenSaverView {
         gallery.wantsLayer = true
         gallery.layer?.cornerRadius = 6
         gallery.layer?.masksToBounds = true
-        gallery.show(shaders: shaders, enabled: rotationEnabled)
+        gallery.show(shaders: shaders, selection: rotationSelection)
         gallery.isEditable = false
         rotationGallery = gallery
 
@@ -699,7 +698,7 @@ public final class LerpSaverView: ScreenSaverView {
             height: content.fittingSize.height + Self.sheetGalleryHeight - Self.sheetGalleryFloor))
         panel.minSize = NSSize(width: 620, height: 460)
         startRotationStills(shaders)
-        Self.log.notice("options: sheet built in \(Int((CFAbsoluteTimeGetCurrent() - sheetStarted) * 1000)) ms, \(entries.count) looks, \(self.rotationEnabled.count) in rotation")
+        Self.log.notice("options: sheet built in \(Int((CFAbsoluteTimeGetCurrent() - sheetStarted) * 1000)) ms, \(entries.count) looks, \(self.rotationSelection.playable.count) in rotation")
         return panel
     }
 

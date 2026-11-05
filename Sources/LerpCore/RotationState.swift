@@ -291,7 +291,13 @@ public enum LerpRotation {
         // user switched off stays off even if the roster has lost the shader it
         // belongs to. The roster's job is to *find renames*, not to decide
         // whether a decision counts.
-        var disabled = state.disabled.intersection(discovered)
+        //
+        // A `shader/*` key is carried the same way, for as long as its shader
+        // is on disk at all. It names no single look, so it can never be "the
+        // same look under a new name"; it simply goes on covering whatever
+        // looks the shader has.
+        var disabled = LerpRotationSelection(discovered: discovered,
+                                             disabled: state.disabled).disabled
 
         for (shader, presets) in now {
             // Rename detection needs something to align against. A shader with
@@ -336,27 +342,42 @@ public enum LerpRotation {
     public static func enabled(discovered: [LerpRotationEntry],
                                in state: LerpRotationState) -> Set<LerpRotationEntry>? {
         guard state.stored else { return nil }
-        return Set(discovered).subtracting(state.disabled)
+        return Set(selection(discovered: discovered, in: state).playable)
+    }
+
+    /// The saved choice as something to ask questions of and edit. A state
+    /// nobody ever stored has no opinions, so everything in it plays.
+    public static func selection(discovered: [LerpRotationEntry],
+                                 in state: LerpRotationState) -> LerpRotationSelection {
+        LerpRotationSelection(discovered: discovered, disabled: state.disabled)
+    }
+
+    /// What the shuffle walks, in display order: the whole chain from "these
+    /// looks are on disk" and "this is what was saved" to "these may play", in
+    /// one call, so no host spells it out for itself.
+    public static func playable(discovered: [LerpRotationEntry],
+                                in state: LerpRotationState) -> [LerpRotationEntry] {
+        selection(discovered: discovered, in: state).playable
     }
 
     // MARK: - Writing
 
     /// Persists a selection.
     ///
-    /// - `enabled`: the looks the caller wants in. nil means "all of them",
-    ///   which is `LerpMetalView.Config.rotation`'s policy and not restated
-    ///   here. An empty set means an empty rotation and is written as such;
-    ///   keeping that unreachable is the gallery's job, not this one's.
-    /// - `discovered`: every look on disk, in `rotationEntries()` order. An
-    ///   empty one saves nothing, so a host that discovered no shaders cannot
-    ///   wipe a rotation.
+    /// The selection's off set is written as it stands — looks that are off and
+    /// `shader/*` switches alike — because it *is* the stored representation and
+    /// there is nothing to translate. An empty rotation is written as such;
+    /// keeping that unreachable is the gallery's job, not this one's.
+    ///
+    /// A selection with nothing discovered saves nothing, so a host that found
+    /// no shaders cannot wipe a rotation.
     ///
     /// Returns the state as written.
     @discardableResult
-    public static func write(enabled: Set<LerpRotationEntry>?,
-                             discovered: [LerpRotationEntry],
+    public static func write(_ selection: LerpRotationSelection,
                              writer: String,
                              to defaults: UserDefaults?) -> LerpRotationState {
+        let discovered = selection.discovered
         guard let defaults, !discovered.isEmpty else { return .empty }
 
         // What the process *is*, not what it calls itself. See `LerpDefaults`.
@@ -370,17 +391,15 @@ public enum LerpRotation {
             return read(defaults, discovered: discovered)
         }
 
-        let all = Set(discovered)
-        let picked = Set(LerpMetalView.Config.rotation(of: enabled, from: discovered))
-
         let state = LerpRotationState(
             stored: true,
             version: LerpRotationState.currentVersion,
             updatedAt: Date(),
             writer: writer,
-            // Only looks that exist. A shader that has gone takes its opinions
-            // with it.
-            disabled: all.subtracting(picked),
+            // Only keys that mean something today: `LerpRotationSelection`
+            // dropped the rest when it was made. A shader that has gone takes
+            // its opinions with it.
+            disabled: selection.disabled,
             roster: roster(of: discovered))
 
         defaults.set([

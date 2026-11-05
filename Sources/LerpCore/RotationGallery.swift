@@ -2,10 +2,10 @@ import AppKit
 
 /// The rotation gallery: every look the screensaver can shuffle through, as a
 /// picture you click to put it in or take it out — and, since it is the only
-/// place in the project where all 123 looks are visible at once, also the way to
+/// place in the project where every look can be reached at once, also the way to
 /// *find* a look and go and edit it.
 ///
-/// A list of 123 checkboxes tells you their names and nothing else — there is no
+/// A list of checkboxes tells you their names and nothing else — there is no
 /// way to find out what `voronoi/Molten` is except to wait for it to come round.
 /// Here each look is a portrait still of itself, grouped under its shader, the
 /// on/off state is the difference between a lit tile with an accent frame and a
@@ -128,7 +128,30 @@ public final class RotationTile: NSView {
     public var isToggleable: Bool { isLive && !isLocked }
     /// "voronoi · Molten". The same words `accessibilityLabel` says, so a
     /// pointer and a screen reader name a tile identically.
-    private var lookLabel: String { entry.shader + " · " + entry.displayName }
+    private var lookLabel: String {
+        summary.map { shaderTitle + " · " + $0 } ?? entry.shader + " · " + entry.displayName
+    }
+
+    // MARK: Standing for a whole shader
+
+    /// Set on the one tile per shader the Library shows. The caption becomes
+    /// the shader's name over this line — "4 of 11 looks" — and a click means
+    /// the whole shader. A look's own tile leaves it nil.
+    public var summary: String? {
+        didSet { if summary != oldValue { updateToolTip(); redraw() } }
+    }
+    /// The summary describes a hand-picked subset, and is drawn amber so a
+    /// curated shader reads as curated from across the room.
+    public var summaryIsPartial = false { didSet { if summaryIsPartial != oldValue { redraw() } } }
+    /// How many looks the shader's drawer holds. The count pill that opens it
+    /// is drawn only when there is more than one.
+    public var lookCount = 1 { didSet { if lookCount != oldValue { updateToolTip(); redraw() } } }
+    /// The drawer is open, so the pill points up.
+    public var isExpanded = false { didSet { if isExpanded != oldValue { redraw() } } }
+    /// The count pill was clicked: open or close this shader's drawer.
+    public var onExpand: ((RotationTile) -> Void)? { didSet { updateToolTip() } }
+    private var showsExpander: Bool { onExpand != nil && lookCount > 1 }
+    private static let partialInk = NSColor(srgbRed: 0.91, green: 0.66, blue: 0.37, alpha: 1)
     /// The look the editor currently has open, in the picker. Marked so the
     /// popover answers "where am I?" as well as "what is there?".
     public var isCurrent = false { didSet { if isCurrent != oldValue { redraw() } } }
@@ -189,9 +212,11 @@ public final class RotationTile: NSView {
     /// (which happens whenever the rotation goes back above one look) was left
     /// with a tooltip that no longer said a click did anything at all.
     private func updateToolTip() {
-        let action = mode == .picker
-            ? "click to open it; the badge puts it in or out of the rotation"
-            : "click to put it in or out of the rotation; double-click to open it"
+        let what = summary == nil ? "it" : "the whole shader"
+        var action = mode == .picker
+            ? "click to open it; the badge puts \(what) in or out of the rotation"
+            : "click to put \(what) in or out of the rotation; double-click to open it"
+        if showsExpander { action += "; Looks shows its \(lookCount) looks one by one" }
         toolTip = lookLabel + " — " + action
             + (isLocked ? ". The rotation must keep at least one look, and this is the last one."
                         : "")
@@ -228,6 +253,12 @@ public final class RotationTile: NSView {
     /// where it started and opening a look never silently changes it.
     public override func mouseDown(with event: NSEvent) {
         guard isLive else { return }
+        // The count pill opens the drawer in either mode, and only on the first
+        // click: a double-click on it is two requests to look, not to edit.
+        if showsExpander, expanderHitRect.contains(convert(event.locationInWindow, from: nil)) {
+            if event.clickCount == 1 { onExpand?(self) }
+            return
+        }
         switch mode {
         case .rotation:
             // Opening is not gated on `isToggleable` — the last look left in the
@@ -329,6 +360,14 @@ public final class RotationTile: NSView {
         lookLabel + (mode == .picker && !isOn ? " (not in the rotation)" : "")
     }
     public override func accessibilityValue() -> Any? { isOn ? 1 : 0 }
+    public override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
+        guard showsExpander else { return nil }
+        return [NSAccessibilityCustomAction(name: isExpanded ? "Hide looks" : "Show looks") { [weak self] in
+            guard let self else { return false }
+            self.onExpand?(self)
+            return true
+        }]
+    }
     /// Reflects whether the *primary* action works. In the picker that is
     /// opening, which a locked tile still does; in the gallery it is toggling,
     /// which it does not.
@@ -431,6 +470,7 @@ public final class RotationTile: NSView {
         }
 
         drawBadge()
+        if showsExpander { drawExpander() }
         if isLocked { drawLock(in: frame) }
         // `drawCaption` is deliberately not called here: it sits below the
         // picture rather than over it, so `draw` calls it for both states.
@@ -445,6 +485,37 @@ public final class RotationTile: NSView {
     }
 
     private var badgeHitRect: NSRect { badgeRect.insetBy(dx: -6, dy: -6) }
+
+    private var expanderText: NSAttributedString {
+        NSAttributedString(string: isExpanded ? "Looks ▴" : "Looks ▾", attributes: [
+            .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+            .foregroundColor: isExpanded ? Self.accent : EditorTheme.text,
+        ])
+    }
+
+    /// The count pill, along the picture's bottom edge, where neither the badge
+    /// nor the lock goes.
+    private var expanderRect: NSRect {
+        let frame = pictureFrame, size = expanderText.size()
+        let width = (size.width + 14).rounded(), height: CGFloat = 18
+        return NSRect(x: frame.minX + 6, y: frame.maxY - height - 6, width: width, height: height)
+    }
+
+    private var expanderHitRect: NSRect { expanderRect.insetBy(dx: -5, dy: -5) }
+
+    private func drawExpander() {
+        let box = expanderRect
+        NSColor(srgbRed: 0.04, green: 0.05, blue: 0.07, alpha: 0.78).setFill()
+        let pill = NSBezierPath(roundedRect: box, xRadius: box.height / 2, yRadius: box.height / 2)
+        pill.fill()
+        if isExpanded {
+            Self.accent.setStroke()
+            pill.lineWidth = 1
+            pill.stroke()
+        }
+        let text = expanderText
+        text.draw(at: NSPoint(x: box.minX + 7, y: box.midY - text.size().height / 2))
+    }
 
     /// Filled tick when in, empty ring when out. The redundant signal, for
     /// anyone who cannot rely on the frame colour — and, in the picker, the
@@ -475,9 +546,12 @@ public final class RotationTile: NSView {
 
     private func drawCaption(below frame: NSRect) {
         var strong: NSColor = isOn ? EditorTheme.text : NSColor(srgbRed: 0.44, green: 0.47, blue: 0.53, alpha: 1)
-        let weak: NSColor = isOn ? EditorTheme.dim : NSColor(srgbRed: 0.31, green: 0.34, blue: 0.39, alpha: 1)
+        var weak: NSColor = isOn ? EditorTheme.dim : NSColor(srgbRed: 0.31, green: 0.34, blue: 0.39, alpha: 1)
         if isCurrent { strong = Self.accent }
-        Self.drawCaption(entry.displayName, over: shaderTitle, below: frame,
+        if isOn, summaryIsPartial { weak = Self.partialInk }
+        // A shader's card is captioned with the shader, over what of it is in.
+        let (title, subtitle) = summary.map { (shaderTitle, $0) } ?? (entry.displayName, shaderTitle)
+        Self.drawCaption(title, over: subtitle, below: frame,
                          width: bounds.width, strong: strong, weak: weak,
                          emphasised: isCurrent)
     }
@@ -630,11 +704,31 @@ public final class NewLookCard: NSView {
 
 // MARK: - The gallery
 
-/// Search bar, a scrolling grid of tiles grouped by shader, and a status line.
+/// Search bar, a scrolling Library of shader cards, and a status line.
+///
+/// # Shaders first, looks on request
+///
+/// This grid used to draw every look as a tile under a three-state checkbox per
+/// shader — 123 tiles when it was written, about 270 now, with game-of-life
+/// alone filling two rows. Choosing whole shaders, which is most of what anyone
+/// does here, meant finding a checkbox among pictures; choosing looks meant a
+/// wall of them; and the checkbox's mixed state could only be left by throwing
+/// the mix away.
+///
+/// So the Library shows one card per shader. Its frame says whether the shader
+/// plays, its caption says how much of it ("all 5 looks", or "4 of 11" in amber
+/// when hand-picked), and a click switches the whole shader — keeping the
+/// hand-picking, because a switch is a `shader/*` key beside the per-look ones
+/// (see `LerpRotationSelection`). The count pill on the picture opens that
+/// shader's **drawer**, under its row, where its looks are tiles of their own.
+///
+/// Typing in the filter is the other way in: it swaps the cards for the looks
+/// that match, grouped by shader the way the old grid was, because a search for
+/// "Molten" is a search for a look.
 public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
 
-    /// The user changed the rotation. The set is the new one, in full.
-    public var onChange: ((Set<LerpRotationEntry>) -> Void)?
+    /// The user changed the rotation. The selection is the new one, in full.
+    public var onChange: ((LerpRotationSelection) -> Void)?
     /// The user asked to edit a look: double-click in the gallery, a click in
     /// the picker, or ⏎ on the filter field. nil in a host that has no editor to
     /// open one in — the screensaver's Options… sheet — and the tiles simply do
@@ -650,10 +744,8 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// not offer a card that says it can, and two of the three hosts cannot. The
     /// screensaver's Options… sheet has no editor at all, and the gallery window
     /// asks a different question of the same looks — which of these does the
-    /// screensaver shuffle through — where a card that is not a look and cannot
-    /// be checked would be the one thing in the grid that answers something
-    /// else. The toolbar popover, whose whole job is choosing what to edit, is
-    /// where it belongs and where the New… button used to point.
+    /// screensaver shuffle through. The toolbar popover, whose whole job is
+    /// choosing what to edit, is where it belongs.
     public var onNew: (() -> Void)? {
         didSet {
             guard onNew != nil, newCard == nil else { return }
@@ -669,10 +761,13 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     }
 
     public private(set) var shaders: [LerpShader] = []
-    public private(set) var entries: [LerpRotationEntry] = []
-    public private(set) var enabled: Set<LerpRotationEntry> = []
+    public private(set) var selection = LerpRotationSelection(discovered: [])
+    public var entries: [LerpRotationEntry] { selection.discovered }
     /// The look the host's editor has open, marked in the grid.
     public private(set) var currentEntry: LerpRotationEntry?
+    /// The shader whose drawer is open, if any. One at a time: two open drawers
+    /// is the wall of tiles this view exists to replace.
+    public private(set) var expanded: String?
 
     /// What a click means here. See `RotationTile.Mode`.
     public let mode: RotationTile.Mode
@@ -696,35 +791,46 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// would leave the floor unenforced with no sign of it.
     private var deselectAllButton: NSButton?
 
+    /// One card per shader, for the Library.
+    private var cards: [String: RotationTile] = [:]
+    /// One tile per look, for the drawer and for search results.
     private var tiles: [LerpRotationEntry: RotationTile] = [:]
     /// Present only where the host offered `onNew`. Deliberately not in `tiles`
     /// — everything that iterates those is about looks.
     private var newCard: NewLookCard?
-    private var headers: [String: NSButton] = [:]
+    /// Shader names over search results, and the drawer's heading.
+    private var headers: [String: NSTextField] = [:]
     private var headerCounts: [String: NSTextField] = [:]
+    /// The panel behind an open drawer, so its looks read as the inside of the
+    /// card above them rather than as more cards.
+    private let drawerBackdrop = NSView()
     /// Laid out in shader order, so the grid and the model cannot disagree.
     private var order: [String] = []
     private var filter = ""
+    private var isSearching: Bool { !filter.isEmpty }
 
     /// Off when the rotation does not apply — the saver's Options… sheet greys
     /// the whole gallery out while a single shader is pinned.
     public private(set) var isActive = true
     private var inactiveNote: String?
 
-    /// Whether clicking a tile changes the rotation.
+    /// Whether clicking changes the rotation.
     ///
     /// False in the saver's Options… sheet, which shows the rotation but does
     /// not own it: the playground is the rotation's only writer, because the
     /// sheet runs sandboxed and can only reach Apple's container rather than the
     /// ByHost file the saver reads. A gallery that accepted clicks it could not
     /// persist where the saver would look for them is worse than one that does
-    /// not accept them.
+    /// not accept them. Drawers still open there: looking is not editing.
     ///
     /// Distinct from `isActive`, which greys the gallery out entirely: a
     /// read-only gallery is still legible, still scrolls, still previews on
     /// hover and still shows which looks are in.
     public var isEditable = true {
-        didSet { tiles.values.forEach { $0.toolTip = isEditable ? nil : Self.readOnlyNote } }
+        didSet {
+            guard !isEditable else { return }
+            (Array(tiles.values) + Array(cards.values)).forEach { $0.toolTip = Self.readOnlyNote }
+        }
     }
 
     /// Said once, where a click would otherwise have gone.
@@ -732,17 +838,23 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
 
     /// The one predicate every mutator asks. `isActive` is "the rotation does
     /// not apply right now"; `isEditable` is "this gallery never writes". Both
-    /// have to be true before the enabled set moves.
+    /// have to be true before the selection moves.
     private var canEdit: Bool { isActive && isEditable }
 
+    /// The scroll view's document. Always exactly as wide as what is visible:
+    /// it takes its width from the clip view on every pass rather than trusting
+    /// autoresizing, which starts from a zero frame and can leave the canvas
+    /// wider than the window — a grid that scrolls sideways and clips its last
+    /// column.
     private final class Canvas: NSView {
         override var isFlipped: Bool { true }
         var onLayout: ((CGFloat) -> CGFloat)?
         override func layout() {
             super.layout()
-            guard let height = onLayout?(bounds.width) else { return }
-            if abs(frame.height - height) > 0.5 {
-                setFrameSize(NSSize(width: bounds.width, height: height))
+            let width = superview?.bounds.width ?? bounds.width
+            guard let height = onLayout?(width) else { return }
+            if abs(frame.height - height) > 0.5 || abs(frame.width - width) > 0.5 {
+                setFrameSize(NSSize(width: width, height: height))
             }
         }
     }
@@ -752,13 +864,12 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     }
 
     /// - Parameters:
-    ///   - tileSize: how big one look is drawn. The Options… sheet has less
-    ///     room than the playground's window and asks for a smaller tile; so
-    ///     does the toolbar popover.
+    ///   - tileSize: how big one card or look is drawn. The Options… sheet has
+    ///     less room than the playground's window and asks for a smaller tile;
+    ///     so does the toolbar popover.
     ///   - showsRegenerate: the playground offers Regenerate because it edits
     ///     shaders; nothing in the Options… sheet can change what a still shows.
-    ///   - mode: what a click on a tile does. Defaulted so the Options… sheet,
-    ///     which is the surface whose behaviour must not change, needs no edit.
+    ///   - mode: what a click does. Defaulted so the Options… sheet needs no edit.
     public init(frame frameRect: NSRect, tileSize: NSSize, showsRegenerate: Bool,
                 mode: RotationTile.Mode = .rotation) {
         self.tileSize = tileSize
@@ -780,7 +891,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     private func build() {
         search.placeholderString = mode == .picker
             ? "Type to filter — ⏎ opens the first"
-            : "Filter shaders and presets"
+            : "Filter shaders and looks"
         search.controlSize = .small
         search.font = .systemFont(ofSize: 11)
         search.sendsWholeSearchString = false
@@ -819,6 +930,16 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         controls += [Chrome.flexible(), progress, countLabel]
         let bar = Chrome.bar(controls)
 
+        // First into the canvas, so every tile added later draws over it.
+        drawerBackdrop.wantsLayer = true
+        drawerBackdrop.layer?.backgroundColor = EditorTheme.chrome.cgColor
+        drawerBackdrop.layer?.cornerRadius = 10
+        drawerBackdrop.layer?.borderWidth = 1
+        drawerBackdrop.layer?.borderColor = NSColor(srgbRed: 0.18, green: 0.2, blue: 0.25, alpha: 1).cgColor
+        drawerBackdrop.isHidden = true
+        drawerBackdrop.identifier = NSUserInterfaceItemIdentifier("drawer")
+        canvas.addSubview(drawerBackdrop)
+
         canvas.onLayout = { [weak self] width in self?.reflow(width: width) ?? 0 }
         canvas.autoresizingMask = [.width]
         scroll.documentView = canvas
@@ -853,16 +974,21 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
 
     // MARK: Model in
 
-    /// Rebuilds the grid for `shaders`. Tiles for looks that are still there
-    /// keep their images, so a shader being edited redraws one row rather than
-    /// blanking the whole gallery.
-    public func show(shaders: [LerpShader], enabled: Set<LerpRotationEntry>) {
+    /// Rebuilds the grid for `shaders`. Cards and tiles for looks that are
+    /// still there keep their images, so a shader being edited redraws one card
+    /// rather than blanking the whole gallery.
+    ///
+    /// The selection is re-made against these shaders' looks, so a host that
+    /// read it against a slightly older list cannot leave a key in it that
+    /// nothing on screen can show.
+    public func show(shaders: [LerpShader], selection: LerpRotationSelection) {
         // A tile that is about to be taken away must not still be holding the
         // shared live view.
         preview.stop()
         self.shaders = shaders
-        self.entries = shaders.rotationEntries()
-        self.enabled = enabled
+        self.selection = LerpRotationSelection(discovered: shaders.rotationEntries(),
+                                               disabled: selection.disabled)
+        pendingUndo = nil
         let live = Set(entries)
 
         for (entry, tile) in tiles where !live.contains(entry) {
@@ -870,38 +996,59 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
             tiles[entry] = nil
         }
         let names = Set(shaders.map(\.name))
+        for (name, card) in cards where !names.contains(name) || cover(of: name) != card.entry {
+            card.removeFromSuperview()
+            cards[name] = nil
+        }
         for (name, header) in headers where !names.contains(name) {
             header.removeFromSuperview()
             headerCounts[name]?.removeFromSuperview()
             headers[name] = nil
             headerCounts[name] = nil
         }
+        if let open = expanded, !names.contains(open) { expanded = nil }
 
         order = shaders.map(\.name)
         for shader in shaders {
-            if headers[shader.name] == nil {
-                let box = NSButton(checkboxWithTitle: shader.displayName, target: self,
-                                   action: #selector(groupToggled(_:)))
-                box.allowsMixedState = true
-                box.font = .systemFont(ofSize: 12, weight: .semibold)
-                box.identifier = NSUserInterfaceItemIdentifier("shader:" + shader.name)
-                box.isEnabled = isActive
-                canvas.addSubview(box)
-                headers[shader.name] = box
+            let name = shader.name
+            if headers[name] == nil {
+                let title = Chrome.label(shader.displayName, size: 12, color: EditorTheme.text)
+                title.font = .systemFont(ofSize: 12, weight: .semibold)
+                title.identifier = NSUserInterfaceItemIdentifier("shader:" + name)
+                canvas.addSubview(title)
+                headers[name] = title
 
                 let count = Chrome.label("", size: 10.5)
-                count.identifier = NSUserInterfaceItemIdentifier("count:" + shader.name)
+                count.identifier = NSUserInterfaceItemIdentifier("count:" + name)
                 canvas.addSubview(count)
-                headerCounts[shader.name] = count
+                headerCounts[name] = count
+            }
+            if cards[name] == nil, let cover = cover(of: name) {
+                let card = RotationTile(entry: cover, shaderTitle: shader.displayName, size: tileSize)
+                card.mode = mode
+                card.summary = ""
+                card.onToggle = { [weak self] _ in self?.toggleShader(name) }
+                card.onOpen = { [weak self] entry in self?.open(entry, undoing: name) }
+                card.onExpand = { [weak self] _ in self?.toggleDrawer(name) }
+                card.onHover = { [weak self] tile, inside in self?.hovered(tile, inside) }
+                card.identifier = NSUserInterfaceItemIdentifier("card:" + name)
+                card.isLive = isActive
+                if !isEditable { card.toolTip = Self.readOnlyNote }
+                // A card that replaced an older one keeps the still its look
+                // already has, if a tile is holding it.
+                card.image = tiles[cover]?.image
+                canvas.addSubview(card)
+                cards[name] = card
             }
             for entry in [shader].rotationEntries() where tiles[entry] == nil {
                 let tile = RotationTile(entry: entry, shaderTitle: shader.displayName, size: tileSize)
                 tile.mode = mode
-                tile.onToggle = { [weak self] in self?.toggle($0) }
-                tile.onOpen = { [weak self] in self?.open($0) }
+                tile.onToggle = { [weak self] in self?.toggleLook($0) }
+                tile.onOpen = { [weak self] in self?.open($0, undoing: $0.key) }
                 tile.onHover = { [weak self] tile, inside in self?.hovered(tile, inside) }
                 tile.identifier = NSUserInterfaceItemIdentifier("entry:" + entry.key)
                 tile.isLive = isActive
+                if !isEditable { tile.toolTip = Self.readOnlyNote }
                 canvas.addSubview(tile)
                 tiles[entry] = tile
             }
@@ -910,20 +1057,28 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         canvas.needsLayout = true
     }
 
+    /// The look a shader's card shows and opens: its first, in display order.
+    private func cover(of shader: String) -> LerpRotationEntry? {
+        entries.first { $0.shader == shader }
+    }
+
     /// A still arrived.
     public func show(image: NSImage, for entry: LerpRotationEntry) {
         tiles[entry]?.image = image
+        if let card = cards[entry.shader], card.entry == entry { card.image = image }
     }
 
     /// Drops every still, so the next run redraws them all.
     public func clearImages() {
         tiles.values.forEach { $0.image = nil }
+        cards.values.forEach { $0.image = nil }
     }
 
-    /// Marks the look the host's editor has open.
+    /// Marks the look the host's editor has open — and its shader's card.
     public func showCurrent(_ entry: LerpRotationEntry?) {
         currentEntry = entry
         for (key, tile) in tiles { tile.isCurrent = key == entry }
+        for (name, card) in cards { card.isCurrent = name == entry?.shader }
     }
 
     public func showProgress(done: Int, total: Int) {
@@ -931,9 +1086,11 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         progress.maxValue = Double(max(total, 1))
         progress.doubleValue = Double(done)
         countLabel.stringValue = done >= total
-            ? "\(entries.count) looks"
+            ? libraryCount
             : "rendering \(done) of \(total)…"
     }
+
+    private var libraryCount: String { "\(shaders.count) shaders · \(entries.count) looks" }
 
     /// Starts one thumbnail run and wires its images and progress into this
     /// gallery. Host-specific forwarding and completion work stay in callbacks.
@@ -966,8 +1123,8 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         if !active { preview.stop() }
         search.isEnabled = active
         buttons.forEach { $0.isEnabled = active }
-        headers.values.forEach { $0.isEnabled = active }
         tiles.values.forEach { $0.isLive = active }
+        cards.values.forEach { $0.isLive = active }
         alphaValue = active ? 1 : 0.55
         refresh()
     }
@@ -981,7 +1138,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
 
     // MARK: Hover
 
-    /// The pointer arrived on, or left, a tile.
+    /// The pointer arrived on, or left, a card or a tile.
     private func hovered(_ tile: RotationTile, _ inside: Bool) {
         guard previewsOnHover else { return }
         guard inside else { return preview.leave(tile) }
@@ -1005,18 +1162,6 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
 
     // MARK: Model out
 
-    /// The floor, and the only place it is enforced: taking `victims` out must
-    /// leave at least one look in.
-    ///
-    /// Everything that reads this selection now takes it literally — there is no
-    /// longer any code that turns an empty rotation into a full one, because
-    /// that is the behaviour that made a deselected look play. The price of
-    /// deleting those widenings is that an empty selection has to be
-    /// unreachable, and this is where it becomes unreachable.
-    private func wouldEmpty(_ victims: some Sequence<LerpRotationEntry>) -> Bool {
-        enabled.subtracting(victims).isEmpty
-    }
-
     /// Said out loud when a click is refused. Cleared by the next one that is
     /// not, so it reads as a response rather than as a state.
     private var refusal: String?
@@ -1028,81 +1173,88 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         NSSound.beep()
     }
 
-    private func toggle(_ entry: LerpRotationEntry) {
-        guard canEdit else { return refuse(Self.readOnlyNote) }
-        if enabled.contains(entry) {
-            guard !wouldEmpty([entry]) else { return refuse(Self.floorNote) }
-            enabled.remove(entry)
-        } else {
-            enabled.insert(entry)
-        }
-        commit()
-    }
-
-    /// Opening from the gallery arrives on the *second* click of a double-click,
-    /// and the first one already toggled — see `RotationTile.mouseDown`. Undoing
-    /// it here rather than in the tile keeps that a model operation: toggling is
-    /// its own inverse, so the rotation is exactly where it was and the host is
-    /// told about it either way.
+    /// The selection before the last single click, and what was clicked.
     ///
-    /// Unless the first click was refused, which is exactly what a locked tile
-    /// does. `RotationTile.mouseDown` guards its toggle on `isToggleable`, so
-    /// this has to guard the undo on the same thing: double-clicking the last
-    /// look in the rotation used to answer a request to *open* it with a beep
-    /// and "the rotation must keep at least one look" — a refusal of a toggle
-    /// nobody had asked for and that had never happened.
-    private func open(_ entry: LerpRotationEntry) {
-        if mode == .rotation, tiles[entry]?.isToggleable == true { toggle(entry) }
-        onOpen?(entry)
+    /// Opening from the gallery arrives on the *second* click of a
+    /// double-click, and the first one has already changed the rotation — it
+    /// has to, or every click would wait out the double-click interval. So the
+    /// second click puts the selection back the way the first found it. That
+    /// used to be "toggle again", which was its own inverse only while a click
+    /// meant one thing; a click on a look of a switched-off shader now also
+    /// switches the shader on, so the honest undo is the saved state itself.
+    ///
+    /// Only honoured within the double-click interval, so a double-click on a
+    /// tile whose first click was refused — a locked one — cannot undo some
+    /// earlier, unrelated click on the same tile.
+    private var pendingUndo: (target: String, before: LerpRotationSelection, at: TimeInterval)?
+
+    /// The one way the selection changes: apply, refuse if the rotation would
+    /// be left empty, remember what to restore for a double-click, publish.
+    ///
+    /// The floor is enforced here and only here. Everything that reads the
+    /// selection takes it literally — there is no code left that turns an empty
+    /// rotation into a full one, because that is the behaviour that made a
+    /// deselected look play — so an empty rotation has to be unreachable, and
+    /// this is where it becomes unreachable.
+    private func change(_ target: String, refusing why: String = floorNote,
+                        _ edit: (inout LerpRotationSelection) -> Void) {
+        guard canEdit else { return refuse(Self.readOnlyNote) }
+        let next = selection.applying(edit)
+        guard !next.playable.isEmpty else { return refuse(why) }
+        pendingUndo = (target, selection, ProcessInfo.processInfo.systemUptime)
+        selection = next
+        commit()
     }
 
-    /// A shader heading owns its whole group: if every look under it is in, it
-    /// takes them all out, otherwise it puts them all in. Read off the group
-    /// rather than off the checkbox's own next state — a three-state box's idea
-    /// of what comes next is not what we mean.
-    @objc private func groupToggled(_ sender: NSButton) {
-        guard canEdit else { return }
-        let name = (sender.identifier?.rawValue ?? "").replacingOccurrences(of: "shader:", with: "")
-        let group = entries.filter { $0.shader == name }
-        guard !group.isEmpty else { return }
-        if group.allSatisfy(enabled.contains) {
-            guard !wouldEmpty(group) else {
-                // Put the box back where it was: it is a checkbox, and it has
-                // already flipped itself by the time we are called.
-                refresh()
-                return refuse("\(name) is the whole rotation. " + Self.floorNote)
-            }
-            enabled.subtract(group)
-        } else {
-            enabled.formUnion(group)
+    private func toggleShader(_ name: String) {
+        let on = !selection.shaderPlays(name)
+        change(name, refusing: "\(name) is the whole rotation. " + Self.floorNote) {
+            $0.setShader(name, on: on)
         }
-        commit()
+    }
+
+    /// A look's own tile. In a switched-off shader every click asks for the
+    /// look to play — the tile is dimmed, and dimmed reads as "off" whichever
+    /// way it was picked — which switches its shader back on.
+    private func toggleLook(_ look: LerpRotationEntry) {
+        let on = selection.isSwitchedOff(look.shader) || !selection.isPicked(look)
+        change(look.key) { $0.setLook(look, on: on) }
+    }
+
+    /// Opens a look: a double-click in the gallery, a click in the picker.
+    /// In the gallery the first click of the double already changed the
+    /// rotation, so that is put back first — unless that click was refused,
+    /// which a locked tile's always is.
+    private func open(_ entry: LerpRotationEntry, undoing target: String) {
+        if mode == .rotation, let undo = pendingUndo, undo.target == target,
+           ProcessInfo.processInfo.systemUptime - undo.at <= NSEvent.doubleClickInterval {
+            selection = undo.before
+            pendingUndo = nil
+            commit()
+        }
+        onOpen?(entry)
     }
 
     /// Acts on what is on screen. With no filter that is everything; with one it
     /// is the far more useful "all the dark ones" rather than a button that
     /// quietly ignores the search.
     @objc private func selectAllLooks() {
-        guard canEdit else { return }
-        enabled.formUnion(visibleEntries())
-        commit()
+        let shown = visibleEntries()
+        change("select-all") { $0.setLooks(shown, on: true) }
     }
 
     /// Disabled outright when it would empty the rotation — which, with no
     /// filter up, it always would. Refusing here rather than "succeeding" and
     /// having the saved set silently mean *all of them* is the whole of this
-    /// change: a control that cannot do the wrong thing beats a control that
+    /// control: a control that cannot do the wrong thing beats a control that
     /// does the opposite of what it says.
     @objc private func deselectAllLooks() {
-        guard canEdit else { return }
-        let victims = visibleEntries()
-        guard !wouldEmpty(victims) else {
-            return refuse(filter.isEmpty
-                          ? Self.floorNote + " Filter first, then deselect what you filtered."
-                          : "That would clear the whole rotation. " + Self.floorNote)
+        let shown = visibleEntries()
+        change("deselect-all", refusing: isSearching
+               ? "That would clear the whole rotation. " + Self.floorNote
+               : Self.floorNote + " Filter first, then deselect what you filtered.") {
+            $0.setLooks(shown, on: false)
         }
-        enabled.subtract(victims)
-        commit()
     }
 
     @objc private func regenerate() {
@@ -1114,6 +1266,26 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         preview.stop()          // the tile it was on may be about to be hidden
         refresh()
         canvas.needsLayout = true
+    }
+
+    /// Opens or closes a shader's drawer, and brings it into view.
+    private func toggleDrawer(_ name: String) {
+        preview.stop()
+        expanded = expanded == name ? nil : name
+        refresh()
+        canvas.needsLayout = true
+        canvas.layoutSubtreeIfNeeded()
+        // Not before the gallery has a width: laid out at zero, every card is
+        // its own row, and a scroll position taken from that is nowhere.
+        guard let open = expanded, !drawerBackdrop.isHidden, let card = cards[open],
+              scroll.contentView.bounds.width > 0 else { return }
+        // The card's row and as much of the drawer as fits, so the eye goes
+        // from what was clicked straight down into what it opened.
+        let span = card.frame.union(drawerBackdrop.frame)
+        let visible = scroll.contentView.bounds.height
+        let want = NSRect(x: 0, y: span.minY - Self.pad, width: 1,
+                          height: min(span.height + 2 * Self.pad, visible))
+        canvas.scrollToVisible(want)
     }
 
     /// Typeahead. The dropbox this grid replaced had one thing over it — you
@@ -1130,32 +1302,70 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     private func commit() {
         refusal = nil
         refresh()
-        onChange?(enabled)
+        onChange?(selection)
     }
 
     // MARK: Presentation
 
     private func matches(_ entry: LerpRotationEntry) -> Bool {
-        guard !filter.isEmpty else { return true }
-        let haystack = entry.shader + " " + (entry.preset ?? "defaults")
+        guard isSearching else { return true }
+        let haystack = entry.shader + " " + entry.displayName
         return haystack.range(of: filter, options: .caseInsensitive) != nil
     }
 
+    /// The looks on screen: every look in the Library, the matches while
+    /// searching.
     public func visibleEntries() -> [LerpRotationEntry] { entries.filter(matches) }
 
-    /// Pushes the model into every tile and heading, and writes the status line.
+    /// "all 5 looks", "4 of 11 looks", "off".
+    private func summary(of name: String) -> (text: String, partial: Bool) {
+        let looks = selection.looks(of: name)
+        let picked = looks.filter(selection.isPicked).count
+        let noun = looks.count == 1 ? "look" : "looks"
+        if !selection.shaderPlays(name) {
+            return selection.isSwitchedOff(name) && picked > 0 && picked < looks.count
+                ? ("off · keeps \(picked) of \(looks.count)", false) : ("off", false)
+        }
+        if picked == looks.count {
+            return (looks.count == 1 ? "1 look" : "all \(looks.count) \(noun)", false)
+        }
+        return ("\(picked) of \(looks.count) \(noun)", true)
+    }
+
+    /// Whether `edit` would leave nothing to play — what locks a control.
+    private func wouldEmpty(_ edit: (inout LerpRotationSelection) -> Void) -> Bool {
+        selection.applying(edit).playable.isEmpty
+    }
+
+    /// Pushes the model into every card, tile and heading, and writes the
+    /// status line.
     ///
     /// Visibility is settled here rather than in `reflow`, because "the filter
     /// hid it" is a fact about the model and has to be true the moment the
     /// filter changes — not on the next layout pass.
     private func refresh() {
-        // The one look that cannot be turned off, when there is only one left.
-        let lastOne = enabled.count == 1 ? enabled.first : nil
+        let playable = selection.playable
+        for (name, card) in cards {
+            let plays = selection.shaderPlays(name)
+            let summary = summary(of: name)
+            card.isOn = plays
+            card.summary = summary.text
+            card.summaryIsPartial = summary.partial
+            card.lookCount = selection.looks(of: name).count
+            card.isExpanded = expanded == name
+            card.isCurrent = name == currentEntry?.shader
+            card.isLocked = plays && wouldEmpty { $0.setShader(name, on: false) }
+            card.isHidden = isSearching
+        }
         for (entry, tile) in tiles {
-            tile.isOn = enabled.contains(entry)
+            let switchedOff = selection.isSwitchedOff(entry.shader)
+            tile.isOn = selection.isPicked(entry)
+            // Dimmed whole: the per-look picks are still shown, because they
+            // are what comes back when the shader is switched on again.
+            tile.alphaValue = switchedOff ? 0.45 : 1
             tile.isCurrent = entry == currentEntry
-            tile.isLocked = entry == lastOne
-            tile.isHidden = !matches(entry)
+            tile.isLocked = selection.plays(entry) && wouldEmpty { $0.setLook(entry, on: false) }
+            tile.isHidden = isSearching ? !matches(entry) : entry.shader != expanded
         }
         // The "+" card sits out the filter: it is not a look, so there is
         // nothing about it to match, and a card that disappeared as you typed
@@ -1165,48 +1375,54 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         newCard?.isHidden = !isActive
         // Deselect All goes with them: a button that would clear the rotation is
         // off, not silently ignored.
-        deselectAllButton?.isEnabled = isActive && !wouldEmpty(visibleEntries())
+        let shown = visibleEntries()
+        deselectAllButton?.isEnabled = isActive && !wouldEmpty { $0.setLooks(shown, on: false) }
         deselectAllButton?.toolTip = deselectAllButton?.isEnabled == true ? nil : Self.floorNote
         for name in order {
             let group = entries.filter { $0.shader == name }
-            let on = group.filter(enabled.contains).count
-            headers[name]?.state = on == 0 ? .off : (on == group.count ? .on : .mixed)
-            headerCounts[name]?.stringValue = "\(on)/\(group.count)"
-            let shown = group.contains(where: matches)
+            let picked = group.filter(selection.isPicked).count
+            let shown = isSearching ? group.contains(where: matches) : name == expanded
             headers[name]?.isHidden = !shown
             headerCounts[name]?.isHidden = !shown
+            let plays = group.filter(selection.plays).count
+            headerCounts[name]?.stringValue = isSearching
+                ? "\(plays)/\(group.count)"
+                : selection.isSwitchedOff(name)
+                    ? "switched off · these \(picked) of \(group.count) come back when it is switched on"
+                    : "\(plays) of \(group.count) in the rotation"
         }
-        if progress.isHidden { countLabel.stringValue = "\(entries.count) looks" }
+        drawerBackdrop.isHidden = isSearching || expanded == nil
+        if progress.isHidden { countLabel.stringValue = libraryCount }
         // Inactive: the status line's job is to say why nothing here applies,
         // not to report a count that has no effect.
         if !isActive, let inactiveNote {
             note.stringValue = inactiveNote
             return
         }
-        let shaderCount = Set(enabled.map(\.shader)).count
+        let shaderCount = Set(playable.map(\.shader)).count
         if entries.isEmpty {
             note.stringValue = "No shaders found."
-        } else if enabled.isEmpty {
-            // Only reachable by hand-editing the defaults: the tiles and the
-            // Deselect All button both refuse to get here. Said plainly rather
-            // than papered over, because the thing this used to say — that an
-            // empty selection is saved as all of them — was the sentence that
-            // made deselecting a look unreliable.
+        } else if playable.isEmpty {
+            // Only reachable by hand-editing the defaults: every control here
+            // refuses to get there. Said plainly rather than papered over,
+            // because the thing this used to say — that an empty selection is
+            // saved as all of them — was the sentence that made deselecting a
+            // look unreliable.
             note.stringValue = "No looks selected. The screensaver has nothing to show."
         } else {
-            note.stringValue = "\(enabled.count) of \(entries.count) looks, "
-                + "across \(shaderCount) of \(shaders.count) shaders."
+            note.stringValue = "\(shaderCount) of \(shaders.count) shaders, "
+                + "\(playable.count) of \(entries.count) looks."
         }
-        if !filter.isEmpty {
-            note.stringValue += "  Filter “\(filter)”: \(visibleEntries().count) shown."
+        if isSearching {
+            note.stringValue += "  Filter “\(filter)”: \(shown.count) shown."
         }
-        // Why the last tile will not budge, said before it is pressed rather
+        // Why the last one will not budge, said before it is pressed rather
         // than only after. A control that refuses is only fair if the reason is
         // already on screen — the tooltip is not enough, because a tile that
         // does not respond reads as broken long before anyone hovers it.
         if let refusal {
             note.stringValue += "  " + refusal
-        } else if enabled.count == 1 {
+        } else if playable.count == 1 {
             note.stringValue += "  " + Self.floorNote
         }
     }
@@ -1218,22 +1434,85 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     private static let groupGapX: CGFloat = 30
     private static let groupGapY: CGFloat = 22
     private static let headerHeight: CGFloat = 26
-    /// A shader's looks stay on one line up to this many, so a group reads as a
-    /// single strip of that shader rather than as a paragraph.
+    /// Inside an open drawer: from its edge to the looks, and above its heading.
+    private static let drawerInset: CGFloat = 12
+    /// A search group's looks stay on one line up to this many, so a group
+    /// reads as a single strip of that shader rather than as a paragraph.
     private static let maxPerGroupRow = 6
 
     /// Lays the grid out for a given width and returns the height it needs.
-    ///
-    /// The unit that flows is the *group*, not the tile: a heading and its
-    /// shader's looks are one block, and blocks pack across the window until the
-    /// next one will not fit. Flowing tiles instead would put one shader per
-    /// band and leave two thirds of a wide window empty, because no shader here
-    /// has more than five looks.
-    ///
-    /// Hand-rolled because that is not a shape any stock container makes
-    /// cheaply, and because 123 tiles want a flat view tree.
+    /// Hand-rolled because neither shape is one a stock container makes
+    /// cheaply, and because a few hundred views want a flat view tree.
     @discardableResult
     private func reflow(width: CGFloat) -> CGFloat {
+        let height = isSearching ? reflowSearch(width: width) : reflowLibrary(width: width)
+        return max(height, scroll.contentView.bounds.height)
+    }
+
+    /// The Library: cards in rows, the "+" card first, and the open drawer
+    /// directly under the row holding its card, so the looks appear where the
+    /// eye already is.
+    private func reflowLibrary(width: CGFloat) -> CGFloat {
+        let tile = tileSize
+        let usable = max(tile.width, width - 2 * Self.pad)
+        let perRow = max(1, Int((usable + Self.gap) / (tile.width + Self.gap)))
+        var items: [NSView] = []
+        if let newCard, !newCard.isHidden { items.append(newCard) }
+        items += order.compactMap { cards[$0] }
+
+        var top = Self.pad
+        var start = 0
+        while start < items.count {
+            let row = items[start..<min(start + perRow, items.count)]
+            for (column, view) in row.enumerated() {
+                view.setFrameSize(tile)
+                view.setFrameOrigin(NSPoint(x: Self.pad + CGFloat(column) * (tile.width + Self.gap),
+                                            y: top))
+            }
+            top += tile.height
+            start += row.count
+            if let open = expanded, let card = cards[open], row.contains(where: { $0 === card }) {
+                top = layoutDrawer(open, top: top + Self.gap, width: width, perRow: perRow)
+            }
+            top += Self.gap
+        }
+        return top - Self.gap + Self.pad
+    }
+
+    /// One shader's looks, in a panel, starting at `top`. Returns where the
+    /// panel ends.
+    private func layoutDrawer(_ name: String, top: CGFloat, width: CGFloat, perRow: Int) -> CGFloat {
+        let tile = tileSize
+        let inset = Self.drawerInset
+        let looks = entries.filter { $0.shader == name }
+        let columns = max(1, min(looks.count, Int((width - 2 * Self.pad - 2 * inset + Self.gap)
+                                                 / (tile.width + Self.gap))))
+        if let header = headers[name], let count = headerCounts[name] {
+            header.sizeToFit()
+            count.sizeToFit()
+            header.setFrameOrigin(NSPoint(x: Self.pad + inset - 2, y: top + inset - 2))
+            count.setFrameOrigin(NSPoint(x: Self.pad + inset - 2 + header.frame.width + 8,
+                                         y: top + inset + 1))
+        }
+        let tilesTop = top + inset + Self.headerHeight
+        for (index, entry) in looks.enumerated() {
+            let view = tiles[entry]
+            view?.setFrameSize(tile)
+            view?.setFrameOrigin(NSPoint(
+                x: Self.pad + inset + CGFloat(index % columns) * (tile.width + Self.gap),
+                y: tilesTop + CGFloat(index / columns) * (tile.height + Self.gap)))
+        }
+        let rows = (looks.count + columns - 1) / columns
+        let bottom = tilesTop + CGFloat(rows) * (tile.height + Self.gap) - Self.gap + inset
+        drawerBackdrop.frame = NSRect(x: Self.pad, y: top, width: width - 2 * Self.pad,
+                                      height: bottom - top)
+        return bottom
+    }
+
+    /// Search results: each matching shader's matching looks as one block — a
+    /// heading over a strip of tiles — and blocks pack across the window until
+    /// the next one will not fit.
+    private func reflowSearch(width: CGFloat) -> CGFloat {
         let tile = tileSize
         let usable = max(tile.width, width - 2 * Self.pad)
         let perRow = max(1, min(Self.maxPerGroupRow,
@@ -1242,12 +1521,9 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         var bandTop = Self.pad
         var bandHeight: CGFloat = 0
 
-        // The "+" card leads, on the first band rather than on one of its own:
-        // it is a single card, and a band to itself would push all 123 looks
-        // down a whole tile for it. It starts a heading's height down, so it
-        // lines up with the looks beside it and not with their headings — it
-        // heads no group, and a card floating level with the shader names would
-        // read as one.
+        // The "+" card leads, on the first band rather than on one of its own,
+        // a heading's height down so it lines up with the looks beside it and
+        // not with their headings — it heads no group.
         if let newCard, !newCard.isHidden {
             newCard.setFrameSize(tile)
             newCard.setFrameOrigin(NSPoint(x: x, y: bandTop + Self.headerHeight))
@@ -1278,8 +1554,8 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
                 bandHeight = 0
             }
 
-            header.setFrameOrigin(NSPoint(x: x - 2, y: bandTop))
-            count?.setFrameOrigin(NSPoint(x: x - 2 + header.frame.width + 6, y: bandTop + 3))
+            header.setFrameOrigin(NSPoint(x: x - 2, y: bandTop + 3))
+            count?.setFrameOrigin(NSPoint(x: x - 2 + header.frame.width + 6, y: bandTop + 6))
             for (index, entry) in group.enumerated() {
                 let view = tiles[entry]
                 view?.setFrameSize(tile)
@@ -1292,7 +1568,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
             bandHeight = max(bandHeight, blockHeight)
             x += blockWidth + Self.groupGapX
         }
-        return max(bandTop + bandHeight + Self.pad, scroll.contentView.bounds.height)
+        return bandTop + bandHeight + Self.pad
     }
 
     public override func layout() {

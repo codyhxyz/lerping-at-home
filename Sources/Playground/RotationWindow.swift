@@ -13,8 +13,10 @@ import AppKit
 ///
 /// Two things leave through callbacks rather than being done here, because both
 /// belong to the editor window and not to this one: `onOpen`, a double-click
-/// asking to go and edit a look, and `onChange`, so the toolbar popover showing
-/// the same 123 tiles can be kept in step with what was just clicked.
+/// asking to go and edit a look, and `onChange`, a click that changed the
+/// rotation. The editor window is what writes it — for this grid and the
+/// toolbar popover's alike — so there is one save path in the playground, and
+/// it is also what brings the other grid up to date.
 final class RotationWindowController: NSWindowController, NSWindowDelegate {
 
     let gallery = RotationGalleryView(frame: NSRect(x: 0, y: 0, width: 1120, height: 760))
@@ -26,8 +28,9 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
 
     /// A look was double-clicked: go and open it in the editor.
     var onOpen: ((LerpRotationEntry) -> Void)?
-    /// The rotation changed here. The editor's popover shows the same set.
-    var onChange: ((Set<LerpRotationEntry>) -> Void)?
+    /// The rotation changed here. The host saves it and shows it in the
+    /// popover, which draws the same looks.
+    var onChange: ((LerpRotationSelection) -> Void)?
     /// A still landed. Handed on so the popover's copy of the grid can show it
     /// too — the two share one `RotationThumbnails`, and a `start` supersedes
     /// the run in flight, so whichever run is live has to feed both.
@@ -54,10 +57,7 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
             window.setFrameAutosaveName("LerpRotationWindow")
         }
 
-        gallery.onChange = { [weak self] enabled in
-            self?.persist(enabled)
-            self?.onChange?(enabled)
-        }
+        gallery.onChange = { [weak self] selection in self?.onChange?(selection) }
         gallery.onOpen = { [weak self] entry in self?.onOpen?(entry) }
         gallery.onRegenerate = { [weak self] in
             guard let self else { return }
@@ -76,9 +76,9 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
         guard force || fingerprint != sourceFingerprint else { return }
         sourceFingerprint = fingerprint
 
-        let entries = shaders.rotationEntries()
         gallery.show(shaders: shaders,
-                     enabled: RotationStore.resolved(discovered: entries, from: defaults))
+                     selection: RotationStore.selection(discovered: shaders.rotationEntries(),
+                                                        from: defaults))
 
         gallery.populate(
             using: thumbnails,
@@ -90,19 +90,13 @@ final class RotationWindowController: NSWindowController, NSWindowDelegate {
     /// looks. Straight into the tiles, without going back out through
     /// `onChange`, because whoever changed it has already saved it.
     ///
-    func showEnabled(_ enabled: Set<LerpRotationEntry>) {
+    func showSelection(_ selection: LerpRotationSelection) {
         guard !gallery.entries.isEmpty else { return }
-        gallery.show(shaders: gallery.shaders, enabled: enabled)
+        gallery.show(shaders: gallery.shaders, selection: selection)
     }
 
     /// Marks the look the editor has open.
     func showCurrent(_ entry: LerpRotationEntry?) { gallery.showCurrent(entry) }
-
-    /// The whole point of the feature: a click writes the screensaver's own
-    /// rotation, in the screensaver's own domain, immediately.
-    private func persist(_ enabled: Set<LerpRotationEntry>) {
-        RotationStore.save(enabled, entries: gallery.entries, to: defaults)
-    }
 
     func show() {
         window?.makeKeyAndOrderFront(nil)

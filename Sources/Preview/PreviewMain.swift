@@ -44,6 +44,11 @@ enum PreviewMain {
             return
         }
 
+        if args.contains("--rotation-selftest") {
+            RotationSelfTest.run(extraSearch)
+            return
+        }
+
         if args.contains("--animate-selftest") {
             AnimateSelfTest.run(extraSearch)
             return

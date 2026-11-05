@@ -85,7 +85,7 @@ enum LookCatalog {
     static func snapshot(defaults: UserDefaults? = RotationStore.saverDefaults()) -> Snapshot {
         let discovered = discovered()
         return Snapshot(discovered: discovered,
-                        enabled: RotationStore.resolved(discovered: discovered, from: defaults))
+                        enabled: Set(RotationStore.rotation(discovered: discovered, from: defaults)))
     }
 }
 

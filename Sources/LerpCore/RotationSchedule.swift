@@ -40,10 +40,12 @@ import Foundation
 /// # The shape
 ///
 /// Time is cut into `interval`-sized slots numbered from the reference date.
-/// Slot *n* plays position `n mod count` of an order that is itself a pure
-/// function of the cycle number `n / count` — so the list is re-shuffled once
-/// per complete pass, deterministically, and every host re-derives the same
-/// pass without anyone persisting it.
+/// Slot *n* plays position `n mod count` of an order of the rotation's
+/// *shaders* that is itself a pure function of the cycle number `n / count` —
+/// so the list is re-shuffled once per complete pass, deterministically, and
+/// every host re-derives the same pass without anyone persisting it. Each
+/// shader then plays its next look, by the same arithmetic one level down; see
+/// `rotation(_:at:interval:offset:)` for why airtime is shared that way.
 ///
 /// The shuffle is `LerpSplitMix64`, not `Array.shuffled()`, for the reason
 /// spelled out in `Hashing.swift`: the standard library's randomness is salted
@@ -91,16 +93,16 @@ public enum LerpRotationSchedule {
         return boundary > date ? boundary : date.addingTimeInterval(interval)
     }
 
-    /// A deterministic Fisher-Yates over `entries`, seeded by the cycle number
-    /// alone.
+    /// A deterministic Fisher-Yates over `items`, seeded by the cycle number
+    /// (and, for one shader's looks, by that shader's name).
     ///
-    /// Seeded by the cycle and not by the entry set, so that toggling one look
-    /// in the gallery does not re-roll the position of every other look
-    /// mid-pass. The set change alters which entries are in the list; it does
-    /// not have to alter the order of the ones that stayed.
-    private static func shuffle(_ entries: [LerpRotationEntry], cycle: Int) -> [LerpRotationEntry] {
-        var rng = LerpSplitMix64(state: UInt64(bitPattern: Int64(cycle)) &* LerpSplitMix64.gamma)
-        var shuffled = entries
+    /// Seeded by the cycle and not by the set, so that toggling one look in the
+    /// gallery does not re-roll the position of everything else mid-pass. The
+    /// set change alters which items are in the list; it does not have to alter
+    /// the order of the ones that stayed.
+    private static func shuffle<Item>(_ items: [Item], cycle: Int, salt: UInt64) -> [Item] {
+        var rng = LerpSplitMix64(state: (UInt64(bitPattern: Int64(cycle)) ^ salt) &* LerpSplitMix64.gamma)
+        var shuffled = items
         for index in stride(from: shuffled.count - 1, to: 0, by: -1) {
             shuffled.swapAt(index, rng.below(index + 1))
         }
@@ -109,29 +111,30 @@ public enum LerpRotationSchedule {
 
     /// The order cycle `cycle` is played in.
     ///
-    /// Every look appears exactly once per cycle, and — the part the raw
-    /// shuffle does not give you — no look is ever played twice in a row across
+    /// Every item appears exactly once per cycle, and — the part the raw
+    /// shuffle does not give you — no item is ever played twice in a row across
     /// a cycle boundary. Two passes are independently shuffled, so roughly one
-    /// boundary in `count` would otherwise end and begin on the same entry,
+    /// boundary in `count` would otherwise end and begin on the same item,
     /// leaving it on screen for two full intervals. On a 34-look rotation that
     /// is a ten-minute stretch of one shader every few hours, which is
     /// indistinguishable from the rotation having stopped — the exact report
     /// this whole area of the code exists to stop generating.
     ///
     /// The previous cycle is re-derived rather than remembered, so this stays a
-    /// pure function of `(entries, cycle)` and two hosts computing it
-    /// separately still agree. Looking back exactly one cycle is enough, and it
-    /// terminates: the swap below moves position 0, and with more than two
-    /// entries that cannot change which entry is last, so the previous cycle's
-    /// raw shuffle and its adjusted order always end on the same look.
-    public static func order(_ entries: [LerpRotationEntry], cycle: Int) -> [LerpRotationEntry] {
-        guard entries.count > 1 else { return entries }
-        var shuffled = shuffle(entries, cycle: cycle)
-        // Two entries are excluded because there the swap *does* change the
-        // last element, so the reasoning above stops holding. A two-look
-        // rotation alternates on its own well enough.
-        guard entries.count > 2,
-              let previousLast = shuffle(entries, cycle: cycle - 1).last,
+    /// pure function of `(items, cycle)` and two hosts computing it separately
+    /// still agree. Looking back exactly one cycle is enough, and it terminates:
+    /// the swap below moves position 0, and with more than two items that
+    /// cannot change which item is last, so the previous cycle's raw shuffle and
+    /// its adjusted order always end on the same one.
+    public static func order<Item: Equatable>(_ items: [Item], cycle: Int,
+                                              salt: UInt64 = 0) -> [Item] {
+        guard items.count > 1 else { return items }
+        var shuffled = shuffle(items, cycle: cycle, salt: salt)
+        // Two items are excluded because there the swap *does* change the
+        // last element, so the reasoning above stops holding. Two alternate on
+        // their own well enough.
+        guard items.count > 2,
+              let previousLast = shuffle(items, cycle: cycle - 1, salt: salt).last,
               shuffled[0] == previousLast
         else { return shuffled }
         shuffled.swapAt(0, 1)
@@ -149,7 +152,12 @@ public enum LerpRotationSchedule {
     public static func position(in count: Int, at date: Date,
                                 interval: TimeInterval, offset: Int = 0) -> (cycle: Int, index: Int) {
         guard count > 0 else { return (0, 0) }
-        let step = slot(at: date, interval: interval) &+ offset
+        return split(slot(at: date, interval: interval) &+ offset, by: count)
+    }
+
+    /// Floor division and its remainder, for cycle numbers that can be
+    /// negative (a manual nudge back past the reference date).
+    private static func split(_ step: Int, by count: Int) -> (cycle: Int, index: Int) {
         var cycle = step / count
         if step % count != 0, step < 0 { cycle -= 1 }
         return (cycle, step - cycle * count)
@@ -157,13 +165,44 @@ public enum LerpRotationSchedule {
 
     /// The whole answer: the order to walk and where in it to be.
     ///
-    /// Callers take the order rather than just the entry because a look that
-    /// will not compile has to be stepped over — see
-    /// `ShaderLibrary.firstStep` — and stepping needs the list, not the pick.
+    /// # Airtime goes to shaders, then to looks
+    ///
+    /// The rotation used to be one flat shuffle of looks, so a shader's share
+    /// of the screen was however many presets its author had written:
+    /// `sierpinski-pyramid`, with seven looks, played three and a half times as
+    /// often as `torque`, with two, and writing a preset quietly turned a shader
+    /// up. Nobody had chosen that.
+    ///
+    /// So the schedule has two levels now, and both are still pure functions of
+    /// the clock. Slots walk a shuffle of the *shaders* that have anything on —
+    /// each one exactly once per cycle, with the same no-repeat-across-the-seam
+    /// rule as before. Each time a shader comes round it plays its next look:
+    /// visit *n* of a shader is position `n mod looks` of that shader's own
+    /// shuffle, which re-rolls once per pass through its looks and is salted by
+    /// the shader's name so two shaders with the same look count do not step in
+    /// lockstep. A shader's visits are a whole cycle apart, so its looks never
+    /// sit back to back either.
+    ///
+    /// The returned order has one look per shader — the one each will play
+    /// this cycle — which is what `ShaderLibrary.firstStep` needs to step past a
+    /// look that will not compile: to the next shader, not to a sibling preset
+    /// that very likely fails the same way.
     public static func rotation(_ entries: [LerpRotationEntry], at date: Date,
                                 interval: TimeInterval,
                                 offset: Int = 0) -> (order: [LerpRotationEntry], index: Int) {
-        let position = position(in: entries.count, at: date, interval: interval, offset: offset)
-        return (order(entries, cycle: position.cycle), position.index)
+        var shaders: [String] = []
+        var looks: [String: [LerpRotationEntry]] = [:]
+        for entry in entries {
+            if looks[entry.shader] == nil { shaders.append(entry.shader) }
+            looks[entry.shader, default: []].append(entry)
+        }
+        let position = position(in: shaders.count, at: date, interval: interval, offset: offset)
+        let order = order(shaders, cycle: position.cycle).map { shader -> LerpRotationEntry in
+            let own = looks[shader] ?? []
+            guard own.count > 1 else { return own[0] }
+            let visit = split(position.cycle, by: own.count)
+            return order(own, cycle: visit.cycle, salt: LerpHash.fnv1a(shader))[visit.index]
+        }
+        return (order, position.index)
     }
 }

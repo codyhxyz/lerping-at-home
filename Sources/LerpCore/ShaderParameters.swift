@@ -635,6 +635,10 @@ public enum LerpParamParser {
             } else if let text = directiveBody(raw, presetDirective) {
                 do {
                     let (name, values) = try parsePreset(text, line: line)
+                    // Reserved for `shader/*` — see `LerpRotationEntry.wholeShaderPreset`.
+                    if name == LerpRotationEntry.wholeShaderPreset {
+                        throw fail(line, text, "`\(name)` is reserved: in the rotation it means every look of the shader")
+                    }
                     if presetValues[name] == nil {
                         presetOrder.append(name)
                         presetLine[name] = line
@@ -1127,6 +1131,10 @@ public enum LerpPresetWriter {
         if trimmed.caseInsensitiveCompare(reserved) == .orderedSame {
             return "“\(reserved)” is the name every shader's *un*-preset look already goes by, "
                 + "so a preset called that would be two looks with one caption. Pick another."
+        }
+        if trimmed == LerpRotationEntry.wholeShaderPreset {
+            return "“\(trimmed)” stands for every look of a shader at once in the rotation, "
+                + "so it cannot also be the name of one of them. Pick another."
         }
         return nil
     }

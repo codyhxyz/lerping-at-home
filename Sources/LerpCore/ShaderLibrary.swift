@@ -166,6 +166,29 @@ public struct LerpRotationEntry: Hashable, Sendable {
 
     /// What the Options list calls this entry underneath its shader heading.
     public var displayName: String { preset ?? Self.defaultsName }
+
+    /// The preset name that stands for *every* look of a shader, including the
+    /// ones its author has not written yet: `kleinian/*`.
+    ///
+    /// It only ever appears in the rotation's off set, where it records that a
+    /// shader is switched off as a whole — beside, not instead of, whatever the
+    /// user decided about its individual looks. That is what lets a shader go
+    /// off and come back with its curation intact, and it is why the switch is
+    /// a key in the one set rather than a second set: `verify-rotation.py` and
+    /// every reader see one list of opinions. See `LerpRotationSelection`.
+    ///
+    /// Reserved for the same reason "Defaults" is: `LerpPresetWriter.problem`
+    /// refuses it and the parser rejects a hand-written one, so a real preset can
+    /// never be mistaken for the whole shader.
+    public static let wholeShaderPreset = "*"
+
+    /// `shader/*`: the whole of `shader`, as one key.
+    public static func wholeShader(_ shader: String) -> LerpRotationEntry {
+        LerpRotationEntry(shader: shader, preset: wholeShaderPreset)
+    }
+
+    /// Whether this is a `shader/*` key rather than a look.
+    public var isWholeShader: Bool { preset == Self.wholeShaderPreset }
 }
 
 /// Filesystem policy shared by the saver's sandbox and the ordinary app hosts.

@@ -98,8 +98,17 @@ def main():
     disabled, source, stale = rotation()
     looks = played(args.days)
 
+    # `shader/*` switches a whole shader off, on top of whatever is recorded
+    # about its looks one at a time — see LerpRotationSelection. A look is off
+    # if it is named, or if its shader is.
+    shaders_off = {key[:-2] for key in disabled if key.endswith("/*")}
+
+    def switched_off(look):
+        return look in disabled or look.split("/", 1)[0] in shaders_off
+
     print(f"rotation: {source}")
-    print(f"          {len(disabled)} looks switched off")
+    print(f"          {len(disabled) - len(shaders_off)} looks switched off, "
+          f"{len(shaders_off)} whole shaders switched off")
     if stale:
         # Not fatal, but it is the shape of the bug this file exists for: a
         # second representation of the rotation that something could still read.
@@ -114,12 +123,12 @@ def main():
     seen, bad = {}, []
     for look, _, _ in looks:
         seen[look] = seen.get(look, 0) + 1
-        if look in disabled and look not in bad:
+        if switched_off(look) and look not in bad:
             bad.append(look)
 
     print(f"\n{len(looks)} plays over {args.days}d, {len(seen)} distinct looks:")
     for look in sorted(seen):
-        mark = "PLAYED WHILE SWITCHED OFF" if look in disabled else ""
+        mark = "PLAYED WHILE SWITCHED OFF" if switched_off(look) else ""
         print(f"  {seen[look]:3d}x  {look}  {mark}")
 
     if bad:

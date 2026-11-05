@@ -76,6 +76,14 @@ this area came from having more than one of any of them.
   stores the looks that are *off*. The old `enabledEntries` / `knownEntries` /
   `enabledShaders` / `knownShaders` keys are read once by a domain that has no
   `rotationState`, deleted on the next write, and never written again.
+  That one list holds three shapes of key: `shader` (its Defaults look),
+  `shader/Preset`, and `shader/*` — the whole shader switched off, kept beside
+  its per-look keys so switching it back on restores the hand-picked looks.
+  `LerpRotationSelection` is the only code that turns the list into "what
+  plays"; ask it rather than subtracting the set yourself, which would miss
+  `shader/*`. `*` is a reserved preset name. `LerpPreview --rotation-selftest`
+  (with `LERP_DEFAULTS_MODULE` set to a scratch domain) checks the model, the
+  schedule's per-shader airtime and the Library gallery.
 - **One writer.** LerpPlayground. The saver's Options… sheet shows the gallery
   read-only, because it runs sandboxed inside `legacyScreenSaver` and can only
   write Apple's container — not the file the saver reads.

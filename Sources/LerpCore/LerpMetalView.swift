@@ -139,11 +139,16 @@ public final class LerpMetalView: NSView {
     private var pacedFPS: Int?
     private var lastPaceCheck: CFTimeInterval = 0
     private var lastPaceChange: CFTimeInterval = 0
-    /// The order the current cycle is played in, re-derived from
-    /// `LerpRotationSchedule` rather than remembered. Kept as a field only
-    /// because `loadEntry` needs a list to step through when a look will not
-    /// compile, and the log line wants its length.
+    /// The order the current cycle is played in — one look per shader —
+    /// re-derived from `LerpRotationSchedule` rather than remembered. Kept as a
+    /// field only because `loadEntry` needs a list to step through when a look
+    /// will not compile.
     private var shuffleOrder: [LerpRotationEntry] = []
+    /// Every look the rotation may play, from the same refresh as
+    /// `shuffleOrder`. "Is the look on screen still wanted?" is asked of this,
+    /// not of the order: the order holds one look per shader per cycle, so a
+    /// look that is still on can be absent from it.
+    private var shuffleLooks: Set<LerpRotationEntry> = []
     /// Manual nudges from `advanceShuffle(by:)`, added to the clock's slot
     /// number. Stays zero in the screensaver, which lets the clock alone decide
     /// — that is the whole point of the schedule.
@@ -579,7 +584,7 @@ public final class LerpMetalView: NSView {
             // next person to look has something to go on.
             if pipeline == nil {
                 Self.log.error("""
-                nothing to render: \(self.shuffleOrder.count, privacy: .public) look(s) in the \
+                nothing to render: \(self.shuffleLooks.count, privacy: .public) look(s) in the \
                 rotation of \(available.rotationEntries().count, privacy: .public) discovered, \
                 and none of them could be built. Not widening to the looks that were switched \
                 off. Compile errors: \
@@ -615,7 +620,8 @@ public final class LerpMetalView: NSView {
     /// through the gallery, which will not let the last look be switched off.
     @discardableResult
     private func refreshShuffleOrder(_ available: [LerpShader]) -> Int {
-        let picked = Config.rotation(of: config.enabledEntries, from: available.rotationEntries())
+        let picked = pickedLooks(available)
+        shuffleLooks = Set(picked)
         let scheduled = LerpRotationSchedule.rotation(picked, at: Date(),
                                                       interval: config.shuffleInterval,
                                                       offset: shuffleOffset)
@@ -630,7 +636,7 @@ public final class LerpMetalView: NSView {
         let index = refreshShuffleOrder(available)
         // The look on screen may fade out only if it is still one the user
         // wants. One that has left the rotation is cut away from instead.
-        let stillWanted = currentEntry.map(shuffleOrder.contains) ?? false
+        let stillWanted = currentEntry.map(shuffleLooks.contains) ?? false
         loadEntry(after: nil, offset: index, in: shuffleOrder, from: available,
                   fadingOutAllowed: stillWanted)
         // After `show` above cleared it: the schedule put this look up, so a
@@ -647,7 +653,9 @@ public final class LerpMetalView: NSView {
     /// menu held open, a window being dragged — does not hold the rotation.
     private func armShuffleTimer(_ available: [LerpShader]) {
         cancelShuffleTimer()
-        guard running, !frozen, config.shaderName == nil, shuffleOrder.count > 1,
+        // Counted in looks, not in the order's length: a rotation of one
+        // shader with several looks on still moves.
+        guard running, !frozen, config.shaderName == nil, shuffleLooks.count > 1,
               let next = LerpRotationSchedule.nextBoundary(after: Date(),
                                                            interval: config.shuffleInterval)
         else { return }
@@ -677,8 +685,7 @@ public final class LerpMetalView: NSView {
     /// between) costs one compile that the switch would have paid anyway.
     private func prefetch(slotAfter boundary: Date, from available: [LerpShader]) {
         let interval = config.shuffleInterval
-        let picked = Config.rotation(of: config.enabledEntries, from: available.rotationEntries())
-        let upcoming = LerpRotationSchedule.rotation(picked,
+        let upcoming = LerpRotationSchedule.rotation(pickedLooks(available),
                                                      at: boundary.addingTimeInterval(interval / 2),
                                                      interval: interval, offset: shuffleOffset)
         let library = self.library
@@ -706,8 +713,13 @@ public final class LerpMetalView: NSView {
     /// claim in a comment.
     public var rotationNow: [LerpRotationEntry] {
         guard config.shaderName == nil else { return [] }
-        return Config.rotation(of: config.enabledEntries,
-                               from: library.discover().rotationEntries())
+        return pickedLooks(library.discover())
+    }
+
+    /// What `config` selects from these shaders — the one spelling of it in
+    /// this view, for the schedule, the prefetch and `rotationNow` alike.
+    private func pickedLooks(_ available: [LerpShader]) -> [LerpRotationEntry] {
+        Config.rotation(of: config.enabledEntries, from: available.rotationEntries())
     }
 
     /// Steps the shuffle rotation. `by: 0` loads the rotation's first entry.
@@ -749,7 +761,7 @@ public final class LerpMetalView: NSView {
         // The interval may have changed with the selection, so the boundary
         // this view is waiting on has to be recomputed either way.
         armShuffleTimer(available)
-        guard let current = currentEntry, !shuffleOrder.contains(current) else { return }
+        guard let current = currentEntry, !shuffleLooks.contains(current) else { return }
         // The look on screen has just been switched off, so it goes now rather
         // than at the next boundary. It is replaced by whatever the schedule
         // says is due, which keeps this view in step with every other one
@@ -870,7 +882,7 @@ public final class LerpMetalView: NSView {
         // anything after it is free.
         Self.log.notice("""
             playing \(candidate.key, privacy: .public) \
-            (\(self.shuffleOrder.count) in rotation of \(available.rotationEntries().count) discovered)\
+            (\(self.shuffleLooks.count) in rotation of \(available.rotationEntries().count) discovered)\
             \(crossfade ? " crossfade" : "", privacy: .public)
             """)
     }

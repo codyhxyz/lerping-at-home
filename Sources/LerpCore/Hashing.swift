@@ -34,27 +34,6 @@ public enum LerpHash {
     /// FNV-1a's 64-bit prime, 2^40 + 2^8 + 0xb3.
     public static let prime: UInt64 = 0x0000_0100_0000_01B3
 
-    /// The multiplier `LerpRotation.digest` has always used: FNV's with one
-    /// extra zero in the middle of it.
-    ///
-    /// A transcription slip, and one that has to stay. The digest's whole job is
-    /// to be compared against the number the *last* write left in
-    /// `UserDefaults`, so correcting the constant would make every rotation
-    /// already saved on every machine look, exactly once, as though an older
-    /// build had written the legacy keys behind the current record's back — the
-    /// one condition this digest exists to detect. It recovers from that (the v1
-    /// keys are written by the same call and say the same thing, so the same set
-    /// comes back) but it recovers by losing the record's `updatedAt` and
-    /// relabelling its writer, and no amount of tidiness is worth spending a
-    /// user's saved state on.
-    ///
-    /// Nothing depends on the multiplier being FNV's. Avalanche is all this
-    /// needs and any odd multiplier with high bits set gives it; what it needs
-    /// and *does* have is to be the same number next launch. The name was the
-    /// only thing that was wrong, and it is now the parameter rather than a
-    /// silent literal.
-    static let rotationDigestPrime: UInt64 = 0x1000_0000_01b3
-
     public static func fnv1a(_ text: String, prime: UInt64 = prime) -> UInt64 {
         var value = offsetBasis
         for byte in text.utf8 {

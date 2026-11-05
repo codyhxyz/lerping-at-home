@@ -51,47 +51,41 @@ enum RotationStore {
         LerpRotation.read(defaults, discovered: discovered)
     }
 
-    /// What the screensaver's saved rotation comes to for these looks — the one
-    /// spelling of it the playground uses, so the gallery window and the toolbar
-    /// popover cannot come up disagreeing about what is in.
+    /// The saved rotation as something to ask and edit — the one spelling of
+    /// it the playground uses, so the gallery window and the toolbar popover
+    /// cannot come up disagreeing about what is in.
     ///
-    /// `LerpRotation.enabled` is the policy; the cases it has to keep:
+    /// The policy is `LerpRotationSelection`'s; the cases it keeps:
     ///
-    /// - Nothing ever saved: nil, i.e. the full rotation. Never an empty one.
-    /// - Saved entries that no longer exist are dropped.
-    /// - Entries discovered since the last save default to enabled, so a new
-    ///   `.metal` file — or a new preset on a file that was already there — does
-    ///   not silently sit out of the rotation.
+    /// - Nothing ever saved: no opinions, so everything plays. Never an empty
+    ///   rotation.
+    /// - Saved keys that no longer mean anything are dropped.
+    /// - Looks discovered since the last save play, so a new `.metal` file — or
+    ///   a new preset on a file that was already there — does not silently sit
+    ///   out of the rotation. Unless its shader is switched off whole, which
+    ///   covers looks nobody had heard of when it was switched off.
     /// - A preset that was *renamed* is not "discovered since": it keeps
     ///   whatever the user decided about it under its old name.
-    /// - A rotation saved before presets counted holds shader *names*; every
-    ///   look of a shader that was in it joins.
-    static func resolved(discovered: [LerpRotationEntry],
-                         from defaults: UserDefaults?) -> Set<LerpRotationEntry> {
-        let state = state(discovered: discovered, from: defaults)
-        return Set(LerpMetalView.Config.rotation(
-            of: LerpRotation.enabled(discovered: discovered, in: state), from: discovered))
+    static func selection(discovered: [LerpRotationEntry],
+                          from defaults: UserDefaults?) -> LerpRotationSelection {
+        LerpRotation.selection(discovered: discovered,
+                               in: state(discovered: discovered, from: defaults))
     }
 
     /// What the screensaver will actually shuffle through, given what is saved
-    /// and what exists. The "empty means all" policy is `Config.rotation`'s, not
-    /// this file's.
+    /// and what exists.
     static func rotation(discovered: [LerpRotationEntry],
                          from defaults: UserDefaults?) -> [LerpRotationEntry] {
-        LerpMetalView.Config.rotation(of: resolved(discovered: discovered, from: defaults),
-                                      from: discovered)
+        selection(discovered: discovered, from: defaults).playable
     }
 
     // MARK: - Writing
 
-    /// Writes the rotation the way the saver's Options sheet writes it, and
-    /// nothing else.
+    /// Writes the rotation, and nothing else.
     ///
-    /// `entries` is the full rotation in display order; an empty one leaves the
-    /// saved rotation alone, so a host that discovered nothing cannot wipe it.
-    /// An empty *selection*, though, is written as an empty rotation and means
-    /// it: `Config.rotation` takes the set literally, and it no longer widens an
-    /// empty one back to everything. What stops a deselect-all blacking the
+    /// A selection that discovered nothing leaves the saved rotation alone, so
+    /// a host that found no shaders cannot wipe it. An empty *rotation*, though,
+    /// is written as one and means it: what stops a deselect-all blacking the
     /// screensaver out is the gallery refusing the last look, not this.
     ///
     /// There is no `base` any more, and nothing to merge against. The
@@ -101,11 +95,9 @@ enum RotationStore {
     /// reads. Two writers needed a revision number and a three-way merge to stop
     /// one silently undoing the other; one writer needs neither.
     @discardableResult
-    static func save(_ enabled: Set<LerpRotationEntry>?,
-                     entries: [LerpRotationEntry],
+    static func save(_ selection: LerpRotationSelection,
                      to defaults: UserDefaults?) -> LerpRotationState {
-        LerpRotation.write(enabled: enabled, discovered: entries,
-                           writer: writerName, to: defaults)
+        LerpRotation.write(selection, writer: writerName, to: defaults)
     }
 
     // MARK: - One look at a time
@@ -130,19 +122,15 @@ enum RotationStore {
                         defaults: UserDefaults? = saverDefaults()) throws -> Bool {
         guard !discovered.isEmpty else { throw LookIntentError.noLooks }
         guard discovered.contains(entry) else { throw LookIntentError.unknownLook(entry.key) }
-        var picked = resolved(discovered: discovered, from: defaults)
-        guard picked.contains(entry) != enabled else { return false }
-        if enabled {
-            picked.insert(entry)
-        } else {
-            guard picked.count > 1 else { throw LookIntentError.lastLook(entry.key) }
-            picked.remove(entry)
-        }
+        let before = selection(discovered: discovered, from: defaults)
+        guard before.plays(entry) != enabled else { return false }
+        let after = before.applying { $0.setLook(entry, on: enabled) }
+        guard !after.playable.isEmpty else { throw LookIntentError.lastLook(entry.key) }
         // `write` can decline (no defaults, or the production guard in
         // `LerpDefaults`) and hands back what is on disk instead. Say so rather
         // than reporting a change that did not happen.
-        let written = save(picked, entries: discovered, to: defaults)
-        let nowIn = LerpRotation.enabled(discovered: discovered, in: written)?.contains(entry) ?? true
+        let written = save(after, to: defaults)
+        let nowIn = LerpRotation.selection(discovered: discovered, in: written).plays(entry)
         guard nowIn == enabled else { throw LookIntentError.notSaved(entry.key) }
         NotificationCenter.default.post(name: changedElsewhere, object: nil)
         return true

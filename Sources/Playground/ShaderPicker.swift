@@ -63,7 +63,7 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
     var onNew: (() -> Void)?
     /// The rotation was changed from here. The host writes it and tells the
     /// gallery window, which is showing the same looks.
-    var onChange: ((Set<LerpRotationEntry>) -> Void)?
+    var onChange: ((LerpRotationSelection) -> Void)?
     /// A still landed. See `RotationWindowController.onImage`: one
     /// `RotationThumbnails` feeds both grids, so whichever run is live delivers
     /// to both.
@@ -92,7 +92,7 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
             self?.close()
             self?.onOpen?(entry)
         }
-        gallery.onChange = { [weak self] enabled in self?.onChange?(enabled) }
+        gallery.onChange = { [weak self] selection in self?.onChange?(selection) }
         gallery.onNew = { [weak self] in
             self?.close()
             // Same close a chosen look gets, but the answer to this one is a
@@ -122,16 +122,16 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
     /// underneath the pointer just as often. The gallery *window* never had this
     /// because its own `load` is fingerprinted; this is the same guard, widened
     /// to the two other things the grid draws from.
-    func prepare(shaders: [LerpShader], enabled: Set<LerpRotationEntry>,
+    func prepare(shaders: [LerpShader], selection: LerpRotationSelection,
                  current: LerpRotationEntry?) {
         let fingerprint = RotationThumbnails.fingerprint(for: shaders)
         let stamp = [fingerprint,
-                     enabled.map(\.key).sorted().joined(separator: ","),
+                     selection.disabled.map(\.key).sorted().joined(separator: ","),
                      current?.key ?? ""].joined(separator: "\u{1}")
         guard stamp != loadedStamp else { return }
         loadedStamp = stamp
 
-        gallery.show(shaders: shaders, enabled: enabled)
+        gallery.show(shaders: shaders, selection: selection)
         gallery.showCurrent(current)
         guard fingerprint != loadedFingerprint else { return }
         loadedFingerprint = fingerprint
@@ -143,9 +143,9 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
 
     /// Someone else changed the rotation. Straight into the tiles; nothing goes
     /// back out through `onChange`.
-    func showEnabled(_ enabled: Set<LerpRotationEntry>) {
+    func showSelection(_ selection: LerpRotationSelection) {
         guard !gallery.entries.isEmpty else { return }
-        gallery.show(shaders: gallery.shaders, enabled: enabled)
+        gallery.show(shaders: gallery.shaders, selection: selection)
     }
 
     func showImage(_ image: NSImage, for entry: LerpRotationEntry) {

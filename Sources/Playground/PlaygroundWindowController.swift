@@ -90,7 +90,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private var compiled: LerpShader?
 
     private let split = NSSplitViewController()
-    /// Opens the shader picker. Where a plain `NSPopUpButton` listing 123 look
+    /// Opens the shader picker. Where a plain `NSPopUpButton` listing every look
     /// *names* used to be — see `ShaderPicker` for why a grid of stills replaced
     /// it, and for what the dropdown did better and had to be kept.
     private let shaderButton = NSButton()
@@ -266,7 +266,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         //
         // The list is the picker's, which means *looks* and not shaders: a
         // shader's presets are the looks worth comparing side by side, and
-        // stepping over shader names skipped every one of them. Walking all 123
+        // stepping over shader names skipped every one of them. Walking all of them
         // in the order the grid shows them is the whole point of a next button.
         let previousButton = Chrome.button("‹", target: self, action: #selector(previousLook))
         let nextButton = Chrome.button("›", target: self, action: #selector(nextLook))
@@ -567,7 +567,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Both grids mark the look the editor has open, so "where am I in these
-    /// 123 pictures" is answerable without reading captions.
+    /// a few hundred pictures" is answerable without reading captions.
     private func showCurrentEverywhere() {
         rotation?.showCurrent(currentEntry)
         picker?.gallery.showCurrent(currentEntry)
@@ -1037,7 +1037,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Screensaver rotation
 
     /// The gallery window, once it has been asked for. Built lazily: it renders
-    /// 123 stills, and an app that never opens it should never pay for them.
+    /// a few hundred stills, and an app that never opens it should never pay for them.
     private(set) var rotation: RotationWindowController?
 
     /// The screensaver's rotation, as this window sees it. Written by the
@@ -1047,13 +1047,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     var rotationDefaults: UserDefaults?
 
     /// The toolbar's picker popover, once it has been asked for. Same reason as
-    /// the gallery window: 123 stills is not a bill an app that never opens it
+    /// the gallery window: a few hundred stills is not a bill an app that never opens it
     /// should pay.
     private(set) var picker: ShaderPicker?
 
-    /// One cache of stills for both grids. They show the same 123 looks, and
+    /// One cache of stills for both grids. They show the same looks, and
     /// `RotationThumbnails.start` supersedes the run in flight — two instances
-    /// would mean two copies of 123 decoded images, and one instance driven by
+    /// would mean two copies of every decoded images, and one instance driven by
     /// two hosts would mean whichever asked second silently stopping the first
     /// one's deliveries. So there is one instance, and each host hands the
     /// images it receives to the other; whichever run is live feeds both.
@@ -1068,7 +1068,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                             defaults: rotationDefaults, hidden: hidden,
                                             thumbnails: thumbnails)
         made.onOpen = { [weak self] entry in self?.openEntry(entry) }
-        made.onChange = { [weak self] enabled in self?.picker?.showEnabled(enabled) }
+        made.onChange = { [weak self] selection in
+            self?.persistRotation(selection)
+            self?.picker?.showSelection(selection)
+        }
         made.onImage = { [weak self] entry, image in self?.picker?.showImage(image, for: entry) }
         made.showCurrent(currentEntry)
         rotation = made
@@ -1098,7 +1101,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // become a second flow, or one of them will be the one that forgets to
         // ask.
         made.onNew = { [weak self] in self?.newShader(nil) }
-        made.onChange = { [weak self] enabled in self?.persistRotation(enabled) }
+        made.onChange = { [weak self] selection in
+            self?.persistRotation(selection)
+            self?.rotation?.showSelection(selection)
+        }
         made.onImage = { [weak self] entry, image in
             self?.rotation?.gallery.show(image: image, for: entry)
         }
@@ -1120,20 +1126,19 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func loadPicker(_ picker: ShaderPicker, shaders: [LerpShader]) {
-        let entries = shaders.rotationEntries()
         picker.prepare(shaders: shaders,
-                       enabled: RotationStore.resolved(discovered: entries, from: rotationDefaults),
+                       selection: RotationStore.selection(discovered: shaders.rotationEntries(),
+                                                          from: rotationDefaults),
                        current: currentEntry)
     }
 
-    /// A badge in the picker was clicked. Writes the screensaver's rotation the
-    /// same way the gallery window's click does — through `RotationStore`, into
-    /// the saver's own ByHost domain — and brings the gallery window's copy of
-    /// the grid up to date if it happens to be open.
-    private func persistRotation(_ enabled: Set<LerpRotationEntry>) {
-        let entries = metalView.shaderLibrary.discover().rotationEntries()
-        RotationStore.save(enabled, entries: entries, to: rotationDefaults)
-        rotation?.showEnabled(enabled)
+    /// A click in either grid changed the rotation. The one place the
+    /// playground writes it: through `RotationStore`, into the saver's own
+    /// ByHost domain, the moment you click. Each grid's callback then shows the
+    /// change in the *other* grid — not in its own, which already drew it and
+    /// would otherwise stop the preview under the pointer to redraw itself.
+    private func persistRotation(_ selection: LerpRotationSelection) {
+        RotationStore.save(selection, to: rotationDefaults)
     }
 
     /// A Shortcuts action wrote the rotation (see `RotationIntents.swift`).
@@ -1142,9 +1147,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// straight over the action's change.
     @objc private func rotationChangedElsewhere(_ note: Notification) {
         let entries = metalView.shaderLibrary.discover().rotationEntries()
-        let enabled = RotationStore.resolved(discovered: entries, from: rotationDefaults)
-        rotation?.showEnabled(enabled)
-        picker?.showEnabled(enabled)
+        let selection = RotationStore.selection(discovered: entries, from: rotationDefaults)
+        rotation?.showSelection(selection)
+        picker?.showSelection(selection)
     }
 
     /// A shader was saved, or changed on disk. Both grids key their stills on
