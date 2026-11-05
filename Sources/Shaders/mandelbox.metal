@@ -43,8 +43,14 @@
 //     wide enough to cover every lane's ray, and each lane testing a
 //     different one of the next 32 strides (cf. dusk-terrain's 2x2 version)
 //   - iteration count falls with distance, blended between whole counts so
-//     detail fades instead of popping; hit tolerance is a fixed angle (not
-//     per drawable pixel) and widens inside the fog
+//     detail fades instead of popping; the fold being blended carves
+//     features at most ~2 px across (~1 px in the halls), so what fades is
+//     detail too small to read and distant structure keeps its shape as the
+//     camera nears
+//   - hit tolerance is a fixed angle (not per drawable pixel) and widens by
+//     at most half inside the fog: it used to keep growing with fog depth,
+//     to 8x by the fog cutoff, which sealed holes ~30 px across far
+//     away that opened as the camera approached
 //   - the march ends where fog is ~97%; Box skips rays that miss the cube
 //   - forward-difference normals reuse the hit sample; occlusion is one probe
 //     along the normal times the orbit trap; no shadow rays (a lantern at the
@@ -78,6 +84,7 @@ constant float MB_OMEGA = 1.3;            // over-relaxation of the per-lane mar
 constant float MB_FOCAL = 1.5;
 constant float MB_HALLS_SCALE = 3.0;
 constant float MB_HALLS_BREATHE = 0.1;    // the routes are verified for 3 ± 0.1
+constant float MB_FOG_EPS = 1.5;          // most the fog may widen the hit tolerance
 
 // Halls routes: control points every ~0.2 units, uniform Catmull-Rom.
 constant int MB_ROUTE_N = 67;
@@ -183,8 +190,12 @@ static inline float mbScene(float3 p, MbScene S, float lod, thread float& trap) 
 static inline float mbD(float3 p, MbScene S, float lod) { float tr; return mbScene(p, S, lod, tr); }
 
 // Iterations worth evaluating at distance t: a feature after n folds is about
-// 2E/|s|^n across; at bias 0, stop near two pixel footprints of a
-// 1500-px-tall view (each form adds its own bias).
+// 2E/|s|^n across, so at bias b the fold being blended in (the only part of
+// the shape that changes as the camera approaches) carves features 2|s|^(-1-b)
+// to 2|s|^(-b) pixel footprints of a 1500-px-tall view across. Each form sets
+// b so that stays about a pixel: at s = 3, bias 0 gives 0.7-2 px and 0.5 gives
+// 0.4-1.2 px. (Slab used to run at -1.2, blending 2.5-7.5 px features in and out,
+// and Halls at -0.5: holes grew and closed with distance.)
 static inline float mbLod(float t, MbScene S, float px) {
     float n = log(S.E / max(px * t, 1e-7)) / log(abs(S.s)) + S.lodBias;
     return clamp(n, float(MB_LOD_MIN), S.nMax);
@@ -251,7 +262,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         fwd = normalize(ah - ro);
         upv = sg * mbPerm(float3(0.0, 1.0, 0.0), pm);  // the routes were flown level in y
         sceneUnit = 1.0;
-        S.lodBias = -0.5;
+        S.lodBias = 0.5;                             // the fading fold is 0.4-1.2 px
         S.nMax = 12.0;                               // the iteration count the routes were verified at
     } else if (form == 1) {
         // --- Box: glide around the outside of the bounding cube, 1.65–2.45
@@ -301,7 +312,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         fwd = normalize(float3(fd.x, -0.5, fd.y));
         upv = float3(0.0, 1.0, 0.0);
         sceneUnit = S.E / 4.0;
-        S.lodBias = -1.2;
+        S.lodBias = 0.0;                             // 0.7-2 px; most of the frame is far
         S.nMax = 11.0;
     }
 
@@ -310,7 +321,9 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 rd = normalize(uv.x * right + uv.y * up + MB_FOCAL * fwd);
 
     // Hit tolerance and LOD are fixed angles (2 px of a 1500-px view), so a
-    // 5K frame costs no more per pixel than a small one.
+    // 5K frame costs no more per pixel than a small one. A fixed angle seals
+    // the same on-screen size of hole at every distance; the fog may widen it
+    // by at most MB_FOG_EPS, so it cannot keep sealing bigger ones further out.
     float px = 2.0 / (MB_FOCAL * 1500.0);
     float fogK = mix(0.12, 0.9, u.fog) / sceneUnit;
 
@@ -371,7 +384,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
             float lod = mbLod(t, S, px);
             float d = mbScene(ro + rd * t, S, lod, trapHit);
             dHit = d;
-            float eps = 2.0 * px * t * (1.0 + 2.0 * max(t - tFog0, 0.0) * fogK);
+            float eps = 2.0 * px * t * min(1.0 + 2.0 * max(t - tFog0, 0.0) * fogK, MB_FOG_EPS);
             bool fail = omega > 1.0 && (d + prevD) < stepLen;
             if (fail) {
                 stepLen -= omega * stepLen;
