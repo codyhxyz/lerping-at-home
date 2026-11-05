@@ -21,7 +21,13 @@
 //     result is composited over `colorBack` as upstream would on a page.
 //   - `size` is in drawable pixels, like `dithering.metal`, not CSS pixels.
 //   - `speed` is this port's own addition; upstream is static. It drives the
-//     landscape, never the dither.
+//     landscape, never the dither. The ridges and clouds drift 3x what they
+//     first did, and the cloud octaves slide against each other so the
+//     banks change shape: at the first rates the near ridge moved ~5 px/s at
+//     878 px tall and the look read as a still. A whole-frame change metric
+//     stays low (1-3% of pixels per 2 s) because ordered dithering only
+//     flips cells where the luminance crosses a threshold; pushing that to
+//     5% would mean boiling the dither across the flat sky, which is crawl.
 //
 // `type` is upstream's enum: 1 random, 2 Bayer 2x2, 3 Bayer 4x4, 4 Bayer 8x8.
 //
@@ -85,10 +91,10 @@ static float idFbm(float x) {
     return v;
 }
 
-static float idCloud(float2 p) {
+static float idCloud(float2 p, float t) {
     float v = 0.0, a = 0.5;
     for (int i = 0; i < 3; i++) {
-        v += a * valueNoise(p);
+        v += a * valueNoise(p + float(i) * float2(0.08, 0.05) * t);
         p = 2.1 * p + float2(5.2, 1.3);
         a *= 0.5;
     }
@@ -114,9 +120,9 @@ static float3 idScene(float2 p, float aspect, float t, float seed) {
     // Two cloud banks drifting at different heights.
     for (int i = 0; i < 2; i++) {
         float fi = float(i);
-        float2 q = float2(p.x * (2.2 - 0.6 * fi) + (0.05 + 0.03 * fi) * t + 13.0 * fi,
+        float2 q = float2(p.x * (2.2 - 0.6 * fi) + (0.15 + 0.08 * fi) * t + 13.0 * fi,
                           (p.y - 0.18 - 0.14 * fi) * (9.0 - 2.0 * fi));
-        float c = idCloud(q) * exp(-q.y * q.y * 0.9);
+        float c = idCloud(q, t) * exp(-q.y * q.y * 0.9);
         c = smoothstep(0.30, 0.62, c);
         float3 lit = mix(float3(0.42, 0.28, 0.46), float3(1.0, 0.78, 0.62), warm * exp(-1.5 * abs(p.x - sun.x)));
         sky = mix(sky, lit, 0.8 * c);
@@ -128,7 +134,7 @@ static float3 idScene(float2 p, float aspect, float t, float seed) {
     // takes on less of the sky's colour the nearer it is.
     for (int i = 0; i < 3; i++) {
         float fi = float(i);
-        float rate = 0.010 + 0.022 * fi * fi;
+        float rate = 0.030 + 0.066 * fi * fi;
         float x = p.x * (1.6 + 0.9 * fi) + rate * t + 37.0 * fi + 50.0 * seed;
         float ridge = -0.06 - 0.11 * fi + (0.16 - 0.03 * fi) * (idFbm(x) - 0.5) * 2.0;
         float edge = 1.5 / 900.0;

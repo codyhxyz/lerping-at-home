@@ -28,15 +28,20 @@
 // lerp-param: speed           float 0 1     = 0.13 "Drift speed"
 //
 // Upstream presets (their static focal/distortion values carry over; this
-// port keeps drifting around them).
+// port keeps drifting around them), except where that left nothing to drift:
+// Lo-Fi's grain hid a 0.3 focal orbit (1.9% of pixels changing per 2 s), so
+// its focus sits at 0.5 (7%); Cross Section's focus sat dead centre, so only
+// the distortion breathing moved it and that stalls at its turning points
+// (0-5%) — focus 0.2 and speed 0.18 keep the petals swirling (5-14%).
 // lerp-preset: "Lo-Fi" colorBack=#2e1f27, color1=#d72638, color2=#3f88c5, color3=#f49d37
-// lerp-preset: "Lo-Fi" color4=#d72638, radius=1, focalDistance=0.3, focalAngle=0, falloff=0.9
+// lerp-preset: "Lo-Fi" color4=#d72638, radius=1, focalDistance=0.5, focalAngle=0, falloff=0.9
 // lerp-preset: "Lo-Fi" mixing=0.7, distortion=0, distortionShift=0, distortionFreq=12
 // lerp-preset: "Lo-Fi" grainMixer=1, grainOverlay=0.5
 // lerp-preset: "Cross Section" colorBack=#3d348b, color1=#7678ed, color2=#f7b801
-// lerp-preset: "Cross Section" color3=#f18701, color4=#37a066, radius=1, focalDistance=0
+// lerp-preset: "Cross Section" color3=#f18701, color4=#37a066, radius=1, focalDistance=0.2
 // lerp-preset: "Cross Section" focalAngle=0, falloff=0, mixing=0, distortion=1
 // lerp-preset: "Cross Section" distortionShift=0, distortionFreq=12, grainMixer=0, grainOverlay=0
+// lerp-preset: "Cross Section" speed=0.18
 // lerp-preset: Radial colorBack=#264653, color1=#9c2b2b, color2=#f4a261, color3=#ffffff
 // lerp-preset: Radial color4=#9c2b2b, radius=1, focalDistance=0.3, focalAngle=0, falloff=0
 // lerp-preset: Radial mixing=1, distortion=0, distortionShift=0, distortionFreq=12

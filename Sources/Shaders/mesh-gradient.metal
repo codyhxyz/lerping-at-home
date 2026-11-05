@@ -17,12 +17,15 @@
 // lerp-param: speed      float 0 2 = 0.22 "Speed"
 //
 // Upstream presets, speed scaled to this port's ambience (upstream × 0.22).
+// Beach is the exception: upstream's 0.1 became 0.022, and on its pale
+// palette that left 0-3% of pixels changing per 2 s (a still picture). 0.11
+// (upstream 0.5) keeps it the calmest of the four at >=5% in every window.
 // lerp-preset: Ink    color1=#ffffff, color2=#000000, color3=#ffffff, color4=#000000
 // lerp-preset: Ink    color5=#ffffff, distortion=1, swirl=0.2, speed=0.22
 // lerp-preset: Purple color1=#aaa7d7, color2=#3c2b8e, color3=#aaa7d7, color4=#3c2b8e
 // lerp-preset: Purple color5=#aaa7d7, distortion=1, swirl=1, speed=0.132
 // lerp-preset: Beach  color1=#bcecf6, color2=#00aaff, color3=#00f7ff, color4=#ffd447
-// lerp-preset: Beach  color5=#bcecf6, distortion=0.8, swirl=0.35, speed=0.022
+// lerp-preset: Beach  color5=#bcecf6, distortion=0.8, swirl=0.35, speed=0.11
 
 constant int MG_COLOR_COUNT = 5;
 

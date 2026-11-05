@@ -18,7 +18,10 @@
 //   - The image box is the screen (upstream's `fit: contain` on an image the
 //     drawable's shape), so the sizing props are not ported.
 //   - `speed` is this port's own addition; upstream is static. It drives the
-//     plate, never the lens.
+//     plate, never the lens: the shapes orbit and the drafting grid pans
+//     slowly. Without the pan, Fisheye — which magnifies only the middle of
+//     the plate — sat still whenever the shapes were outside it (0.6-28% of
+//     pixels changing per 2 s); with it, 11-33%.
 //
 // Parameters mirror the upstream <LensDistortion> props. `count` is upstream's
 // float prop floored, as upstream does, so it is exposed as an int.
@@ -77,6 +80,7 @@ constant int LD_MAX_SAMPLES = 50;
 struct LdPlateFrame {
     float2 c0, c1, c2, c3;
     float2 barCS;      // cos/sin of the bar's rotation
+    float2 grid;       // the drafting grid's slow pan
     float aspect, px;
 };
 
@@ -90,6 +94,7 @@ static LdPlateFrame ldPlateFrame(float aspect, float t, float px) {
     f.c3 = float2(0.42 * aspect * cos(0.15 * t + 5.3),  0.32 * cos(0.14 * t + 3.9));
     float a = 0.21 * t + 0.6;
     f.barCS = float2(cos(a), sin(a));
+    f.grid = float2(0.06, 0.035) * t;
     f.aspect = aspect;
     f.px = px;
     return f;
@@ -106,9 +111,10 @@ static float3 ldPlate(float2 uv, thread const LdPlateFrame& f) {
 
     // Drafting grid: thin lines every 1/8 of the short axis, a brighter one
     // every fourth. Lines are what make the bulge and the fan legible.
-    float2 g = abs(fract(p * 8.0 + 0.5) - 0.5) / 8.0;
+    float2 pg = p + f.grid;
+    float2 g = abs(fract(pg * 8.0 + 0.5) - 0.5) / 8.0;
     float minor = 1.0 - smoothstep(0.0, px, min(g.x, g.y));
-    float2 G = abs(fract(p * 2.0 + 0.5) - 0.5) / 2.0;
+    float2 G = abs(fract(pg * 2.0 + 0.5) - 0.5) / 2.0;
     float major = 1.0 - smoothstep(0.0, 1.6 * px, min(G.x, G.y));
     float3 color = float3(0.035, 0.040, 0.060);
     color += float3(0.10, 0.11, 0.14) * minor + float3(0.16, 0.17, 0.21) * major;

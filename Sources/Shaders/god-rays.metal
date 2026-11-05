@@ -29,14 +29,16 @@
 // lerp-param: speed        float 0 2     = 0.08 "Speed"
 //
 // Upstream presets, with the pre-multiplied scaling applied and speed scaled
-// to this port's ambience (upstream × 0.107).
+// to this port's ambience (upstream × 0.107). Linear's faint white rays run
+// at 0.16 (upstream 1.5): at 0.107, 3-10% of the frame changed per 2 s and
+// 60% of windows read as still.
 // lerp-preset: Warp   colorBack=#000000, colorBloom=#222288, color1=#ff47d4, color2=#ff8c00
 // lerp-preset: Warp   color3=#ffffff, color4=#ff47d4, density=2.7, spotty=0.975
 // lerp-preset: Warp   midIntensity=0.4, midSize=3.3, intensity=7.9, bloom=0.4, speed=0.214
 // lerp-preset: Linear offsetX=0.2, offsetY=-0.8, colorBack=#000000, colorBloom=#eeeeee
 // lerp-preset: Linear color1=#ffffff1f, color2=#ffffff3d, color3=#ffffff29, color4=#ffffff1f
 // lerp-preset: Linear density=2.46, spotty=1.625, midSize=1, midIntensity=0.75
-// lerp-preset: Linear intensity=7.9, bloom=1, speed=0.107
+// lerp-preset: Linear intensity=7.9, bloom=1, speed=0.16
 // lerp-preset: Ether  offsetX=-0.6, colorBack=#090f1d, colorBloom=#ffffff
 // lerp-preset: Ether  color1=#148effa6, color2=#c4dffebe, color3=#232a47, color4=#148effa6
 // lerp-preset: Ether  density=0.18, spotty=5.005, midSize=1, midIntensity=0.6

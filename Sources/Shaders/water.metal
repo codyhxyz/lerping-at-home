@@ -22,9 +22,12 @@
 // lerp-param: speed          float 0 3     = 0.22 "Speed"
 //
 // Upstream presets, size mapped into this port's units and speed scaled to
-// this port's ambience (upstream × 0.22).
+// this port's ambience (upstream × 0.22). Abstract's upstream highlights=0
+// works over an image; over this port's dark gradient it rendered a nearly
+// black, nearly still frame (0-7% of pixels changing per 2 s), so it gets
+// highlights=0.25 for its caustics to be seen, as Streaming got earlier.
 // lerp-preset: "Slow-mo"  highlights=0.4, layering=0, waves=0, caustic=0.2, size=3.5, speed=0.022
-// lerp-preset: Abstract   highlights=0, layering=0, waves=1, caustic=0.4, size=0.75, speed=0.22
+// lerp-preset: Abstract   highlights=0.25, layering=0, waves=1, caustic=0.4, size=0.75, speed=0.22
 // lerp-preset: Streaming  highlights=0.2, layering=0, waves=0.5, caustic=0.3, size=2.5, speed=0.44
 
 static float wtCausticNoise(float2 uv, float t, float scale) {
