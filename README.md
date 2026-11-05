@@ -398,13 +398,22 @@ Keys:
 Hand control (**Shader › Control with Hands**, off at every launch) makes your
 hands a MIDI controller, so no device is needed. Hold up an open hand, then
 pinch to grab; values move only while you pinch, and letting go leaves them
-where they are. Pinch with both hands and the distance between them is a third
-axis. The three axes, **Hand X**, **Hand Y** and **Hand Spread**, bind like
-knobs: click a parameter's Learn…, then pinch and move. They are relative CCs
-102–104 on channel 16, so they share banks, ranges and saving with real knobs.
+where they are. Move the pinch for **Hand X** and **Hand Y**, or turn it like a
+knob for **Hand Twist** (half a turn sweeps a parameter end to end). A stroke
+is one or the other, judged by whether the pinch point travels, so twisting
+never nudges the Y-bound parameter. Pinch with both hands and the distance
+between them is **Hand Spread**, and turning the pair like a wheel is Hand
+Twist. The axes bind like knobs: click a parameter's Learn…, then pinch and
+move or turn. They are relative CCs 102–105 on channel 16, so they share
+banks, ranges and saving with real knobs.
+
 The tracking is coding cube's MediaPipe hand control, run in a transparent web
-view over the render, which draws a cursor for each hand and says what it is
-waiting for. Frames stay inside the app. `make` downloads MediaPipe's web
+view over the render. The overlay follows The Poet Engineer's hand interfaces:
+the hand's skeleton in thin white line (never the camera picture), a dial round
+the pinch that turns with it, a meter of the value it is moving, and a legend
+of what each bound axis drives. It fades out when your hand leaves. A window
+that is completely covered gets no camera frames, so tracking pauses until it
+is visible again. Frames stay inside the app. `make` downloads MediaPipe's web
 runtime and hand model once, checks them against pinned sha256s and bundles
 them; they are not in git.
 

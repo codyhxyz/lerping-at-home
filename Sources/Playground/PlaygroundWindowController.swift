@@ -1675,26 +1675,50 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func toggleHandControl(_ sender: Any?) {
         if hands != nil { return stopHandControl(nil) }
-        withCamera { [weak self] in
-            guard let self, self.hands == nil else { return }
+        withCamera { [weak self] in self?.startHandControl() }
+    }
+
+    /// Everything but the camera question, which `withCamera` has asked.
+    func startHandControl() {
+        guard hands == nil else { return }
+        do {
             let control = HandControl()
             control.onMessage = { [weak self] message in self?.receive(message) }
-            control.isLearning = { [weak self] in self?.learnTarget != nil }
+            control.learning = { [weak self] in self?.learnTarget?.param }
+            control.describe = { [weak self] axis in self?.handReadout(axis) }
             // What it is waiting for is drawn over the render; here only
             // matters that it stopped: no camera, or a page that failed.
             control.onStatus = { [weak self, weak control] status, active in
                 guard let self, !active, self.hands === control else { return }
                 self.stopHandControl("Hand control stopped: \(status)")
             }
-            do {
-                try control.start(over: self.metalView)
-            } catch {
-                return self.setStatus("Hand control unavailable: \(error)", tint: EditorTheme.error)
-            }
-            self.hands = control
-            self.refreshMappingList()
-            self.setStatus("Hand control on: hold up an open hand, then pinch to grab", tint: EditorTheme.dim)
+            try control.start(over: metalView)
+            hands = control
+        } catch {
+            return setStatus("Hand control unavailable: \(error)", tint: EditorTheme.error)
         }
+        refreshMappingList()
+        setStatus("Hand control on: hold up an open hand, then pinch to grab", tint: EditorTheme.dim)
+    }
+
+    /// What `axis` drives in the active mapping, for the label beside the hand:
+    /// a scalar as its value, a colour as how far round its bound axis it is.
+    private func handReadout(_ axis: HandControl.Axis) -> HandControl.Readout? {
+        guard let binding = activeMapping?.bindings.first(where: {
+                  HandControl.Axis(channel: $0.channel, cc: $0.cc) == axis }),
+              let param = shownParameters.first(where: { $0.name == binding.paramID }) else { return nil }
+        if param.type == .color {
+            let component = binding.component ?? .hue
+            let position = ColorProjection.position(of: component, in: currentColor(of: param),
+                                                    base: param.defaultValue.colorValue ?? SIMD4<Float>(0, 0, 0, 1))
+            return .init(param: "\(param.name) \(component.label)",
+                         value: String(format: "%.0f%%", position * 100), fraction: position)
+        }
+        let value = currentValue(of: param).scalarValue ?? 0
+        let span = param.max - param.min
+        return .init(param: param.name,
+                     value: param.type == .float ? String(format: "%.2f", value) : String(Int(value)),
+                     fraction: span > 0 ? min(max((value - param.min) / span, 0), 1) : 0)
     }
 
     private func stopHandControl(_ reason: String?) {

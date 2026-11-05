@@ -12,23 +12,24 @@ import WebKit
 /// is already written and already worked, in JavaScript. `Hands/app/` is that
 /// code, with the camera and the model loaded from this app's bundle.
 ///
-/// What comes out is the cube's gesture, nothing more: a pinch drags, and a
-/// second hand pinching too makes it a two-hand pinch whose span is a third
-/// axis. Each axis is sent as a relative CC on its own channel, so everything
+/// What comes out is the cube's gesture plus one axis: a pinch drags, a second
+/// hand pinching too makes it a two-hand pinch whose span is a third axis, and
+/// turning the pinch like a knob — or the pair like a wheel — is the fourth.
+/// Each axis is sent as a relative CC on its own channel, so everything
 /// else — Learn, banks, ranges, saving, the binding labels — is the MIDI code,
 /// unchanged. A pinch is the clutch: values move only while it is held, and
 /// letting go leaves them where they are, as an endless encoder does.
 ///
 /// The page is also the feedback: a transparent, click-through web view laid
-/// over the render, drawing the cube's cursors and saying what it is waiting
-/// for ("Show an open hand", "Ready — pinch to grab").
+/// over the render that draws the hand's skeleton, a dial round the pinch, and
+/// what each bound axis is driving (`readout`).
 final class HandControl: NSObject {
 
-    /// The CCs the three axes are sent on. 102–104 are "undefined" in the MIDI
+    /// The CCs the four axes are sent on. 102–105 are "undefined" in the MIDI
     /// spec and channel 16 is the last one, so a hardware knob landing here by
     /// accident is about as unlikely as MIDI allows.
     enum Axis: UInt8, CaseIterable {
-        case x = 102, y = 103, spread = 104
+        case x = 102, y = 103, spread = 104, twist = 105
 
         static let channel: UInt4 = 15
 
@@ -39,8 +40,12 @@ final class HandControl: NSObject {
             case .x: "Hand X"
             case .y: "Hand Y"
             case .spread: "Hand Spread"
+            case .twist: "Hand Twist"
             }
         }
+
+        /// The page's name for it, in both directions.
+        var key: String { String(describing: self) }
 
         init?(channel: UInt4?, cc: UInt7) {
             guard channel == Self.channel, let axis = Self(rawValue: UInt8(cc)) else { return nil }
@@ -51,9 +56,10 @@ final class HandControl: NSObject {
     static let sourceID = "lerp-hands"
     static let sourceName = "Hands"
 
-    /// Half the camera's view sweeps a parameter end to end: the 128 ticks an
-    /// absolute knob has, over a comfortable arm's movement at a desk.
-    private static let ticksPerFrame = 256.0
+    /// Half the camera's view, or half a turn of the wrist, sweeps a parameter
+    /// end to end: the 128 ticks an absolute knob has, over a comfortable
+    /// movement at a desk. The page measures moves in frames and twists in turns.
+    private static let ticksPerUnit = 256.0
     /// Learn binds the first message it sees, and a pinch moved up also drifts
     /// a little sideways. While learning, an axis has to have clearly won.
     private static let learnTicks = 12.0
@@ -62,8 +68,18 @@ final class HandControl: NSObject {
     var onMessage: ((MIDIController.Message) -> Void)?
     /// What the hand controller is waiting for, and whether the camera is on.
     var onStatus: ((String, Bool) -> Void)?
-    /// Whether a parameter's Learn is armed.
-    var isLearning: () -> Bool = { false }
+    /// The parameter whose Learn is armed, if one is.
+    var learning: () -> String? = { nil }
+    /// What an axis drives here and its value now, for the readout beside the
+    /// hand; nil for an axis nothing is bound to.
+    var describe: (Axis) -> Readout? = { _ in nil }
+
+    struct Readout {
+        var param: String
+        var value: String
+        /// Where the value sits in its range, 0…1, for the dial's meter.
+        var fraction: Double
+    }
 
     private var webView: WKWebView?
     /// Sub-tick movement carried to the next frame, so a slow drag still moves.
@@ -131,29 +147,61 @@ final class HandControl: NSObject {
         case "grab", "release":
             remainder.removeAll()
             learnTravel.removeAll()
+            if body["type"] as? String == "grab" { showReadout() }
         case "move":
-            let moved: [(Axis, Double)] = [(.x, body["x"]), (.y, body["y"]), (.spread, body["spread"])]
-                .map { ($0, ($1 as? Double) ?? 0) }
-            for (axis, frames) in moved where frames != 0 { move(axis, by: frames * Self.ticksPerFrame) }
+            var moved: [Axis: Double] = [:]
+            for axis in Axis.allCases {
+                if let units = body[axis.key] as? Double, units != 0 { moved[axis] = units * Self.ticksPerUnit }
+            }
+            guard !moved.isEmpty else { return }
+            learning() == nil ? emit(moved) : learn(moved)
         default:
             break
         }
     }
 
-    private func move(_ axis: Axis, by ticks: Double) {
-        if isLearning() {
-            learnTravel[axis, default: 0] += abs(ticks)
-            let travel = learnTravel[axis]!
-            guard travel >= Self.learnTicks,
-                  learnTravel.allSatisfy({ $0.key == axis || $0.value * 1.5 <= travel }) else { return }
-            learnTravel.removeAll()
-            return send(axis, ticks: ticks < 0 ? -1 : 1)
-        }
+    /// Sends one tick of the axis that has clearly won this pinch, so Learn
+    /// binds what the hand meant rather than the first thing that twitched.
+    private func learn(_ moved: [Axis: Double]) {
+        for (axis, ticks) in moved { learnTravel[axis, default: 0] += abs(ticks) }
+        guard let (axis, most) = learnTravel.max(by: { $0.value < $1.value }), most >= Self.learnTicks,
+              learnTravel.allSatisfy({ $0.key == axis || $0.value * 1.5 <= most }) else { return }
+        learnTravel.removeAll()
+        send(axis, ticks: moved[axis, default: 1] < 0 ? -1 : 1)
+        showReadout()
+    }
+
+    private func emit(_ moved: [Axis: Double]) {
+        var sent = false
+        for (axis, ticks) in moved { sent = tick(axis, ticks) || sent }
+        if sent { showReadout() }
+    }
+
+    /// Whole ticks go now; the fraction waits for the next frame.
+    private func tick(_ axis: Axis, _ ticks: Double) -> Bool {
         let total = remainder[axis, default: 0] + ticks
         let whole = total.rounded(.towardZero)
         remainder[axis] = total - whole
-        guard whole != 0 else { return }
-        send(axis, ticks: Int(max(-63, min(63, whole))))
+        var left = whole
+        // One CC carries at most 63 ticks; a fast flick sends several.
+        while left != 0 {
+            let step = max(-63, min(63, left))
+            send(axis, ticks: Int(step))
+            left -= step
+        }
+        return whole != 0
+    }
+
+    /// Tells the page what every bound axis drives and where it is now, and
+    /// what Learn is waiting to bind.
+    private func showReadout() {
+        let rows: [[String: Any]] = Axis.allCases.compactMap { axis in
+            describe(axis).map { ["axis": axis.key, "param": $0.param, "value": $0.value, "fraction": $0.fraction] }
+        }
+        let readout: [String: Any] = ["rows": rows, "learning": learning() ?? NSNull()]
+        guard let webView, let data = try? JSONSerialization.data(withJSONObject: readout),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("lerpHands.readout(\(json))")
     }
 
     /// One relative CC, two's complement — the encoding Learn records for this

@@ -43,6 +43,11 @@ export function handSample(result) {
     y: clamp(palm.y, 0, 1),
     pinch: distance(geometry[4], geometry[8]) / palmWidth,
     eligible: extended >= 2,
+    // The playground's additions: the hand itself, to draw, and which way the
+    // palm points (wrist to middle knuckle) as seen in the mirror, clockwise
+    // positive — the angle of a knob held by the pinch.
+    landmarks,
+    roll: Math.atan2(geometry[9].y - geometry[0].y, geometry[0].x - geometry[9].x),
   };
 }
 
@@ -209,6 +214,8 @@ export class HandController {
       y: point?.y,
       pinch: sample?.pinch,
       threshold: this.baseline && this.#grabThreshold(),
+      landmarks: sample?.landmarks,
+      roll: sample?.roll,
     });
   }
 }
@@ -456,7 +463,7 @@ export function createHandTracking({ video, onInput, onStatus = () => {}, onFeed
   };
 }
 
-class OneEuroFilter {
+export class OneEuroFilter {
   constructor(minCutoff = 1.5, beta = 0.8, derivativeCutoff = 1) {
     this.minCutoff = minCutoff;
     this.beta = beta;
