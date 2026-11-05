@@ -315,11 +315,11 @@ public struct LerpParamError: Error, Sendable, Equatable, CustomStringConvertibl
 
 // MARK: - Uniform-block layout
 
-/// Byte layout of the fragment buffer 0 payload: the fixed 32-byte
-/// `LerpUniforms` header followed by the shader's declared parameters.
+/// Byte layout of the fragment buffer 0 payload: the fixed `LerpUniforms`
+/// header (`headerSize` bytes) followed by the shader's declared parameters.
 ///
 /// Fields are emitted colours first (`float4`, 16-byte aligned, and the header
-/// is exactly 32 bytes so the first one lands flush), then every scalar
+/// is a multiple of 16 bytes so the first one lands flush), then every scalar
 /// (`float`/`int`, 4 bytes each) in declaration order. Fixing the order this
 /// way makes the offsets computable with two multiplications and keeps the
 /// Swift packer and the generated MSL struct trivially in step.
@@ -327,13 +327,14 @@ public enum LerpParamLayout {
     /// Members of the fixed header, which a `// lerp-param:` may not reuse.
     public static let builtInFields: Set<String> = [
         "resolution", "time", "seed", "audioLevel", "audioBass", "audioMid", "audioTreble",
+        "viewer",
     ]
 
     public static let headerSize: Int = {
         let stride = MemoryLayout<LerpUniforms>.stride
         // A multiple of 16 is what lets the first `float4` parameter sit
         // flush against the header; growing the head means padding it to one.
-        precondition(stride == 32, "Swift LerpUniforms must match Metal's 32-byte fixed header")
+        precondition(stride == 48, "Swift LerpUniforms must match Metal's 48-byte fixed header")
         return stride
     }()
 
@@ -342,7 +343,7 @@ public enum LerpParamLayout {
         params.filter(\.type.isColor) + params.filter { !$0.type.isColor }
     }
 
-    /// Size in bytes of the parameter block that follows the 32-byte header,
+    /// Size in bytes of the parameter block that follows the fixed header,
     /// rounded up to a multiple of 16 (the alignment `float4` forces).
     public static func tailSize(_ params: [LerpParam]) -> Int {
         guard !params.isEmpty else { return 0 }
@@ -386,7 +387,7 @@ public struct LerpParameterValues: Sendable {
     /// the value it returns to when pinned, not what is on screen — that is
     /// `resolved(time:seed:)`.
     public private(set) var values: [String: LerpParamValue]
-    /// Bytes that follow the 32-byte `LerpUniforms` header. Empty when the
+    /// Bytes that follow the fixed `LerpUniforms` header. Empty when the
     /// shader declares no parameters — the renderer then takes the old path.
     /// Packs the held `values`; `LerpRenderer` binds `resolved(time:seed:)`'s.
     public private(set) var packedTail: [UInt8]

@@ -104,7 +104,8 @@ public final class SplatData: LerpDataProvider {
         let visible = sort(asset: asset, cam: cam, deform: deform, size: SIMD2(Float(w), Float(h)))
 
         var u = LerpSplatUniforms(view: cam.view, focal: SIMD2(cam.focal, cam.focal),
-                                  viewport: SIMD2(Float(w), Float(h)), deform: deform)
+                                  viewport: SIMD2(Float(w), Float(h)), principal: cam.principal,
+                                  deform: deform)
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.label = "splat \(captureName)"
         if let order = visible.buffer, visible.count > 0 {
@@ -124,8 +125,10 @@ public final class SplatData: LerpDataProvider {
         let o = cam.view * SIMD4<Float>(0, 0, 0, 1)
         let z = max(0.01, -o.z)
         let focalDrawable = cam.focal / scale
+        let shift = cam.principal / scale
         view = LerpSplatViewInfo(
-            center: SIMD2(res.x * 0.5 + focalDrawable * o.x / z, res.y * 0.5 - focalDrawable * o.y / z),
+            center: SIMD2(res.x * 0.5 + focalDrawable * o.x / z + shift.x,
+                          res.y * 0.5 - focalDrawable * o.y / z - shift.y),
             radius: focalDrawable * cam.subjectRadius / z,
             fovy: cam.fovy, ready: 1, phase: deform.phase, splats: Float(visible.count), pad: 0)
     }
@@ -136,6 +139,9 @@ public final class SplatData: LerpDataProvider {
         var view: simd_float4x4
         var focal: Float      // pixels of the splat target
         var fovy: Float
+        /// Where the image centre sits, in pixels of the splat target from the
+        /// middle, y up. Zero but for a tracked viewer (`applyViewer`).
+        var principal = SIMD2<Float>(0, 0)
         var subjectRadius: Float = 1
         /// Splats nearer than this are not drawn. A capture is only well
         /// formed near the cameras that photographed it; a camera that backs
@@ -150,6 +156,13 @@ public final class SplatData: LerpDataProvider {
     }
 
     private func camera(uniforms: LerpUniforms, params: LerpParameterValues?, size: SIMD2<Float>) -> Camera {
+        var cam = movingCamera(uniforms: uniforms, params: params, size: size)
+        Self.applyViewer(uniforms.viewer, gain: LerpViewer.gain(in: params), to: &cam, size: size)
+        return cam
+    }
+
+    /// The look's own camera move, before any viewer is applied.
+    private func movingCamera(uniforms: LerpUniforms, params: LerpParameterValues?, size: SIMD2<Float>) -> Camera {
         let t = max(0, uniforms.time)
         let speed = param(params, "speed", 1)
         let distance = param(params, "distance", 3)
@@ -201,6 +214,22 @@ public final class SplatData: LerpDataProvider {
             return Camera(view: Self.lookAt(eye: eye, target: target), focal: focal, fovy: 2 * half,
                           near: max(0.02, simd_length(eye - target) - clip))
         }
+    }
+
+    /// `LerpViewer.eye` as a rasteriser applies it: the eye steps by `e`
+    /// without turning, the image centre shifts by `e.xy`, and the focal length
+    /// shrinks to the glass's new distance — so a point at the look's own
+    /// screen distance stays on the same pixel. Leaves `cam` untouched for a
+    /// centred viewer or a look with no `parallax` gain.
+    static func applyViewer(_ viewer: LerpViewer, gain: Float, to cam: inout Camera, size: SIMD2<Float>) {
+        guard gain != 0, viewer != .centered else { return }
+        let half = 0.5 * size.y                 // pixels per unit of the short-axis screen
+        let screen = cam.focal / half           // the glass's distance, in those units
+        let e = viewer.eye(focal: screen, gain: gain)
+        // Camera space looks down -z, so stepping forward is -z there.
+        cam.view.columns.3 -= SIMD4(e.x, e.y, -e.z, 0)
+        cam.focal *= max(0.2, screen - e.z) / screen
+        cam.principal = SIMD2(e.x, e.y) * half
     }
 
     static func lookAt(eye: SIMD3<Float>, target: SIMD3<Float>, up: SIMD3<Float> = SIMD3(0, 1, 0)) -> simd_float4x4 {
@@ -255,6 +284,7 @@ public final class SplatData: LerpDataProvider {
         let r1 = SIMD4(v[0][1], v[1][1], v[2][1], v[3][1])
         let r2 = SIMD4(v[0][2], v[1][2], v[2][2], v[3][2])
         let halfW = size.x * 0.5 / cam.focal * 1.25, halfH = size.y * 0.5 / cam.focal * 1.25
+        let shift = cam.principal / cam.focal   // image-centre offset, as a slope
         let near = cam.near
         let displaced = deform.movesSplats
 
@@ -285,7 +315,9 @@ public final class SplatData: LerpDataProvider {
                         // but whose footprint is not).
                         if z < near { dbase[i] = -1; continue }
                         let x = simd_dot(r0, p), y = simd_dot(r1, p)
-                        if abs(x) > z * halfW + 0.5 || abs(y) > z * halfH + 0.5 { dbase[i] = -1; continue }
+                        if abs(x + shift.x * z) > z * halfW + 0.5 || abs(y + shift.y * z) > z * halfH + 0.5 {
+                            dbase[i] = -1; continue
+                        }
                         dbase[i] = z
                         zmin = min(zmin, z); zmax = max(zmax, z)
                     }
@@ -451,6 +483,7 @@ struct LerpSplatUniforms {
     var view: simd_float4x4
     var focal: SIMD2<Float>
     var viewport: SIMD2<Float>
+    var principal: SIMD2<Float>
     var deform: LerpSplatDeform
 }
 
@@ -667,6 +700,7 @@ enum LerpSplatPipeline {
         float4x4 view;
         float2 focal;
         float2 viewport;
+        float2 principal;   // image-centre offset, pixels, y up (a tracked viewer)
         SplatDeform deform;
     };
     struct SplatOut {
@@ -765,7 +799,7 @@ enum LerpSplatPipeline {
         float2 minor = min(sqrt(2.0 * l2), 2048.0) * float2(axis.y, -axis.x);
 
         float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0) * 2.0;
-        float2 centre = float2(fx * v.x / z, fy * v.y / z);
+        float2 centre = float2(fx * v.x / z, fy * v.y / z) + U.principal;
         float2 px = centre + corner.x * major + corner.y * minor;
         o.position = float4(px / (0.5 * U.viewport), 0.0, 1.0);
         o.uv = corner;

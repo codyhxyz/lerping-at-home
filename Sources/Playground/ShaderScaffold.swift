@@ -65,8 +65,9 @@ enum ShaderScaffold {
         //
         // Uniforms:  u.resolution (px)  u.time (s)  u.seed ([0,1), per launch)
         //            u.audioLevel/audioBass/audioMid/audioTreble (~0..1; 0 unless audio is on)
+        //            u.viewer (tracked head; 0 unless a `parallax` param opts in and tracking is on)
         // Prelude:   lerpUV, lerpScreenUV, rotate, hash11/21/22, valueNoise,
-        //            snoise, glmod/2/3, lerpDither, PI, TWO_PI
+        //            snoise, glmod/2/3, lerpDither, lerpViewerRay, PI, TWO_PI
 
         constant float3 \(prefix)_BACKGROUND = float3(0.024, 0.028, 0.055); // near-black indigo
         constant float3 \(prefix)_MID        = float3(0.157, 0.412, 0.545); // dusk teal

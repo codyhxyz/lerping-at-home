@@ -159,6 +159,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Off at every launch and never persisted: listening to what the Mac is
     /// playing is something you turn on, each time.
     private var audioTap: AnyObject?
+    /// The camera feeding `u.viewer`, while Shader › Track Head with Camera is
+    /// on. Off at every launch and never persisted, like `audioTap`.
+    private var headTracker: HeadTracker?
 
     private static let windowAutosave = "LerpPlaygroundWindow"
     /// Bumped when the inspector added a third pane: an autosaved two-subview
@@ -1589,8 +1592,53 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if #available(macOS 14.2, *) { (audioTap as? SystemAudioTap)?.stop() }
         audioTap = nil
         metalView.audioLevels = nil
+        liveInputStopped("System audio", reason: reason)
+    }
+
+    /// The shared end of turning a live input off, once the view has stopped
+    /// polling it: redraw a paused frame without it, and say so.
+    private func liveInputStopped(_ input: String, reason: String?) {
         if isPaused { metalView.renderOnce() }
-        setStatus(reason ?? "System audio off", tint: reason == nil ? EditorTheme.dim : EditorTheme.error)
+        setStatus(reason ?? "\(input) off", tint: reason == nil ? EditorTheme.dim : EditorTheme.error)
+    }
+
+    // MARK: - Head tracking
+
+    @objc func toggleHeadTracking(_ sender: Any?) {
+        if headTracker != nil { return stopHeadTracking(nil) }
+        HeadTracker.requestAccess { [weak self] granted in
+            guard let self, self.headTracker == nil else { return }
+            guard granted else {
+                return self.setStatus("Camera access is off for LerpPlayground: System Settings › "
+                                      + "Privacy & Security › Camera", tint: EditorTheme.error)
+            }
+            let tracker = HeadTracker()
+            do {
+                try tracker.start()
+            } catch {
+                return self.setStatus("Head tracking unavailable: \(error)", tint: EditorTheme.error)
+            }
+            self.headTracker = tracker
+            let viewer = tracker.viewer
+            self.metalView.viewer = { viewer.current }
+            let ignored = LerpViewer.isUsed(by: self.metalView.parameterValues) ? ""
+                : ". This look ignores it; looks with a `\(LerpViewer.gainParameter)` parameter respond"
+            self.setStatus("Tracking your head with \(tracker.cameraName) (u.viewer)\(ignored)",
+                           tint: EditorTheme.dim)
+        }
+    }
+
+    @objc func recenterHead(_ sender: Any?) {
+        guard let headTracker else { return }
+        headTracker.recenter()
+        setStatus("Head recentred: where you are now is straight on", tint: EditorTheme.dim)
+    }
+
+    private func stopHeadTracking(_ reason: String?) {
+        headTracker?.stop()
+        headTracker = nil
+        metalView.viewer = nil
+        liveInputStopped("Head tracking", reason: reason)
     }
 
     // MARK: - Chrome and polling
@@ -1767,6 +1815,10 @@ extension PlaygroundWindowController: NSMenuItemValidation {
         case #selector(toggleSystemAudio(_:)):
             item.state = audioTap == nil ? .off : .on
             if #available(macOS 14.2, *) { return true } else { return false }
+        case #selector(toggleHeadTracking(_:)):
+            item.state = headTracker == nil ? .off : .on
+            return true
+        case #selector(recenterHead(_:)): return headTracker != nil
         default: return true
         }
     }

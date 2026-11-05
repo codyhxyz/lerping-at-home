@@ -136,23 +136,7 @@ final class AudioBandAnalyzer {
 /// The latest levels, handed from the audio queue to the render thread.
 /// Readers get `.silent` once the tap has gone quiet for longer than a few
 /// frames — a stalled device must not freeze a shader mid-pulse.
-final class AudioLevelBox: Sendable {
-    private struct State { var levels = LerpAudioLevels.silent; var stamp: CFTimeInterval = 0 }
-    private let state = OSAllocatedUnfairLock(initialState: State())
-    private static let staleAfter: CFTimeInterval = 0.5
-
-    func publish(_ levels: LerpAudioLevels) {
-        let now = CACurrentMediaTime()
-        state.withLock { $0 = State(levels: levels, stamp: now) }
-    }
-
-    func reset() { state.withLock { $0 = State() } }
-
-    var current: LerpAudioLevels {
-        let now = CACurrentMediaTime()
-        return state.withLock { now - $0.stamp > Self.staleAfter ? .silent : $0.levels }
-    }
-}
+typealias AudioLevelBox = LiveInput<LerpAudioLevels>
 
 /// A process tap on every process's output, routed through a private
 /// aggregate device so it has a clock and an IOProc. Start and stop on the
@@ -170,7 +154,7 @@ final class SystemAudioTap {
         var description: String { "\(step) failed (OSStatus \(status))" }
     }
 
-    let levels = AudioLevelBox()
+    let levels = AudioLevelBox(idle: .silent, staleAfter: 0.5)
     /// Told when the default output device changes and the tap is rebuilt, or
     /// when that rebuild fails. Main thread.
     var onRestart: ((Error?) -> Void)?

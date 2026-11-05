@@ -119,6 +119,10 @@ public final class LerpMetalView: NSView {
     /// renders with `.silent`, byte-for-byte what it rendered before the
     /// fields existed.
     public var audioLevels: (() -> LerpAudioLevels)?
+    /// Polled once per drawn frame for `u.viewer`, the same way. Nil — the
+    /// saver, and the playground until Track Head is on — means `.centered`,
+    /// which every look renders exactly as it did before the field existed.
+    public var viewer: (() -> LerpViewer)?
 
     private let renderer: LerpRenderer
     private let library: ShaderLibrary
@@ -1254,12 +1258,8 @@ public final class LerpMetalView: NSView {
                 guard drawable.presentedTime > 0 else { return }
                 displayed.withLock { $0 = CACurrentMediaTime() }
             }
-            let uniforms = LerpUniforms(
-                resolution: SIMD2<Float>(Float(metalLayer.drawableSize.width),
-                                         Float(metalLayer.drawableSize.height)),
-                time: Float(time),
-                seed: seed,
-                audio: audioLevels?() ?? .silent)
+            let uniforms = liveUniforms(width: Int(metalLayer.drawableSize.width),
+                                        height: Int(metalLayer.drawableSize.height), at: time)
             if isEDRActive, let post = edrPostPipeline {
                 drawEDR(drawable: drawable, pipeline: pipeline, post: post, uniforms: uniforms)
             } else {
@@ -1308,6 +1308,17 @@ public final class LerpMetalView: NSView {
         commandBuffer.commit()
     }
 
+    /// This frame's uniforms for a target of the given size: the clock, the
+    /// seed, and whatever live input a host is feeding. The one place they are
+    /// built, so the incoming look and a crossfade's outgoing one always see
+    /// the same frame.
+    private func liveUniforms(width: Int, height: Int, at time: CFTimeInterval) -> LerpUniforms {
+        LerpUniforms(resolution: SIMD2<Float>(Float(width), Float(height)),
+                     time: Float(time), seed: seed,
+                     audio: audioLevels?() ?? .silent,
+                     viewer: viewer?() ?? .centered)
+    }
+
     /// Mid-fade: renders the outgoing look into the scratch texture, in its
     /// own command buffer ahead of the frame's, and returns it as the overlay
     /// for `renderer.draw`. nil — and the fade over — once it has run its
@@ -1328,10 +1339,7 @@ public final class LerpMetalView: NSView {
             || fadeScratch?.pixelFormat != target.pixelFormat {
             fadeScratch = LerpCrossfade.makeScratch(device: renderer.device, like: target)
         }
-        let uniforms = LerpUniforms(resolution: SIMD2<Float>(Float(target.width),
-                                                             Float(target.height)),
-                                    time: Float(time), seed: seed,
-                                    audio: audioLevels?() ?? .silent)
+        let uniforms = liveUniforms(width: target.width, height: target.height, at: time)
         guard let scratch = fadeScratch,
               let commandBuffer = renderer.encodePass(target: scratch, pipeline: outgoing.pipeline,
                                                       uniforms: uniforms, params: outgoing.params,

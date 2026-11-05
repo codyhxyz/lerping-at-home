@@ -66,6 +66,7 @@
 // lerp-param: palette    float 0 1   = 0.15 "Palette"
 // lerp-param: metal      float 0 1   = 0.65 "Metallic"
 // lerp-param: fog        float 0 1   = 0.4  "Fog"
+// lerp-param: parallax   float 0 2   = 1.0  "Head parallax"
 //
 // lerp-preset: "Jerusalem Cube"   shape=1.0, palette=0.62, metal=0.55, fog=0.35
 // lerp-preset: "Folded Cube"      twist=animate(0.4, 0.8, period=200), shape=0, iterations=3
@@ -391,7 +392,9 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     }
     float3 right = normalize(cross(upHint, fwd));
     float3 up = cross(fwd, right);
-    float3 rd = normalize(uv.x * right + uv.y * up + focal * fwd);
+    // Head parallax: the screen is a window onto the sponge. Down the tunnel
+    // the walls are a few tenths away, so the eye may only lean a little.
+    float3 rd = lerpViewerRay(u, u.parallax * (S.tiled ? 0.1 : 1.0), uv, focal, right, up, fwd, ro);
     float px = 2.0 / (focal * min(u.resolution.x, u.resolution.y));   // one pixel, as an angle
 
     // --- Colours and lights. The key light rides with the camera (upper

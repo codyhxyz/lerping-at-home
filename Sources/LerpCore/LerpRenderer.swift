@@ -2,9 +2,10 @@ import Foundation
 import Metal
 import QuartzCore
 
-/// The fixed 32-byte head of `struct LerpUniforms` in LerpPrelude.source.
-/// A shader's declared `// lerp-param:` values are appended straight after it
-/// in the same fragment buffer 0 binding — see `LerpParamLayout`.
+/// The fixed head of `struct LerpUniforms` in LerpPrelude.source
+/// (`LerpParamLayout.headerSize` bytes). A shader's declared `// lerp-param:`
+/// values are appended straight after it in the same fragment buffer 0
+/// binding — see `LerpParamLayout`.
 public struct LerpUniforms {
     public var resolution: SIMD2<Float>
     public var time: Float
@@ -13,13 +14,18 @@ public struct LerpUniforms {
     /// `audioLevel, audioBass, audioMid, audioTreble` straight after `seed`.
     /// Zero unless a host feeds it — see `LerpAudioLevels`.
     public var audio: LerpAudioLevels
+    /// The watcher's head, for looks that draw the screen as a window. A
+    /// `float4` at byte 32, after the audio levels. `.centered` unless a host
+    /// feeds it — see `LerpViewer`.
+    public var viewer: LerpViewer
 
     public init(resolution: SIMD2<Float>, time: Float, seed: Float,
-                audio: LerpAudioLevels = .silent) {
+                audio: LerpAudioLevels = .silent, viewer: LerpViewer = .centered) {
         self.resolution = resolution
         self.time = time
         self.seed = seed
         self.audio = audio
+        self.viewer = viewer
     }
 }
 
@@ -64,7 +70,7 @@ public final class LerpRenderer {
 
     /// `params` carries the values for whatever the shader declared with
     /// `// lerp-param:`; they ride along in the same fragment buffer 0 binding,
-    /// straight after the 32-byte uniform head. `data` is the optional
+    /// straight after the fixed uniform head. `data` is the optional
     /// `LerpDataProvider` the shader declared, binding fragment indices 1 and
     /// up. A shader with neither encodes byte-for-byte as it always did.
     ///

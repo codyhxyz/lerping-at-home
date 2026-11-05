@@ -15,7 +15,8 @@ signature above unchanged.)
 Every file gets `Sources/LerpCore/Prelude.swift`'s Metal prelude prepended
 before compilation. Read that file first — it defines `LerpUniforms`
 (`u.resolution` pixels, `u.time` seconds, `u.seed` random [0,1) per launch,
-and the four audio levels described under "Audio-reactive shaders"), `lerpUV` (centered UV, [-1,1] short axis, y up), `lerpScreenUV` (0..1, y down),
+the four audio levels described under "Audio-reactive shaders", and
+`u.viewer`, described under "Head-tracked shaders"), `lerpUV` (centered UV, [-1,1] short axis, y up), `lerpScreenUV` (0..1, y down),
 `rotate`, `hash11/21/22`, `valueNoise`, `snoise` (2D simplex), `glmod/2/3`,
 `lerpDither`, `PI`, `TWO_PI`. **Do not redefine any prelude symbol** — name
 your file-local helpers with a shader-specific prefix (e.g. `mbShape` for
@@ -65,7 +66,9 @@ Grammar, one declaration per comment line, anywhere in the file:
 
 - **NAME** — a valid MSL identifier, unique in the file, and not one of the
   built-in fields: `resolution`, `time`, `seed`, `audioLevel`, `audioBass`,
-  `audioMid`, `audioTreble`.
+  `audioMid`, `audioTreble`, `viewer`. One name is special rather than
+  reserved: `parallax` opts a look into head tracking (see "Head-tracked
+  shaders").
 - **TYPE** — `float`, `int`, `bool` or `color`.
 - **MIN MAX** — required for `float` and `int`, rejected for `bool` and
   `color`. The default has to fall inside the range.
@@ -268,6 +271,52 @@ Capture is a Core Audio process tap on every process's output (macOS 14.2+),
 analysed with a 1024-point vDSP FFT on a background queue, with a fast-attack,
 slow-release envelope (~25 ms up, ~300 ms down). See
 `Sources/Playground/SystemAudio.swift`.
+
+## Head-tracked shaders
+
+With **Shader › Track Head with Camera** on, the playground follows the
+watcher's face with the Mac's camera and the screen becomes a window: it
+stays put, the eye moves, and each pixel's ray runs from the eye through that
+pixel's own spot on the glass. Nearer things swing against the head, farther
+things follow it, and leaning in widens the view. It is off at every launch,
+and everywhere else `u.viewer` is exactly 0 — the screensaver, `--snapshot`,
+the gallery stills.
+
+A look opts in by declaring one parameter, which is also its strength:
+
+```
+// lerp-param: parallax float 0 2 = 1 "Head parallax"
+```
+
+and, for a raymarched look, swapping its ray for the prelude's:
+
+```
+float3 rd = normalize(uv.x * right + uv.y * up + focal * fwd);              // before
+float3 rd = lerpViewerRay(u, u.parallax, uv, focal, right, up, fwd, ro);    // after
+```
+
+`lerpViewerRay` moves `ro` to the eye and returns the ray. With the viewer
+centred it is the plain camera again. A splat look (`// lerp-data: splat:…`)
+needs only the parameter: `SplatData` applies the same camera to its
+rasteriser. `menger-sponge` and `splat-owl` are the worked examples.
+
+Fit matters more than mechanics:
+
+- **Good:** real depth and a calm camera — raymarched fractals, solid objects
+  in a volume, layered depth, splat captures. Holes and edges that hide and
+  reveal what is behind them are what sell it.
+- **Poor:** flat 2D designs and screen-space simulations (there is nothing
+  behind the glass to reveal), and fast or first-person camera flights, where
+  head motion fights the camera's own. Leave those without `parallax`.
+- **Scale the gain to the space.** The eye can move about `0.3 × focal` scene
+  units. Inside a tunnel that is enough to put it through the wall, so
+  `menger-sponge` cuts its gain to a tenth in tunnel mode.
+
+`u.viewer.xyz` is the head's offset (x right, y up, z towards the screen),
+divided by the distance the watcher sat at when tracking began, so it is about
+the tangent of the angle the head has moved through. **Shader › Recentre Head**
+makes wherever they are now the centre. See `Sources/LerpCore/LerpViewer.swift`
+and `Sources/Playground/HeadTracker.swift`.
 
 ## Shaders that need CPU-computed data
 

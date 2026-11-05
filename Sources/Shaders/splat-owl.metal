@@ -21,6 +21,7 @@
 // lerp-param: frequency  float 0 20    = 4     "Deform frequency"
 // lerp-param: cycle      float 6 120   = 28    "Dissolve cycle (s)"
 // lerp-param: pool       float 0 1     = 0.0   "Light pool"
+// lerp-param: parallax   float 0 2     = 1     "Head parallax"
 // lerp-param: background color         = (0.02, 0.025, 0.03) "Background"
 //
 // lerp-preset: Ripple  deform=1, amount=0.09, frequency=3

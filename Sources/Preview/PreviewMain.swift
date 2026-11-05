@@ -9,7 +9,7 @@ import Metal
 ///   LerpPreview --animate-selftest  check the `// lerp-animate:` contract
 ///   LerpPreview --snapshot DIR      render every shader to PNG in DIR
 ///       [--size WxH] [--time T] [--seed S] [--shader NAME]
-///       [--preset NAME] [--param name=value ...]
+///       [--preset NAME] [--param name=value ...] [--viewer x,y,z]
 ///       [--hdr [--hdr-format exr|heic|avif|png] [--edr-peak P]]
 ///                                   extended-range stills through the EDR
 ///                                   path (default exr, peak 4× SDR white)
@@ -260,6 +260,13 @@ enum PreviewMain {
         let hdrPeak: Float? = args.contains("--hdr")
             ? Float(flagValue(args, "--edr-peak") ?? "") ?? LerpEDR.defaultPeak : nil
         let ext = hdrPeak == nil ? "png" : (flagValue(args, "--hdr-format") ?? "exr")
+        // `--viewer x,y,z` stands in for a tracked head (see `LerpViewer` for
+        // the units), so a look's head parallax can be checked without a camera.
+        let viewer: LerpViewer = flagValue(args, "--viewer").map { raw in
+            let v = raw.split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }
+            guard v.count == 3 else { fail("--viewer expects x,y,z, got '\(raw)'") }
+            return LerpViewer(x: v[0], y: v[1], z: v[2])
+        } ?? .centered
 
         let outURL = URL(fileURLWithPath: outDir)
         try? FileManager.default.createDirectory(at: outURL, withIntermediateDirectories: true)
@@ -277,6 +284,7 @@ enum PreviewMain {
                                             time: time, seed: seed,
                                             params: parameterValues(for: shader, args: args),
                                             hdrPeak: hdrPeak,
+                                            viewer: viewer,
                                             to: url)
             if let error = result.error {
                 failed = true

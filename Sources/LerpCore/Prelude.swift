@@ -19,13 +19,15 @@ public enum LerpPrelude {
     #define TWO_PI 6.28318530718
     """
 
-    /// `struct LerpUniforms` for a given parameter list. The first 32 bytes are
-    /// always the same fields; a shader's `// lerp-param:` declarations are
-    /// appended as extra members, which is why reading a parameter needs no
-    /// change to the `lerpMain` signature. The audio fields were appended to
-    /// the fixed head after the original three, so a shader that never names
-    /// them compiles and renders exactly as before; they read 0 whenever the
-    /// host is not capturing audio, which is everywhere but the playground.
+    /// `struct LerpUniforms` for a given parameter list. The fixed header
+    /// (`LerpParamLayout.headerSize` bytes) is always the same fields; a
+    /// shader's `// lerp-param:` declarations are appended as extra members,
+    /// which is why reading a parameter needs no change to the `lerpMain`
+    /// signature. The audio fields and then `viewer` were appended to the fixed
+    /// head after the original three, so a shader that never names them
+    /// compiles and renders exactly as before; they read 0 whenever the host is
+    /// not capturing audio or tracking a head, which is everywhere but the
+    /// playground.
     public static func uniformsStruct(parameters: [LerpParam] = []) -> String {
         var text = """
         struct LerpUniforms {
@@ -36,6 +38,7 @@ public enum LerpPrelude {
             float  audioBass;   // ~20-250 Hz band, ~0..1
             float  audioMid;    // ~250-4000 Hz band, ~0..1
             float  audioTreble; // ~4-16 kHz band, ~0..1
+            float4 viewer;      // watcher's head, xyz (0 = centred); see lerpViewerRay
         """
         if !parameters.isEmpty {
             text += "\n    // --- declared by `// lerp-param:` in the shader file ---\n"
@@ -153,6 +156,7 @@ public enum LerpPrelude {
 
     public static func helpers(parameters: [LerpParam]) -> String {
         header + "\n\n" + uniformsStruct(parameters: parameters) + "\n\n" + functions
+            + "\n\n" + LerpViewer.metalSource
     }
 
     /// The standard prelude: helpers plus the `#line 1` marker.
