@@ -6,7 +6,7 @@
 // @YoheiNishitsuji; its full notice is in its section below and in
 // NOTICE.txt. Forms 1-3 are original work for Lerping@Home (AGPL-3.0).
 //
-// Forms (each section below keeps its original notes, word for word):
+// Forms (each section below keeps its original notes):
 //   0 Multiverse  the faithful port
 //   1 Cathedral   a negative-scale Mandelbox, mirrored like a nave
 //   2 Coral       the sphere-inversion Apollonian packing
@@ -15,6 +15,8 @@
 // These were four shaders built on one technique (a short fixed march
 // through a slab of fractal space, lit by each sample's orbit), so one
 // shader with a form setting keeps all four and drops the repeated looks.
+// Each form's drawing function now returns its colour before dithering, so
+// the dispatch can supersample; Coral's lace is prefiltered (below).
 // The playground cannot hide a setting a form ignores, so the settings are
 // the ones every form shares, scaled to each form's own defaults:
 //   zoom       multiplies the form's own zoom (port 1, Cathedral 1.3,
@@ -29,8 +31,33 @@
 // The port ignores everything but speed, zoom and glow, all of which are
 // identity at their defaults, so its default look is unchanged.
 //
+// Sparkle: the port and Coral put more fractal detail into a pixel than one
+// sample can hold (the port's inversions leave isolated white pixels and a
+// frost that reshuffles every frame; Coral's lace is ~0.7 px wide at
+// 1352x878 and its pearl clusters are sub-pixel), so those two forms take
+// two samples on the pixel's diagonal. Each sample is clamped before the
+// two are averaged, so a firefly is averaged as the screen would show it,
+// not as an unbounded linear value. Coral's lace is also prefiltered: its
+// width is widened by the sample's footprint and dimmed by the same ratio
+// (see mcoCoral). Cathedral and Lattice render within ~0.003 mean of a
+// 16-sample reference at one sample, so they stay at one.
+// Measured at 1352x878 (mean |frame(t-dt) - 2 frame(t) + frame(t+dt)| at
+// dt = 1/60, t = 20, 75, 140; reference = 16 samples a pixel):
+//   Upstream  0.0964 -> 0.0862 (reference 0.0775); 0.0162 -> 0.0106 off it
+//   port      0.0409 -> 0.0343 (reference 0.0263); 0.0132 -> 0.0088 off it
+//   Coral     0.0160 -> 0.0102 (reference 0.0093); 0.0052 -> 0.0053 off it,
+//             the lace a touch softer than the reference, 2% dimmer
+// Most of what is left in the port is the fractal's own frost, which the
+// 16-sample reference shows too, carried along at ~3 px a frame.
+// (Tried and rejected: a per-step soft cap on the port's glow, which cut
+// flicker a little more but darkened the frame 4-11%, and an fwidth-based
+// prefilter on Cathedral's tracery, which made quad-sized blocks flicker.)
+//
 // GPU cost: the form is a uniform branch, so a frame costs what its form
-// always cost (~9 ms at 3840x2160 on an M5, every form).
+// always cost per sample (~9 ms at 3840x2160 on an M5, every form). Two
+// samples double it: LerpPreview --bench at 2704x1756, Apple M5, under
+// load from other jobs: ~5.5 ms a sample, so the port, Upstream and Coral
+// read ~11 ms mean and ~12.3-12.8 p95, Cathedral and Lattice ~5.5.
 //
 // lerp-param: form      int   0 3       = 0     "Form"
 // lerp-param: speed     float 0 2       = 0.5   "Speed"
@@ -68,7 +95,7 @@ struct MvCoralIn {
     float time;
     float seed;
     float speed; float inversion; float lace; float pearls; float glow;
-    float zoom; float4 near; float4 far;
+    float zoom; float footprint; float4 near; float4 far;
 };
 struct MvLatticeIn {
     float2 resolution;
@@ -110,9 +137,10 @@ struct MvLatticeIn {
 // Port changes: time is slowed and offset by u.seed (house style); `speed` is
 // this port's own parameter, upstream has none. Upstream divides by the
 // resolution's height; this uses the short axis so portrait screens see the
-// same framing (identical on landscape). Negative colour is clamped.
+// same framing (identical on landscape). Negative colour is clamped. Two
+// samples a pixel (see the note at the top of the file).
 //
-// GPU cost: 18 x 9 fold iterations per pixel, no cap needed. LerpPreview
+// GPU cost: 18 x 9 fold iterations per sample, no cap needed. LerpPreview
 // --bench, Apple M5: ~0.95 ms/frame at 1200x750, ~8.7 ms at 3840x2160
 // (between pipes and paper-texture).
 //
@@ -134,7 +162,7 @@ static inline float3x3 fmRotate3D(float angle, float3 axis) {
                     float3(a.x * a.z * r + a.y * s, a.y * a.z * r - a.x * s, a.z * a.z * r + c));
 }
 
-static half4 fmPort(float4 pos, MvPortIn u) {
+static float3 fmPort(float4 pos, MvPortIn u) {
     float2 r = u.resolution;
     float2 fc = float2(pos.x, r.y - pos.y);           // GLSL gl_FragCoord (y up)
     float t = u.speed * u.time + u.seed * 60.0;
@@ -166,9 +194,7 @@ static half4 fmPort(float4 pos, MvPortIn u) {
         col += fmHsv(0.59, 0.4 - g, s / 4e3);
     }
 
-    float3 color = max(col, 0.0);
-    color = lerpDither(color, pos);
-    return half4(half3(color), 1.0h);
+    return max(col, 0.0);
 }
 
 // ============================================================================
@@ -210,7 +236,7 @@ static inline float3x3 mcRotY(float a, float tilt) {
     return pitch * yaw;
 }
 
-static half4 mcCathedral(float4 pos, MvCathedralIn u) {
+static float3 mcCathedral(float4 pos, MvCathedralIn u) {
     float2 uv = lerpUV(pos, u.resolution);
     float t = u.speed * u.time + u.seed * 400.0;
     uv.x = abs(uv.x);                                   // the nave's mirror
@@ -254,8 +280,7 @@ static half4 mcCathedral(float4 pos, MvCathedralIn u) {
 
     float3 color = 1.0 - exp(-col * 1.6);
     color += float3(0.012, 0.004, 0.008);               // a nave is never quite black
-    color = lerpDither(color, pos);
-    return half4(half3(color), 1.0h);
+    return color;
 }
 
 // ============================================================================
@@ -298,7 +323,7 @@ static inline float3 mcoView(float3 v, float2 turn) {
     return v;
 }
 
-static half4 mcoCoral(float4 pos, MvCoralIn u) {
+static float3 mcoCoral(float4 pos, MvCoralIn u) {
     float2 uv = lerpUV(pos, u.resolution);
     float t = u.speed * u.time + u.seed * 400.0;
 
@@ -330,7 +355,14 @@ static half4 mcoCoral(float4 pos, MvCoralIn u) {
         }
         float d = 0.25 * abs(length(q) - 1.0) / scale;   // world-space lace distance
         float pearl = exp(-trap * 20.0);
-        float light = exp(-d * u.lace) * (0.3 + u.pearls * pearl);
+        // The lace, prefiltered: its width 1/lace is widened by the sample's
+        // footprint (in d's units, so 0.25 x world, and growing with the
+        // layer's spread) and dimmed by the same ratio, so a strand thinner
+        // than a pixel keeps its brightness on average instead of landing
+        // on some pixels and missing their neighbours.
+        float w = 1.0 / u.lace;
+        float wf = length(float2(w, u.footprint * (1.0 + 0.5 * layer)));
+        float light = (w / wf) * exp(-d / wf) * (0.3 + u.pearls * pearl);
 
         float3 tint = mix(u.near.rgb, u.far.rgb, smoothstep(0.1, 0.9, layer));
         tint = mix(tint, float3(0.85, 1.0, 0.96), pearl);
@@ -340,8 +372,7 @@ static half4 mcoCoral(float4 pos, MvCoralIn u) {
 
     float3 color = 1.0 - exp(-col);
     color += float3(0.0, 0.006, 0.014);                  // deep water, not void
-    color = lerpDither(color, pos);
-    return half4(half3(color), 1.0h);
+    return color;
 }
 
 // ============================================================================
@@ -382,7 +413,7 @@ static half4 mcoCoral(float4 pos, MvCoralIn u) {
 constant int LM_LAYERS = 11;
 constant int LM_ROUNDS = 8;
 
-static half4 lmLattice(float4 pos, MvLatticeIn u) {
+static float3 lmLattice(float4 pos, MvLatticeIn u) {
     float2 uv = lerpUV(pos, u.resolution);
     float t = u.speed * u.time + u.seed * 400.0;
 
@@ -438,16 +469,16 @@ static half4 lmLattice(float4 pos, MvLatticeIn u) {
 
     float3 color = 1.0 - exp(-col);
     color += float3(0.0, 0.004, 0.01);
-    color = lerpDither(color, pos);
-    return half4(half3(color), 1.0h);
+    return color;
 }
 
 // ============================================================================
 // Dispatch
 // ============================================================================
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
-    int form = clamp(u.form, 0, 3);
+// One form's colour at one sample position, clamped to what the screen can
+// show, so a supersampled pixel averages what each sample would display.
+static float3 mvSample(float4 pos, constant LerpUniforms& u, int form) {
     if (form == 0) {
         // The port has no zoom or glow of its own: zoom scales its view about
         // the centre (the short axis it divides by) and glow its light, both
@@ -457,8 +488,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         s.speed = u.speed;
         float2 c = 0.5 * u.resolution;
         float4 p = float4(c + (pos.xy - c) * u.zoom, pos.zw);
-        half4 out = fmPort(p, s);
-        return half4(out.rgb * half(u.glow), out.a);
+        return saturate(fmPort(p, s) * u.glow);
     }
     if (form == 1) {
         MvCathedralIn s;
@@ -468,7 +498,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         s.tracery = 42.0 * u.sharpness;
         s.glow = u.glow; s.zoom = 1.3 * u.zoom;
         s.near = u.near; s.far = u.far;
-        return mcCathedral(pos, s);
+        return saturate(mcCathedral(pos, s));
     }
     if (form == 2) {
         MvCoralIn s;
@@ -478,8 +508,12 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         s.lace = 1500.0 * u.sharpness;
         s.pearls = 2.0;
         s.glow = u.glow; s.zoom = 1.6 * u.zoom;
+        // One supersample's footprint in the lace's distance units: uv
+        // spacing 2/short side, x zoom, x 0.25 (d's scale), x 0.35 (tuned
+        // against 16 samples a pixel: wider blurs the strands).
+        s.footprint = 0.175 * s.zoom / min(u.resolution.x, u.resolution.y);
         s.near = u.near; s.far = u.far;
-        return mcoCoral(pos, s);
+        return saturate(mcoCoral(pos, s));
     }
     MvLatticeIn s;
     s.resolution = u.resolution; s.time = u.time; s.seed = u.seed;
@@ -489,5 +523,20 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     s.frost = 0.03;
     s.glow = u.glow; s.zoom = u.zoom;
     s.ice = u.near; s.cyan = u.mid; s.gold = u.far;
-    return lmLattice(pos, s);
+    return saturate(lmLattice(pos, s));
+}
+
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+    int form = clamp(u.form, 0, 3);
+    float3 color;
+    if (form == 0 || form == 2) {
+        // Two samples on the pixel's diagonal, each clamped before they are
+        // averaged (see the note at the top of the file).
+        color = 0.5 * (mvSample(pos + float4(0.25, 0.25, 0.0, 0.0), u, form)
+                     + mvSample(pos - float4(0.25, 0.25, 0.0, 0.0), u, form));
+    } else {
+        color = mvSample(pos, u, form);
+    }
+    color = lerpDither(color, pos);
+    return half4(half3(color), 1.0h);
 }
