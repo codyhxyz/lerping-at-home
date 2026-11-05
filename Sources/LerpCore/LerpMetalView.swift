@@ -130,6 +130,11 @@ public final class LerpMetalView: NSView {
     /// the view renders exactly the look `currentEntry` names.
     public private(set) var parameterValues: LerpParameterValues?
     private var displayLink: CADisplayLink?
+    /// The rate the current look has been paced down to, or nil for the
+    /// requested rate. See `paceIfNeeded`.
+    private var pacedFPS: Int?
+    private var lastPaceCheck: CFTimeInterval = 0
+    private var lastPaceChange: CFTimeInterval = 0
     /// The order the current cycle is played in, re-derived from
     /// `LerpRotationSchedule` rather than remembered. Kept as a field only
     /// because `loadEntry` needs a list to step through when a look will not
@@ -974,6 +979,13 @@ public final class LerpMetalView: NSView {
         currentShaderName = shader.name
         currentEntry = entry
         renderer.gpuCost.begin(look: entry.key)
+        // Every look starts at the requested rate and earns a lower one only
+        // by being measured too slow for it.
+        if pacedFPS != nil {
+            pacedFPS = nil
+            applyFrameRate()
+        }
+        lastPaceChange = CACurrentMediaTime()
         drewCurrentLook = false
         return fade
     }
@@ -989,6 +1001,8 @@ public final class LerpMetalView: NSView {
     private func endCrossfade() {
         fadingOut = nil
         fadeScratch = nil
+        // Crossfade frames drew two looks; they say nothing about this one.
+        renderer.gpuCost.restartRecent()
     }
 
     /// The shader at its declared defaults — which is a look in its own right,
@@ -1082,10 +1096,61 @@ public final class LerpMetalView: NSView {
     /// rather than skip to a half rate; the preferred rate is the cap itself.
     private func applyFrameRate() {
         let requested = max(1, min(config.framesPerSecond, 120))
-        let fps = Float(LerpPowerMonitor.shared.state.frameRate(for: requested))
+        let capped = LerpPowerMonitor.shared.state.frameRate(for: requested)
+        let fps = Float(min(capped, pacedFPS ?? capped))
         displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: min(max(10, fps - 6), fps),
                                                                 maximum: fps,
                                                                 preferred: fps)
+    }
+
+    /// The rate the display link is asking for right now.
+    private var currentFPS: Int {
+        let requested = max(1, min(config.framesPerSecond, 120))
+        let capped = LerpPowerMonitor.shared.state.frameRate(for: requested)
+        return min(capped, pacedFPS ?? capped)
+    }
+
+    /// Rates that divide the panel's refresh exactly, at or below `ceiling`,
+    /// fastest first: on a 120 Hz panel 60, 40, 30, 24, 20, 15. Each frame then
+    /// stays on screen for the same whole number of refreshes.
+    private func cleanRates(atMost ceiling: Int) -> [Int] {
+        let panel = max(window?.screen?.maximumFramesPerSecond ?? 60, 1)
+        return stride(from: min(ceiling, panel), through: 15, by: -1).filter { panel % $0 == 0 }
+    }
+
+    /// Keeps a look that cannot hold its frame rate from juddering.
+    ///
+    /// A look whose GPU time overruns the frame does not run at a lower rate,
+    /// it runs at an irregular one: most frames on time, some a refresh late,
+    /// and motion that steps unevenly. Once a second this reads the p95 of the
+    /// look's last ~2 s of frames (`LerpGPUCost.recentP95`) and, if it uses
+    /// more than 85% of the frame, steps down to the next rate that divides
+    /// the panel's refresh, where every frame lasts the same number of
+    /// refreshes. It steps back up, at most every 10 s, when the faster rate
+    /// would still leave 40% headroom. Every new look starts back at the
+    /// requested rate. Crossfades are skipped: they draw two looks.
+    private func paceIfNeeded() {
+        let now = CACurrentMediaTime()
+        guard now - lastPaceCheck >= 1.0 else { return }
+        lastPaceCheck = now
+        guard fadingOut == nil, let p95 = renderer.gpuCost.recentP95() else { return }
+        let requested = max(1, min(config.framesPerSecond, 120))
+        let capped = LerpPowerMonitor.shared.state.frameRate(for: requested)
+        let fps = currentFPS
+        let rates = cleanRates(atMost: capped)
+        var next: Int?
+        if p95 > 0.85 * 1000.0 / Double(fps) {
+            next = rates.first { $0 < fps && p95 <= 0.85 * 1000.0 / Double($0) } ?? rates.last
+        } else if fps < capped, now - lastPaceChange >= 10,
+                  let faster = rates.last(where: { $0 > fps }), p95 <= 0.6 * 1000.0 / Double(faster) {
+            next = faster
+        }
+        guard let next, next != fps else { return }
+        pacedFPS = next >= capped ? nil : next
+        lastPaceChange = now
+        renderer.gpuCost.restartRecent()
+        applyFrameRate()
+        Self.log.notice("pace: \(self.currentEntry?.key ?? "?", privacy: .public) p95=\(String(format: "%.2f", p95), privacy: .public)ms → \(next) fps")
     }
 
     /// Posted on the main queue by `LerpPowerMonitor`, which also logs it.
@@ -1133,8 +1198,17 @@ public final class LerpMetalView: NSView {
 
     @objc private func tick(_ link: CADisplayLink) {
         guard running, pipeline != nil else { return }
-        let now = CACurrentMediaTime()
-        let time = runningTime(at: now)
+        // Animate to when this frame will be on screen, not to when the
+        // callback happened to run. The callback lands a variable few ms into
+        // the frame (main-thread work, a timer, the run loop), and sampling
+        // the clock there turned that jitter into uneven animation steps:
+        // judder on every smooth camera move. `targetTimestamp` advances by
+        // exactly one refresh interval per frame. It is on the same clock as
+        // `CACurrentMediaTime()`, and never behind it, so the crossfade's
+        // start (taken from `time`) still precedes the first faded frame.
+        let target = link.targetTimestamp
+        let time = runningTime(at: target > 0 ? max(target, CACurrentMediaTime()) : CACurrentMediaTime())
+        paceIfNeeded()
 
         if config.freezeAfter > 0, time - freezeBaseline > config.freezeAfter {
             frozen = true

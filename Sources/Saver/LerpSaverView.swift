@@ -797,7 +797,7 @@ public final class LerpSaverView: ScreenSaverView {
             var settings = Settings()
             settings.shader = shaderPopup?.titleOfSelectedItem ?? Settings.shuffleTitle
             settings.preset = selectedPreset
-            settings.fps = Int(fpsPopup?.titleOfSelectedItem ?? "30") ?? 30
+            settings.fps = Int(fpsPopup?.titleOfSelectedItem ?? "60") ?? 60
             settings.renderScale = Chrome.value(of: scalePopup, in: Self.renderScales, default: 0)
             settings.freezeMinutes = Chrome.value(of: freezePopup, in: Self.freezeChoices, default: 3)
             settings.hdr = (hdrCheckbox?.state ?? .on) == .on
@@ -856,7 +856,11 @@ private struct Settings {
     var shader = shuffleTitle
     /// Preset for the pinned shader, or nil for its declared defaults.
     var preset: String?
-    var fps = 30
+    /// 60, not 30: at 30 fps every camera move and drift on a 120 Hz panel
+    /// visibly steps. Battery and Low Power Mode still cap it (`LerpPower`),
+    /// and a look too heavy for 60 is paced to a clean 40 or 30 by the view
+    /// rather than dropping frames unevenly.
+    var fps = 60
     var renderScale = 1.0
     /// No UI offers this one; it is read but never written back.
     var shuffleMinutes = 5.0

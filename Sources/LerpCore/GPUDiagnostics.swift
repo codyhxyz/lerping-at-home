@@ -106,6 +106,9 @@ public final class LerpGPUCost: @unchecked Sendable {
         /// `gpuEndTime` of the last buffer counted. Survives `begin`, because
         /// the queue does not know the look changed.
         var lastEnd: CFTimeInterval = 0
+        /// The newest `recentCap` frames of this look since the last
+        /// `restartRecent()`, oldest first: what `LerpMetalView`'s pacing reads.
+        var recent: [Double] = []
 
         func summary(now: CFTimeInterval) -> Summary? {
             guard let look, frames > 0 else { return nil }
@@ -116,6 +119,27 @@ public final class LerpGPUCost: @unchecked Sendable {
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
+
+    /// Two seconds at 60 fps: long enough that one slow frame is not a verdict,
+    /// short enough that a look which got heavier is caught within a few
+    /// seconds.
+    static let recentCap = 120
+
+    /// p95 of the current look's most recent frames, or nil before `minimum`
+    /// of them have completed since the look began or the window restarted.
+    public func recentP95(minimum: Int = 45) -> Double? {
+        state.withLock { state in
+            guard state.look != nil, state.recent.count >= minimum else { return nil }
+            let sorted = state.recent.sorted()
+            return sorted[min(sorted.count - 1, Int((Double(sorted.count) * 0.95).rounded(.up)) - 1)]
+        }
+    }
+
+    /// Forgets the recent window (not the look's summary): after a crossfade,
+    /// whose frames drew two looks, or a frame-rate change.
+    public func restartRecent() {
+        state.withLock { $0.recent.removeAll(keepingCapacity: true) }
+    }
 
     public init() {}
 
@@ -165,6 +189,8 @@ public final class LerpGPUCost: @unchecked Sendable {
                 state.totalMs += ms
                 state.maxMs = max(state.maxMs, ms)
                 if state.samples.count < Self.sampleCap { state.samples.append(ms) }
+                if state.recent.count >= Self.recentCap { state.recent.removeFirst() }
+                state.recent.append(ms)
                 state.width = width
                 state.height = height
             }

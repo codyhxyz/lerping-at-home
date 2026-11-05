@@ -602,11 +602,14 @@ the snapshot renderer should have to link a framework they never use.
 
 ## Runtime behavior
 
-- Frame rate is capped at 30 fps by default via `CADisplayLink.preferredFrameRateRange`.
+- Frame rate is 60 fps by default via `CADisplayLink.preferredFrameRateRange`, animated to
+  each frame's `targetTimestamp` so motion steps evenly. A look whose GPU time (p95 over its last
+  ~2 s) overruns 85% of the frame is paced down to the next rate that divides the panel's refresh
+  (60 → 40 → 30 on a 120 Hz panel) and logged as `pace:`; every new look starts back at 60.
 - Frame rate drops to 0 fps when the window is occluded — but only where AppKit actually
   reports occlusion. It does not for a `legacyScreenSaver` host at the desktop-wallpaper
   layer, which is why the saver has a second, independent check; see below.
-- Low Power Mode caps the frame rate at 20 fps.
+- Low Power Mode caps the frame rate at 15 fps, and running on battery at 20.
 - Internal render scale is selectable at 100%, 75%, or 50%; the compositor upscales.
 - The animation clock is frozen while paused, so time does not jump on resume.
 - "Still image" (default: after 30 minutes) stops rendering and holds the last frame.
