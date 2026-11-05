@@ -1,0 +1,773 @@
+import Foundation
+import Metal
+import simd
+
+/// Photoreal 3D Gaussian splat captures, drawn the way 3DGS viewers draw them:
+/// each splat's 3D covariance projected to a screen-space ellipse, sorted back
+/// to front, and alpha-blended as an instanced quad. A look opts in with
+///
+///     // lerp-data: splat:<move>:<capture>
+///
+/// where `<capture>` names a `.lsplat` file (made by `scripts/splat-convert.py`
+/// from `Sources/Splats/captures.json`) and `<move>` picks the camera:
+///
+///     orbit   circle (or sweep an arc of) the subject — turntables, places
+///     dolly   dolly zoom: the lens zooms while the camera backs off, so the
+///             subject keeps its size and the background compresses
+///
+/// The engine draws one fullscreen fragment function, so the splats are drawn
+/// here, in `encodeCompute`, into a texture this provider owns; the look's
+/// fragment shader then reads it as `texture(1)` with the camera summary
+/// `LerpSplatView` at `buffer(1)` and composites whatever the look adds (a
+/// glass globe, a filter, a background).
+///
+/// **Purity.** The camera, the deformation and the sort are all derived from
+/// `(time, seed, params)` every frame; the only thing kept between frames is
+/// the decoded capture, which is input, not state.
+public final class SplatData: LerpDataProvider {
+
+    public enum Move: String { case orbit, dolly }
+
+    let move: Move
+    let captureName: String
+    private let device: MTLDevice
+    private var target: MTLTexture?
+    private var view = LerpSplatViewInfo()
+
+    // Sort scratch, reused every frame.
+    private var depth: [Float] = []
+    private var counts = [UInt32](repeating: 0, count: 1 << 16)
+
+    /// Most pixels the splat pass draws, whatever the drawable. Splats are
+    /// soft, so a 5K screen drawn at ~2.7K and filtered up is indistinguishable
+    /// and costs a third of the fill.
+    static let maxPixels: Float = 3_800_000
+
+    public init?(device: MTLDevice, spec: String) {
+        let parts = spec.split(separator: ":").map(String.init)
+        guard parts.count == 3, parts[0] == "splat", let move = Move(rawValue: parts[1]) else { return nil }
+        self.device = device
+        self.move = move
+        self.captureName = parts[2]
+        // Decode off the render thread as soon as the look is known, so the
+        // first frame usually finds it ready.
+        LerpSplatAssets.prefetch(captureName, device: device)
+    }
+
+    public var metalPrelude: String { Self.lookPrelude }
+
+    public func bind(to encoder: MTLRenderCommandEncoder, uniforms: LerpUniforms) {
+        bind(to: encoder, uniforms: uniforms, params: nil)
+    }
+
+    public func bind(to encoder: MTLRenderCommandEncoder, uniforms: LerpUniforms,
+                     params: LerpParameterValues?) {
+        var info = view
+        encoder.setFragmentBytes(&info, length: MemoryLayout<LerpSplatViewInfo>.stride, index: 1)
+        if let target { encoder.setFragmentTexture(target, index: 1) }
+    }
+
+    public func encodeCompute(into commandBuffer: MTLCommandBuffer,
+                              uniforms: LerpUniforms,
+                              params: LerpParameterValues?) {
+        let res = uniforms.resolution
+        let scale = min(1, sqrt(Self.maxPixels / max(1, res.x * res.y)))
+        let w = max(1, Int((res.x * scale).rounded())), h = max(1, Int((res.y * scale).rounded()))
+        if target?.width != w || target?.height != h {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: w,
+                                                             height: h, mipmapped: false)
+            d.usage = [.renderTarget, .shaderRead]
+            d.storageMode = .private
+            target = device.makeTexture(descriptor: d)
+            target?.label = "splat.\(captureName)"
+        }
+        guard let target else { return }
+
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+
+        guard let asset = LerpSplatAssets.asset(captureName, device: device),
+              let pipeline = LerpSplatPipeline.shared(for: device) else {
+            // Missing capture: an empty (transparent) frame, so the look shows
+            // its background rather than last frame's splats.
+            commandBuffer.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+            view = LerpSplatViewInfo()
+            return
+        }
+
+        let cam = camera(uniforms: uniforms, params: params, size: SIMD2(Float(w), Float(h)))
+        let deform = deformation(uniforms: uniforms, params: params)
+        let visible = sort(asset: asset, cam: cam, deform: deform, size: SIMD2(Float(w), Float(h)))
+
+        var u = LerpSplatUniforms(view: cam.view, focal: SIMD2(cam.focal, cam.focal),
+                                  viewport: SIMD2(Float(w), Float(h)), deform: deform)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        encoder.label = "splat \(captureName)"
+        if let order = visible.buffer, visible.count > 0 {
+            encoder.setRenderPipelineState(pipeline)
+            encoder.setVertexBytes(&u, length: MemoryLayout<LerpSplatUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(order, offset: 0, index: 1)
+            encoder.setVertexBuffer(asset.positions, offset: 0, index: 2)
+            encoder.setVertexBuffer(asset.covariances, offset: 0, index: 3)
+            encoder.setVertexBuffer(asset.colors, offset: 0, index: 4)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                   instanceCount: visible.count)
+        }
+        encoder.endEncoding()
+
+        // Where the subject (origin, radius 1) lands, in drawable pixels, for
+        // looks that frame something around it.
+        let o = cam.view * SIMD4<Float>(0, 0, 0, 1)
+        let z = max(0.01, -o.z)
+        let focalDrawable = cam.focal / scale
+        view = LerpSplatViewInfo(
+            center: SIMD2(res.x * 0.5 + focalDrawable * o.x / z, res.y * 0.5 - focalDrawable * o.y / z),
+            radius: focalDrawable * cam.subjectRadius / z,
+            fovy: cam.fovy, ready: 1, phase: deform.phase, splats: Float(visible.count), pad: 0)
+    }
+
+    // MARK: - Camera
+
+    struct Camera {
+        var view: simd_float4x4
+        var focal: Float      // pixels of the splat target
+        var fovy: Float
+        var subjectRadius: Float = 1
+        /// Splats nearer than this are not drawn. A capture is only well
+        /// formed near the cameras that photographed it; a camera that backs
+        /// away (the dolly) looks through the floaters and foliage it left
+        /// behind, so those are cut away in front of the subject.
+        var near: Float = 0.02
+    }
+
+    private func param(_ p: LerpParameterValues?, _ name: String, _ fallback: Float) -> Float {
+        guard let v = p?[name]?.scalarValue else { return fallback }
+        return Float(v)
+    }
+
+    private func camera(uniforms: LerpUniforms, params: LerpParameterValues?, size: SIMD2<Float>) -> Camera {
+        let t = max(0, uniforms.time)
+        let speed = param(params, "speed", 1)
+        let distance = param(params, "distance", 3)
+        let height = param(params, "height", 0.35)
+        let lookHeight = param(params, "lookHeight", 0)
+        let startAngle = param(params, "angle", 0) * .pi / 180
+        let arc = param(params, "arc", 360) * .pi / 180
+        let period = max(4, param(params, "period", 60)) / max(0.01, speed)
+        let seedTurn = uniforms.seed * 2 * .pi
+        let target = SIMD3<Float>(0, lookHeight, 0)
+
+        switch move {
+        case .orbit:
+            let fovy = param(params, "fov", 35) * .pi / 180
+            let angle: Float
+            if arc >= 2 * .pi - 0.001 {
+                // Full turntable; the seed picks where in the turn a launch starts.
+                angle = startAngle + seedTurn + 2 * .pi * t / period
+            } else {
+                // Sweep an arc and back, eased at the ends.
+                let s = 0.5 - 0.5 * cos(2 * .pi * (t / period + uniforms.seed))
+                angle = startAngle + (s - 0.5) * arc
+            }
+            let bob = param(params, "bob", 0) * sin(2 * .pi * (t / (period * 0.37) + uniforms.seed))
+            let eye = SIMD3(sin(angle) * distance, height + bob, cos(angle) * distance)
+            let focal = 0.5 * size.y / tan(fovy * 0.5)
+            let clip = param(params, "clip", 0)
+            return Camera(view: Self.lookAt(eye: eye, target: target), focal: focal, fovy: fovy,
+                          near: clip > 0 ? max(0.02, simd_length(eye - target) - clip) : 0.02)
+
+        case .dolly:
+            // VoxelKei's telephoto compression, as a move: the field of view
+            // swings between wide and long, and the camera distance follows
+            // d = r / tan(fov / 2) so the subject's framed size never changes.
+            let wide = param(params, "wideFov", 70) * .pi / 180
+            let long = param(params, "longFov", 9) * .pi / 180
+            let s = 0.5 - 0.5 * cos(2 * .pi * (t / period + uniforms.seed))
+            // Interpolate in log-tangent space so the zoom feels even.
+            let lt = log(tan(wide * 0.5)) * (1 - s) + log(tan(long * 0.5)) * s
+            let half = atan(exp(lt))
+            let framing = param(params, "framing", 1.4)   // subject radii above/below centre
+            let d = framing / tan(half)
+            let drift = param(params, "drift", 0) * .pi / 180 * sin(2 * .pi * (t / (period * 1.7)))
+            let angle = startAngle + drift
+            let dir = SIMD3(sin(angle), 0, cos(angle))
+            let eye = target + dir * d + SIMD3(0, height * d / distance, 0)
+            let focal = 0.5 * size.y / tan(half)
+            let clip = param(params, "clip", 1.5)
+            return Camera(view: Self.lookAt(eye: eye, target: target), focal: focal, fovy: 2 * half,
+                          near: max(0.02, simd_length(eye - target) - clip))
+        }
+    }
+
+    static func lookAt(eye: SIMD3<Float>, target: SIMD3<Float>, up: SIMD3<Float> = SIMD3(0, 1, 0)) -> simd_float4x4 {
+        let f = simd_normalize(target - eye)
+        var r = simd_cross(f, up)
+        if simd_length(r) < 1e-5 { r = SIMD3(1, 0, 0) }
+        r = simd_normalize(r)
+        let u = simd_cross(r, f)
+        // Rows r, u, -f: camera space x right, y up, looking down -z.
+        return simd_float4x4(rows: [
+            SIMD4(r, -simd_dot(r, eye)),
+            SIMD4(u, -simd_dot(u, eye)),
+            SIMD4(-f, simd_dot(f, eye)),
+            SIMD4(0, 0, 0, 1),
+        ])
+    }
+
+    // MARK: - Deformation
+
+    private func deformation(uniforms: LerpUniforms, params: LerpParameterValues?) -> LerpSplatDeform {
+        var d = LerpSplatDeform()
+        d.mode = UInt32(max(0, param(params, "deform", 0)))
+        d.time = max(0, uniforms.time) * param(params, "speed", 1) + 97 * uniforms.seed
+        d.amount = param(params, "amount", 0.08) * (1 + 3 * uniforms.audio.bass)
+        d.frequency = param(params, "frequency", 6)
+        let cycle = max(4, param(params, "cycle", 24))
+        d.phase = (max(0, uniforms.time) / cycle + uniforms.seed).truncatingRemainder(dividingBy: 1)
+        return d
+    }
+
+    // MARK: - Sort
+
+    private var orderBuffers: LerpBufferRing?
+    private var orderBufferCount = 0
+
+    /// Back-to-front order of the splats in front of the camera, as a 16-bit
+    /// counting sort over view depth. Depths of displaced splats come from the
+    /// same displacement the vertex shader applies (`LerpSplatDeform.apply`),
+    /// so a dissolving capture still blends in the right order.
+    private func sort(asset: LerpSplatAsset, cam: Camera, deform: LerpSplatDeform,
+                      size: SIMD2<Float>) -> (buffer: MTLBuffer?, count: Int) {
+        let n = asset.count
+        if depth.count < n { depth = [Float](repeating: 0, count: n) }
+        if orderBufferCount < n {
+            orderBufferCount = n
+            orderBuffers = LerpBufferRing(device: device, length: max(4, n * 4), label: "splat.order")
+        }
+        guard let orderBuffer = orderBuffers?.next() else { return (nil, 0) }
+
+        let v = cam.view
+        let r0 = SIMD4(v[0][0], v[1][0], v[2][0], v[3][0])
+        let r1 = SIMD4(v[0][1], v[1][1], v[2][1], v[3][1])
+        let r2 = SIMD4(v[0][2], v[1][2], v[2][2], v[3][2])
+        let halfW = size.x * 0.5 / cam.focal * 1.25, halfH = size.y * 0.5 / cam.focal * 1.25
+        let near = cam.near
+        let displaced = deform.movesSplats
+
+        let chunks = 8
+        var mins = [Float](repeating: .infinity, count: chunks)
+        var maxs = [Float](repeating: -.infinity, count: chunks)
+        let pos = asset.positions.contents().bindMemory(to: SIMD4<Float>.self, capacity: n)
+        depth.withUnsafeMutableBufferPointer { dp in
+            let dbase = dp.baseAddress!
+            mins.withUnsafeMutableBufferPointer { mn in
+                maxs.withUnsafeMutableBufferPointer { mx in
+                    let mnb = mn.baseAddress!, mxb = mx.baseAddress!
+                    DispatchQueue.concurrentPerform(iterations: chunks) { c in
+                        let lo = n * c / chunks, hi = n * (c + 1) / chunks
+                        var zmin = Float.infinity, zmax = -Float.infinity
+                        for i in lo..<hi {
+                            var p = pos[i]
+                            p.w = 1
+                            if displaced { p = SIMD4(deform.apply(SIMD3(p.x, p.y, p.z), index: UInt32(i)), 1) }
+                            let z = -simd_dot(r2, p)
+                            // Cull behind the camera and well outside the frustum
+                            // (with margin, for splats whose centre is off screen
+                            // but whose footprint is not).
+                            if z < near { dbase[i] = -1; continue }
+                            let x = simd_dot(r0, p), y = simd_dot(r1, p)
+                            if abs(x) > z * halfW + 0.5 || abs(y) > z * halfH + 0.5 { dbase[i] = -1; continue }
+                            dbase[i] = z
+                            zmin = min(zmin, z); zmax = max(zmax, z)
+                        }
+                        mnb[c] = zmin; mxb[c] = zmax
+                    }
+                }
+            }
+        }
+        let zmin = mins.min() ?? 0, zmax = maxs.max() ?? 0
+        guard zmax >= zmin else { return (orderBuffer, 0) }
+        let k = Float(65535) / max(1e-6, zmax - zmin)
+
+        let order = orderBuffer.contents().bindMemory(to: UInt32.self, capacity: n)
+        var visible = 0
+        counts.withUnsafeMutableBufferPointer { cp in
+            let cb = cp.baseAddress!
+            cb.update(repeating: 0, count: 1 << 16)
+            depth.withUnsafeBufferPointer { dp in
+                for i in 0..<n where dp[i] >= 0 {
+                    // Far first: key 0 is the farthest splat.
+                    cb[Int((zmax - dp[i]) * k)] &+= 1
+                    visible += 1
+                }
+                var running: UInt32 = 0
+                for b in 0..<(1 << 16) {
+                    let c = cb[b]; cb[b] = running; running &+= c
+                }
+                for i in 0..<n where dp[i] >= 0 {
+                    let b = Int((zmax - dp[i]) * k)
+                    order[Int(cb[b])] = UInt32(i)
+                    cb[b] &+= 1
+                }
+            }
+        }
+        return (orderBuffer, visible)
+    }
+
+    // MARK: - Metal
+
+    /// Spliced into every look that declares a splat provider.
+    static let lookPrelude = """
+    // ---- splat captures (SplatData.swift) --------------------------------------
+    // texture(1): the capture drawn this frame, premultiplied RGBA, possibly at a
+    // lower resolution than the drawable (sample it with lerpSplatSample).
+    // buffer(1): LerpSplatView.
+    struct LerpSplatView {
+        float2 center;   // the subject's centre, drawable pixels, y down
+        float  radius;   // the subject's radius (1 capture unit), drawable pixels
+        float  fovy;     // radians
+        float  ready;    // 0 while the capture is missing
+        float  phase;    // deform cycle phase, 0..1
+        float  splats;   // splats drawn this frame
+        float  pad;
+    };
+
+    static inline float4 lerpSplatSample(texture2d<half> t, float2 px, float2 res) {
+        constexpr sampler s(filter::linear, address::clamp_to_edge);
+        return float4(t.sample(s, px / res));
+    }
+
+    // Captures are trained against sRGB photos; the layer is Display P3.
+    static inline float3 lerpSplatToP3(float3 c) {
+        float3 lin = select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
+        const float3x3 m = float3x3(float3(0.8225, 0.0332, 0.0171),
+                                    float3(0.1774, 0.9669, 0.0724),
+                                    float3(0.0000, 0.0000, 0.9108));
+        float3 p = max(m * lin, 0.0);
+        return select(1.055 * pow(p, 1.0 / 2.4) - 0.055, p * 12.92, p <= 0.0031308);
+    }
+
+    // The capture over a background, colour converted on unpremultiplied values.
+    static inline float3 lerpSplatOver(float4 s, float3 bg) {
+        float3 c = s.a > 1e-4 ? lerpSplatToP3(saturate(s.rgb / s.a)) : float3(0.0);
+        return c * s.a + (1.0 - s.a) * bg;
+    }
+    """
+}
+
+/// Camera summary handed to the look (`LerpSplatView` in MSL).
+struct LerpSplatViewInfo {
+    var center = SIMD2<Float>(0, 0)
+    var radius: Float = 0
+    var fovy: Float = 0
+    var ready: Float = 0
+    var phase: Float = 0
+    var splats: Float = 0
+    var pad: Float = 0
+}
+
+/// Per-splat displacement, applied identically by the vertex shader and by the
+/// CPU sort (`apply`). Must match `LerpSplatDeform` and `splatDeform` in
+/// `LerpSplatPipeline.source`.
+///
+///     0 none
+///     1 ripple   rings spreading across the ground plane (y)
+///     2 wall     waves rolling across a facade, pushed toward the camera (z)
+///     3 twist    the capture wrung about its vertical axis
+///     4 dissolve splats drift apart from the bottom up and come back
+struct LerpSplatDeform {
+    var mode: UInt32 = 0
+    var time: Float = 0
+    var amount: Float = 0
+    var frequency: Float = 6
+    var phase: Float = 0
+    var pad0: Float = 0, pad1: Float = 0, pad2: Float = 0
+
+    /// Only the modes that move splats far enough to change their order are
+    /// worth repeating on the CPU.
+    var movesSplats: Bool { mode == 3 || mode == 4 }
+
+    static func hash(_ x: UInt32) -> UInt32 {
+        var v = x &* 747796405 &+ 2891336453
+        v = ((v >> ((v >> 28) &+ 4)) ^ v) &* 277803737
+        return (v >> 22) ^ v
+    }
+
+    static func unit(_ x: UInt32) -> Float { Float(hash(x) >> 8) / Float(1 << 24) }
+
+    /// The dissolve envelope: 0 assembled, 1 fully scattered.
+    static func scatter(phase: Float, height: Float) -> Float {
+        // Hold, dissolve upward, hold apart briefly, reassemble downward.
+        let w: Float
+        if phase < 0.45 { w = 0 }
+        else if phase < 0.65 { w = (phase - 0.45) / 0.20 }
+        else if phase < 0.72 { w = 1 }
+        else { w = 1 - (phase - 0.72) / 0.28 }
+        let front = w * 1.6 - 0.3          // sweeps -0.3 … 1.3
+        let x = min(1, max(0, (front - height) / 0.3))
+        return x * x * (3 - 2 * x)
+    }
+
+    func apply(_ p: SIMD3<Float>, index i: UInt32) -> SIMD3<Float> {
+        switch mode {
+        case 3:
+            let a = amount * 4 * p.y * sin(time * 0.35)
+            let c = cos(a), s = sin(a)
+            return SIMD3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z)
+        case 4:
+            let h = min(1, max(0, (p.y + 1) * 0.5))
+            let e = LerpSplatDeform.scatter(phase: phase, height: h)
+            if e <= 0 { return p }
+            let a = LerpSplatDeform.unit(i &* 3) * 2 * .pi
+            let z = LerpSplatDeform.unit(i &* 3 &+ 1) * 2 - 1
+            let r = sqrt(max(0, 1 - z * z))
+            let dir = SIMD3(r * cos(a), z, r * sin(a))
+            let dist = (0.4 + 1.2 * LerpSplatDeform.unit(i &* 3 &+ 2)) * amount * 10
+            return p + (dir * dist + SIMD3(0, 0.6, 0) * dist) * e
+        default:
+            return p
+        }
+    }
+}
+
+/// Must match `SplatUniforms` in `LerpSplatPipeline.source`.
+struct LerpSplatUniforms {
+    var view: simd_float4x4
+    var focal: SIMD2<Float>
+    var viewport: SIMD2<Float>
+    var deform: LerpSplatDeform
+}
+
+// MARK: - Assets
+
+/// A decoded capture, GPU-resident.
+final class LerpSplatAsset {
+    let count: Int
+    let positions: MTLBuffer    // float4: xyz, opacity
+    let covariances: MTLBuffer  // 2 × float4 a splat: xx xy xz yy, yz zz 0 0
+    let colors: MTLBuffer       // uchar4: sRGB-encoded rgb, opacity
+
+    init(count: Int, positions: MTLBuffer, covariances: MTLBuffer, colors: MTLBuffer) {
+        self.count = count
+        self.positions = positions
+        self.covariances = covariances
+        self.colors = colors
+    }
+
+    static func load(_ url: URL, device: MTLDevice) throws -> LerpSplatAsset {
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count >= 48, data.prefix(4) == Data("LSPL".utf8) else {
+            throw LerpSplatError.format("\(url.lastPathComponent) is not an .lsplat file")
+        }
+        func u32(_ o: Int) -> UInt32 { data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt32.self) } }
+        func f32(_ o: Int) -> Float { data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: Float.self) } }
+        guard u32(4) == 1 else { throw LerpSplatError.format("unknown .lsplat version \(u32(4))") }
+        let n = Int(u32(8))
+        let lo = SIMD3(f32(16), f32(20), f32(24)), hi = SIMD3(f32(28), f32(32), f32(36))
+        let payloadSize = Int(u32(40))
+        guard data.count >= 48 + payloadSize else { throw LerpSplatError.format("truncated") }
+        let planes = try (data.subdata(in: 48..<(48 + payloadSize)) as NSData).decompressed(using: .zlib) as Data
+        let expected = n * (6 + 4 + 3 + 4)
+        guard planes.count == expected else {
+            throw LerpSplatError.format("payload is \(planes.count) bytes, expected \(expected)")
+        }
+        guard let posBuf = device.makeBuffer(length: max(16, n * 16), options: .storageModeShared),
+              let covBuf = device.makeBuffer(length: max(32, n * 32), options: .storageModeShared),
+              let colBuf = device.makeBuffer(length: max(4, n * 4), options: .storageModeShared) else {
+            throw LerpSplatError.format("out of GPU memory for \(n) splats")
+        }
+        posBuf.label = "splat.positions"; covBuf.label = "splat.cov"; colBuf.label = "splat.colors"
+        let pos = posBuf.contents().bindMemory(to: SIMD4<Float>.self, capacity: n)
+        let cov = covBuf.contents().bindMemory(to: SIMD4<Float>.self, capacity: n * 2)
+        let col = colBuf.contents().bindMemory(to: SIMD4<UInt8>.self, capacity: n)
+        let span = (hi - lo) / 65535
+        let logMin: Float = -10, logStep: Float = 12 / 255
+
+        planes.withUnsafeBytes { raw in
+            let b = raw.bindMemory(to: UInt8.self).baseAddress!
+            let qx = UnsafeRawPointer(b), qy = qx + 2 * n, qz = qy + 2 * n
+            let cr = b + 6 * n, cg = cr + n, cbl = cg + n, ca = cbl + n
+            let sx = ca + n, sy = sx + n, sz = sy + n
+            let rw = sz + n, rx = rw + n, ry = rx + n, rz = ry + n
+            DispatchQueue.concurrentPerform(iterations: 8) { c in
+                for i in (n * c / 8)..<(n * (c + 1) / 8) {
+                    let p = SIMD3(Float(qx.loadUnaligned(fromByteOffset: 2 * i, as: UInt16.self)),
+                                  Float(qy.loadUnaligned(fromByteOffset: 2 * i, as: UInt16.self)),
+                                  Float(qz.loadUnaligned(fromByteOffset: 2 * i, as: UInt16.self)))
+                    let world = lo + p * span
+                    let alpha = Float(ca[i]) / 255
+                    pos[i] = SIMD4(world, alpha)
+                    col[i] = SIMD4(cr[i], cg[i], cbl[i], ca[i])
+                    let s = SIMD3(exp(logMin + Float(sx[i]) * logStep),
+                                  exp(logMin + Float(sy[i]) * logStep),
+                                  exp(logMin + Float(sz[i]) * logStep))
+                    var q = simd_quatf(ix: Float(rx[i]) / 127.5 - 1, iy: Float(ry[i]) / 127.5 - 1,
+                                       iz: Float(rz[i]) / 127.5 - 1, r: Float(rw[i]) / 127.5 - 1)
+                    q = q.length > 1e-6 ? q.normalized : simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+                    let r = simd_float3x3(q)
+                    let m = r * simd_float3x3(diagonal: s)
+                    let sigma = m * m.transpose
+                    cov[2 * i] = SIMD4(sigma[0][0], sigma[0][1], sigma[0][2], sigma[1][1])
+                    cov[2 * i + 1] = SIMD4(sigma[1][2], sigma[2][2], 0, 0)
+                }
+            }
+        }
+        return LerpSplatAsset(count: n, positions: posBuf, covariances: covBuf, colors: colBuf)
+    }
+}
+
+enum LerpSplatError: Error, CustomStringConvertible {
+    case format(String)
+    var description: String { if case .format(let s) = self { return s }; return "" }
+}
+
+/// Where captures are found, and the decoded ones kept. The installed saver
+/// reads `Resources/Splats` in its bundle; a development host also reads
+/// `build/splats` beside whichever `Sources/Shaders` it was pointed at.
+public enum LerpSplatAssets {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var extraDirectories: [URL] = []
+    nonisolated(unsafe) private static var cache: [String: LerpSplatAsset] = [:]
+    nonisolated(unsafe) private static var recent: [String] = []
+    nonisolated(unsafe) private static var loading: [String: NSCondition] = [:]
+    nonisolated(unsafe) private static var failed: Set<String> = []
+    private static let keep = 3
+
+    /// Called by `ShaderLibrary` with its source-tree search URLs.
+    static func addSourceRoots(_ shaderDirectories: [URL]) {
+        lock.lock(); defer { lock.unlock() }
+        for dir in shaderDirectories {
+            let splats = dir.deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("build/splats").standardizedFileURL
+            if !extraDirectories.contains(splats) { extraDirectories.append(splats) }
+        }
+    }
+
+    static func url(for name: String) -> URL? {
+        lock.lock()
+        var dirs = extraDirectories
+        lock.unlock()
+        if let repo = ShaderLocations.repoShaderDirectory() {
+            dirs.append(repo.deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("build/splats"))
+        }
+        dirs = LerpBundleResources.directories(named: "Splats") + dirs
+        return dirs.map { $0.appendingPathComponent(name + ".lsplat") }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    static func prefetch(_ name: String, device: MTLDevice) {
+        DispatchQueue.global(qos: .userInitiated).async { _ = asset(name, device: device) }
+    }
+
+    /// The decoded capture, loading it on this thread if no other thread is
+    /// already doing so (then waiting for that one). nil if it is missing or
+    /// unreadable; that is logged once and not retried.
+    static func asset(_ name: String, device: MTLDevice) -> LerpSplatAsset? {
+        lock.lock()
+        while true {
+            if let a = cache[name] {
+                recent.removeAll { $0 == name }; recent.append(name)
+                lock.unlock(); return a
+            }
+            if failed.contains(name) { lock.unlock(); return nil }
+            if let cond = loading[name] {
+                lock.unlock()
+                cond.lock(); cond.wait(until: Date().addingTimeInterval(0.05)); cond.unlock()
+                lock.lock()
+                continue
+            }
+            break
+        }
+        let cond = NSCondition()
+        loading[name] = cond
+        lock.unlock()
+
+        var loaded: LerpSplatAsset?
+        if let url = url(for: name) {
+            do { loaded = try LerpSplatAsset.load(url, device: device) }
+            catch { NSLog("Lerping: splat capture %@ failed to load: %@", name, "\(error)") }
+        } else {
+            NSLog("Lerping: splat capture %@.lsplat not found (run `make splats`)", name)
+        }
+
+        lock.lock()
+        loading[name] = nil
+        if let loaded {
+            cache[name] = loaded
+            recent.removeAll { $0 == name }; recent.append(name)
+            while recent.count > keep { cache[recent.removeFirst()] = nil }
+        } else {
+            failed.insert(name)
+        }
+        lock.unlock()
+        cond.lock(); cond.broadcast(); cond.unlock()
+        return loaded
+    }
+}
+
+// MARK: - Pipeline
+
+enum LerpSplatPipeline {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var pipelines: [UInt64: MTLRenderPipelineState] = [:]
+
+    static func shared(for device: MTLDevice) -> MTLRenderPipelineState? {
+        lock.lock(); defer { lock.unlock() }
+        if let p = pipelines[device.registryID] { return p }
+        do {
+            let library = try device.makeLibrary(source: source, options: nil)
+            let d = MTLRenderPipelineDescriptor()
+            d.label = "splat"
+            d.vertexFunction = library.makeFunction(name: "splatVertex")
+            d.fragmentFunction = library.makeFunction(name: "splatFragment")
+            let c = d.colorAttachments[0]!
+            c.pixelFormat = .rgba16Float
+            c.isBlendingEnabled = true
+            c.rgbBlendOperation = .add
+            c.alphaBlendOperation = .add
+            c.sourceRGBBlendFactor = .one
+            c.sourceAlphaBlendFactor = .one
+            c.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            c.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            let p = try device.makeRenderPipelineState(descriptor: d)
+            pipelines[device.registryID] = p
+            return p
+        } catch {
+            NSLog("Lerping: splat pipeline failed: %@", "\(error)")
+            return nil
+        }
+    }
+
+    static let source = """
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct SplatDeform {
+        uint mode; float time; float amount; float frequency;
+        float phase; float pad0, pad1, pad2;
+    };
+    struct SplatUniforms {
+        float4x4 view;
+        float2 focal;
+        float2 viewport;
+        SplatDeform deform;
+    };
+    struct SplatOut {
+        float4 position [[position]];
+        float2 uv;
+        half4 color;
+    };
+
+    static inline uint splatHash(uint x) {
+        uint v = x * 747796405u + 2891336453u;
+        v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+        return (v >> 22u) ^ v;
+    }
+    static inline float splatUnit(uint x) { return float(splatHash(x) >> 8) / float(1u << 24); }
+
+    static inline float splatScatter(float phase, float height) {
+        float w;
+        if (phase < 0.45) w = 0.0;
+        else if (phase < 0.65) w = (phase - 0.45) / 0.20;
+        else if (phase < 0.72) w = 1.0;
+        else w = 1.0 - (phase - 0.72) / 0.28;
+        float front = w * 1.6 - 0.3;
+        float x = saturate((front - height) / 0.3);
+        return x * x * (3.0 - 2.0 * x);
+    }
+
+    // Displacement; the CPU sort repeats modes 3 and 4 (LerpSplatDeform.apply).
+    static inline float3 splatDeform(float3 p, uint i, constant SplatDeform& D, thread float& fade) {
+        fade = 1.0;
+        if (D.mode == 1u) {
+            // Rings across the ground. Captures are normalised so the subject
+            // stands on y = -1; only what lies near that plane moves.
+            float r = length(p.xz);
+            float wave = sin(D.frequency * r * 3.0 - D.time * 2.2);
+            float ground = saturate(1.0 - (p.y + 1.0) / 0.35);
+            p.y += D.amount * wave * ground * exp(-r * 0.35);
+        } else if (D.mode == 2u) {
+            float wave = sin(D.frequency * p.x - D.time * 1.6) * cos(D.frequency * 0.6 * p.y + D.time * 0.9);
+            p.z += D.amount * 2.0 * wave;
+        } else if (D.mode == 3u) {
+            float a = D.amount * 4.0 * p.y * sin(D.time * 0.35);
+            float c = cos(a), s = sin(a);
+            p = float3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+        } else if (D.mode == 4u) {
+            float h = saturate((p.y + 1.0) * 0.5);
+            float e = splatScatter(D.phase, h);
+            if (e > 0.0) {
+                float a = splatUnit(i * 3u) * 2.0 * M_PI_F;
+                float z = splatUnit(i * 3u + 1u) * 2.0 - 1.0;
+                float r = sqrt(max(0.0, 1.0 - z * z));
+                float3 dir = float3(r * cos(a), z, r * sin(a));
+                float dist = (0.4 + 1.2 * splatUnit(i * 3u + 2u)) * D.amount * 10.0;
+                p += (dir * dist + float3(0.0, 0.6, 0.0) * dist) * e;
+                fade = 1.0 - 0.6 * e;
+            }
+        }
+        return p;
+    }
+
+    vertex SplatOut splatVertex(uint vid [[vertex_id]], uint iid [[instance_id]],
+                                constant SplatUniforms& U [[buffer(0)]],
+                                device const uint* order [[buffer(1)]],
+                                device const float4* posOp [[buffer(2)]],
+                                device const float4* cov [[buffer(3)]],
+                                device const uchar4* rgba [[buffer(4)]]) {
+        SplatOut o;
+        o.position = float4(0.0, 0.0, 2.0, 1.0);   // clipped
+        o.uv = float2(0.0);
+        o.color = half4(0.0h);
+        uint i = order[iid];
+        float fade;
+        float3 p = splatDeform(posOp[i].xyz, i, U.deform, fade);
+        float4 v = U.view * float4(p, 1.0);
+        float z = -v.z;
+        if (z < 0.02) return o;
+
+        float4 c0 = cov[2u * i], c1 = cov[2u * i + 1u];
+        float3x3 S = float3x3(float3(c0.x, c0.y, c0.z),
+                              float3(c0.y, c0.w, c1.x),
+                              float3(c0.z, c1.x, c1.y));
+        float fx = U.focal.x, fy = U.focal.y;
+        float3x3 J = float3x3(float3(fx / z, 0.0, 0.0),
+                              float3(0.0, fy / z, 0.0),
+                              float3(fx * v.x / (z * z), fy * v.y / (z * z), 0.0));
+        float3x3 W = float3x3(U.view[0].xyz, U.view[1].xyz, U.view[2].xyz);
+        float3x3 T = J * W;
+        float3x3 C = T * S * transpose(T);
+        float a = C[0][0] + 0.3, b = C[0][1], d = C[1][1] + 0.3;
+
+        float mid = 0.5 * (a + d);
+        float rad = length(float2(0.5 * (a - d), b));
+        float l1 = mid + rad, l2 = max(mid - rad, 0.1);
+        float2 axis = abs(b) > 1e-7 ? normalize(float2(b, l1 - a))
+                                    : (a >= d ? float2(1.0, 0.0) : float2(0.0, 1.0));
+        float2 major = min(sqrt(2.0 * l1), 2048.0) * axis;
+        float2 minor = min(sqrt(2.0 * l2), 2048.0) * float2(axis.y, -axis.x);
+
+        float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0) * 2.0;
+        float2 centre = float2(fx * v.x / z, fy * v.y / z);
+        float2 px = centre + corner.x * major + corner.y * minor;
+        o.position = float4(px / (0.5 * U.viewport), 0.0, 1.0);
+        o.uv = corner;
+        float4 col = float4(rgba[i]) / 255.0;
+        o.color = half4(half3(col.rgb), half(col.a * fade));
+        return o;
+    }
+
+    fragment half4 splatFragment(SplatOut in [[stage_in]]) {
+        float r2 = dot(in.uv, in.uv);
+        if (r2 > 4.0) discard_fragment();
+        float alpha = exp(-r2) * float(in.color.a);
+        if (alpha < 1.0 / 255.0) discard_fragment();
+        alpha = min(alpha, 0.99);
+        return half4(in.color.rgb * half(alpha), half(alpha));
+    }
+    """
+}

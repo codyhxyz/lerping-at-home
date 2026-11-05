@@ -97,7 +97,10 @@ public enum LerpDataProviders {
         lock.lock()
         let factory = factories[name]
         lock.unlock()
-        return factory?(device)
+        if let factory { return factory(device) }
+        // `splat:<move>:<capture>` — one provider class, parameterised by name.
+        if name.hasPrefix("splat:") { return SplatData(device: device, spec: name) }
+        return nil
     }
 
     public static var registeredNames: [String] {

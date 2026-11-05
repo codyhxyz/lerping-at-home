@@ -1,0 +1,207 @@
+{
+  "_comment": "Photoreal 3DGS captures for the splat looks. Each is downloaded and converted by `make splats` (scripts/splat-convert.py); none is stored in git. Every one is CC BY 4.0 on SuperSplat (credit in NOTICE.txt). The transform puts each subject at the origin, y up, radius about 1.",
+  "captures": {
+    "strawberry": {
+      "title": "Strawberry",
+      "author": "danylyon (Dany Bittel)",
+      "page": "https://superspl.at/scene/84df8849",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/84df8849/v1/meta.json"
+      ],
+      "decimate": 700000,
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        0.05,
+        -0.15,
+        0.13
+      ],
+      "scale": 0.85,
+      "shift": [
+        0,
+        -0.15,
+        0
+      ],
+      "center_xz": true
+    },
+    "triceratops": {
+      "title": "Burke Museum Triceratops Skull",
+      "author": "lukeshea",
+      "page": "https://superspl.at/scene/811dd9ed",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/811dd9ed/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        0.14,
+        -1.08,
+        0.0
+      ],
+      "scale": 1.0,
+      "center_xz": true
+    },
+    "owl": {
+      "title": "Owl Wood Sculpture",
+      "author": "pierrecharpentierdesign",
+      "page": "https://superspl.at/scene/ac4eb719",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/ac4eb719/v1/meta.json"
+      ],
+      "decimate": 600000,
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        -0.5,
+        -13.0,
+        0.5
+      ],
+      "scale": 0.096,
+      "crop": {
+        "cylinder": [
+          2.4,
+          -1.4,
+          1.6
+        ]
+      },
+      "center_xz": true
+    },
+    "grape": {
+      "title": "Grape",
+      "author": "danylyon (Dany Bittel)",
+      "page": "https://superspl.at/scene/4ae563ac",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/4ae563ac/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        0.0,
+        -0.05,
+        0.13
+      ],
+      "scale": 1.1,
+      "center_xz": true
+    },
+    "bonsai": {
+      "title": "Bonsai Tree",
+      "author": "garrettknelli",
+      "page": "https://superspl.at/scene/4c461e7c",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/4c461e7c/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        0.026,
+        -0.575,
+        -0.05
+      ],
+      "scale": 1.6,
+      "crop": {
+        "sphere": 1.03,
+        "box": [
+          [
+            -2,
+            -0.8,
+            -2
+          ],
+          [
+            2,
+            2,
+            2
+          ]
+        ]
+      }
+    },
+    "saka-shrine": {
+      "title": "Saka Shrine",
+      "author": "kotohibi",
+      "page": "https://superspl.at/scene/3f8c617d",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/3f8c617d/v1/2_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/3f8c617d/v1/2_1/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        10.5,
+        3.3,
+        10.0
+      ],
+      "scale": 0.4
+    },
+    "shenley-church": {
+      "title": "Shenley Church",
+      "author": "naturalsplats",
+      "page": "https://superspl.at/scene/aa451b94",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/aa451b94/v1/2_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/aa451b94/v1/2_1/meta.json"
+      ],
+      "rotate": [
+        180,
+        90,
+        0
+      ],
+      "center": [
+        0.5,
+        -0.5,
+        1
+      ],
+      "scale": 0.1,
+      "shift": [
+        0,
+        -0.35,
+        0
+      ],
+      "center_xz": true
+    },
+    "trogir-square": {
+      "title": "Main square, Trogir",
+      "author": "tosolini",
+      "page": "https://superspl.at/scene/89f82474",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/3_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/3_1/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        0,
+        0.5,
+        -8
+      ],
+      "scale": 0.08
+    }
+  }
+}

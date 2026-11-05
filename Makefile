@@ -195,7 +195,7 @@ define STAGE_DMG
 		-srcfolder "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
 endef
 
-.PHONY: all preview playground playground-build saver saver-build midi-deps \
+.PHONY: splats all preview playground playground-build saver saver-build midi-deps \
         verify-rotation \
         install install-example install-playground uninstall-playground package dmg release clean \
         FORCE
@@ -266,12 +266,26 @@ $(PLAYGROUND_ICNS): $(BUILD)/LerpPreview Sources/Shaders/mesh-gradient.metal
 	done
 	iconutil -c icns -o $@ $(BUILD)/icon.iconset
 
+# Photoreal Gaussian splat captures (Sources/Splats/captures.json). The source
+# files are third-party and large, so they are not in git: `splats` downloads
+# each one once into build/splats-src, checks its sha256, and converts it to
+# the compact .lsplat that SplatData.swift reads. Re-running is a no-op unless
+# captures.json or the converter changed.
+SPLAT_OUT := $(BUILD)/splats
+SPLAT_STAMP := $(SPLAT_OUT)/.stamp
+
+splats: $(SPLAT_STAMP)
+
+$(SPLAT_STAMP): Sources/Splats/captures.json scripts/splat-convert.py
+	python3 -I scripts/splat-convert.py all
+	@touch $@
+
 # `saver` means the saver the machine will actually run. Use `saver-build` only
 # when a staging bundle is explicitly wanted.
 saver: install
 
-saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/Info.plist LICENSE NOTICE.txt
-	@mkdir -p $(SAVER_DIR)/Contents/MacOS $(SAVER_DIR)/Contents/Resources/Shaders
+saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/Info.plist LICENSE NOTICE.txt splats
+	@mkdir -p $(SAVER_DIR)/Contents/MacOS $(SAVER_DIR)/Contents/Resources/Shaders $(SAVER_DIR)/Contents/Resources/Splats
 	swiftc -O -whole-module-optimization -parse-as-library -emit-object \
 		-target $(TARGET) -module-name LerpSaver \
 		-o $(BUILD)/LerpSaver.o $(CORE) $(SAVER_SRC)
@@ -284,6 +298,8 @@ saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/
 	plutil -replace CFBundleVersion -string $(BUNDLE_VERSION) $(SAVER_DIR)/Contents/Info.plist
 	plutil -replace LerpBuild -string $(LERP_BUILD) $(SAVER_DIR)/Contents/Info.plist
 	cp $(SHADERS) $(SAVER_DIR)/Contents/Resources/Shaders/
+	rm -f $(SAVER_DIR)/Contents/Resources/Splats/*.lsplat
+	cp $(SPLAT_OUT)/*.lsplat $(SAVER_DIR)/Contents/Resources/Splats/
 	cp LICENSE NOTICE.txt $(SAVER_DIR)/Contents/Resources/
 	$(BUILD)/LerpPreview --snapshot $(BUILD)/thumb --size 180x116 --time 4 \
 		--shader mesh-gradient >/dev/null
@@ -447,6 +463,7 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 	cp $(SHADERS) "$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders/"
 	cp "$(RELEASE_SAVER)/Contents/Resources/Thumbnails/"*.heic \
 		"$(RELEASE_PLAYGROUND)/Contents/Resources/Thumbnails/"
+	cp -R "$(RELEASE_SAVER)/Contents/Resources/Splats" "$(RELEASE_PLAYGROUND)/Contents/Resources/"
 	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_SAVER)/Contents/Resources/"
 	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_PLAYGROUND)/Contents/Resources/"
 	@if [ "$(APP_SIGN_IDENTITY)" = "-" ]; then \

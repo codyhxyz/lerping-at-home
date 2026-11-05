@@ -4,7 +4,7 @@
 
 - Screensaver for macOS that renders procedural shaders with Metal.
 - Shaders are single `.metal` files compiled at runtime via `MTLDevice.makeLibrary(source:)`.
-- 68 built-in shaders in `Sources/Shaders/`: all 30 of Paper Shaders' looks ported to Metal, raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
+- 76 built-in shaders in `Sources/Shaders/`: all 30 of Paper Shaders' looks ported to Metal, eight photoreal Gaussian splat captures (`splat-*`), raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
 - Custom `.metal` files are supported without rebuilding the engine.
 - No Xcode project. Builds with `swiftc` through a Makefile.
 - No build-time Metal toolchain and no precompiled shader archive.
@@ -87,8 +87,8 @@ unattended: replacing it could discard unsaved editor state.
 - Options… also has an **In rotation** gallery: pick which *looks* Shuffle draws
   from, by looking at them. Shuffle rotates over (shader, preset) pairs, not just
   shaders — defaults plus each distinct `// lerp-preset:` look, with a useful
-  preset name replacing an identical “Defaults” tile. That is about 270 looks
-  across the 68 shaders rather than 68. Every look is a portrait still of itself; click
+  preset name replacing an identical “Defaults” tile. That is about 286 looks
+  across the 76 shaders rather than 76. Every look is a portrait still of itself; click
   a tile to put it in or take it out. They are grouped under a shader heading
   whose checkbox turns the
   whole group on or off and carries an *n/m* count, and there is a search field,
@@ -479,7 +479,7 @@ its parameters and presets wherever the file goes.
   drifting, and dragging the slider (or turning a MIDI knob bound to it) takes
   control until the toggle hands it back. Details in `PORTING.md`.
 - A malformed declaration is a compile error naming the line.
-- 67 of the 68 built-in shaders declare parameters (all but `pipes`). The 30
+- 75 of the 76 built-in shaders declare parameters (all but `pipes`). The 30
   Paper Shaders ports mirror the upstream props, with defaults set to this
   project's current look and the upstream looks available as presets.
 - Inspect and drive them from the CLI:
@@ -527,6 +527,33 @@ its parameters and presets wherever the file goes.
 - Protocol and registry: `Sources/LerpCore/DataProvider.swift`. Worked examples:
   `Sources/LerpCore/PipesData.swift` (derive every frame),
   `Sources/LerpCore/LifeData.swift` (bounded history). Details in `PORTING.md`.
+
+### Gaussian splat captures
+
+- The `splat-*` looks draw real, photographed scenes stored as 3D Gaussian
+  splats (3DGS): a strawberry, a triceratops skull, a carved owl, a grape, a
+  bonsai, a shrine approach, a parish church and a town square. Each declares
+  `// lerp-data: splat:<move>:<capture>`; `<move>` is `orbit` (a turntable, or
+  an eased arc) or `dolly` (a dolly zoom).
+- `SplatData.swift` draws them the way 3DGS viewers do: each splat's 3D
+  covariance projected to a screen ellipse, a back-to-front counting sort on
+  the CPU every frame, and premultiplied blending of instanced quads into a
+  texture the provider owns. That runs in `encodeCompute`, so the engine still
+  draws one fullscreen fragment function; the look reads the texture at
+  `texture(1)` and composites its own glass, filter or sky over it.
+- Deformations (`deform` 1–4: ripple, wall waves, twist, dissolve) displace
+  splats in the vertex shader; the twist and dissolve are repeated on the CPU
+  so the sort sees the moved splats.
+- The captures are third-party (CC BY 4.0, credited in `NOTICE.txt`) and
+  large, so they are not in git. `Sources/Splats/captures.json` lists where
+  each comes from and how it is turned upright, centred, cropped and scaled;
+  `make splats` (run by `make saver`) downloads each once, decodes it with
+  PlayCanvas's `splat-transform`, and writes a compact `.lsplat` to
+  `build/splats`, which the saver bundles under `Resources/Splats`. Needs
+  Node.js and network the first time; about 62 MB for all eight.
+- A capture only holds together near where its photos were taken. Cameras
+  that leave that region (the dolly backing away, the town square's arc) set
+  `clip`, which drops every splat nearer than the subject minus `clip`.
 
 ### GLSL → Metal mapping
 
