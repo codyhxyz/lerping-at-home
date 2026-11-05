@@ -92,9 +92,9 @@
 // the descent fades the same way; the march ends where it reaches 95%.
 // Lighting close up: no shadow rays (the key rides over the camera's
 // shoulder), a lamp just above the camera with distance falloff, one
-// occlusion probe deepened by the crevice trap, and normals from how the hit
-// point moves across the pixel quad (the solids are polyhedra, so that is
-// exact within a face and costs nothing).
+// occlusion probe deepened by the crevice trap, and a prefiltered normal two
+// levels shallower than the hit (see the comment where it is taken: the
+// exact one sparkled).
 //
 // GPU cost, LerpPreview --bench at 3840x2160 on an Apple M5, best of several
 // runs interleaved with fractal-multiverse and scaled to its 8.6 ms (the GPU
@@ -174,6 +174,7 @@ constant int   SP_SHADOW_STEPS = 16;
 constant int   SP_FLY_STEPS = 40;
 constant float SP_FOG_END = 24.0;           // flying, the march ends here (in clearance units), where fog is 95%
 constant float SP_PIXEL = 1.0 / 1600.0;      // reference pixel footprint, in focal units
+constant float SP_PIXEL_5K = 1.0 / 2880.0;   // a 5K drawable's pixel: the flight's normal filter never gets finer
 constant float SP_FOCAL = 2.0;
 constant float SP_LOD_MIN = 6.0;             // stands in for SpRoute.lodMin when not flying (unused there)
 constant float SP_LOD_MAX = 12.0;
@@ -1432,28 +1433,26 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         }
     }
 
-    // Flying, the normal comes from how the hit point moves across the pixel
-    // quad: the solids are polyhedra, so within a face that is exact, and it
-    // costs no distance evaluations. Where the quad straddles an edge (its
-    // hit distances disagree) the edge gets a normal facing the camera.
-    float3 nQuad = float3(0.0);
-    bool quadOK = false;
-    if (fly) {
-        float tq = max(tHit, 0.0);
-        float3 pq = roF + rdF * tq;
-        float3 dpx = dfdx(pq), dpy = dfdy(pq);
-        float dtx = abs(dfdx(tq)), dty = abs(dfdy(tq));
-        float3 cn = cross(dpy, dpx);
-        quadOK = tHit > 0.0 && max(dtx, dty) < 0.03 * tHit && dot(cn, cn) > 1e-20;
-        nQuad = quadOK ? normalize(cn) : -rdF;
-        if (dot(nQuad, rdF) > 0.0) nQuad = -nQuad;
-    }
-
     if (tHit > 0.0) {
         float3 p = roF + rdF * tHit;
         float lodH = fly ? clamp((lodK - log(tHit)) * invLogS + SP_FLY_LOD_BIAS, lodMin, SP_LOD_MAX) : float(F.iters);
         float eN = max(0.25 * SP_PIXEL * tHit, 1e-6);
-        float3 n = fly ? nQuad : spNormal(p, eN, F, lodH);
+        // Flying, the normal is prefiltered: two levels shallower than the
+        // hit, over a few of the drawable's pixels. Past the camera's own
+        // neighbourhood the flight sits at its verified floor depth, where
+        // the deepest solids and the gaps between them are 2-4 px, and a
+        // normal taken from them (it used to come free from the pixel quad's
+        // hit points) gave every pixel its own facet: the whole surface
+        // sparkled and crawled as the camera moved, about as frame-to-frame
+        // incoherent as noise. The silhouette still has every level; the
+        // light now reads the solids one could actually see. Costs four
+        // shallow DE evaluations: at 3840x2160 on an M5, Stone 18.4 -> 23.2 ms,
+        // Jade 15.0 -> 17.3, Defaults 14.4 -> 15.9. Frame-to-frame flicker at
+        // 20 fps drops 40-80% across the flying presets (Stone 0.165 -> 0.044
+        // mean |f(t-dt) - 2 f(t) + f(t+dt)|).
+        float px = max(1.0 / min(u.resolution.x, u.resolution.y), SP_PIXEL_5K);
+        float3 n = fly ? spNormal(p, 2.5 * px * tHit, F, max(lodH - 2.0, 3.0))
+                       : spNormal(p, eN, F, lodH);
         float3 v = -rdF;
         float2 tr = spTrap(p, F, fly ? lodH - 3.0 : lodH);
 

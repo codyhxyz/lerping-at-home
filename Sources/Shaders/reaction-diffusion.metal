@@ -22,6 +22,14 @@
 // before a fresh seed. At the default 16 steps per second that is about four
 // and a half minutes. "speed" changes only how long it takes in seconds.
 //
+// Once the colonies have filled the screen the chemistry all but stops: for
+// about a third of every epoch fewer than 3% of pixels changed in two
+// seconds, and the look read as a still picture. So the camera drifts across
+// the toroidal field (which has no edges to reach) along a slow curve, and
+// the key light swings back and forth, walking the gloss over the ridges.
+// Both are closed-form functions of the clock, so a frame is still a pure
+// function of (time, seed, parameters).
+//
 // lerp-data: reaction-diffusion
 //
 // lerp-param: feed       float 0.01 0.1    = 0.0545  "Feed rate"
@@ -82,7 +90,14 @@ fragment half4 lerpMain(float4 pos [[position]],
     // the drawable's aspect up to a 2.5:1 cap; past that the toroidal field
     // simply wraps (the sampler repeats) instead of stretching.
     float cellPx = min(u.resolution.x, u.resolution.y) / min(F.grid.x, F.grid.y);
-    float2 g = pos.xy / cellPx;
+    // The drift: RD_PAN cells a second, its heading turning once every
+    // RD_TURN seconds from a seeded start, integrated in closed form.
+    const float RD_PAN = 1.2, RD_TURN = 600.0;
+    float w = TWO_PI / RD_TURN;
+    float a0 = TWO_PI * u.seed;
+    float a = a0 + w * u.time;
+    float2 pan = (RD_PAN / w) * float2(sin(a) - sin(a0), cos(a0) - cos(a));
+    float2 g = pos.xy / cellPx + pan;
 
     const float e = 0.7;
     float2 centre = rdTexel(grid, g, F.grid);
@@ -96,7 +111,9 @@ fragment half4 lerpMain(float4 pos [[position]],
     // y runs down the screen, so a light from the upper left is (−x, −y).
     // Wrapped diffuse keeps the shadowed flanks soft, like wet tissue.
     float3 n = normalize(float3(-slope * (2.6 * u.relief), 1.0));
-    float3 l = normalize(float3(-0.45, -0.6, 0.66));
+    // Swinging ±0.6 rad about that, once every 80 s.
+    float az = atan2(-0.6, -0.45) + 0.6 * sin(TWO_PI * u.time / 80.0 + 5.0 * u.seed);
+    float3 l = normalize(float3(0.75 * cos(az), 0.75 * sin(az), 0.66));
     float3 halfway = normalize(l + float3(0.0, 0.0, 1.0));
     float diffuse = saturate((dot(n, l) + 0.25) / 1.25);
     float spec = pow(max(0.0, dot(n, halfway)), 36.0);
