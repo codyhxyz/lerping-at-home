@@ -168,6 +168,30 @@ MIDI_FLAGS := -I $(MIDI_BIN) -L $(MIDI_BIN) -lMIDIDeps
 # would otherwise read as "toolchain changed" on every invocation.
 MIDI_SWIFT_STAMP := $(BUILD)/midi-swift-version.stamp
 
+# Shader › Control with Hands (Sources/Playground/HandControl.swift). The page
+# and coding cube's tracking code are in Sources/Playground/Hands; MediaPipe's
+# web runtime and its hand model are third-party and 18 MB, so like the splats
+# they are downloaded once into build/, checked against a pinned sha256, and
+# copied into the bundle — never stored in git. 0.10.35 is the version coding
+# cube's hand control ran on. Only the SIMD module build of the wasm is kept:
+# that is the one MediaPipe's loader picks in WebKit, which has had wasm SIMD
+# since Safari 16.4.
+HANDS_SRC          := $(shell find Sources/Playground/Hands -type f ! -name .DS_Store)
+MEDIAPIPE          := $(BUILD)/mediapipe
+MEDIAPIPE_STAMP    := $(MEDIAPIPE)/.stamp
+MEDIAPIPE_VERSION  := 0.10.35
+MEDIAPIPE_TGZ      := https://registry.npmjs.org/@mediapipe/tasks-vision/-/tasks-vision-$(MEDIAPIPE_VERSION).tgz
+MEDIAPIPE_TGZ_SHA  := 84597a25e13d123b5f4cbe768bb72e97a2c28c7a465f0ace287d8cbe5246bff0
+HAND_MODEL         := https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+HAND_MODEL_SHA     := fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1
+# $(call FETCH,url,sha256,dest): download, refuse anything but the pinned bytes.
+define FETCH
+	curl -fsSL --retry 3 -o "$(3).part" "$(1)"
+	@echo "$(2)  $(3).part" | shasum -a 256 -c --status || { \
+		echo "$(1): sha256 is not the pinned $(2)"; rm -f "$(3).part"; exit 1; }
+	mv "$(3).part" "$(3)"
+endef
+
 # Public installer. The PKG supplies Installer's optional Playground checkbox;
 # the DMG is the downloadable release container. `release` signs and notarizes
 # both so the nested installer also works when its ticket must be checked offline.
@@ -226,7 +250,8 @@ playground: install-playground
 
 playground-build: $(PLAYGROUND_BIN)
 
-$(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/Playground/Info.plist LICENSE NOTICE.txt
+$(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/Playground/Info.plist LICENSE NOTICE.txt \
+                   $(HANDS_SRC) $(MEDIAPIPE_STAMP)
 	@$(LSREGISTER) -u $(LEGACY_PLAYGROUND_APP) 2>/dev/null || true
 	rm -rf $(LEGACY_PLAYGROUND_APP)
 	@mkdir -p $(PLAYGROUND_APP)/Contents/MacOS $(PLAYGROUND_APP)/Contents/Resources $(INTENTS_DIR)
@@ -245,7 +270,25 @@ $(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/
 	plutil -replace LerpBuild -string $(LERP_BUILD) $(PLAYGROUND_APP)/Contents/Info.plist
 	cp $(PLAYGROUND_ICNS) $(PLAYGROUND_APP)/Contents/Resources/LerpPlayground.icns
 	cp LICENSE NOTICE.txt $(PLAYGROUND_APP)/Contents/Resources/
+	rm -rf $(PLAYGROUND_APP)/Contents/Resources/Hands
+	cp -R Sources/Playground/Hands $(PLAYGROUND_APP)/Contents/Resources/Hands
+	cp -R $(MEDIAPIPE)/vendor $(MEDIAPIPE)/models $(PLAYGROUND_APP)/Contents/Resources/Hands/
 	codesign --force -s - $(PLAYGROUND_APP)
+
+# Rebuilt when the pins change, which is the only time the bytes can.
+MEDIAPIPE_PINS := $(MEDIAPIPE_TGZ_SHA)$(HAND_MODEL_SHA)
+$(MEDIAPIPE_STAMP): $(if $(filter $(MEDIAPIPE_PINS),$(shell cat $(MEDIAPIPE_STAMP) 2>/dev/null)),,FORCE)
+	rm -rf $(MEDIAPIPE)
+	@mkdir -p $(MEDIAPIPE)/vendor/mediapipe/wasm $(MEDIAPIPE)/models $(MEDIAPIPE)/npm
+	$(call FETCH,$(MEDIAPIPE_TGZ),$(MEDIAPIPE_TGZ_SHA),$(MEDIAPIPE)/tasks-vision.tgz)
+	$(call FETCH,$(HAND_MODEL),$(HAND_MODEL_SHA),$(MEDIAPIPE)/models/hand_landmarker.task)
+	tar -xzf $(MEDIAPIPE)/tasks-vision.tgz -C $(MEDIAPIPE)/npm \
+		package/vision_bundle.mjs \
+		package/wasm/vision_wasm_module_internal.js package/wasm/vision_wasm_module_internal.wasm
+	mv $(MEDIAPIPE)/npm/package/vision_bundle.mjs $(MEDIAPIPE)/vendor/mediapipe/
+	mv $(MEDIAPIPE)/npm/package/wasm/* $(MEDIAPIPE)/vendor/mediapipe/wasm/
+	rm -rf $(MEDIAPIPE)/npm $(MEDIAPIPE)/tasks-vision.tgz
+	@echo '$(MEDIAPIPE_PINS)' > $@
 
 # The app icon, rendered from the same mesh-gradient shader that makes the
 # saver's System Settings thumbnail. No binary art in the repo, and `make
@@ -434,7 +477,7 @@ FORCE:
 # by default and can be unchecked on Installer's Customize screen.
 package: saver-build playground-build Packaging/Distribution.xml Packaging/InstallerReadMe.txt \
          Packaging/saver-scripts/preinstall Packaging/saver-scripts/postinstall \
-         Packaging/playground-scripts/preinstall LICENSE NOTICE.txt
+         Packaging/playground-scripts/preinstall Packaging/LerpPlayground.entitlements LICENSE NOTICE.txt
 	@printf '%s' '$(RELEASE_VERSION)' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$$' || { \
 		echo "package: RELEASE_VERSION must look like 1.2.3"; exit 1; }
 	rm -rf "$(RELEASE_DIR)"
@@ -471,7 +514,8 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 		codesign --force -s - "$(RELEASE_PLAYGROUND)"; \
 	else \
 		codesign --force --options runtime --timestamp -s "$(APP_SIGN_IDENTITY)" "$(RELEASE_SAVER)"; \
-		codesign --force --options runtime --timestamp -s "$(APP_SIGN_IDENTITY)" "$(RELEASE_PLAYGROUND)"; \
+		codesign --force --options runtime --timestamp --entitlements Packaging/LerpPlayground.entitlements \
+			-s "$(APP_SIGN_IDENTITY)" "$(RELEASE_PLAYGROUND)"; \
 	fi
 	codesign --verify --deep --strict "$(RELEASE_SAVER)"
 	codesign --verify --deep --strict "$(RELEASE_PLAYGROUND)"

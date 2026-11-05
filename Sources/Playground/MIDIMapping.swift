@@ -105,7 +105,8 @@ struct MIDIBinding: Codable, Hashable {
     var component: ColorComponent?
 
     var shortLabel: String {
-        "CC\(cc)" + (channel.map { " c\(Int($0) + 1)" } ?? "")
+        (HandControl.Axis(channel: channel, cc: cc)?.label
+            ?? "CC\(cc)" + (channel.map { " c\(Int($0) + 1)" } ?? ""))
             + (component.map { " " + $0.shortLabel } ?? "")
     }
 

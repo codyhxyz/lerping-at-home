@@ -393,6 +393,9 @@ enum MainMenu {
             item("Track Head with Camera",
                  #selector(PlaygroundWindowController.toggleHeadTracking(_:)), ""),
             item("Recentre Head", #selector(PlaygroundWindowController.recenterHead(_:)), ""),
+            // Off at launch. Gestures arrive as CCs; bind them with Learn.
+            item("Control with Hands",
+                 #selector(PlaygroundWindowController.toggleHandControl(_:)), ""),
             .separator(),
             item("Next Look", Selector(("nextLook:")), "]", [.command, .shift]),
             item("Previous Look", Selector(("previousLook:")), "[", [.command, .shift]),

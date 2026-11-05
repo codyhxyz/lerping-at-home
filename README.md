@@ -395,6 +395,19 @@ Keys:
 - `⌥⌘R` — open the screensaver rotation gallery window.
 - `⇧⌘[` / `⇧⌘]` — previous/next look.
 
+Hand control (**Shader › Control with Hands**, off at every launch) makes your
+hands a MIDI controller, so no device is needed. Hold up an open hand, then
+pinch to grab; values move only while you pinch, and letting go leaves them
+where they are. Pinch with both hands and the distance between them is a third
+axis. The three axes, **Hand X**, **Hand Y** and **Hand Spread**, bind like
+knobs: click a parameter's Learn…, then pinch and move. They are relative CCs
+102–104 on channel 16, so they share banks, ranges and saving with real knobs.
+The tracking is coding cube's MediaPipe hand control, run in a transparent web
+view over the render, which draws a cursor for each hand and says what it is
+waiting for. Frames stay inside the app. `make` downloads MediaPipe's web
+runtime and hand model once, checks them against pinned sha256s and bundles
+them; they are not in git.
+
 Other targets:
 
 - `make package RELEASE_VERSION=…` — build the inner Installer package for inspection.
@@ -727,4 +740,5 @@ even before `make saver` bakes it into the bundle.
 - Microsoft 3D Maze (`ssmaze`) — `Sources/Shaders/maze.metal` is an original ray-cast homage sharing no code, textures or artwork with it. See `NOTICE.txt`.
 - The OpenGL "teapot" material table (emerald, jade, pearl, ruby, turquoise, brass, bronze, copper, gold, silver, plastics, rubbers) — long-published values used by `pipes`.
 - [orchetect/swift-midi](https://github.com/orchetect/swift-midi) — MIT. MIDI I/O for the playground, linked statically via `Sources/MIDIDeps`. Formerly named MIDIKit.
+- [MediaPipe](https://github.com/google-ai-edge/mediapipe) — Apache-2.0. Tasks Vision web runtime and hand landmarker model, for the playground's hand control; downloaded and bundled at build time, not in git.
 - [MIKMIDI](https://github.com/mixedinkey-opensource/MIKMIDI) — MIT. The MIDI mapping model (per-device bindings, MIDI learn, named banks) follows its design. No MIKMIDI code is used and it is not a dependency.

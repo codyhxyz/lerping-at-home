@@ -301,6 +301,13 @@ The MIDI mapping-preset model (per-device bindings, MIDI learn, named banks)
 follows the design of MIKMIDI (https://github.com/mixedinkey-opensource/MIKMIDI),
 Copyright Mixed In Key LLC, MIT-licensed. No MIKMIDI code is used.
 
+The playground's hand control bundles Google's MediaPipe Tasks Vision web
+runtime (@mediapipe/tasks-vision 0.10.35, https://github.com/google-ai-edge/mediapipe)
+and its hand landmarker model, Copyright Google LLC, licensed under the Apache
+License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0). Both are
+downloaded at build time by the Makefile, checked against pinned sha256s, and
+are not stored in this tree. The screensaver does not include them.
+
 
 GAUSSIAN SPLAT CAPTURES
 -----------------------

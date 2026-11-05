@@ -22,6 +22,10 @@ final class MIDIController: @unchecked Sendable {
         let value: UInt8
         let sourceID: String
         let sourceName: String
+        /// How Learn binds this source. A knob is learned omni and absolute;
+        /// `HandControl` sends relative ticks on a channel of its own.
+        var learnChannel: UInt4? = nil
+        var learnMode: MIDIBindingMode = .abs7
     }
 
     struct Source: Equatable {

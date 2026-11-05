@@ -162,6 +162,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// The camera feeding `u.viewer`, while Shader › Track Head with Camera is
     /// on. Off at every launch and never persisted, like `audioTap`.
     private var headTracker: HeadTracker?
+    /// The camera, while Shader › Control with Hands is on. Off at every
+    /// launch for the same reason as system audio. Its gestures arrive as CCs
+    /// through `receive`, exactly like a knob's.
+    private var hands: HandControl?
 
     private static let windowAutosave = "LerpPlaygroundWindow"
     /// Bumped when the inspector added a third pane: an autosaved two-subview
@@ -776,7 +780,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func refreshMappingList() {
-        midiPanel.showDevices(midi.summary)
+        midiPanel.showDevices(hands == nil ? midi.summary : midi.summary + " · Hands")
         midiPanel.showMappings(mappings.map(\.name), selected: activeMapping?.name,
                                enabled: midi.isAvailable)
         guard midi.isAvailable else {
@@ -850,17 +854,27 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             let component = learnComponent(target)
             // Omni by default: most controllers sit on a channel the user has
             // never chosen, and a binding that only works on one is a trap.
-            preset.bind(MIDIBinding(paramID: target.param, channel: nil, cc: message.cc,
-                                    component: component))
+            // A source with a channel of its own (hands) says so in the message.
+            let binding = MIDIBinding(paramID: target.param, channel: message.learnChannel,
+                                      cc: message.cc, mode: message.learnMode, component: component)
+            preset.bind(binding)
             commit(preset)
-            midiPanel.showStatus("Learned CC\(message.cc) → \(target.param)"
-                                    + (component.map { " \($0.label)" } ?? ""),
+            midiPanel.showStatus("Learned \(binding.shortLabel) → \(target.param)",
                                  tint: EditorTheme.text)
             return
         }
         guard let routed = router.route(channel: message.channel, cc: message.cc, value: message.value),
               let param = shownParameters.first(where: { $0.name == routed.binding.paramID }),
-              let value = resolve(routed.update, for: param, binding: routed.binding) else { return }
+              let value = resolve(routed.update, for: param, binding: routed.binding) else {
+            // Only while no hand axis is bound at all: with Y bound, a drag's
+            // sideways ticks would otherwise flash this over every Y update.
+            if message.sourceID == HandControl.sourceID,
+               activeMapping?.bindings.contains(where: { HandControl.Axis(channel: $0.channel, cc: $0.cc) != nil }) != true {
+                midiPanel.showStatus("\(HandControl.Axis(channel: message.channel, cc: message.cc)?.label ?? "Hand") "
+                                     + "is not bound here — click a parameter's Learn…, then pinch and move")
+            }
+            return
+        }
         // A knob is a hand on the control: bound to an animated parameter, it
         // takes control of it exactly as dragging the slider does.
         setParameter(param.name, value)
@@ -943,7 +957,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             learnTarget = armed ? nil : (name, component)
             midiPanel.showStatus(learnTarget == nil
                 ? "Learn cancelled"
-                : "Learning \(name)\(component.map { " \($0.label)" } ?? "") — move a knob",
+                : "Learning \(name)\(component.map { " \($0.label)" } ?? "")"
+                    + (hands == nil ? " — move a knob" : " — move a knob, or pinch and move a hand"),
                                  tint: EditorTheme.text)
         case .clear:
             guard var preset = activeMapping else { return }
@@ -1607,16 +1622,26 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         setStatus(reason ?? "\(input) off", tint: reason == nil ? EditorTheme.dim : EditorTheme.error)
     }
 
+    /// The shared start of a camera input: ask once, and say where the switch
+    /// is when the answer was no. Both head tracking and hand control go
+    /// through here, so there is one prompt and one wording for a refusal.
+    private func withCamera(_ start: @escaping () -> Void) {
+        HeadTracker.requestAccess { [weak self] granted in
+            guard granted else {
+                self?.setStatus("Camera access is off for LerpPlayground: System Settings › "
+                                + "Privacy & Security › Camera", tint: EditorTheme.error)
+                return
+            }
+            start()
+        }
+    }
+
     // MARK: - Head tracking
 
     @objc func toggleHeadTracking(_ sender: Any?) {
         if headTracker != nil { return stopHeadTracking(nil) }
-        HeadTracker.requestAccess { [weak self] granted in
+        withCamera { [weak self] in
             guard let self, self.headTracker == nil else { return }
-            guard granted else {
-                return self.setStatus("Camera access is off for LerpPlayground: System Settings › "
-                                      + "Privacy & Security › Camera", tint: EditorTheme.error)
-            }
             let tracker = HeadTracker()
             do {
                 try tracker.start()
@@ -1644,6 +1669,39 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         headTracker = nil
         metalView.viewer = nil
         liveInputStopped("Head tracking", reason: reason)
+    }
+
+    // MARK: - Hands
+
+    @objc func toggleHandControl(_ sender: Any?) {
+        if hands != nil { return stopHandControl(nil) }
+        withCamera { [weak self] in
+            guard let self, self.hands == nil else { return }
+            let control = HandControl()
+            control.onMessage = { [weak self] message in self?.receive(message) }
+            control.isLearning = { [weak self] in self?.learnTarget != nil }
+            // What it is waiting for is drawn over the render; here only
+            // matters that it stopped: no camera, or a page that failed.
+            control.onStatus = { [weak self, weak control] status, active in
+                guard let self, !active, self.hands === control else { return }
+                self.stopHandControl("Hand control stopped: \(status)")
+            }
+            do {
+                try control.start(over: self.metalView)
+            } catch {
+                return self.setStatus("Hand control unavailable: \(error)", tint: EditorTheme.error)
+            }
+            self.hands = control
+            self.refreshMappingList()
+            self.setStatus("Hand control on: hold up an open hand, then pinch to grab", tint: EditorTheme.dim)
+        }
+    }
+
+    private func stopHandControl(_ reason: String?) {
+        hands?.stop()
+        hands = nil
+        refreshMappingList()
+        liveInputStopped("Hand control", reason: reason)
     }
 
     // MARK: - Chrome and polling
@@ -1817,6 +1875,9 @@ extension PlaygroundWindowController: NSMenuItemValidation {
         switch item.action {
         case #selector(saveShader(_:)): return saveButton.isEnabled
         case #selector(revertShader(_:)): return revertButton.isEnabled
+        case #selector(toggleHandControl(_:)):
+            item.state = hands == nil ? .off : .on
+            return true
         case #selector(toggleSystemAudio(_:)):
             item.state = audioTap == nil ? .off : .on
             if #available(macOS 14.2, *) { return true } else { return false }
