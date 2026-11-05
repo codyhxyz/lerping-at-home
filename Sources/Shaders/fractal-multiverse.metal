@@ -28,8 +28,8 @@
 //              inversion 1.08..1.24 and Lattice's twist 0.28..0.52, and
 //              values outside 0..1 carry on past those ends
 //   near, mid, far  depth colours (Cathedral and Coral use near and far)
-// The port ignores everything but speed, zoom and glow, all of which are
-// identity at their defaults, so its default look is unchanged.
+// The port ignores everything but speed, zoom and glow; zoom and glow are
+// identity at their defaults, and its speed is a fifth of upstream's (below).
 //
 // Sparkle: the port and Coral put more fractal detail into a pixel than one
 // sample can hold (the port's inversions leave isolated white pixels and a
@@ -42,7 +42,9 @@
 // (see mcoCoral). Cathedral and Lattice render within ~0.003 mean of a
 // 16-sample reference at one sample, so they stay at one.
 // Measured at 1352x878 (mean |frame(t-dt) - 2 frame(t) + frame(t+dt)| at
-// dt = 1/60, t = 20, 75, 140; reference = 16 samples a pixel):
+// dt = 1/60, t = 20, 75, 140; reference = 16 samples a pixel), before the
+// port's clock was slowed and Coral's forward drift became a sideways pan
+// (see their sections), so the port and Coral now move less per frame:
 //   Upstream  0.0964 -> 0.0862 (reference 0.0775); 0.0162 -> 0.0106 off it
 //   port      0.0409 -> 0.0343 (reference 0.0263); 0.0132 -> 0.0088 off it
 //   Coral     0.0160 -> 0.0102 (reference 0.0093); 0.0052 -> 0.0053 off it,
@@ -60,7 +62,7 @@
 // read ~11 ms mean and ~12.3-12.8 p95, Cathedral and Lattice ~5.5.
 //
 // lerp-param: form      int   0 3       = 0     "Form"
-// lerp-param: speed     float 0 2       = 0.5   "Speed"
+// lerp-param: speed     float 0 2.5     = 0.5   "Speed"
 // lerp-param: morph     float -1 2      = 0.5   "Morph"
 // lerp-animate: morph 0 1 period=210
 // lerp-param: glow      float 0.2 3     = 1.0   "Glow"
@@ -70,7 +72,7 @@
 // lerp-param: mid       color           = (0.25, 0.85, 1.0)  "Middle colour"
 // lerp-param: far       color           = (1.0, 0.70, 0.25)  "Far colour"
 //
-// lerp-preset: Upstream  speed=1.0
+// lerp-preset: Upstream  speed=2.5
 // lerp-preset: Cathedral form=1, near=(1.0, 0.70, 0.36), far=(0.92, 0.27, 0.42)
 // lerp-preset: Coral     form=2, near=(0.12, 0.95, 0.78), far=(0.52, 0.24, 1.0)
 // lerp-preset: Lattice   form=3
@@ -135,10 +137,22 @@ struct MvLatticeIn {
 // saturation fades with depth. The view breathes in and out with cos(t/2).
 //
 // Port changes: time is slowed and offset by u.seed (house style); `speed` is
-// this port's own parameter, upstream has none. Upstream divides by the
-// resolution's height; this uses the short axis so portrait screens see the
-// same framing (identical on landscape). Negative colour is clamped. Two
-// samples a pixel (see the note at the top of the file).
+// this port's own parameter, upstream has none. The port's clock is
+// 0.4 x speed, so the default 0.5 runs upstream's motion at a fifth of its
+// rate and the Upstream preset's 2.5 is upstream exactly. The tumble turns
+// the fractal out of the screen's plane, through a slab only 18 samples
+// deep; at upstream x 0.5 (the old default, 0.25 rad/s) the sparse far
+// samples swelled and vanished as the volume turned, which read as the
+// distance morphing. At 0.1 rad/s a CPU model of the march shows the
+// motion-compensated change over 2 s falling from 0.74 to 0.46 (a rigid
+// camera orbit through castle-to-castle scores 0.84, so what is left is the
+// turn itself), the zoom breathes over 63 s instead of 25 (a 3%/s peak, not
+// 8%), and 41-96% of a 480x300 frame still changes in any 2 s.
+//
+// Upstream divides by the resolution's height; this uses the short axis so
+// portrait screens see the same framing (identical on landscape). Negative
+// colour is clamped. Two samples a pixel (see the note at the top of the
+// file).
 //
 // GPU cost: 18 x 9 fold iterations per sample, no cap needed. LerpPreview
 // --bench, Apple M5: ~0.95 ms/frame at 1200x750, ~8.7 ms at 3840x2160
@@ -165,7 +179,7 @@ static inline float3x3 fmRotate3D(float angle, float3 axis) {
 static float3 fmPort(float4 pos, MvPortIn u) {
     float2 r = u.resolution;
     float2 fc = float2(pos.x, r.y - pos.y);           // GLSL gl_FragCoord (y up)
-    float t = u.speed * u.time + u.seed * 60.0;
+    float t = 0.4 * u.speed * u.time + u.seed * 60.0; // speed 2.5 = upstream
 
     // Per-pixel constants hoisted out of the march (upstream rebuilds them
     // every step; the values are identical).
@@ -222,6 +236,13 @@ static float3 fmPort(float4 pos, MvPortIn u) {
 // u.seed picks where on the route each activation begins. `foldScale`
 // drifts slowly (lerp-animate), which morphs the tracery continuously.
 //
+// The slab is orthographic and its layers sit at fixed depths, so a turn out
+// of its plane or a glide along its depth reshapes the tracery rather than
+// moving it. Both were halved (yaw 0.05 t -> 0.025 t, the route's z swing
+// 1.5 -> 0.75): in a CPU model the motion-compensated change over 2 s falls
+// from 0.21 (0.31 at worst) to 0.08 (0.09), and 67-87% of a 480x300 frame
+// changes per 2 s (15-93% before, the low end where the yaw alone moved it).
+//
 // GPU cost: 14 layers x 8 folds, no trig or square root in the loop.
 // LerpPreview --bench, Apple M5, 3840x2160: within about 5-10% of
 // fractal-multiverse measured in the same run (~9-10 ms when it reads
@@ -242,9 +263,9 @@ static float3 mcCathedral(float4 pos, MvCathedralIn u) {
     uv.x = abs(uv.x);                                   // the nave's mirror
 
     float2 xy = uv * u.zoom * (1.0 + 0.08 * sin(0.13 * t));
-    float3x3 turn = mcRotY(0.05 * t, 0.12 * sin(0.041 * t));
+    float3x3 turn = mcRotY(0.025 * t, 0.12 * sin(0.041 * t));
     // The slab's route through the box: a slow, never-repeating glide.
-    float3 route = float3(0.25 * sin(0.017 * t), 0.6 * sin(0.031 * t), 1.5 * sin(0.023 * t));
+    float3 route = float3(0.25 * sin(0.017 * t), 0.6 * sin(0.031 * t), 0.75 * sin(0.023 * t));
 
     const float S = u.foldScale;
     const float minR2 = 0.09;                           // inner sphere radius 0.3
@@ -297,7 +318,7 @@ static float3 mcCathedral(float4 pos, MvCathedralIn u) {
 //
 // The fractal is the sphere-inversion Apollonian packing (fold space into a
 // repeating cube, invert in the unit sphere, repeat), which is periodic, so
-// the slab can drift forward forever without leaving it. Each of 14 layers
+// the slab can drift sideways forever without leaving it. Each of 14 layers
 // runs 8 folds; the running inversion scale turns the final distance to the
 // unit sphere into a distance in world space, so the lace stays thin at
 // every depth of the packing, and the orbit's closest approach to the
@@ -305,8 +326,21 @@ static float3 mcCathedral(float4 pos, MvCathedralIn u) {
 // cluster. The layers spread slightly with depth (a little perspective) and
 // fade from teal to violet, so the far filaments read as further down.
 //
-// u.seed picks where on the drift each activation begins. `inversion`
+// u.seed picks where on the drift each activation begins, the slab's
+// heading through the packing and which slices its layers are. `inversion`
 // drifts slowly (lerp-animate), swelling and thinning the strands.
+//
+// Motion is in the slab's own plane only. The layers sit at fixed depths, so
+// anything moving through them reshapes: the slab used to drift forward
+// 0.05 t (a layer's spacing, 0.07, every ~3 s at the default speed) and to
+// yaw 0.03 t out of its plane, which at the frame's edges swept the layers
+// through the packing faster still, so strands thinner than a layer swelled
+// and shrank instead of moving. Now the heading is fixed for the activation
+// and the slab pans sideways at the old forward rate: every layer slides
+// rigidly, the near ones faster (the layers spread with depth), which is
+// parallax. A CPU model's motion-compensated change over 2 s falls from 0.49
+// to 0.02 (the pan and the screen's own slow turn), with 54-65% of a 480x300
+// frame changing per 2 s (70-79% before).
 //
 // GPU cost: 14 layers x 8 folds, no trig in the loop, and each layer's
 // sample point is one multiply-add from a per-pixel origin and step.
@@ -328,14 +362,19 @@ static float3 mcoCoral(float4 pos, MvCoralIn u) {
     float t = u.speed * u.time + u.seed * 400.0;
 
     float2 xy = rotate(uv, 0.02 * t) * u.zoom;
-    // Forward drift through the periodic packing, with a slow sway.
-    float3 drift = float3(0.3 * sin(0.05 * t), 0.2 * cos(0.04 * t), 0.05 * t);
-    float yaw = 0.49 + 0.03 * t;
+    // A sideways pan across the periodic packing, with a slow sway; the
+    // depth is the seed's and stays put (see the header).
+    float3 drift = float3(0.3 * sin(0.05 * t) + 0.0413 * t,   // 0.05 t along 0.6 rad
+                          0.2 * cos(0.04 * t) + 0.0282 * t,
+                          20.0 * u.seed);
+    float yaw = 0.49 + 12.0 * u.seed;
     float2 turn = float2(cos(yaw), sin(yaw));
     // Layer L samples view((xy * (1 + 0.5 L), L) + drift), which is linear
-    // in L, so it is built once here as origin + L * step.
+    // in L, so it is built once here as origin + L * step. The packing
+    // repeats every 2 on each axis, so the drift is wrapped to that (exact)
+    // to keep float precision however long the pan runs.
     float3 flat = mcoView(float3(xy, 0.0), turn);
-    float3 origin = flat + mcoView(drift, turn);
+    float3 origin = flat + (glmod3(mcoView(drift, turn) + 1.0, 2.0) - 1.0);
     float3 step = 0.5 * flat + mcoView(float3(0.0, 0.0, 1.0), turn);
 
     float3 col = float3(0.0);
@@ -392,7 +431,7 @@ static float3 mcoCoral(float4 pos, MvCoralIn u) {
 // kaleidoscope of a KIFS), turn the xw and yz planes together (a double
 // rotation, which has no 3D counterpart), then Kali's inversion
 // |q| / q.q - c. Space repeats every 2.4 units first, and the first fold is
-// a mirror, so the repetition has no seams and the slab can drift forever.
+// a mirror, so the repetition has no seams and the slab can pan forever.
 // Each layer keeps the orbit's closest approach to the unit 3-sphere,
 // paying a little for every later round, and draws it as fine faceted
 // lines over a faint blue frost. Near layers are ice-white, middle cyan,
@@ -401,7 +440,18 @@ static float3 mcoCoral(float4 pos, MvCoralIn u) {
 // The `twist` angle is the double rotation: it changes which of the 4D
 // crystal's facets this 3D slice cuts through, so as it drifts
 // (lerp-animate) the lattice slowly turns inside out. u.seed picks where
-// on the drift each activation begins.
+// on the pan each activation begins and which slices its layers are.
+//
+// Motion is in the slab's own plane only. The slab used to drift forward
+// 0.05 t through layers 0.145 apart (one every ~6 s at the default speed),
+// and the facets are thin in z, so they swelled and shrank as they crossed
+// a layer instead of moving: even a tenth of that rate still showed in a
+// CPU model. Now each layer is a fixed slice and the slab pans sideways at the
+// old forward rate, the near layers sliding faster than the far (parallax);
+// what still changes shape is the slow 4D slice (w0) and `twist`. The
+// model's motion-compensated change over 2 s falls from 0.56 to 0.11 (most
+// of it the layers' parallax), and 87-96% of a 480x300 frame still changes
+// per 2 s.
 //
 // GPU cost: 11 layers x 8 rounds. The sort is a min/max network, and since
 // every step but the inversion keeps |q|, one dot product per round serves
@@ -419,14 +469,19 @@ static float3 lmLattice(float4 pos, MvLatticeIn u) {
 
     float2 xy = rotate(uv, 0.02 * t) * u.zoom;
     // The slab stays square to the crystal, so its axes and mirror planes
-    // line up with the screen's; it drifts forward through the repeating
-    // cells and wanders sideways across them.
-    float3 drift = float3(0.7 * sin(0.021 * t), 0.6 * cos(0.017 * t), 0.05 * t);
+    // line up with the screen's; it pans across the repeating cells (0.05 t
+    // along 0.5 rad, wandering as it goes) at a depth the seed picks. The
+    // cells repeat every `period`, so the drift is wrapped to it (exact) to
+    // keep float precision however long the pan runs.
+    const float period = 2.4;
+    float3 drift = float3(0.7 * sin(0.021 * t) + 0.0439 * t,
+                          0.6 * cos(0.017 * t) + 0.0240 * t,
+                          20.0 * u.seed);
+    drift = glmod3(drift, period);
     float ca = cos(u.twist), sa = sin(u.twist);
     float cb = cos(0.7 * u.twist + 0.3), sb = sin(0.7 * u.twist + 0.3);
     float w0 = 0.2 + 0.1 * sin(0.05 * t);
     const float4 c = float4(0.6);
-    const float period = 2.4;
 
     // Layer L samples (xy * (1 + 0.4 L), 1.6 L) + drift.
     float3 origin = float3(xy, 0.0) + drift;

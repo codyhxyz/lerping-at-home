@@ -27,13 +27,27 @@
 // exp(-2000 e) glow gathered at every step, so surfaces read as lit stone and
 // the depth falls away into black.
 //
-// Port changes: time is slowed and offset by u.seed (house style). `speed`
-// and `tint` are this port's own parameters; upstream has neither. Upstream
-// is pure white, and when the camera drifts up against a large face the
-// frame goes almost entirely white (mean luma ~0.75), so the default tint
-// is a dimmer warm ivory; the "Upstream" preset restores white. Upstream
-// divides by the resolution's height; this uses the short axis so portrait
-// screens see the same framing (identical on landscape).
+// The swing is a morph, not a motion: seven folds each turn the sub-structure
+// below them by the change in the fold, so the fine, distant detail reshuffles
+// fastest. At upstream's rate (up to ~0.2 rad/s of axis tilt at the default
+// speed) a patch of it is unrecognisable within half a second, which reads as
+// the castle melting rather than turning. So `swing` scales the swing's rate
+// and defaults to 0.02: one castle becomes the next over ~13 minutes, and in
+// any 2 s a CPU model of this march shows no more reshaping than 0.25 s of
+// the camera's own orbit (motion-compensated residual: median 0.07, at most
+// 0.14; the orbit's 0.08 and 0.14; swing 1's median 0.97). The seed lands each
+// activation anywhere on the swing, so the castle on screen differs from one
+// activation to the next, and the tumble keeps the look moving (84-95% of a
+// 480x300 frame changes per 2 s).
+//
+// Port changes: time is slowed and offset by u.seed (house style). `speed`,
+// `swing` and `tint` are this port's own parameters; upstream has none.
+// Upstream is pure white, and when the camera drifts up against a large face
+// the frame goes almost entirely white (mean luma ~0.75), so the default
+// tint is a dimmer warm ivory; the "Upstream" preset restores white (and
+// swing=1, upstream's rate). Upstream divides by the resolution's height;
+// this uses the short axis so portrait screens see the same framing
+// (identical on landscape).
 //
 // GPU cost: upstream marches 100 steps of 7 rotate-and-fold passes, ~5x
 // fractal-multiverse. The march is a heavily under-relaxed sphere trace
@@ -64,11 +78,12 @@
 // grouped (rho is far from steady there), which is why the 20-step default
 // marches every step as before.
 //
-// lerp-param: speed float 0 2   = 0.5 "Speed"
-// lerp-param: steps int 20 100  = 20  "March steps"
+// lerp-param: speed float 0 2   = 0.5  "Speed"
+// lerp-param: swing float 0 1   = 0.02 "Fold swing"
+// lerp-param: steps int 20 100  = 20   "March steps"
 // lerp-param: tint  color       = (0.86, 0.81, 0.72) "Tint"
 //
-// lerp-preset: Upstream  speed=1.0, steps=100, tint=(1.0, 1.0, 1.0)
+// lerp-preset: Upstream  speed=1.0, swing=1.0, steps=100, tint=(1.0, 1.0, 1.0)
 // lerp-preset: Moonstone tint=(0.58, 0.70, 0.86)
 
 // twigl's rotate3D(): Rodrigues rotation by `angle` about `axis`, built in
@@ -98,8 +113,11 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     // The fold: a quarter turn about (1, tilt, 0), tilt breathing between
     // -0.5 and 1.0, then abs(p + p) - 2. GLSL p *= M is row-vector times
-    // matrix; the 2x is folded into the matrix (exact).
-    float tilt = 1.5 * smoothstep(-1.0, 1.0, sin(t * 0.4)) - 0.5;
+    // matrix; the 2x is folded into the matrix (exact). Upstream's phase is
+    // 0.4 t; here only the time part runs at `swing`'s rate (identical at 1),
+    // the seed's offset at full rate so each activation finds its own castle.
+    float swingPhase = 0.4 * (u.swing * u.speed * u.time + u.seed * 60.0);
+    float tilt = 1.5 * smoothstep(-1.0, 1.0, sin(swingPhase)) - 0.5;
     float3x3 fold = 2.0 * ccRotate3D(1.57, float3(1.0, tilt, 0.0));
 
     // Upstream samples p = (uv * g, g - 4.3) and turns its zy plane by t*0.2.
