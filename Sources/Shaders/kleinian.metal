@@ -36,9 +36,9 @@
 // pseudo-Kleinian hall, 0.65 beside the pearls. The zoom camera rides the
 // axis through each shell's pole, which is always the centre of a hole.
 //
-// Distance must not change the shape. The hit threshold is one pixel
-// footprint of the (halved) estimate, which registers a hit ~2 px off the
-// surface in the two packings and ~1 px in the other two. At 3 footprints it
+// Distance must not change the shape. The hit threshold is 1.5 pixel
+// footprints of the (halved) estimate, which registers a hit ~3 px off the
+// surface in the two packings and ~1.5 px in the other two. At 3 footprints it
 // was ~7 px in the packings, so every gap narrower than ~14 px was sealed far
 // away and opened as the camera approached. A ray that runs out of steps
 // within KL_CREEP footprints of a surface is creeping along it and is shaded
@@ -46,7 +46,7 @@
 // from frame to frame wherever the far field ran the march dry. Occlusion is
 // probed at a fixed size in the scene, not one that grows with distance.
 //
-// Cost, for hours at up to 5K: at most 48 steps, over-relaxed; the hit
+// Cost, for hours at up to 5K: at most 44 steps, over-relaxed; the hit
 // threshold is measured at no more than 1600 rows, so 4K and 5K cost what
 // 1600 rows do per pixel; 6 / 12 / 16 fixed folds (an early exit on the fold
 // scale stopped the loops unrolling and cost more than it saved); one normal
@@ -55,8 +55,11 @@
 // the same runs, measured with the old 3-footprint threshold and 44 steps:
 // default ~12 ms, Indra's Pearls ~9 ms, Bone Cathedral ~16.5 ms, Zoom
 // Forever ~19 ms, Pearl Halls ~19.5 ms. A CPU step-count model (worst lane
-// per 32-pixel SIMD group) puts the two packings ~19% above that now, Indra's
-// Pearls ~5% and Zoom Forever ~7%.
+// per 32-pixel SIMD group) put a 1-footprint threshold with 48 steps ~19%
+// above that; the GPU agreed (+20% on Pearl Halls), which pushed Pearl Halls
+// past a 60 fps frame at 2704x1756, so it is 1.5 footprints and 44 steps:
+// +15% on the packings and Zoom, +12% on Indra's Pearls, at 2704x1756 ~12.3 ms
+// mean on Pearl Halls (bench under contention, scaled by a reference look).
 //
 // lerp-param: mode     int   0 3 = 0    "Fractal"
 // lerp-param: shape    float 0 1 = 0.5  "Shape"
@@ -72,11 +75,11 @@
 // lerp-preset: "Indra's Pearls" mode=2, material=0.85, hue=0.12, fog=0.35
 // lerp-preset: "Zoom Forever"   mode=3, material=0.55, hue=0.8, glow=0.5
 
-constant int   KL_STEPS = 48;
+constant int   KL_STEPS = 44;
 constant float KL_SHADE_STEPS = 44.0;      // step count that reads as fully occluded / full glow
 constant float KL_OMEGA = 1.4;             // over-relaxation (the two packings)
 constant float KL_REF_RES = 1600.0;        // rows the hit threshold is measured at, at most
-constant float KL_EPS = 1.0;               // hit threshold in pixel footprints
+constant float KL_EPS = 1.5;               // hit threshold in pixel footprints
 constant float KL_CREEP = 8.0;             // out of steps this close (footprints): a hit
 constant int   KL_APO_ITERS = 6;
 constant float KL_APO_K = 0.5;             // Apollonian distance-estimate factor
