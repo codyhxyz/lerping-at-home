@@ -19,12 +19,36 @@ import os
 /// finished pattern, fade, and reseed from `(seed, epoch)`. Its length in steps
 /// depends only on the parameters, so the clock maps to `(epoch, step)` with no
 /// history, and reaching any time costs at most one epoch of steps.
+///
+/// Two stretches of that story used to read as a still picture. Measured at
+/// 480×300, fraction of pixels changing by more than 2% over two seconds, the
+/// "Single" preset sat below 5% for 40 of 100 windows across two stories:
+/// ~24 s of each 100 s hold showed exactly 0% (the pile had settled and the
+/// frame froze), and ~18 s after each reseed stayed under 5% because a pile a
+/// few dozen cells across is a small share of the screen. So a story now
+/// opens a third of the way up its growth curve (`startProgress`), fading in
+/// over 3% of the epoch rather than cutting from black, and the camera pushes
+/// in on the settling, then finished, pile (`Plan.camera`), still moving when
+/// the fade takes it. Both are closed-form in the phase. The price of the
+/// first is one frame at each reseed that runs 0.3² = 9% of the epoch's steps
+/// at once — ~1,700 steps by default, ~4,200 on "Fine"'s larger grid — on a
+/// frame the fade draws black.
 public final class SandpileData: LerpDataProvider {
 
     static let log = Logger(subsystem: LerpDefaults.productionModule, category: "sandpile")
 
     /// The share of an epoch spent holding the settled pattern, then fading.
     static let holdShare: Float = 0.2
+    /// Where on the growth curve a story opens (see `Plan`).
+    static let startProgress: Float = 0.3
+    /// Phase spans of the fade in at a story's start and out at its end.
+    static let fadeIn: Float = 0.03
+    static let fadeOut: Float = 0.06
+    /// The camera's push-in over the settling and finished pile (`Plan.camera`).
+    static let cameraStart: Float = 0.6
+    static let cameraEase: Float = 0.4
+    static let cameraZoom: Float = 1.4
+    static let cameraOffset: Float = 0.08
     /// Steps allowed for the pile to settle, as a multiple of rows². Measured
     /// with every grain dropped on one cell at once (the slowest case): 160
     /// rows settle by step 8,000 and 300 rows by step 28,000, about 0.31·rows².
@@ -46,7 +70,8 @@ public final class SandpileData: LerpDataProvider {
     static let blockSteps = 8
 
     let simulation: LerpGPUSimulation?
-    private var fragmentFrame = Frame(generation: 0, ready: 0, phase: 0, fade: 1)
+    private var fragmentFrame = Frame(generation: 0, ready: 0, phase: 0, fade: 1,
+                                      focus: .zero, zoom: 1, pad: 0)
     private(set) var lastTexture: MTLTexture?
     /// Bound when the simulation is unavailable, so the fragment shader never
     /// reads an unbound texture; `ready = 0` tells it to draw the fallback.
@@ -58,6 +83,9 @@ public final class SandpileData: LerpDataProvider {
         var ready: UInt32
         var phase: Float
         var fade: Float
+        var focus: SIMD2<Float>
+        var zoom: Float
+        var pad: Float
     }
 
     public init(device: MTLDevice) {
@@ -90,7 +118,10 @@ public final class SandpileData: LerpDataProvider {
             uint  generation; // steps since the epoch began
             uint  ready;      // 0: no simulation on this GPU; draw a fallback
             float phase;      // 0..1 through the epoch
-            float fade;       // 1 normally, falling to 0 just before reseeding
+            float fade;       // 0 at an epoch's edges, 1 between
+            float2 focus;     // camera focus, in cells from the grid's centre
+            float zoom;       // camera magnification, 1 while the pile grows
+            float pad;
         };
         """
     }
@@ -112,12 +143,13 @@ public final class SandpileData: LerpDataProvider {
         guard let simulation,
               let textures = simulation.advance(commandBuffer, to: plan.step, of: plan.key) else {
             lastTexture = nil
-            fragmentFrame = Frame(generation: 0, ready: 0, phase: plan.phase, fade: 1)
+            fragmentFrame = Frame(generation: 0, ready: 0, phase: plan.phase, fade: 1,
+                                  focus: .zero, zoom: 1, pad: 0)
             return
         }
         lastTexture = textures[0]
         fragmentFrame = Frame(generation: UInt32(plan.step), ready: 1,
-                              phase: plan.phase, fade: plan.fade)
+                              phase: plan.phase, fade: plan.fade, focus: plan.focus, zoom: plan.zoom, pad: 0)
     }
 
     // MARK: - The clock
@@ -128,6 +160,8 @@ public final class SandpileData: LerpDataProvider {
         var step: Int
         var phase: Float
         var fade: Float
+        var focus: SIMD2<Float>
+        var zoom: Float
 
         init(uniforms: LerpUniforms, params: LerpParameterValues?) {
             func scalar(_ name: String, _ fallback: Float) -> Float {
@@ -154,18 +188,22 @@ public final class SandpileData: LerpDataProvider {
             // The seed picks where in a story the clock starts, as every
             // look's seed offsets its phase: an activation opens on a pile
             // already growing rather than on an empty screen. The 0.38 lands
-            // the gallery's fixed seed (0.37, t = 6) on the settled fractal.
+            // the gallery's fixed seed (0.37, t = 6) on the settled fractal, at
+            // phase ~0.81, a little way (~1.15x) into the camera's push-in.
             let start = (uniforms.seed + 0.38).truncatingRemainder(dividingBy: 1)
             let position = rate > 0 ? max(0, uniforms.time) * rate / length + start : start
             let epoch = Int(position.rounded(.down))
             phase = position - Float(epoch)
-            let progress = min(1, phase / (1 - SandpileData.holdShare))
+            let growth = 1 - SandpileData.holdShare
+            let p0 = SandpileData.startProgress
+            let progress = p0 + (1 - p0) * min(1, phase / growth)
             step = min(active, Int((pow(progress, SandpileData.clockExponent) * Float(active)).rounded(.down)))
-            fade = min(1, max(0, (1 - phase) / 0.06))
+            fade = min(1, max(0, min(phase / SandpileData.fadeIn, (1 - phase) / SandpileData.fadeOut)))
 
             // Sources split the feed, so the total stays `grains` however
             // many there are. Count and placement come from (seed, epoch).
             let salt = uniforms.seed.bitPattern &+ UInt32(truncatingIfNeeded: epoch &* 0x9E3779B9)
+            (focus, zoom) = Self.camera(phase: phase, rows: rows, salt: salt)
             let requested = Int(scalar("sources", 0).rounded())
             let roll = LerpGPUSimulation.hashBits(17, 3, salt) % 10
             let count = requested > 0 ? min(3, requested) : (roll < 5 ? 1 : roll < 8 ? 2 : 3)
@@ -179,6 +217,22 @@ public final class SandpileData: LerpDataProvider {
             }
             key = LerpGPUSimulation.Key(seed: uniforms.seed, epoch: epoch,
                                         width: cols, height: rows, config: config)
+        }
+
+        /// The push-in over the finished pile: still until `cameraStart`, then
+        /// a log-zoom whose speed ramps up linearly over the first
+        /// `cameraEase` of the remaining story and then holds, so the camera
+        /// eases in and is still moving when the fade takes the frame. The
+        /// focus is the grid's centre, nudged by (seed, epoch) so successive
+        /// stories are not framed identically. Returns the focus in cells
+        /// from the centre (y down, the grid's rows) and the magnification.
+        static func camera(phase: Float, rows: Int, salt: UInt32) -> (SIMD2<Float>, Float) {
+            let start = SandpileData.cameraStart, ease = SandpileData.cameraEase
+            let u = max(0, (phase - start) / (1 - start))
+            let travel = (u < ease ? u * u / (2 * ease) : u - ease / 2) / (1 - ease / 2)
+            let angle = Float(LerpGPUSimulation.hashBits(5, 7, salt) >> 8) / 16_777_216 * 2 * Float.pi
+            let focus = SIMD2(cos(angle), sin(angle)) * (SandpileData.cameraOffset * Float(rows))
+            return (focus, pow(SandpileData.cameraZoom, travel))
         }
 
         /// One source sits at the centre; two or three spread along the long

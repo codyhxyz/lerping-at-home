@@ -110,9 +110,22 @@ static inline KlSample klApollo(float3 p, float s) {
 // Pseudo-Kleinian: reflect into the box [-C, C], invert in the sphere of
 // radius sqrt(size) only where that expands, repeat. The surface is the
 // orbit of the plane z = off.
+//
+// The box fold is a reflection, not a wrap, so on its own it is not periodic:
+// a point 4C further along x needs two more folds to come home, and spends a
+// fold iteration doing it. The camera flies along x through eight 4C periods
+// per loop, so by the far half it had shed half its iterations: the hall
+// thinned to a bare floor and ceiling (under 5% of pixels changing in two
+// seconds for 140 s of each 493 s loop, at speed 1), and the loop's wrap back
+// to x = 0 was a hard cut. Wrapping x into [-2C, 2C) first changes nothing
+// for |x| < 3C, where one fold already lands in the box, and makes the hall
+// exactly 4C-periodic, so every stretch of the route sees the full hall and
+// the loop closes seamlessly. Camera clearance is unchanged (0.34 units
+// over the shape and size range, checked offline as before).
 constant float3 KL_PK_C = float3(0.92436, 0.90756, 0.92436);
 static inline KlSample klPseudo(float3 p, float size, float off) {
     float df = 1.0, trap = 1e9;
+    p.x = glmod(p.x + 2.0 * KL_PK_C.x, 4.0 * KL_PK_C.x) - 2.0 * KL_PK_C.x;
     for (int i = 0; i < KL_PK_ITERS; i++) {
         p = 2.0 * clamp(p, -KL_PK_C, KL_PK_C) - p;
         float r2 = max(dot(p, p), 1e-6);
