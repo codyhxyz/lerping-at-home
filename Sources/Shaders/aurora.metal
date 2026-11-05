@@ -22,7 +22,9 @@
 // lerp-preset: Ember   colorLow=#ff7a1a, colorMid=#ff2f6b, colorHigh=#7a1aff
 // lerp-preset: Ember   colorSkyLow=#050206, colorSkyHigh=#160a1c, brightness=1.6
 // lerp-preset: Ember   layers=3, starDensity=0.002, speed=0.09
-// lerp-preset: Quiet   layers=1, brightness=0.8, starDensity=0.004, speed=0.05
+// Quiet's single faint curtain read as still at 0.05 (4-13% of pixels
+// changing per 2 s); 0.1 keeps it the slowest look here at 6-24%.
+// lerp-preset: Quiet   layers=1, brightness=0.8, starDensity=0.004, speed=0.1
 
 static float auroraFbm(float2 p) {
     float value = 0.0;

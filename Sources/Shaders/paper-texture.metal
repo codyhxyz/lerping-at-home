@@ -27,13 +27,16 @@
 // lerp-param: drops        float 0 1    = 0.30 "Drops"
 // lerp-param: speed        float 0 1    = 0.10 "Drift speed"
 //
-// Upstream presets, restricted to the props this port implements.
+// Upstream presets, restricted to the props this port implements. Upstream is
+// static, so the speeds are this port's: Cardboard (crumples only) and
+// Abstract (three big facets) need 0.6 and 0.4 for >=5% of the frame to move
+// in every 2 s window; at the default 0.1 they measured 0.1-4% and 0.5-6%.
 // lerp-preset: Cardboard colorFront=#c7b89e, colorBack=#999180, contrast=0.4
 // lerp-preset: Cardboard roughness=0, fiber=0.35, fiberSize=0.14, crumples=0.7
-// lerp-preset: Cardboard crumpleSize=0.1, folds=0, foldCount=1, fade=0, drops=0.1
+// lerp-preset: Cardboard crumpleSize=0.1, folds=0, foldCount=1, fade=0, drops=0.1, speed=0.6
 // lerp-preset: Abstract  colorFront=#00eeff, colorBack=#ff0a81, contrast=0.85
 // lerp-preset: Abstract  roughness=0, fiber=0.1, fiberSize=0.2, crumples=0.01
-// lerp-preset: Abstract  crumpleSize=0.3, folds=1, foldCount=3, fade=0, drops=0.2
+// lerp-preset: Abstract  crumpleSize=0.3, folds=1, foldCount=3, fade=0, drops=0.2, speed=0.4
 // lerp-preset: Details   colorFront=#ffffff, colorBack=#000000, contrast=0.01
 // lerp-preset: Details   roughness=1, fiber=0.27, fiberSize=0.22, crumples=1
 // lerp-preset: Details   crumpleSize=0.5, folds=1, foldCount=15, fade=0, drops=0.01
@@ -231,9 +234,15 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     normal += fiber;
 
     // Upstream's fixed vec3(1, 2, 1) light, put on a slow orbit so the relief
-    // keeps changing which way it catches the light.
+    // keeps changing which way it catches the light. The orbit is centred
+    // near upstream's light and never swings its xy edge-on to (1, 1), the
+    // direction crumples tilt the normal: an earlier (1.4cos, 1.6 + 0.9sin)
+    // orbit passed within 0.06 of it, so crumples blanked out once a lap and
+    // Cardboard sat 100% still in the stillness sweep (crumples are all it has).
+    // The tighter orbit also evened out Details, whose 2 s change swung 2-89%
+    // and is now 9-27%.
     float la = 0.45 * t;
-    float3 lightPos = float3(1.4 * cos(la), 1.6 + 0.9 * sin(la), 1.0);
+    float3 lightPos = float3(1.0 + 0.9 * cos(la), 1.7 + 0.9 * sin(la), 1.0);
 
     float res = dot(normalize(float3(normal, 9.5 - 9.0 * pow(u.contrast, 0.1))),
                     normalize(lightPos));

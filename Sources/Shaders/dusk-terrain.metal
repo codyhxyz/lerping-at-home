@@ -46,8 +46,10 @@
 // lerp-param: altitude   float 0 1 = 0.35 "Flight altitude"
 // lerp-param: haze       float 0 1 = 0.5  "Haze"
 //
+// Blue Hour flies at the default camera speed: at 0.7, over a dark, misty
+// scene, 1-11% of the frame changed per 2 s and most windows read as still.
 // lerp-preset: "Blue Hour"      timeOfDay=0.12, palette=1.0, cloudSea=0.6, cloudCover=0.3
-// lerp-preset: "Blue Hour"      haze=0.65, speed=0.7
+// lerp-preset: "Blue Hour"      haze=0.65
 // lerp-preset: "Golden Hour"    timeOfDay=0.55, cloudSea=0.15, cloudCover=0.35, haze=0.4
 // lerp-preset: "Above the Clouds" timeOfDay=0.24, palette=0.5, cloudSea=0.85, altitude=0.75
 // lerp-preset: "Above the Clouds" cloudCover=0.6, speed=0.8
@@ -309,7 +311,8 @@ static float3 dtSky(float3 rd, DtLight L) {
 // High cloud deck, composited over the sky.
 static float3 dtSkyClouds(float3 rd, float3 sky, DtLight L, float cover, float time, uint salt) {
     if (rd.y <= 0.0 || cover <= 0.001) return sky;
-    float2 cp = rd.xz / (rd.y + 0.06) * 1.6 + float2(0.02, 0.01) * time;
+    // Drift 3x what it first was, so the deck visibly moves at Blue Hour.
+    float2 cp = rd.xz / (rd.y + 0.06) * 1.6 + float2(0.06, 0.03) * time;
     float n = 0.0, amp = 0.55;
     for (int i = 0; i < 5; i++) {
         n += amp * dtNoised(cp, salt + 77u).x;
@@ -480,7 +483,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     if (tSea < DT_FAR && (t < 0.0 || t > tSea)) {
         float3 sp = ro + rd * tSea;
         float path = (t < 0.0) ? seaDepth : (t - tSea);
-        float2 q = sp.xz * 0.55 + float2(0.015, 0.008) * u.time;
+        // The sea flows 3x its first rate: at 0.015 it read as frozen.
+        float2 q = sp.xz * 0.55 + float2(0.045, 0.024) * u.time;
         // Billows from four octaves; their analytic gradients tilt the
         // lighting normal, so the tops shade without any extra samples.
         float3 n1 = dtNoised(q, salt + 31u);
