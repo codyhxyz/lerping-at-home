@@ -36,7 +36,8 @@ public final class SplatData: LerpDataProvider {
 
     // Sort scratch, reused every frame.
     private var depth: [Float] = []
-    private var counts = [UInt32](repeating: 0, count: 1 << 16)
+    private var counts: [UInt32] = []
+    static let sortChunks = max(4, min(16, ProcessInfo.processInfo.activeProcessorCount))
 
     /// Most pixels the splat pass draws, whatever the drawable. Splats are
     /// soft, so a 5K screen drawn at ~2.7K and filtered up is indistinguishable
@@ -257,61 +258,73 @@ public final class SplatData: LerpDataProvider {
         let near = cam.near
         let displaced = deform.movesSplats
 
-        let chunks = 8
+        // Every pass splits the splats into the same contiguous chunks and
+        // runs them in parallel; the scatter keeps each chunk's splats in
+        // index order within a bucket, so the result is the same order a
+        // single-threaded counting sort would produce, whatever the timing.
+        let chunks = Self.sortChunks
+        let bins = 1 << 16
+        if counts.count < chunks * bins { counts = [UInt32](repeating: 0, count: chunks * bins) }
         var mins = [Float](repeating: .infinity, count: chunks)
         var maxs = [Float](repeating: -.infinity, count: chunks)
         let pos = asset.positions.contents().bindMemory(to: SIMD4<Float>.self, capacity: n)
-        depth.withUnsafeMutableBufferPointer { dp in
-            let dbase = dp.baseAddress!
-            mins.withUnsafeMutableBufferPointer { mn in
-                maxs.withUnsafeMutableBufferPointer { mx in
-                    let mnb = mn.baseAddress!, mxb = mx.baseAddress!
-                    DispatchQueue.concurrentPerform(iterations: chunks) { c in
-                        let lo = n * c / chunks, hi = n * (c + 1) / chunks
-                        var zmin = Float.infinity, zmax = -Float.infinity
-                        for i in lo..<hi {
-                            var p = pos[i]
-                            p.w = 1
-                            if displaced { p = SIMD4(deform.apply(SIMD3(p.x, p.y, p.z), index: UInt32(i)), 1) }
-                            let z = -simd_dot(r2, p)
-                            // Cull behind the camera and well outside the frustum
-                            // (with margin, for splats whose centre is off screen
-                            // but whose footprint is not).
-                            if z < near { dbase[i] = -1; continue }
-                            let x = simd_dot(r0, p), y = simd_dot(r1, p)
-                            if abs(x) > z * halfW + 0.5 || abs(y) > z * halfH + 0.5 { dbase[i] = -1; continue }
-                            dbase[i] = z
-                            zmin = min(zmin, z); zmax = max(zmax, z)
-                        }
-                        mnb[c] = zmin; mxb[c] = zmax
+        let dbase = depth.withUnsafeMutableBufferPointer { $0.baseAddress! }
+        mins.withUnsafeMutableBufferPointer { mn in
+            maxs.withUnsafeMutableBufferPointer { mx in
+                let mnb = mn.baseAddress!, mxb = mx.baseAddress!
+                DispatchQueue.concurrentPerform(iterations: chunks) { c in
+                    let lo = n * c / chunks, hi = n * (c + 1) / chunks
+                    var zmin = Float.infinity, zmax = -Float.infinity
+                    for i in lo..<hi {
+                        var p = pos[i]
+                        p.w = 1
+                        if displaced { p = SIMD4(deform.apply(SIMD3(p.x, p.y, p.z), index: UInt32(i)), 1) }
+                        let z = -simd_dot(r2, p)
+                        // Cull behind the camera and well outside the frustum
+                        // (with margin, for splats whose centre is off screen
+                        // but whose footprint is not).
+                        if z < near { dbase[i] = -1; continue }
+                        let x = simd_dot(r0, p), y = simd_dot(r1, p)
+                        if abs(x) > z * halfW + 0.5 || abs(y) > z * halfH + 0.5 { dbase[i] = -1; continue }
+                        dbase[i] = z
+                        zmin = min(zmin, z); zmax = max(zmax, z)
                     }
+                    mnb[c] = zmin; mxb[c] = zmax
                 }
             }
         }
         let zmin = mins.min() ?? 0, zmax = maxs.max() ?? 0
         guard zmax >= zmin else { return (orderBuffer, 0) }
-        let k = Float(65535) / max(1e-6, zmax - zmin)
+        let k = Float(bins - 1) / max(1e-6, zmax - zmin)
 
         let order = orderBuffer.contents().bindMemory(to: UInt32.self, capacity: n)
-        var visible = 0
-        counts.withUnsafeMutableBufferPointer { cp in
-            let cb = cp.baseAddress!
-            cb.update(repeating: 0, count: 1 << 16)
-            depth.withUnsafeBufferPointer { dp in
-                for i in 0..<n where dp[i] >= 0 {
-                    // Far first: key 0 is the farthest splat.
-                    cb[Int((zmax - dp[i]) * k)] &+= 1
-                    visible += 1
-                }
-                var running: UInt32 = 0
-                for b in 0..<(1 << 16) {
-                    let c = cb[b]; cb[b] = running; running &+= c
-                }
-                for i in 0..<n where dp[i] >= 0 {
-                    let b = Int((zmax - dp[i]) * k)
-                    order[Int(cb[b])] = UInt32(i)
-                    cb[b] &+= 1
-                }
+        let cbase = counts.withUnsafeMutableBufferPointer { $0.baseAddress! }
+        // Per-chunk histograms. Key 0 is the farthest splat.
+        DispatchQueue.concurrentPerform(iterations: chunks) { c in
+            let h = cbase + c * bins
+            h.update(repeating: 0, count: bins)
+            for i in (n * c / chunks)..<(n * (c + 1) / chunks) where dbase[i] >= 0 {
+                h[Int((zmax - dbase[i]) * k)] &+= 1
+            }
+        }
+        // Bucket-major, chunk-minor prefix sum: each chunk's slice of a bucket
+        // follows the previous chunk's.
+        var running: UInt32 = 0
+        for b in 0..<bins {
+            for c in 0..<chunks {
+                let slot = cbase + c * bins + b
+                let count = slot.pointee
+                slot.pointee = running
+                running &+= count
+            }
+        }
+        let visible = Int(running)
+        DispatchQueue.concurrentPerform(iterations: chunks) { c in
+            let h = cbase + c * bins
+            for i in (n * c / chunks)..<(n * (c + 1) / chunks) where dbase[i] >= 0 {
+                let b = Int((zmax - dbase[i]) * k)
+                order[Int(h[b])] = UInt32(i)
+                h[b] &+= 1
             }
         }
         return (orderBuffer, visible)
@@ -534,7 +547,7 @@ public enum LerpSplatAssets {
     nonisolated(unsafe) private static var recent: [String] = []
     nonisolated(unsafe) private static var loading: [String: NSCondition] = [:]
     nonisolated(unsafe) private static var failed: Set<String> = []
-    private static let keep = 3
+    private static let keep = 2
 
     /// Called by `ShaderLibrary` with its source-tree search URLs.
     static func addSourceRoots(_ shaderDirectories: [URL]) {

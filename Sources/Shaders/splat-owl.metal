@@ -11,7 +11,7 @@
 // lerp-param: period     float 10 300  = 90  "Seconds a turn"
 // lerp-param: angle      float -360 360 = 0  "Start angle"
 // lerp-param: arc        float 0 360   = 360  "Arc swept (360 = full turn)"
-// lerp-param: distance   float 0.5 10  = 4.8  "Distance"
+// lerp-param: distance   float 0.5 10  = 5.6  "Distance"
 // lerp-param: height     float -2 4    = 1.4  "Camera height"
 // lerp-param: lookHeight float -1 2    = 0.25  "Look-at height"
 // lerp-param: fov        float 10 90   = 30   "Field of view"

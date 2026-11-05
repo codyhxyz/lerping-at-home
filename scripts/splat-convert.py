@@ -248,7 +248,7 @@ def apply_config(splats, cfg):
         pos[:, 0] -= mid[0]
         pos[:, 2] -= mid[1]
 
-    limit = int(cfg.get("max_splats", 1_500_000))
+    limit = int(cfg.get("max_splats", 50_000_000))
     if len(pos) > limit:
         importance = alpha * np.exp(log_scale.sum(1) / 3.0)
         idx = np.argsort(-importance)[:limit]

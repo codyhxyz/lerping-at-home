@@ -9,7 +9,6 @@
       "sources": [
         "https://d28zzqy0iyovbz.cloudfront.net/84df8849/v1/meta.json"
       ],
-      "decimate": 700000,
       "rotate": [
         180,
         0,
@@ -57,7 +56,6 @@
       "sources": [
         "https://d28zzqy0iyovbz.cloudfront.net/ac4eb719/v1/meta.json"
       ],
-      "decimate": 600000,
       "rotate": [
         180,
         0,
@@ -140,8 +138,12 @@
       "page": "https://superspl.at/scene/3f8c617d",
       "license": "CC BY 4.0",
       "sources": [
-        "https://d28zzqy0iyovbz.cloudfront.net/3f8c617d/v1/2_0/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/3f8c617d/v1/2_1/meta.json"
+        "https://d28zzqy0iyovbz.cloudfront.net/3f8c617d/v1/0_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/3f8c617d/v1/0_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/3f8c617d/v1/0_2/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/3f8c617d/v1/0_3/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/3f8c617d/v1/0_4/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/3f8c617d/v1/0_5/meta.json"
       ],
       "rotate": [
         180,
@@ -161,8 +163,10 @@
       "page": "https://superspl.at/scene/aa451b94",
       "license": "CC BY 4.0",
       "sources": [
-        "https://d28zzqy0iyovbz.cloudfront.net/aa451b94/v1/2_0/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/aa451b94/v1/2_1/meta.json"
+        "https://d28zzqy0iyovbz.cloudfront.net/aa451b94/v1/0_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/aa451b94/v1/0_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/aa451b94/v1/0_2/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/aa451b94/v1/0_3/meta.json"
       ],
       "rotate": [
         180,
@@ -203,8 +207,17 @@
       "page": "https://superspl.at/scene/89f82474",
       "license": "CC BY 4.0",
       "sources": [
-        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/3_0/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/3_1/meta.json"
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_2/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_3/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_4/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_5/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_6/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_7/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_8/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_9/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/89f82474/v1/0_10/meta.json"
       ],
       "rotate": [
         180,
