@@ -48,7 +48,21 @@
 // is folded into its rotation matrix. The "Upstream" preset restores 100
 // steps. LerpPreview --bench, Apple M5, best of 6 in one quiet window:
 // ~8.3 ms/frame at 3840x2160 (0.94x fractal-multiverse's 8.8 ms), ~0.93 ms
-// at 1200x750; Upstream ~42 ms at 3840x2160.
+// at 1200x750; Upstream ~42 ms at 3840x2160 before the grouping below.
+//
+// Upstream's 100 steps (any `steps` from 80 up) are grouped: at stride ~1
+// the march closes on a surface geometrically, e falling by a near-steady
+// ratio rho (~0.85-0.95) per step, so three steps share one distance
+// evaluation. The group advances by e(1 + rho + rho^2) with rho from the
+// previous group, and its glow is summed over e, e*rho', e*rho'^2 with rho'
+// measured to the next group's distance. 35 evaluations instead of 100
+// (23 ms p95 at 2704x1756 before, over the 13 ms 60 fps budget there). A
+// float64 model of both marches at 2704x1756 differs by a mean 1.2/255
+// (p99 7/255, bias under 0.4/255): the same structure and light, with the
+// odd edge a few levels brighter or darker. Grouping by four (27
+// evaluations) roughly doubles that, and the stride-5 default can't be
+// grouped (rho is far from steady there), which is why the 20-step default
+// marches every step as before.
 //
 // lerp-param: speed float 0 2   = 0.5 "Speed"
 // lerp-param: steps int 20 100  = 20  "March steps"
@@ -66,6 +80,16 @@ static inline float3x3 ccRotate3D(float angle, float3 axis) {
                     float3(a.x * a.y * r - a.z * s, a.y * a.y * r + c,       a.z * a.y * r + a.x * s),
                     float3(a.x * a.z * r + a.y * s, a.y * a.z * r - a.x * s, a.z * a.z * r + c));
 }
+
+// Distance to a slanted torus in the folded space (scaled by 128 from the
+// folds; /800 makes the step a fraction of the true distance).
+static inline float ccDistance(float3 p, float3x3 fold) {
+    for (int j = 0; j < 7; j++) p = abs(p * fold) - 2.0;
+    return (length(float2(length(p.xz) - 2.0, (p.y - p.x) * 0.7)) - 0.6) / 8e2;
+}
+
+// From this many steps up the march is taken in predicted groups of three.
+constant int CC_GROUP_FROM = 80;
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
     float2 r = u.resolution;
@@ -98,15 +122,49 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     float glow = 0.0;
     float g = 0.0;   // depth along the ray
-    for (int i = 0; i < steps; i++) {
-        float3 p = origin + g * dir;
-        for (int j = 0; j < 7; j++) p = abs(p * fold) - 2.0;
-
-        // Distance to a slanted torus in the folded space (scaled by 128 from
-        // the folds; /800 makes the step a fraction of the true distance).
-        float e = (length(float2(length(p.xz) - 2.0, (p.y - p.x) * 0.7)) - 0.6) / 8e2;
-        g += e * stride;
-        glow += weight * exp(-e * 2e3) / 4e1;
+    if (steps < CC_GROUP_FROM) {
+        for (int i = 0; i < steps; i++) {
+            float e = ccDistance(origin + g * dir, fold);
+            g += e * stride;
+            glow += weight * exp(-e * 2e3) / 4e1;
+        }
+    } else {
+        // Long marches (Upstream's 100): the under-relaxed march closes on
+        // a surface geometrically, e shrinking by a near-constant ratio per
+        // step, so steps are taken in groups of three on one distance
+        // evaluation each: the group's three distances are e, e*rho, e*rho^2
+        // with rho measured from the last group (predictor), and once the
+        // next group's distance is known the glow is summed along the
+        // measured decay between the two (corrector). See the header.
+        float ePrev = 0.0;
+        for (int i = 0; i < 2; i++) {
+            float e = ccDistance(origin + g * dir, fold);
+            g += e * stride;
+            glow += weight * exp(-e * 2e3) / 4e1;
+            ePrev = e;
+        }
+        float e = ccDistance(origin + g * dir, fold);
+        float rho = clamp(max(e, 1e-12) / max(ePrev, 1e-12), 0.3, 0.999);
+        for (int i = 2; i < steps; i += 3) {
+            int k = min(3, steps - i);
+            float next = e, rhoNext = rho;
+            float travel = e * (1.0 + (k > 1 ? rho : 0.0) + (k > 2 ? rho * rho : 0.0));
+            g += travel * stride;
+            if (i + k < steps) {
+                next = ccDistance(origin + g * dir, fold);
+                float ratio = max(next, 1e-12) / max(e, 1e-12);
+                rhoNext = clamp(k == 3 ? pow(ratio, 1.0 / 3.0) : k == 2 ? sqrt(ratio) : ratio, 0.3, 0.999);
+            }
+            float ej = e;
+            float sum = exp(-ej * 2e3);
+            for (int j = 1; j < k; j++) {
+                ej *= rhoNext;
+                sum += exp(-ej * 2e3);
+            }
+            glow += weight * sum / 4e1;
+            e = next;
+            rho = rhoNext;
+        }
     }
 
     float3 color = glow * u.tint.rgb;

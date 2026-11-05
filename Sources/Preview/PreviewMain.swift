@@ -16,7 +16,7 @@ import Metal
 ///   LerpPreview --thumbnails SAVER  bake the Options… gallery's stills into
 ///                                   a .saver bundle
 ///   LerpPreview --bench             per-shader GPU cost table (Markdown)
-///       [--size WxH] [--frames N] [--shader NAME] [--looks]
+///       [--size WxH] [--frames N] [--shader NAME] [--looks] [--time T] [--seed S]
 ///
 /// `--gputrace PATH.gputrace` (or `LERP_GPUTRACE=PATH`) records a Metal
 /// capture: of every frame `--snapshot` draws, or of the live window's first
@@ -320,15 +320,19 @@ enum PreviewMain {
     /// Every frame is its own command buffer through `LerpRenderer.encodePass`,
     /// the path the live view draws with, timed by the GPU's own
     /// `gpuStartTime`/`gpuEndTime`. The clock advances 1/60 s a frame from the
-    /// gallery's t=6, so a shader whose cost moves with time is sampled across
-    /// two seconds of itself. The first frames are thrown away: they pay for
-    /// residency and clock ramp-up, not for the shader.
+    /// gallery's t=6 (or `--time T`), so a shader whose cost moves with time is
+    /// sampled across two seconds of itself; bench a few start times (and
+    /// seeds, which pick the scene for many looks) to cover a look whose
+    /// expensive moments are minutes apart. The first frames are thrown away:
+    /// they pay for residency and clock ramp-up, not for the shader.
     static func bench(args: [String], extraSearch: [URL]) {
         let (renderer, library) = makeLibrary(extraSearch)
         let (width, height) = size(args, default: (3840, 2160))
         let frames = max(1, Int(flagValue(args, "--frames") ?? "") ?? 120)
         let warmup = 10
         let only = flagValue(args, "--shader")
+        let start = Float(flagValue(args, "--time") ?? "") ?? 6
+        let seed = Float(flagValue(args, "--seed") ?? "") ?? 0.37
 
         var shaders = library.discover()
         if let only { shaders = shaders.filter { $0.name == only } }
@@ -367,7 +371,7 @@ enum PreviewMain {
             var buffers: [MTLCommandBuffer] = []
             for frame in 0..<(warmup + frames) {
                 let uniforms = LerpUniforms(resolution: SIMD2<Float>(Float(width), Float(height)),
-                                            time: 6 + Float(frame) / 60, seed: 0.37)
+                                            time: start + Float(frame) / 60, seed: seed)
                 guard let buffer = renderer.encodePass(target: target, pipeline: pipeline,
                                                        uniforms: uniforms, params: values, data: data)
                 else { fail("could not encode a frame of \(look.entry.key)") }
@@ -391,8 +395,8 @@ enum PreviewMain {
         }
 
         let budget = 1000.0 / 60
-        print("GPU time per frame at \(width)x\(height), \(frames) frames per look after "
-              + "\(warmup) warm-up, \(renderer.device.name). Sorted by p95.\n")
+        print("GPU time per frame at \(width)x\(height), \(frames) frames per look from t=\(start) "
+              + "after \(warmup) warm-up, \(renderer.device.name). Sorted by p95.\n")
         print("| look | mean ms | p95 ms | max ms | % of 60 fps budget | compile ms |")
         print("|---|---:|---:|---:|---:|---:|")
         for row in rows.sorted(by: { $0.summary.p95Ms > $1.summary.p95Ms }) {
