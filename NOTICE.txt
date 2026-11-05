@@ -161,8 +161,9 @@ Copyright (c) 2013 Pablo Roman Andrioli, licensed under the MIT License.
 
 Topologica (Sources/Shaders/topologica.metal) is ported from "Topologica" by
 Otavio Good, https://www.shadertoy.com/view/4djXzz, dedicated to the public
-domain under CC0 1.0. The port changes the march step count, lattice hash and
-glow gain.
+domain under CC0 1.0. The port (its Classic form) changes the march step
+count, lattice hash and glow gain. The same file holds this project's
+remixes of it as further forms; see "Topologica remixes" below.
 
 Sea and Moon (Sources/Shaders/sea-and-moon.metal) is ported from "Sea and
 moon" by mrange (Mårten Rånge), https://www.shadertoy.com/view/csfXzN,
@@ -175,16 +176,15 @@ licensed under Creative Commons Attribution 4.0 International. Translated from
 FragCoord's golf dialect to Metal, with time slowed and seeded, a speed
 parameter added, and short-axis scaling. Not endorsed by the author.
 
-Multiverse Cathedral, Multiverse Coral and Multiverse Lattice
-(Sources/Shaders/multiverse-cathedral.metal, multiverse-coral.metal,
-multiverse-lattice.metal) are original work written in the idiom of Yohei
+The Cathedral, Coral and Lattice forms of Fractal Multiverse
+(Sources/Shaders/fractal-multiverse.metal, forms 1-3) are original work written in the idiom of Yohei
 Nishitsuji's "fractal, the multiverse" (https://fragcoord.xyz/s/ftisi70e, MIT;
 ported here as Fractal Multiverse): a short fixed march through a slab of
 fractal space, lit by each sample's fold orbit. No code from that shader is
 reused. They implement published methods: Tom Lowe's Mandelbox (2010); the
 sphere-inversion Apollonian packing as described by Inigo Quilez; Knighty's
 kaleidoscopic IFS octahedral fold (2010) and Kali's (Pablo Roman Andrioli)
-|p|/p.p - c inversion (the Kaliset, 2010), combined in Multiverse Lattice with
+|p|/p.p - c inversion (the Kaliset, 2010), combined in the Lattice form with
 a four-dimensional double rotation; and orbit-trap colouring.
 
 Castle To Castle (Sources/Shaders/castle-to-castle.metal) and Fractal D
@@ -205,7 +205,7 @@ from FragCoord's golf dialect to Metal, with time slowed and seeded, speed
 (and, for Torque, drift) parameters added, and short-axis scaling. Not
 endorsed by the author.
 
-Fractal Multiverse (Sources/Shaders/fractal-multiverse.metal) and Simulated
+Fractal Multiverse (Sources/Shaders/fractal-multiverse.metal, form 0) and Simulated
 Reality (Sources/Shaders/simulated-reality.metal) are ports of "fractal, the
 multiverse" (https://fragcoord.xyz/s/ftisi70e) and "simulated reality -w-"
 (https://fragcoord.xyz/s/sa07o47u) by Yohei Nishitsuji (@YoheiNishitsuji),
@@ -270,20 +270,20 @@ coordinates (the 24 Hurwitz units, the 120 unit icosians, and the classical
 600-vertex set of the 120-cell) under a double rotation, with perspective or
 stereographic projection from S^3.
 
-Topologica remixes (each a remix of "Topologica" by Otavio Good,
-https://www.shadertoy.com/view/4djXzz, dedicated to the public domain under
-CC0 1.0; each keeps upstream's orbiting volumetric glow and colouring and
-replaces its noise lattice):
+Topologica remixes (forms 1-9 of Sources/Shaders/topologica.metal, each a
+remix of "Topologica" by Otavio Good, https://www.shadertoy.com/view/4djXzz,
+dedicated to the public domain under CC0 1.0; each keeps upstream's orbiting
+volumetric glow and colouring and replaces its noise lattice):
 
-Topologica Gyroid (Sources/Shaders/topologica-gyroid.metal): blended triply
-periodic minimal surfaces (gyroid, Schwarz P, Schwarz D, Neovius), drawing the
-curves where two of them intersect, integrated exactly along each march step.
+Lattice, Filigree and Jacks: a kaleidoscopic-IFS wire network written from
+Knighty's technique as described by Christensen, with a seamless
+self-similar zoom.
 
-Topologica Fractal (Sources/Shaders/topologica-fractal.metal): a
-kaleidoscopic-IFS wire network written from Knighty's technique as described
-by Christensen, with a seamless self-similar zoom.
+Minimal surfaces and Strata: blended triply periodic minimal surfaces
+(gyroid, Schwarz P, Schwarz D, Neovius), drawing the curves where two of them
+intersect, integrated exactly along each march step.
 
-Topologica 4D (Sources/Shaders/topologica-4d.metal): sliced tesseractic and
+Tesseract, 24-cell, Hopf fibration and Torus knots: sliced tesseractic and
 24-cell honeycombs, the Hopf fibration and torus knots in S^3, with
 closed-form glow integration.
 

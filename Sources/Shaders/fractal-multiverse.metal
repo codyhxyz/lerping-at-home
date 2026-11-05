@@ -1,3 +1,86 @@
+
+// Fractal Multiverse — Yohei Nishitsuji's "fractal, the multiverse" and this
+// project's three originals in its idiom, as one look with a `form` setting.
+//
+// The port (form 0, the default look) is MIT, Copyright (c) 2026
+// @YoheiNishitsuji; its full notice is in its section below and in
+// NOTICE.txt. Forms 1-3 are original work for Lerping@Home (AGPL-3.0).
+//
+// Forms (each section below keeps its original notes, word for word):
+//   0 Multiverse  the faithful port
+//   1 Cathedral   a negative-scale Mandelbox, mirrored like a nave
+//   2 Coral       the sphere-inversion Apollonian packing
+//   3 Lattice     a four-dimensional KIFS with a double rotation
+//
+// These were four shaders built on one technique (a short fixed march
+// through a slab of fractal space, lit by each sample's orbit), so one
+// shader with a form setting keeps all four and drops the repeated looks.
+// The playground cannot hide a setting a form ignores, so the settings are
+// the ones every form shares, scaled to each form's own defaults:
+//   zoom       multiplies the form's own zoom (port 1, Cathedral 1.3,
+//              Coral 1.6, Lattice 1)
+//   sharpness  multiplies Cathedral's tracery (42), Coral's lace (1500) and
+//              Lattice's facets (80)
+//   morph      the slow drift each original form had on its own parameter:
+//              0..1 spans Cathedral's fold scale -1.9..-1.72, Coral's
+//              inversion 1.08..1.24 and Lattice's twist 0.28..0.52, and
+//              values outside 0..1 carry on past those ends
+//   near, mid, far  depth colours (Cathedral and Coral use near and far)
+// The port ignores everything but speed, zoom and glow, all of which are
+// identity at their defaults, so its default look is unchanged.
+//
+// GPU cost: the form is a uniform branch, so a frame costs what its form
+// always cost (~9 ms at 3840x2160 on an M5, every form).
+//
+// lerp-param: form      int   0 3       = 0     "Form"
+// lerp-param: speed     float 0 2       = 0.5   "Speed"
+// lerp-param: morph     float -1 2      = 0.5   "Morph"
+// lerp-animate: morph 0 1 period=210
+// lerp-param: glow      float 0.2 3     = 1.0   "Glow"
+// lerp-param: zoom      float 0.4 2     = 1.0   "Zoom"
+// lerp-param: sharpness float 0.4 2.5   = 1.0   "Sharpness"
+// lerp-param: near      color           = (0.90, 0.98, 1.0)  "Near colour"
+// lerp-param: mid       color           = (0.25, 0.85, 1.0)  "Middle colour"
+// lerp-param: far       color           = (1.0, 0.70, 0.25)  "Far colour"
+//
+// lerp-preset: Upstream  speed=1.0
+// lerp-preset: Cathedral form=1, near=(1.0, 0.70, 0.36), far=(0.92, 0.27, 0.42)
+// lerp-preset: Coral     form=2, near=(0.12, 0.95, 0.78), far=(0.52, 0.24, 1.0)
+// lerp-preset: Lattice   form=3
+
+// What each form's drawing function reads as `u`: the frame's header fields
+// and that form's own settings, filled in by lerpMain at the bottom.
+struct MvPortIn {
+    float2 resolution;
+    float time;
+    float seed;
+    float speed;
+};
+struct MvCathedralIn {
+    float2 resolution;
+    float time;
+    float seed;
+    float speed; float foldScale; float tracery; float glow; float zoom;
+    float4 near; float4 far;
+};
+struct MvCoralIn {
+    float2 resolution;
+    float time;
+    float seed;
+    float speed; float inversion; float lace; float pearls; float glow;
+    float zoom; float4 near; float4 far;
+};
+struct MvLatticeIn {
+    float2 resolution;
+    float time;
+    float seed;
+    float speed; float twist; float facets; float frost; float glow;
+    float zoom; float4 ice; float4 cyan; float4 gold;
+};
+
+// ============================================================================
+// Form source: was Sources/Shaders/fractal-multiverse.metal
+// ============================================================================
 // Fractal Multiverse — ported from "fractal, the multiverse" by Yohei Nishitsuji (MIT)
 // https://fragcoord.xyz/s/ftisi70e
 // Copyright (c) 2026 @YoheiNishitsuji. SPDX-License-Identifier: MIT
@@ -33,9 +116,6 @@
 // --bench, Apple M5: ~0.95 ms/frame at 1200x750, ~8.7 ms at 3840x2160
 // (between pipes and paper-texture).
 //
-// lerp-param: speed float 0 2 = 0.5 "Speed"
-//
-// lerp-preset: Upstream speed=1.0
 
 // twigl's hsv(): hue/saturation/value to RGB.
 static inline float3 fmHsv(float h, float s, float v) {
@@ -54,7 +134,7 @@ static inline float3x3 fmRotate3D(float angle, float3 axis) {
                     float3(a.x * a.z * r + a.y * s, a.y * a.z * r - a.x * s, a.z * a.z * r + c));
 }
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+static half4 fmPort(float4 pos, MvPortIn u) {
     float2 r = u.resolution;
     float2 fc = float2(pos.x, r.y - pos.y);           // GLSL gl_FragCoord (y up)
     float t = u.speed * u.time + u.seed * 60.0;
@@ -89,4 +169,325 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 color = max(col, 0.0);
     color = lerpDither(color, pos);
     return half4(half3(color), 1.0h);
+}
+
+// ============================================================================
+// Form source: was Sources/Shaders/multiverse-cathedral.metal
+// ============================================================================
+// Multiverse Cathedral — original work for Lerping@Home (AGPL-3.0)
+//
+// Written in the idiom of Yohei Nishitsuji's "fractal, the multiverse"
+// (MIT; see fractal-multiverse.metal for its notice): a short fixed march
+// through a thin slab of fractal space, where every sample is folded a few
+// times and lights the pixel by how its orbit behaves, so the picture is a
+// stack of glowing cross-sections rather than a shaded surface. The fold,
+// the light, the camera and the colouring here are this file's own.
+//
+// The fractal is Tom Lowe's Mandelbox (box fold, then sphere fold, then
+// scale and add the starting point) at a negative scale, whose sections are
+// full of pointed lancets, ribbed vaults and concentric rose windows. Each of
+// 14 layers through the slab runs 8 folds and keeps the closest its orbit
+// comes to the unit sphere: that orbit trap draws the thin tracery (a sharp
+// exp falloff) over a soft haze (a broad one). The picture is mirrored about
+// the vertical axis, as a nave is, and the slab glides slowly through the
+// box while it turns, so arcades open, close and re-form. Near layers are
+// amber, far layers rose, so the depth of each line is its colour.
+//
+// u.seed picks where on the route each activation begins. `foldScale`
+// drifts slowly (lerp-animate), which morphs the tracery continuously.
+//
+// GPU cost: 14 layers x 8 folds, no trig or square root in the loop.
+// LerpPreview --bench, Apple M5, 3840x2160: within about 5-10% of
+// fractal-multiverse measured in the same run (~9-10 ms when it reads
+// ~8.7-9.3), every look.
+//
+
+static inline float3x3 mcRotY(float a, float tilt) {
+    float c = cos(a), s = sin(a), ct = cos(tilt), st = sin(tilt);
+    // Yaw about y, then a fixed small pitch about x.
+    float3x3 yaw = float3x3(float3(c, 0.0, -s), float3(0.0, 1.0, 0.0), float3(s, 0.0, c));
+    float3x3 pitch = float3x3(float3(1.0, 0.0, 0.0), float3(0.0, ct, st), float3(0.0, -st, ct));
+    return pitch * yaw;
+}
+
+static half4 mcCathedral(float4 pos, MvCathedralIn u) {
+    float2 uv = lerpUV(pos, u.resolution);
+    float t = u.speed * u.time + u.seed * 400.0;
+    uv.x = abs(uv.x);                                   // the nave's mirror
+
+    float2 xy = uv * u.zoom * (1.0 + 0.08 * sin(0.13 * t));
+    float3x3 turn = mcRotY(0.05 * t, 0.12 * sin(0.041 * t));
+    // The slab's route through the box: a slow, never-repeating glide.
+    float3 route = float3(0.25 * sin(0.017 * t), 0.6 * sin(0.031 * t), 1.5 * sin(0.023 * t));
+
+    const float S = u.foldScale;
+    const float minR2 = 0.09;                           // inner sphere radius 0.3
+
+    // turn * (xy, z) + route, split so each layer only adds z * column 3.
+    float3 base = turn * float3(xy, 0.0) + route;
+    float3 axis = turn[2];
+
+    float3 col = float3(0.0);
+    for (int i = 0; i < 14; i++) {
+        float layer = float(i) / 14.0;
+        float3 p = base + axis * (2.0 * layer);
+        float3 q = p;
+        float trap = 1e9;
+        for (int j = 0; j < 8; j++) {
+            q = clamp(q, -1.0, 1.0) * 2.0 - q;          // box fold
+            float r2 = dot(q, q);
+            q *= clamp(1.0 / r2, 1.0, 1.0 / minR2) * S; // sphere fold, scale
+            q += p;
+            // Closest approach to the unit sphere (|q|^2 - 1 ~ 2(|q| - 1)
+            // near it); later folds pay a little so the coarse tracery
+            // wins over fine dust.
+            trap = min(trap, 0.5 * abs(dot(q, q) - 1.0) + 0.01 * float(j));
+        }
+        float line = exp(-trap * u.tracery);
+        float haze = exp(-trap * 7.0);
+        float3 tint = mix(u.near.rgb, u.far.rgb, smoothstep(0.2, 0.8, layer));
+        // The hottest cores of the tracery burn whiter.
+        tint = mix(tint, float3(1.0, 0.9, 0.78), 0.3 * line);
+        col += tint * (0.257 * line + 0.0154 * haze);
+    }
+    col *= u.glow;
+
+    float3 color = 1.0 - exp(-col * 1.6);
+    color += float3(0.012, 0.004, 0.008);               // a nave is never quite black
+    color = lerpDither(color, pos);
+    return half4(half3(color), 1.0h);
+}
+
+// ============================================================================
+// Form source: was Sources/Shaders/multiverse-coral.metal
+// ============================================================================
+// Multiverse Coral — original work for Lerping@Home (AGPL-3.0)
+//
+// Written in the idiom of Yohei Nishitsuji's "fractal, the multiverse"
+// (MIT; see fractal-multiverse.metal for its notice): a short fixed march
+// through a thin slab of fractal space, each sample folded a few times and
+// lit by how its orbit behaves, so the frame is a stack of glowing
+// cross-sections rather than a shaded surface. The fold, the light, the
+// camera and the colouring here are this file's own.
+//
+// The fractal is the sphere-inversion Apollonian packing (fold space into a
+// repeating cube, invert in the unit sphere, repeat), which is periodic, so
+// the slab can drift forward forever without leaving it. Each of 14 layers
+// runs 8 folds; the running inversion scale turns the final distance to the
+// unit sphere into a distance in world space, so the lace stays thin at
+// every depth of the packing, and the orbit's closest approach to the
+// centre lights pearls of brighter, whiter glow where the inversions
+// cluster. The layers spread slightly with depth (a little perspective) and
+// fade from teal to violet, so the far filaments read as further down.
+//
+// u.seed picks where on the drift each activation begins. `inversion`
+// drifts slowly (lerp-animate), swelling and thinning the strands.
+//
+// GPU cost: 14 layers x 8 folds, no trig in the loop, and each layer's
+// sample point is one multiply-add from a per-pixel origin and step.
+// LerpPreview --bench, Apple M5, 3840x2160: within about 0-10% of
+// fractal-multiverse measured in the same run (~9 ms), every look.
+//
+
+// The view: a fixed tilt of 0.7 rad about x, so the cube lattice never
+// lines up with the screen, then a slow turn (cos, sin) about y.
+static inline float3 mcoView(float3 v, float2 turn) {
+    const float co = 0.7648, so = 0.6442;               // cos, sin of 0.7
+    v.yz = float2(co * v.y - so * v.z, so * v.y + co * v.z);
+    v.xz = float2(turn.x * v.x - turn.y * v.z, turn.y * v.x + turn.x * v.z);
+    return v;
+}
+
+static half4 mcoCoral(float4 pos, MvCoralIn u) {
+    float2 uv = lerpUV(pos, u.resolution);
+    float t = u.speed * u.time + u.seed * 400.0;
+
+    float2 xy = rotate(uv, 0.02 * t) * u.zoom;
+    // Forward drift through the periodic packing, with a slow sway.
+    float3 drift = float3(0.3 * sin(0.05 * t), 0.2 * cos(0.04 * t), 0.05 * t);
+    float yaw = 0.49 + 0.03 * t;
+    float2 turn = float2(cos(yaw), sin(yaw));
+    // Layer L samples view((xy * (1 + 0.5 L), L) + drift), which is linear
+    // in L, so it is built once here as origin + L * step.
+    float3 flat = mcoView(float3(xy, 0.0), turn);
+    float3 origin = flat + mcoView(drift, turn);
+    float3 step = 0.5 * flat + mcoView(float3(0.0, 0.0, 1.0), turn);
+
+    float3 col = float3(0.0);
+    for (int i = 0; i < 14; i++) {
+        float layer = float(i) / 14.0;
+        float3 q = origin + step * layer;
+
+        float scale = 1.0;
+        float trap = 1e9;
+        for (int j = 0; j < 8; j++) {
+            q = -1.0 + 2.0 * fract(0.5 * q + 0.5);       // repeat the cube
+            float r2 = dot(q, q);
+            trap = min(trap, r2);
+            float k = u.inversion / r2;                  // invert
+            q *= k;
+            scale *= k;
+        }
+        float d = 0.25 * abs(length(q) - 1.0) / scale;   // world-space lace distance
+        float pearl = exp(-trap * 20.0);
+        float light = exp(-d * u.lace) * (0.3 + u.pearls * pearl);
+
+        float3 tint = mix(u.near.rgb, u.far.rgb, smoothstep(0.1, 0.9, layer));
+        tint = mix(tint, float3(0.85, 1.0, 0.96), pearl);
+        col += tint * light * 0.75;
+    }
+    col *= u.glow;
+
+    float3 color = 1.0 - exp(-col);
+    color += float3(0.0, 0.006, 0.014);                  // deep water, not void
+    color = lerpDither(color, pos);
+    return half4(half3(color), 1.0h);
+}
+
+// ============================================================================
+// Form source: was Sources/Shaders/multiverse-lattice.metal
+// ============================================================================
+// Multiverse Lattice — original work for Lerping@Home (AGPL-3.0)
+//
+// Written in the idiom of Yohei Nishitsuji's "fractal, the multiverse"
+// (MIT; see fractal-multiverse.metal for its notice): a short fixed march
+// through a thin slab of fractal space, each sample folded a few times and
+// lit by how its orbit behaves, so the frame is a stack of glowing
+// cross-sections rather than a shaded surface. The fold, the light, the
+// camera and the colouring here are this file's own.
+//
+// The fold is four-dimensional. Each sample becomes (x, y, z, w) and runs 8
+// rounds of: mirror every axis, sort x >= y >= z (the octahedral
+// kaleidoscope of a KIFS), turn the xw and yz planes together (a double
+// rotation, which has no 3D counterpart), then Kali's inversion
+// |q| / q.q - c. Space repeats every 2.4 units first, and the first fold is
+// a mirror, so the repetition has no seams and the slab can drift forever.
+// Each layer keeps the orbit's closest approach to the unit 3-sphere,
+// paying a little for every later round, and draws it as fine faceted
+// lines over a faint blue frost. Near layers are ice-white, middle cyan,
+// far gold.
+//
+// The `twist` angle is the double rotation: it changes which of the 4D
+// crystal's facets this 3D slice cuts through, so as it drifts
+// (lerp-animate) the lattice slowly turns inside out. u.seed picks where
+// on the drift each activation begins.
+//
+// GPU cost: 11 layers x 8 rounds. The sort is a min/max network, and since
+// every step but the inversion keeps |q|, one dot product per round serves
+// both the inversion and the trap. LerpPreview --bench, Apple M5,
+// 3840x2160: within about 0-10% of fractal-multiverse measured in the same
+// run (~9 ms), every look.
+//
+
+constant int LM_LAYERS = 11;
+constant int LM_ROUNDS = 8;
+
+static half4 lmLattice(float4 pos, MvLatticeIn u) {
+    float2 uv = lerpUV(pos, u.resolution);
+    float t = u.speed * u.time + u.seed * 400.0;
+
+    float2 xy = rotate(uv, 0.02 * t) * u.zoom;
+    // The slab stays square to the crystal, so its axes and mirror planes
+    // line up with the screen's; it drifts forward through the repeating
+    // cells and wanders sideways across them.
+    float3 drift = float3(0.7 * sin(0.021 * t), 0.6 * cos(0.017 * t), 0.05 * t);
+    float ca = cos(u.twist), sa = sin(u.twist);
+    float cb = cos(0.7 * u.twist + 0.3), sb = sin(0.7 * u.twist + 0.3);
+    float w0 = 0.2 + 0.1 * sin(0.05 * t);
+    const float4 c = float4(0.6);
+    const float period = 2.4;
+
+    // Layer L samples (xy * (1 + 0.4 L), 1.6 L) + drift.
+    float3 origin = float3(xy, 0.0) + drift;
+    float3 step = float3(0.4 * xy, 1.6);
+
+    float3 col = float3(0.0);
+    for (int i = 0; i < LM_LAYERS; i++) {
+        float layer = float(i) / float(LM_LAYERS);
+        float3 p = origin + step * layer;
+        p = glmod3(p + 0.5 * period, period) - 0.5 * period;
+
+        float4 q = float4(p, w0);
+        float r2 = dot(q, q);
+        float trap = 1e9;
+        for (int j = 0; j < LM_ROUNDS; j++) {
+            q = abs(q);
+            // Octahedral sort x >= y >= z as a min/max network.
+            float a = max(q.x, q.y), b = min(q.x, q.y);
+            float m = min(a, q.z);
+            q.xyz = float3(max(a, q.z), max(b, m), min(b, m));
+            // Double rotation in the xw and yz planes.
+            q.xw = float2(ca * q.x - sa * q.w, sa * q.x + ca * q.w);
+            q.yz = float2(cb * q.y - sb * q.z, sb * q.y + cb * q.z);
+            // Kali's inversion. Mirrors, the sort and rotations keep |q|,
+            // so r2 from the last round is still q.q here.
+            q = abs(q) / max(r2, 1e-3) - c;
+            r2 = dot(q, q);
+            // Closest approach to the unit 3-sphere (|q|^2 - 1 ~ 2(|q| - 1)
+            // near it), later rounds paying a little.
+            trap = min(trap, 0.5 * abs(r2 - 1.0) + 0.012 * float(j));
+        }
+        float line = exp(-trap * u.facets);
+        float frost = u.frost * exp(-trap * 12.0);
+
+        float3 tint = mix(u.ice.rgb, u.cyan.rgb, smoothstep(0.05, 0.45, layer));
+        tint = mix(tint, u.gold.rgb, smoothstep(0.45, 0.85, layer));
+        col += tint * line + float3(0.1, 0.35, 0.6) * frost;
+    }
+    col *= 1.5 * u.glow;
+
+    float3 color = 1.0 - exp(-col);
+    color += float3(0.0, 0.004, 0.01);
+    color = lerpDither(color, pos);
+    return half4(half3(color), 1.0h);
+}
+
+// ============================================================================
+// Dispatch
+// ============================================================================
+
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+    int form = clamp(u.form, 0, 3);
+    if (form == 0) {
+        // The port has no zoom or glow of its own: zoom scales its view about
+        // the centre (the short axis it divides by) and glow its light, both
+        // the identity at 1.
+        MvPortIn s;
+        s.resolution = u.resolution; s.time = u.time; s.seed = u.seed;
+        s.speed = u.speed;
+        float2 c = 0.5 * u.resolution;
+        float4 p = float4(c + (pos.xy - c) * u.zoom, pos.zw);
+        half4 out = fmPort(p, s);
+        return half4(out.rgb * half(u.glow), out.a);
+    }
+    if (form == 1) {
+        MvCathedralIn s;
+        s.resolution = u.resolution; s.time = u.time; s.seed = u.seed;
+        s.speed = u.speed;
+        s.foldScale = clamp(mix(-1.9, -1.72, u.morph), -2.2, -1.5);
+        s.tracery = 42.0 * u.sharpness;
+        s.glow = u.glow; s.zoom = 1.3 * u.zoom;
+        s.near = u.near; s.far = u.far;
+        return mcCathedral(pos, s);
+    }
+    if (form == 2) {
+        MvCoralIn s;
+        s.resolution = u.resolution; s.time = u.time; s.seed = u.seed;
+        s.speed = u.speed;
+        s.inversion = clamp(mix(1.08, 1.24, u.morph), 1.0, 1.4);
+        s.lace = 1500.0 * u.sharpness;
+        s.pearls = 2.0;
+        s.glow = u.glow; s.zoom = 1.6 * u.zoom;
+        s.near = u.near; s.far = u.far;
+        return mcoCoral(pos, s);
+    }
+    MvLatticeIn s;
+    s.resolution = u.resolution; s.time = u.time; s.seed = u.seed;
+    s.speed = u.speed;
+    s.twist = clamp(mix(0.28, 0.52, u.morph), 0.0, 1.0);
+    s.facets = 80.0 * u.sharpness;
+    s.frost = 0.03;
+    s.glow = u.glow; s.zoom = u.zoom;
+    s.ice = u.near; s.cyan = u.mid; s.gold = u.far;
+    return lmLattice(pos, s);
 }

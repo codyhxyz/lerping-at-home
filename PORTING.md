@@ -227,7 +227,8 @@ overrides and the Save round trip.
   makes the image pop or re-layout, and not anything the shader already
   animates against `u.time` (that is two clocks fighting).
 - One or two per shader. Several things drifting at once reads as unsteady.
-- `topologica-gyroid`'s `warp` is the worked example.
+- `fractal-multiverse`'s `morph` is the worked example: one drift that each
+  form maps onto its own fold parameter.
 
 ## Audio-reactive shaders
 

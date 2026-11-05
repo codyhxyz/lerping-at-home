@@ -4,7 +4,7 @@
 
 - Screensaver for macOS that renders procedural shaders with Metal.
 - Shaders are single `.metal` files compiled at runtime via `MTLDevice.makeLibrary(source:)`.
-- 76 built-in shaders in `Sources/Shaders/`: all 30 of Paper Shaders' looks ported to Metal, eight photoreal Gaussian splat captures (`splat-*`), raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
+- 70 built-in shaders in `Sources/Shaders/`: all 30 of Paper Shaders' looks ported to Metal, eight photoreal Gaussian splat captures (`splat-*`), raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
 - Custom `.metal` files are supported without rebuilding the engine.
 - No Xcode project. Builds with `swiftc` through a Makefile.
 - No build-time Metal toolchain and no precompiled shader archive.
@@ -87,7 +87,7 @@ unattended: replacing it could discard unsaved editor state.
 - Options… also has an **In rotation** gallery: pick which *looks* Shuffle draws
   from, by looking at them. Shuffle rotates over (shader, preset) pairs, not just
   shaders — defaults plus each distinct `// lerp-preset:` look, with a useful
-  preset name replacing an identical “Defaults” tile. That is about 286 looks
+  preset name replacing an identical “Defaults” tile. That is about 266 looks
   across the 76 shaders rather than 76. Every look is a portrait still of itself; click
   a tile to put it in or take it out. They are grouped under a shader heading
   whose checkbox turns the
@@ -479,7 +479,7 @@ its parameters and presets wherever the file goes.
   drifting, and dragging the slider (or turning a MIDI knob bound to it) takes
   control until the toggle hands it back. Details in `PORTING.md`.
 - A malformed declaration is a compile error naming the line.
-- 75 of the 76 built-in shaders declare parameters (all but `pipes`). The 30
+- 75 of the 70 built-in shaders declare parameters (all but `pipes`). The 30
   Paper Shaders ports mirror the upstream props, with defaults set to this
   project's current look and the upstream looks available as presets.
 - Inspect and drive them from the CLI:
