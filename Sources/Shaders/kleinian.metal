@@ -36,14 +36,27 @@
 // pseudo-Kleinian hall, 0.65 beside the pearls. The zoom camera rides the
 // axis through each shell's pole, which is always the centre of a hole.
 //
-// Cost, for hours at up to 5K: at most 44 steps, over-relaxed; a hit
-// threshold of 3 pixel footprints measured at no more than 1600 rows, so 4K
-// and 5K cost what 1600 rows do per pixel; 6 / 12 / 16 fixed folds (an early
-// exit on the fold scale stopped the loops unrolling and cost more than it
-// saved); one normal tap per pixel, shared across the 2x2 quad. Apple M5,
-// LerpPreview --bench at 3840x2160, against fractal-multiverse ~8.7 ms and
-// paper-texture ~13 ms in the same runs: default ~12 ms, Indra's Pearls
-// ~9 ms, Bone Cathedral ~16.5 ms, Zoom Forever ~19 ms, Pearl Halls ~19.5 ms.
+// Distance must not change the shape. The hit threshold is one pixel
+// footprint of the (halved) estimate, which registers a hit ~2 px off the
+// surface in the two packings and ~1 px in the other two. At 3 footprints it
+// was ~7 px in the packings, so every gap narrower than ~14 px was sealed far
+// away and opened as the camera approached. A ray that runs out of steps
+// within KL_CREEP footprints of a surface is creeping along it and is shaded
+// as a hit; it used to show fog and glow, a speckled boundary that shifted
+// from frame to frame wherever the far field ran the march dry. Occlusion is
+// probed at a fixed size in the scene, not one that grows with distance.
+//
+// Cost, for hours at up to 5K: at most 48 steps, over-relaxed; the hit
+// threshold is measured at no more than 1600 rows, so 4K and 5K cost what
+// 1600 rows do per pixel; 6 / 12 / 16 fixed folds (an early exit on the fold
+// scale stopped the loops unrolling and cost more than it saved); one normal
+// tap per pixel, shared across the 2x2 quad. Apple M5, LerpPreview --bench at
+// 3840x2160, against fractal-multiverse ~8.7 ms and paper-texture ~13 ms in
+// the same runs, measured with the old 3-footprint threshold and 44 steps:
+// default ~12 ms, Indra's Pearls ~9 ms, Bone Cathedral ~16.5 ms, Zoom
+// Forever ~19 ms, Pearl Halls ~19.5 ms. A CPU step-count model (worst lane
+// per 32-pixel SIMD group) puts the two packings ~19% above that now, Indra's
+// Pearls ~5% and Zoom Forever ~7%.
 //
 // lerp-param: mode     int   0 3 = 0    "Fractal"
 // lerp-param: shape    float 0 1 = 0.5  "Shape"
@@ -59,10 +72,12 @@
 // lerp-preset: "Indra's Pearls" mode=2, material=0.85, hue=0.12, fog=0.35
 // lerp-preset: "Zoom Forever"   mode=3, material=0.55, hue=0.8, glow=0.5
 
-constant int   KL_STEPS = 44;
+constant int   KL_STEPS = 48;
+constant float KL_SHADE_STEPS = 44.0;      // step count that reads as fully occluded / full glow
 constant float KL_OMEGA = 1.4;             // over-relaxation (the two packings)
 constant float KL_REF_RES = 1600.0;        // rows the hit threshold is measured at, at most
-constant float KL_EPS = 3.0;               // hit threshold in pixel footprints
+constant float KL_EPS = 1.0;               // hit threshold in pixel footprints
+constant float KL_CREEP = 8.0;             // out of steps this close (footprints): a hit
 constant int   KL_APO_ITERS = 6;
 constant float KL_APO_K = 0.5;             // Apollonian distance-estimate factor
 constant float KL_APO_T = 0.03;            // Apollonian sheet half-thickness, per fold scale
@@ -326,7 +341,11 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float t = 0.0;
     float trap = 1.0, dHit = 0.0;
     int steps = 0;
-    bool hit = false;
+    bool hit = false, ended = false;
+    // The last sample taken where the march stood (not an overshoot it
+    // stepped back from), for a ray that runs out of steps.
+    float tLast = 0.0;
+    KlSample last; last.d = 1e9; last.trap = 1.0; last.surf = 1e9;
     // Over-relaxed sphere tracing (Keinert et al. 2014, "Enhanced Sphere
     // Tracing"): step omega * d, and if the new unbounding sphere does not
     // overlap the last one, step back and continue unrelaxed.
@@ -342,12 +361,23 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
             omega = 1.0;
             continue;
         }
-        if (sm.trap < 0.0) break;
+        if (sm.trap < 0.0) { ended = true; break; }
         if (sm.surf < eps) { hit = true; trap = sm.trap; dHit = sm.surf; break; }
+        tLast = t;
+        last = sm;
         stepLen = max(sm.d, 0.5 * eps) * omega;
         prevD = sm.d;
         t += stepLen;
-        if (t > tmax) break;
+        if (t > tmax) { ended = true; break; }
+    }
+    // Out of steps still skimming a surface: shade it there rather than
+    // letting it fall through to fog, which is what made the far field's
+    // edge shift from frame to frame.
+    if (!hit && !ended && last.surf < eps0 + KL_CREEP * pix * tLast) {
+        hit = true;
+        t = tLast;
+        trap = last.trap;
+        dHit = last.surf;
     }
 
     // Normal, shared across the 2x2 quad: each lane evaluates one tap of the
@@ -382,6 +412,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // deeper shell sits further in the haze.
     float tn = (S.mode == 3) ? 1.6 * log2(camScale / max(length(ro + rd * t), 1e-6 * camScale))
                              : t / camScale;
+    float sk = min(float(steps) / KL_SHADE_STEPS, 1.0);   // march effort, for occlusion and glow
     if (hit) {
         float3 p = pHit;
         float ndv = clamp(dot(n, -rd), 0.0, 1.0);
@@ -390,13 +421,17 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         // Occlusion: the orbit trap (points that passed near an inversion
         // centre sit deep inside the packing), the step count, and in the two
         // sparse modes one probe along the normal. The dense packings skip
-        // the probe: the trap already carries their occlusion.
+        // the probe: the trap already carries their occlusion. The probe has
+        // a fixed size in the scene (in the zoom, a fixed fraction of the
+        // shell it lands on, which keeps the dive self-similar): one that grew
+        // with distance shaded far crevices darker than the same crevices
+        // close up. These sizes match the old probe at a typical hit.
         float probe = 1.0;
         if (S.mode >= 2) {
-            float h = 0.06 * camScale + 0.05 * t;
+            float h = S.mode == 3 ? 0.14 * length(p) : 0.13;
             probe = clamp(klMap(p + n * h, S).surf / h, 0.0, 1.0);
         }
-        float occ = probe * mix(0.45, 1.0, sqrt(tr)) * (1.0 - 0.6 * float(steps) / float(KL_STEPS));
+        float occ = probe * mix(0.45, 1.0, sqrt(tr)) * (1.0 - 0.6 * sk);
 
         // Bone: ivory on the open faces, umber in the folds, with faint
         // marble banding from the trap. Iridescent: a thin-film palette on
@@ -422,7 +457,6 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         col = mix(col, fogCol, 1.0 - exp(-fogK * tn));
     }
     // Glow: light the march itself, strongest where rays skimmed the surface.
-    float sk = float(steps) / float(KL_STEPS);
     col += u.glow * 0.10 * sk * sk * klPal(u.hue + 0.55, float3(0.0, 0.15, 0.3));
 
     col = 1.0 - exp(-1.3 * col);
