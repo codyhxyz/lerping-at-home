@@ -557,13 +557,19 @@ its parameters and presets wherever the file goes.
 - Deformations (`deform` 1–4: ripple, wall waves, twist, dissolve) displace
   splats in the vertex shader; the twist and dissolve are repeated on the CPU
   so the sort sees the moved splats.
+- View-dependent colour (spherical harmonics, bands 1–3) is kept: a compute
+  pass evaluates it once per visible splat each frame, from the eye's
+  direction turned back into the capture's own frame, before the splats are
+  drawn. Stone, fruit skin and glaze catch the light as the camera moves.
+  Trogir was published without it, so it has band 0 only.
 - The captures are third-party (CC BY 4.0, credited in `NOTICE.txt`) and
   large, so they are not in git. `Sources/Splats/captures.json` lists where
   each comes from and how it is turned upright, centred, cropped and scaled;
-  `make splats` (run by `make saver`) downloads each once, decodes it with
-  PlayCanvas's `splat-transform`, and writes a compact `.lsplat` to
-  `build/splats`, which the saver bundles under `Resources/Splats`. Needs
-  Node.js and network the first time; about 62 MB for all eight.
+  `make splats` (run by `make saver`) downloads each one's SOG files once,
+  decodes them (`scripts/splat-convert.py`, checked against PlayCanvas's own
+  reader), and writes a compact `.lsplat` to `build/splats`, which the saver
+  bundles under `Resources/Splats`. Each is used at full detail, 0.2–4.6M
+  splats; about 220 MB for all eight. Needs network the first time.
 - A capture only holds together near where its photos were taken. Cameras
   that leave that region (the dolly backing away, the town square's arc) set
   `clip`, which drops every splat nearer than the subject minus `clip`.

@@ -311,9 +311,9 @@ $(PLAYGROUND_ICNS): $(BUILD)/LerpPreview Sources/Shaders/mesh-gradient.metal
 
 # Photoreal Gaussian splat captures (Sources/Splats/captures.json). The source
 # files are third-party and large, so they are not in git: `splats` downloads
-# each one once into build/splats-src, checks its sha256, and converts it to
-# the compact .lsplat that SplatData.swift reads. Re-running is a no-op unless
-# captures.json or the converter changed.
+# each one's SOG files once into build/splats-src and converts them to the
+# compact .lsplat that SplatData.swift reads. Re-running is a no-op unless
+# captures.json or the converter changed. Needs network the first time.
 SPLAT_OUT := $(BUILD)/splats
 SPLAT_STAMP := $(SPLAT_OUT)/.stamp
 

@@ -33,6 +33,9 @@ public final class SplatData: LerpDataProvider {
     private let device: MTLDevice
     private var target: MTLTexture?
     private var view = LerpSplatViewInfo()
+    /// This frame's colour of every visible splat, view-dependent colour
+    /// included; written by the `splatShade` kernel, read by the vertex stage.
+    private var shaded: MTLBuffer?
 
     // Sort scratch, reused every frame.
     private var depth: [Float] = []
@@ -91,7 +94,7 @@ public final class SplatData: LerpDataProvider {
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
 
         guard let asset = LerpSplatAssets.asset(captureName, device: device),
-              let pipeline = LerpSplatPipeline.shared(for: device) else {
+              let pipelines = LerpSplatPipeline.shared(for: device) else {
             // Missing capture: an empty (transparent) frame, so the look shows
             // its background rather than last frame's splats.
             commandBuffer.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
@@ -106,15 +109,45 @@ public final class SplatData: LerpDataProvider {
         var u = LerpSplatUniforms(view: cam.view, focal: SIMD2(cam.focal, cam.focal),
                                   viewport: SIMD2(Float(w), Float(h)), principal: cam.principal,
                                   deform: deform)
+        if shaded == nil || shaded!.length < asset.count * 8 {
+            shaded = device.makeBuffer(length: max(8, asset.count * 8), options: .storageModePrivate)
+            shaded?.label = "splat.shaded"
+        }
+        guard let shaded else { return }
+        if let order = visible.buffer, visible.count > 0,
+           let compute = commandBuffer.makeComputeCommandEncoder() {
+            // View-dependent colour, once per visible splat: the direction from
+            // the eye, turned back into the capture's own frame, through its
+            // spherical harmonics.
+            let eye = cam.view.inverse * SIMD4<Float>(0, 0, 0, 1)
+            let r = asset.shRotation
+            var sh = LerpSplatShade(eye: eye, r0: SIMD4(r[0], 0), r1: SIMD4(r[1], 0), r2: SIMD4(r[2], 0),
+                                    coeffs: UInt32(asset.shCoeffs), count: UInt32(visible.count))
+            compute.label = "splat shade \(captureName)"
+            compute.setComputePipelineState(pipelines.shade)
+            compute.setBytes(&u, length: MemoryLayout<LerpSplatUniforms>.stride, index: 0)
+            compute.setBytes(&sh, length: MemoryLayout<LerpSplatShade>.stride, index: 1)
+            compute.setBuffer(order, offset: 0, index: 2)
+            compute.setBuffer(asset.positions, offset: 0, index: 3)
+            compute.setBuffer(asset.colors, offset: 0, index: 4)
+            compute.setBuffer(asset.shLabels, offset: 0, index: 5)
+            compute.setBuffer(asset.shPalette, offset: 0, index: 6)
+            compute.setBuffer(asset.shCodebook, offset: 0, index: 7)
+            compute.setBuffer(shaded, offset: 0, index: 8)
+            let width = pipelines.shade.threadExecutionWidth
+            compute.dispatchThreads(MTLSize(width: visible.count, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: width * 4, height: 1, depth: 1))
+            compute.endEncoding()
+        }
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.label = "splat \(captureName)"
         if let order = visible.buffer, visible.count > 0 {
-            encoder.setRenderPipelineState(pipeline)
+            encoder.setRenderPipelineState(pipelines.render)
             encoder.setVertexBytes(&u, length: MemoryLayout<LerpSplatUniforms>.stride, index: 0)
             encoder.setVertexBuffer(order, offset: 0, index: 1)
             encoder.setVertexBuffer(asset.positions, offset: 0, index: 2)
             encoder.setVertexBuffer(asset.covariances, offset: 0, index: 3)
-            encoder.setVertexBuffer(asset.colors, offset: 0, index: 4)
+            encoder.setVertexBuffer(shaded, offset: 0, index: 4)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                                    instanceCount: visible.count)
         }
@@ -487,6 +520,15 @@ struct LerpSplatUniforms {
     var deform: LerpSplatDeform
 }
 
+/// Must match `SplatShade` in `LerpSplatPipeline.source`.
+struct LerpSplatShade {
+    var eye: SIMD4<Float>             // camera position, normalised capture space
+    var r0: SIMD4<Float>, r1: SIMD4<Float>, r2: SIMD4<Float>  // rows of the capture's rotation
+    var coeffs: UInt32                // SH coefficients per channel past band 0: 0, 3, 8 or 15
+    var count: UInt32                 // visible splats
+    var pad0: UInt32 = 0, pad1: UInt32 = 0
+}
+
 // MARK: - Assets
 
 /// A decoded capture, GPU-resident.
@@ -494,13 +536,31 @@ final class LerpSplatAsset {
     let count: Int
     let positions: MTLBuffer    // float4: xyz, opacity
     let covariances: MTLBuffer  // 2 × float4 a splat: xx xy xz yy, yz zz 0 0
-    let colors: MTLBuffer       // uchar4: sRGB-encoded rgb, opacity
+    let colors: MTLBuffer       // uchar4: sRGB-encoded rgb (SH band 0), opacity
+    /// View-dependent colour: per splat a palette entry (`shLabels`, uint),
+    /// per entry `shCoeffs` × 3 codebook indices (`shPalette`, uchar,
+    /// coefficient-major), and the 256-float codebook. With no SH,
+    /// `shCoeffs` is 0 and the buffers are placeholders.
+    let shCoeffs: Int
+    let shLabels: MTLBuffer
+    let shPalette: MTLBuffer
+    let shCodebook: MTLBuffer
+    /// Rows of the rotation that took the capture into its normalised frame;
+    /// its transpose takes a view direction back to where the SH live.
+    let shRotation: [SIMD3<Float>]
 
-    init(count: Int, positions: MTLBuffer, covariances: MTLBuffer, colors: MTLBuffer) {
+    init(count: Int, positions: MTLBuffer, covariances: MTLBuffer, colors: MTLBuffer,
+         shCoeffs: Int, shLabels: MTLBuffer, shPalette: MTLBuffer, shCodebook: MTLBuffer,
+         shRotation: [SIMD3<Float>]) {
         self.count = count
         self.positions = positions
         self.covariances = covariances
         self.colors = colors
+        self.shCoeffs = shCoeffs
+        self.shLabels = shLabels
+        self.shPalette = shPalette
+        self.shCodebook = shCodebook
+        self.shRotation = shRotation
     }
 
     static func load(_ url: URL, device: MTLDevice) throws -> LerpSplatAsset {
@@ -510,13 +570,29 @@ final class LerpSplatAsset {
         }
         func u32(_ o: Int) -> UInt32 { data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt32.self) } }
         func f32(_ o: Int) -> Float { data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: Float.self) } }
-        guard u32(4) == 1 else { throw LerpSplatError.format("unknown .lsplat version \(u32(4))") }
+        let version = u32(4)
+        guard version == 1 || version == 2 else { throw LerpSplatError.format("unknown .lsplat version \(version)") }
         let n = Int(u32(8))
         let lo = SIMD3(f32(16), f32(20), f32(24)), hi = SIMD3(f32(28), f32(32), f32(36))
         let payloadSize = Int(u32(40))
-        guard data.count >= 48 + payloadSize else { throw LerpSplatError.format("truncated") }
-        let planes = try (data.subdata(in: 48..<(48 + payloadSize)) as NSData).decompressed(using: .zlib) as Data
-        let expected = n * (6 + 4 + 3 + 4)
+        // Version 2 carries view-dependent colour; its header grows by
+        // rotation (9 floats, row-major), coefficient count, palette size and
+        // the 256-float codebook.
+        let extra = version == 2 ? Int(u32(44)) : 0
+        var shCoeffs = 0, paletteCount = 0
+        var rotation = [SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 1, 0), SIMD3<Float>(0, 0, 1)]
+        var codebook = [Float](repeating: 0, count: 256)
+        if version == 2 {
+            guard extra >= 44 + 1024, data.count >= 48 + extra else { throw LerpSplatError.format("truncated header") }
+            rotation = (0..<3).map { r in SIMD3(f32(48 + 12 * r), f32(52 + 12 * r), f32(56 + 12 * r)) }
+            shCoeffs = Int(u32(84))
+            paletteCount = Int(u32(88))
+            for k in 0..<256 { codebook[k] = f32(92 + 4 * k) }
+        }
+        let start = 48 + extra
+        guard data.count >= start + payloadSize else { throw LerpSplatError.format("truncated") }
+        let planes = try (data.subdata(in: start..<(start + payloadSize)) as NSData).decompressed(using: .zlib) as Data
+        let expected = n * (6 + 4 + 3 + 4) + (shCoeffs > 0 ? n * 3 + paletteCount * shCoeffs * 3 : 0)
         guard planes.count == expected else {
             throw LerpSplatError.format("payload is \(planes.count) bytes, expected \(expected)")
         }
@@ -561,7 +637,27 @@ final class LerpSplatAsset {
                 }
             }
         }
-        return LerpSplatAsset(count: n, positions: posBuf, covariances: covBuf, colors: colBuf)
+        let labelBuf = device.makeBuffer(length: max(4, shCoeffs > 0 ? n * 4 : 4), options: .storageModeShared)
+        let paletteBuf = device.makeBuffer(length: max(4, paletteCount * shCoeffs * 3), options: .storageModeShared)
+        let bookBuf = device.makeBuffer(bytes: codebook, length: 256 * 4, options: .storageModeShared)
+        guard let labelBuf, let paletteBuf, let bookBuf else {
+            throw LerpSplatError.format("out of GPU memory for \(n) splats' colour")
+        }
+        labelBuf.label = "splat.shLabels"; paletteBuf.label = "splat.shPalette"; bookBuf.label = "splat.shCodebook"
+        if shCoeffs > 0 {
+            planes.withUnsafeBytes { raw in
+                let b = raw.bindMemory(to: UInt8.self).baseAddress! + 17 * n
+                let l0 = b, l1 = b + n, l2 = b + 2 * n
+                let labels = labelBuf.contents().bindMemory(to: UInt32.self, capacity: n)
+                for i in 0..<n {
+                    labels[i] = UInt32(l0[i]) | UInt32(l1[i]) << 8 | UInt32(l2[i]) << 16
+                }
+                paletteBuf.contents().copyMemory(from: b + 3 * n, byteCount: paletteCount * shCoeffs * 3)
+            }
+        }
+        return LerpSplatAsset(count: n, positions: posBuf, covariances: covBuf, colors: colBuf,
+                              shCoeffs: shCoeffs, shLabels: labelBuf, shPalette: paletteBuf,
+                              shCodebook: bookBuf, shRotation: rotation)
     }
 }
 
@@ -659,9 +755,13 @@ public enum LerpSplatAssets {
 
 enum LerpSplatPipeline {
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var pipelines: [UInt64: MTLRenderPipelineState] = [:]
+    struct Pipelines {
+        let render: MTLRenderPipelineState
+        let shade: MTLComputePipelineState
+    }
+    nonisolated(unsafe) private static var pipelines: [UInt64: Pipelines] = [:]
 
-    static func shared(for device: MTLDevice) -> MTLRenderPipelineState? {
+    static func shared(for device: MTLDevice) -> Pipelines? {
         lock.lock(); defer { lock.unlock() }
         if let p = pipelines[device.registryID] { return p }
         do {
@@ -679,7 +779,9 @@ enum LerpSplatPipeline {
             c.sourceAlphaBlendFactor = .one
             c.destinationRGBBlendFactor = .oneMinusSourceAlpha
             c.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-            let p = try device.makeRenderPipelineState(descriptor: d)
+            guard let shadeFn = library.makeFunction(name: "splatShade") else { return nil }
+            let p = Pipelines(render: try device.makeRenderPipelineState(descriptor: d),
+                              shade: try device.makeComputePipelineState(function: shadeFn))
             pipelines[device.registryID] = p
             return p
         } catch {
@@ -760,12 +862,63 @@ enum LerpSplatPipeline {
         return p;
     }
 
+    struct SplatShade {
+        float4 eye;
+        float4 r0, r1, r2;   // rows of the capture's rotation
+        uint coeffs;         // SH coefficients per channel past band 0
+        uint count;
+        uint pad0, pad1;
+    };
+
+    // Colour of each visible splat for this eye: band 0 (stored, already
+    // offset by 0.5) plus bands 1-3 from the palette, the standard 3DGS
+    // evaluation. Opacity, with any dissolve fade, rides in .a.
+    kernel void splatShade(uint gid [[thread_position_in_grid]],
+                           constant SplatUniforms& U [[buffer(0)]],
+                           constant SplatShade& H [[buffer(1)]],
+                           device const uint* order [[buffer(2)]],
+                           device const float4* posOp [[buffer(3)]],
+                           device const uchar4* rgba [[buffer(4)]],
+                           device const uint* labels [[buffer(5)]],
+                           device const uchar* palette [[buffer(6)]],
+                           constant float* book [[buffer(7)]],
+                           device half4* shaded [[buffer(8)]]) {
+        if (gid >= H.count) return;
+        uint i = order[gid];
+        float fade;
+        float3 p = splatDeform(posOp[i].xyz, i, U.deform, fade);
+        float4 base = float4(rgba[i]) / 255.0;
+        float3 c = base.rgb;
+        if (H.coeffs > 0u) {
+            float3 d = normalize(p - H.eye.xyz);
+            d = H.r0.xyz * d.x + H.r1.xyz * d.y + H.r2.xyz * d.z;
+            float x = d.x, y = d.y, z = d.z;
+            float xx = x * x, yy = y * y, zz = z * z;
+            float b[15] = {
+                -0.4886025119029199 * y, 0.4886025119029199 * z, -0.4886025119029199 * x,
+                1.0925484305920792 * x * y, -1.0925484305920792 * y * z,
+                0.31539156525252005 * (2.0 * zz - xx - yy),
+                -1.0925484305920792 * x * z, 0.5462742152960396 * (xx - yy),
+                -0.5900435899266435 * y * (3.0 * xx - yy), 2.890611442640554 * x * y * z,
+                -0.4570457994644658 * y * (4.0 * zz - xx - yy),
+                0.3731763325901154 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy),
+                -0.4570457994644658 * x * (4.0 * zz - xx - yy),
+                1.445305721320277 * z * (xx - yy), -0.5900435899266435 * x * (xx - 3.0 * yy)
+            };
+            device const uchar* e = palette + labels[i] * H.coeffs * 3u;
+            for (uint j = 0u; j < H.coeffs; j++) {
+                c += b[j] * float3(book[e[3u * j]], book[e[3u * j + 1u]], book[e[3u * j + 2u]]);
+            }
+        }
+        shaded[i] = half4(half3(max(c, 0.0)), half(base.a * fade));
+    }
+
     vertex SplatOut splatVertex(uint vid [[vertex_id]], uint iid [[instance_id]],
                                 constant SplatUniforms& U [[buffer(0)]],
                                 device const uint* order [[buffer(1)]],
                                 device const float4* posOp [[buffer(2)]],
                                 device const float4* cov [[buffer(3)]],
-                                device const uchar4* rgba [[buffer(4)]]) {
+                                device const half4* shaded [[buffer(4)]]) {
         SplatOut o;
         o.position = float4(0.0, 0.0, 2.0, 1.0);   // clipped
         o.uv = float2(0.0);
@@ -803,8 +956,8 @@ enum LerpSplatPipeline {
         float2 px = centre + corner.x * major + corner.y * minor;
         o.position = float4(px / (0.5 * U.viewport), 0.0, 1.0);
         o.uv = corner;
-        float4 col = float4(rgba[i]) / 255.0;
-        o.color = half4(half3(col.rgb), half(col.a * fade));
+        o.color = shaded[i];
+        (void)fade;
         return o;
     }
 

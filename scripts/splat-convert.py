@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
 """Convert a trained 3D Gaussian splat capture into Lerping's .lsplat format.
 
-    scripts/splat-convert.py convert  CAPTURE_ID   (reads Sources/Splats/captures.json)
-    scripts/splat-convert.py inspect  FILE [--views OUT_PREFIX] [--config CAPTURE_ID]
+    scripts/splat-convert.py all              fetch and convert every capture in
+                                              Sources/Splats/captures.json
+    scripts/splat-convert.py fetch  ID        download one capture's SOG files
+    scripts/splat-convert.py convert ID       convert one capture
+    scripts/splat-convert.py inspect FILE|ID [--views OUT_PREFIX] [--config ID]
 
-Input formats: standard 3DGS binary .ply (x y z f_dc_* opacity scale_* rot_*),
-antimatter15 .splat (32 bytes a splat), and Niantic .spz (v2/v3).
+Inputs: PlayCanvas SOG v2 (what SuperSplat serves; one or more chunks),
+standard 3DGS binary .ply, antimatter15 .splat, Niantic .spz. Only SOG keeps
+view-dependent colour.
 
 .lsplat is what `SplatData.swift` loads. Header (little endian, 48 bytes):
 
     char[4]  "LSPL"
-    u32      version (1)
+    u32      version (1, or 2 with view-dependent colour)
     u32      count
     u32      flags (0)
     f32[3]   bounds min      positions are quantized inside these bounds
     f32[3]   bounds max
     u32      payload bytes (compressed)
-    u32      reserved
+    u32      extra header bytes that follow (0 for version 1)
+
+version 2's extra header:
+
+    f32[9]   rotation, row-major, that took the capture into this frame
+    u32      SH coefficients per channel past band 0 (3, 8 or 15)
+    u32      palette entries
+    f32[256] codebook for the palette
 
 then a raw-DEFLATE payload (Apple's COMPRESSION_ZLIB) of planes, splat-major
 within each plane so neighbours compress together:
@@ -25,12 +36,14 @@ within each plane so neighbours compress together:
     u8[count]  r, g, b, a   colour from SH band 0, opacity through the sigmoid
     u8[count]  sx, sy, sz   log scale, -10..2 over 0..255
     u8[count]  qw, qx, qy, qz  unit quaternion, -1..1 over 0..255
-
-Only SH band 0 is kept: view-dependent colour is dropped, as most web
-viewers' compressed formats do.
+  version 2 only:
+    u8[count]  label bits 0-7, 8-15, 16-23   palette entry per splat
+    u8[entries][coeffs][3]                   codebook index per coefficient
 
 The transform in captures.json is applied here, once, so the runtime sees every
 capture the same way: y up, the subject at the origin, the subject's radius 1.
+The view-dependent colour stays in the capture's own frame; the renderer turns
+each view direction back with the stored rotation.
 """
 import json
 import math
@@ -162,7 +175,98 @@ def read_spz(path):
     return pos, rgb, alpha, log_scale, quat
 
 
+SH_COEFFS = {0: 0, 1: 3, 2: 8, 3: 15}
+
+
+def read_sog(meta_paths):
+    """PlayCanvas SOG v2 (meta.json + WebP planes), one or more chunks merged.
+
+    Mirrors splat-transform's reader (src/lib/readers/read-sog.ts). Unlike
+    the .ply path it keeps the higher spherical-harmonic bands, as they are
+    stored: a palette of centroids plus a 16-bit label per splat. Each chunk's
+    palette is kept whole and the labels are offset into the merged palette.
+    """
+    from PIL import Image
+
+    def rgba(path):
+        im = Image.open(path).convert("RGBA")
+        return np.asarray(im, dtype=np.uint8).reshape(-1, 4)
+
+    parts = []
+    palettes = []
+    offset = 0
+    coeffs = None
+    for mp in meta_paths:
+        d = os.path.dirname(mp)
+        m = json.load(open(mp))
+        if m.get("version") != 2:
+            raise ValueError(f"{mp}: only SOG v2 is supported")
+        n = m["count"]
+        lo = rgba(os.path.join(d, m["means"]["files"][0]))[:n].astype(np.uint32)
+        hi = rgba(os.path.join(d, m["means"]["files"][1]))[:n].astype(np.uint32)
+        v = (lo[:, :3] | (hi[:, :3] << 8)).astype(np.float64) / 65535
+        mins, maxs = np.array(m["means"]["mins"]), np.array(m["means"]["maxs"])
+        t = mins + (maxs - mins) * v
+        pos = np.sign(t) * (np.exp(np.abs(t)) - 1)
+
+        q = rgba(os.path.join(d, m["quats"]["files"][0]))[:n].astype(np.float64)
+        tag = q[:, 3].astype(np.int64) - 252
+        abc = (q[:, :3] / 255 * 2 - 1) / math.sqrt(2)
+        quat = np.zeros((n, 4))
+        order = np.array([[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]])
+        valid = (tag >= 0) & (tag <= 3)
+        tagc = np.clip(tag, 0, 3)
+        rows = np.arange(n)
+        for j in range(3):
+            quat[rows, order[tagc, j]] = abc[:, j]
+        quat[rows, tagc] = np.sqrt(np.maximum(0, 1 - (abc ** 2).sum(1)))
+        quat[~valid] = [1, 0, 0, 0]
+
+        sc = rgba(os.path.join(d, m["scales"]["files"][0]))[:n]
+        log_scale = np.array(m["scales"]["codebook"])[sc[:, :3]]
+        c0 = rgba(os.path.join(d, m["sh0"]["files"][0]))[:n]
+        dc = np.array(m["sh0"]["codebook"])[c0[:, :3]]
+        rgb = 0.5 + SH_C0 * dc
+        alpha = c0[:, 3].astype(np.float64) / 255
+
+        shn = m.get("shN")
+        if shn and SH_COEFFS.get(shn["bands"], 0) > 0:
+            c = SH_COEFFS[shn["bands"]]
+            if coeffs is not None and coeffs != c:
+                raise ValueError("chunks disagree on SH bands")
+            coeffs = c
+            cen = rgba(os.path.join(d, shn["files"][0]))
+            width = 64 * c
+            book = np.array(shn["codebook"])
+            count = shn["count"]
+            # palette[entry, coeff, channel]
+            ent = np.arange(count)
+            cols = (ent % 64)[:, None] * c + np.arange(c)[None, :]
+            idx = (ent // 64)[:, None] * width + cols
+            idx = np.minimum(idx, len(cen) - 1)
+            palettes.append(book[cen[idx][:, :, :3]].astype(np.float32))
+            lab = rgba(os.path.join(d, shn["files"][1]))[:n].astype(np.int64)
+            labels = (lab[:, 0] | (lab[:, 1] << 8)) + offset
+            offset += count
+        else:
+            # A chunk with no view-dependent colour (some level-of-detail
+            # chunks are saved without): points at an all-zero entry below.
+            labels = np.full(n, -1, dtype=np.int64)
+        parts.append((pos, rgb, alpha, log_scale, quat, labels))
+
+    cat = lambda k: np.concatenate([p[k] for p in parts])
+    splats = [cat(0), cat(1), cat(2), cat(3), cat(4)]
+    if coeffs:
+        palette = np.concatenate(palettes + [np.zeros((1, coeffs, 3), np.float32)])
+        labels = cat(5)
+        labels[labels < 0] = len(palette) - 1
+        splats.append({"labels": labels, "palette": palette, "coeffs": coeffs})
+    return splats
+
+
 def read_any(path):
+    if isinstance(path, list):
+        return read_sog(path)
     ext = os.path.splitext(path)[1].lower()
     if ext == ".ply":
         return read_ply(path)
@@ -210,9 +314,11 @@ def quat_mul(a, b):
 
 
 def apply_config(splats, cfg):
-    pos, rgb, alpha, log_scale, quat = splats
+    pos, rgb, alpha, log_scale, quat = splats[:5]
+    sh = dict(splats[5]) if len(splats) > 5 else None
+    labels = sh["labels"] if sh else np.zeros(len(pos), dtype=np.int64)
     ok = np.isfinite(pos).all(1) & np.isfinite(log_scale).all(1) & np.isfinite(quat).all(1) & np.isfinite(alpha)
-    pos, rgb, alpha, log_scale, quat = pos[ok], rgb[ok], alpha[ok], log_scale[ok], quat[ok]
+    pos, rgb, alpha, log_scale, quat, labels = pos[ok], rgb[ok], alpha[ok], log_scale[ok], quat[ok], labels[ok]
     quat = quat / np.maximum(np.linalg.norm(quat, axis=1, keepdims=True), 1e-12)
     # Source-space subject centre, then rotation, then uniform scale.
     center = np.array(cfg.get("center", [0, 0, 0]), dtype=np.float64)
@@ -237,7 +343,7 @@ def apply_config(splats, cfg):
             keep &= (np.hypot(pos[:, 0], pos[:, 2]) <= r) & (pos[:, 1] >= y0) & (pos[:, 1] <= y1)
     # Splats far bigger than the subject are background haze from training.
     keep &= log_scale.max(1) <= float(cfg.get("max_log_scale", 1.5))
-    pos, rgb, alpha, log_scale, quat = pos[keep], rgb[keep], alpha[keep], log_scale[keep], quat[keep]
+    pos, rgb, alpha, log_scale, quat, labels = pos[keep], rgb[keep], alpha[keep], log_scale[keep], quat[keep], labels[keep]
 
     if cfg.get("center_xz"):
         # Put the middle of the solid part of the capture on the turntable axis.
@@ -252,8 +358,14 @@ def apply_config(splats, cfg):
     if len(pos) > limit:
         importance = alpha * np.exp(log_scale.sum(1) / 3.0)
         idx = np.argsort(-importance)[:limit]
-        pos, rgb, alpha, log_scale, quat = pos[idx], rgb[idx], alpha[idx], log_scale[idx], quat[idx]
-    return pos, rgb, alpha, log_scale, quat
+        pos, rgb, alpha, log_scale, quat, labels = pos[idx], rgb[idx], alpha[idx], log_scale[idx], quat[idx], labels[idx]
+    if sh is None:
+        return pos, rgb, alpha, log_scale, quat
+    # The SH stay in the capture's own frame; the renderer turns each view
+    # direction back into that frame with this rotation's transpose.
+    sh["labels"] = labels
+    sh["rotation"] = m
+    return pos, rgb, alpha, log_scale, quat, sh
 
 
 # ----------------------------------------------------------------- writer ----
@@ -271,7 +383,8 @@ def morton_order(q):
 
 
 def write_lsplat(path, splats):
-    pos, rgb, alpha, log_scale, quat = splats
+    pos, rgb, alpha, log_scale, quat = splats[:5]
+    sh = splats[5] if len(splats) > 5 else None
     n = len(pos)
     lo = pos.min(0)
     hi = pos.max(0)
@@ -290,10 +403,34 @@ def write_lsplat(path, splats):
                       + [col[:, i].tobytes() for i in range(4)]
                       + [sc[:, i].tobytes() for i in range(3)]
                       + [qq[:, i].tobytes() for i in range(4)])
+    extra = b""
+    version = 1
+    if sh is not None:
+        # Only the palette entries still referenced after cropping, renumbered.
+        used, labels = np.unique(sh["labels"][order], return_inverse=True)
+        palette = sh["palette"][used]                      # [entry, coeff, channel]
+        c = sh["coeffs"]
+        # One shared 256-level codebook for every coefficient: quantiles of
+        # the values, so the levels sit where the values are.
+        vals = palette.reshape(-1)
+        book = np.quantile(vals, np.linspace(0, 1, 256)).astype(np.float32)
+        book = np.unique(book)
+        book = np.concatenate([book, np.full(256 - len(book), book[-1], np.float32)])
+        mids = (book[1:] + book[:-1]) / 2
+        pidx = np.searchsorted(mids, vals).astype(np.uint8).reshape(palette.shape)
+        lab = labels.astype(np.uint32)
+        planes += b"".join([(lab & 0xFF).astype(np.uint8).tobytes(),
+                            ((lab >> 8) & 0xFF).astype(np.uint8).tobytes(),
+                            ((lab >> 16) & 0xFF).astype(np.uint8).tobytes(),
+                            pidx.tobytes()])
+        extra = struct.pack("<9fII", *np.asarray(sh["rotation"], dtype=np.float32).reshape(-1), c, len(used))
+        extra += book.astype("<f4").tobytes()
+        version = 2
     comp = zlib.compressobj(9, zlib.DEFLATED, -15)
     payload = comp.compress(planes) + comp.flush()
-    header = struct.pack("<4sIII3f3fII", b"LSPL", 1, n, 0, *lo.astype(np.float32), *hi.astype(np.float32),
-                         len(payload), 0)
+    header = struct.pack("<4sIII3f3fII", b"LSPL", version, n, 0, *lo.astype(np.float32), *hi.astype(np.float32),
+                         len(payload), len(extra))
+    header += extra
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + ".tmp", "wb") as f:
         f.write(header)
@@ -343,43 +480,39 @@ def inspect(path, prefix=None, cfg=None):
         render_views(prefix, splats, cfg.get("view_extent") if cfg else None)
 
 
-def splat_transform():
-    """PlayCanvas's splat-transform (MIT), pinned, installed under build/."""
-    import subprocess
-    tools = os.path.join(ROOT, "build", "node-tools")
-    exe = os.path.join(tools, "node_modules", ".bin", "splat-transform")
-    if not os.path.exists(exe):
-        subprocess.run(["npm", "install", "--silent", "--no-audit", "--no-fund", "--prefix", tools,
-                        "@playcanvas/splat-transform@" + SPLAT_TRANSFORM_VERSION], check=True)
-    return exe
-
-
-SPLAT_TRANSFORM_VERSION = "3.10.3"
-
-
 def fetch(cid, cfg, src_dir):
-    """The capture as a local .ply, downloaded and decoded once.
+    """The capture's SOG chunks, downloaded once into src_dir/<id>/<n>/.
 
-    SuperSplat serves SOG (a meta.json plus WebP planes); a level of a
-    streamed level-of-detail scene is several such chunks, merged here.
-    Spherical harmonics past band 0 are dropped at this step.
+    Returns the local meta.json paths. SuperSplat serves SOG (a meta.json and
+    WebP planes); one level of a streamed level-of-detail scene is several
+    such chunks, which read_sog merges.
     """
     import subprocess
-    path = os.path.join(src_dir, cid + ".ply")
-    if os.path.exists(path):
-        return path
-    os.makedirs(src_dir, exist_ok=True)
-    cmd = [splat_transform(), "-q", "-w"]
-    for url in cfg["sources"]:
-        cmd.append(url)
-    cmd += ["-H", "0", "-N"]
-    if cfg.get("decimate"):
-        cmd += ["--decimate-adaptive", str(cfg["decimate"])]
-    cmd.append(path + ".part.ply")
-    print(f"{cid}: fetching {len(cfg['sources'])} file(s)")
-    subprocess.run(cmd, check=True)
-    os.replace(path + ".part.ply", path)
-    return path
+    metas = []
+    for k, url in enumerate(cfg["sources"]):
+        d = os.path.join(src_dir, cid, str(k))
+        meta = os.path.join(d, "meta.json")
+        done = os.path.join(d, ".complete")
+        metas.append(meta)
+        if os.path.exists(done):
+            continue
+        os.makedirs(d, exist_ok=True)
+        base = url.rsplit("/", 1)[0]
+        subprocess.run(["curl", "-fsSL", "--retry", "3", "-o", meta, url], check=True)
+        m = json.load(open(meta))
+        files = [f for key in ("means", "scales", "quats", "sh0", "shN") if key in m for f in m[key]["files"]]
+        args = ["curl", "-fsSL", "--retry", "3", "-Z"]
+        for f in files:
+            args += ["-o", os.path.join(d, f), base + "/" + f]
+        print(f"{cid}: chunk {k + 1}/{len(cfg['sources'])}, {len(files)} files")
+        subprocess.run(args, check=True)
+        open(done, "w").close()
+    return metas
+
+
+def source_mtime(src):
+    paths = src if isinstance(src, list) else [src]
+    return max(os.path.getmtime(p) for p in paths)
 
 
 def convert_all(configs):
@@ -391,7 +524,7 @@ def convert_all(configs):
         wanted.add(cid + ".lsplat")
         src = fetch(cid, cfg, src_dir)
         out = os.path.join(out_dir, cid + ".lsplat")
-        if os.path.exists(out) and os.path.getmtime(out) >= max(newest_input, os.path.getmtime(src)):
+        if os.path.exists(out) and os.path.getmtime(out) >= max(newest_input, source_mtime(src)):
             continue
         n, size = write_lsplat(out, apply_config(read_any(src), cfg))
         print(f"{cid}: {n:,} splats, {size / 1e6:.1f} MB")

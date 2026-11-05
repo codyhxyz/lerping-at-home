@@ -325,17 +325,17 @@ International license (https://creativecommons.org/licenses/by/4.0/):
   "Shenley Church" by naturalsplats, https://superspl.at/scene/aa451b94
   "Main square, Trogir" by tosolini, https://superspl.at/scene/89f82474
 
-Changes made: view-dependent colour (spherical harmonics above band 0)
-removed; some decimated or reduced to one level of their level-of-detail set;
-rotated, recentred, rescaled and cropped (Sources/Splats/captures.json); and
-requantised into this project's .lsplat format. The captures are not part of
+Changes made: rotated, recentred, rescaled and cropped
+(Sources/Splats/captures.json), faint splats dropped from some, and
+requantised into this project's .lsplat format (the view-dependent colour
+palette is re-encoded with a single shared codebook). The captures are not part of
 this program's source and are not covered by its AGPL license; they are
 downloaded at build time by `make splats` and shipped alongside it under
 CC BY 4.0.
 
-They are decoded with splat-transform (https://github.com/playcanvas/splat-transform),
-Copyright PlayCanvas Ltd., MIT License, which is run at build time and not
-shipped.
+The SOG decoder in scripts/splat-convert.py follows the reader in
+splat-transform (https://github.com/playcanvas/splat-transform), Copyright
+PlayCanvas Ltd., MIT License. No splat-transform code is shipped.
 
 
 LICENSE INTERACTION
