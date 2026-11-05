@@ -609,6 +609,9 @@ static half4 topoFractal(float4 pos, TopoFractalIn u) {
 // - Cost: all four surfaces, and the partner's four, come from one sin/cos
 //   of the sample point (the partner by angle addition), so a step costs
 //   about what upstream's two trilinear noise lookups do, at fewer steps.
+//   Two more exact savings per step: the samples are evenly spaced on a
+//   straight ray, so the warp's three sines step by angle addition too, and
+//   each closed-form integral's difference of two atans is one atan2.
 //
 
 // The four surfaces at one point, from its sin and cos. Each is scaled so
@@ -643,9 +646,17 @@ struct TgyFrame {
     float3 so, co;     // sin, cos of the partner's lattice offset
 };
 
-// (a, b): the blended surface and its partner, at world point p.
-static float2 tgyField(float3 p, TgyFrame f) {
-    p += f.warpAmp * sin(p.zxy * 0.06 + float3(0.0, 2.1, 4.2) + f.warpPhase);
+// The warp's sine argument at world point p.
+static float3 tgyWarpArg(float3 p, TgyFrame f) {
+    return p.zxy * 0.06 + float3(0.0, 2.1, 4.2) + f.warpPhase;
+}
+
+// (a, b): the blended surface and its partner, at world point p, given
+// sin(tgyWarpArg(p)). The march's samples are evenly spaced on a straight
+// ray, so that argument steps by a constant and its sine comes from an
+// angle-addition recurrence instead of three sines a step.
+static float2 tgyField(float3 p, float3 warpSin, TgyFrame f) {
+    p += f.warpAmp * warpSin;
     float ang = p.y * f.twistRate + f.spin;
     float cs = cos(ang), sn = sin(ang);
     p.xz = float2(cs * p.x - sn * p.z, sn * p.x + cs * p.z);
@@ -665,7 +676,9 @@ static float2 tgyField(float3 p, TgyFrame f) {
 static float tgySegment(float a0, float a1, float e, float dt) {
     float da = a1 - a0;
     if (abs(da) < 1e-4) return dt / (a0 * a0 + e * e);
-    return dt * (atan(a1 / e) - atan(a0 / e)) / (e * da);
+    // atan(a1/e) - atan(a0/e) as one atan2 (the difference identity, exact,
+    // and free of the cancellation between two nearly equal angles).
+    return dt * atan2(e * da, e * e + a0 * a1) / (e * da);
 }
 
 // A thin tube around the curve where both surfaces vanish, integrated
@@ -680,7 +693,10 @@ static float2 tgyTube(float2 p0, float2 p1, float r2) {
     float C = dot(p0, p0) + r2;
     float q2 = max(4.0 * A * C - B * B, 1e-14);
     float q = sqrt(q2);
-    float i1 = 2.0 / q * (atan((2.0 * A + B) / q) - atan(B / q));
+    // atan((2A+B)/q) - atan(B/q) by the difference identity: the atan2 of
+    // (2A/q, 1 + B(2A+B)/q^2), scaled by q^2/2A to (q, 2C + B), and
+    // 2C + B = 2(p0.p1 + r2). One atan2 instead of two atans (exact).
+    float i1 = 2.0 / q * atan2(q, 2.0 * (dot(p0, p1) + r2));
     float i2 = ((2.0 * A + B) / (A + B + C) - B / C + 2.0 * A * i1) / q2;
     return float2(i1, i2);
 }
@@ -726,12 +742,19 @@ static half4 topoGyroid(float4 pos, TopoGyroidIn u) {
     float bandK = u.bands * PI;
     float dt = (maxDepth - t0) / float(u.steps);
     float t = t0;
-    float2 ab0 = tgyField(camPos + relVec * t, f) * 0.3;
+    float3 ws = sin(tgyWarpArg(camPos + relVec * t, f));
+    float3 wc = cos(tgyWarpArg(camPos + relVec * t, f));
+    float3 wStep = relVec.zxy * (0.06 * dt);
+    float3 sStep = sin(wStep), cStep = cos(wStep);
+    float2 ab0 = tgyField(camPos + relVec * t, ws, f) * 0.3;
     if (bandK > 0.0) ab0.y = sin(ab0.y * bandK) / bandK;
     float3 glow = float3(0.0);
     for (int i = 0; i < u.steps; i++) {
         t += dt;
-        float2 ab1 = tgyField(camPos + relVec * t, f) * 0.3;
+        float3 wsNext = ws * cStep + wc * sStep;
+        wc = wc * cStep - ws * sStep;
+        ws = wsNext;
+        float2 ab1 = tgyField(camPos + relVec * t, ws, f) * 0.3;
         // Iso-bands: b = k / bands for every integer k, not just b = 0.
         if (bandK > 0.0) ab1.y = sin(ab1.y * bandK) / bandK;
         // Fade in past the near clip, out with depth; tint toward the

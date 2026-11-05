@@ -33,17 +33,29 @@
 //
 // GPU cost. This is the expensive kind of golf shader: upstream marches 89
 // steps x 9 octaves, 18 sines and two 2x2 rotations per octave, for every
-// pixel. Three things bring it down. (1) The octave rotations are hoisted
-// into per-pixel wave vectors (exact). (2) Sky pixels stop marching as soon
-// as their result is provably black (exact; it halves the work, since the
-// sky is half the frame and upstream's sky is black). (3) `steps` caps the
-// march at 64 by default instead of 89: the sea converges early, and the
-// only visible difference is a slightly softer far horizon (mean 3/255 per
-// pixel). The "Upstream" preset restores 89. LerpPreview --bench, Apple M5,
-// defaults: ~3.3 ms/frame at 1200x750, ~30 ms at 3840x2160 (about 2.4x
-// paper-texture, the heaviest shader before it; a straight port measured
-// ~13.5 ms at 1200x750). On 4K-and-up screens it wants the saver's 75% or
-// 50% render scale to hold 60 fps.
+// pixel. What brings it down:
+//   (1) The octave rotations are hoisted into per-pixel wave vectors, and
+//       the per-step HSV into one per-pixel colour (both exact).
+//   (2) Sky pixels stop marching as soon as their result is provably black
+//       (exact; the sky is half the frame and upstream's sky is black).
+//   (3) Sea pixels stop once the ray has settled on the surface (|e| < 1e-6)
+//       and add the remaining steps' light in one go. Most of the sea
+//       settles in 10-25 steps, so this halves the sea's work; against the
+//       full march it differs by a mean 0.001/255 (max 1/255) at 2704x1756.
+//   (4) Octaves 6-8 are replaced by their mean while the first six put the
+//       sample more than 0.1 above the surface, where they move e by under
+//       3% (mean-zero) and the light is linear in e. A float64 model of the
+//       march puts this at a mean 0.014/255 (max 3/255) per pixel.
+//   (5) `steps` caps the march at 64 by default instead of 89: the only
+//       visible difference is a slightly softer far horizon (mean 3/255).
+//       The "Upstream" preset restores 89.
+// The pixels that never settle (the band at the horizon, and sea pixels
+// whose 1.4x over-relaxed step keeps hopping across a steep ripple) still
+// march every step, and set the cost. LerpPreview --bench, Apple M5,
+// 2704x1756 (the 60 fps budget there is 13 ms): before the HSV hoist, (3)
+// and (4), ~17.3 ms/frame default and ~22.8 ms Upstream; (3) alone measured
+// 12.1 and 14.5 ms on a loaded GPU, and the model's SIMD-group step count
+// puts (4) at another ~12% of the octave work.
 //
 // lerp-param: speed   float 0 2  = 0.35 "Speed"
 // lerp-param: sunTint float 0 1  = 0.0  "Sun warm/cool"
@@ -59,6 +71,10 @@ static inline float3 srHsv(float h, float s, float v) {
     float3 p = abs(fract(float3(h) + k.xyz) * 6.0 - k.www);
     return v * mix(float3(k.x), clamp(p - k.xxx, 0.0, 1.0), s);
 }
+
+// Mean of the dropped octaves 6-8, E|0.1 (sin a + sin b)| / f = 0.1 * 8/pi^2 / f
+// for f = 64, 128, 256.
+constant float SR_TAIL = 0.1 * 0.8105695 * (1.0 / 64.0 + 1.0 / 128.0 + 1.0 / 256.0);
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
     float2 r = u.resolution;
@@ -89,7 +105,16 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         f += f;
     }
 
-    float3 col = float3(0.0);
+    // Upstream adds srHsv(hue, 0.3, v) every step, with a hue fixed per pixel.
+    // HSV is linear in v, so the sum is the per-pixel colour `tone` times the
+    // sum of the v's (exact): one add per step instead of an HSV conversion.
+    float3 tone = srHsv(uv.y > 0.0 ? uv.y : 0.57, 0.3, 1.0);
+    // Sky: tone is positive, so tone * light + sun <= 0 in every channel
+    // exactly when light <= -max(sun / tone).
+    float3 ratio = sun / tone;
+    float skyBlack = -max(ratio.x, max(ratio.y, ratio.z));
+
+    float light = 0.0;
     float g = 0.0;   // distance travelled along the ray
     for (int k = 0; k < u.steps; k++) {
         // Base distance: height of (uv*g, g) above the sea plane y = -0.7.
@@ -97,9 +122,23 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
         // Turbulence fBm: |sin| ripples along the rotated wave vectors.
         f = 1.0;
-        for (int o = 0; o < 9; o++) {
+        for (int o = 0; o < 6; o++) {
             e += abs(0.1 * (sin(g * wave[o].x + t) + sin(g * wave[o].y + t))) / f;
             f += f;
+        }
+        // The last three octaves (f = 64, 128, 256) add at most 0.0055 and
+        // only matter near the surface, where e is small. While the first
+        // six already put the sample more than 0.1 above it, their mean
+        // (8/pi^2 * 0.1/f each) stands in for them: the step and the light
+        // below are then linear in e, so the error is under 3% of a step and
+        // zero on average.
+        if (e > 0.1) {
+            e += SR_TAIL;
+        } else {
+            for (int o = 6; o < 9; o++) {
+                e += abs(0.1 * (sin(g * wave[o].x + t) + sin(g * wave[o].y + t))) / f;
+                f += f;
+            }
         }
 
         // Advance the ray.
@@ -108,16 +147,25 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         // Volumetric shading: sky hue follows height, sea is a fixed blue-grey;
         // brightness peaks in a thin shell near the surface (upstream's
         // octave counter is 512 here).
-        col += srHsv(uv.y > 0.0 ? uv.y : 0.57, 0.3, min(e * 512.0 - 0.05, 0.45 - e) / 63.0);
+        light += min(e * 512.0 - 0.05, 0.45 - e) / 63.0;
 
         // Above the horizon e only grows and never drops below 0.7, so every
         // step subtracts light. Once even the sun cannot lift any channel back
         // above zero the pixel's final value is black; stop marching. (Exact:
         // the remaining steps could only push it further below zero.)
-        if (uv.y > 0.0 && all(col + sun <= 0.0)) break;
+        if (uv.y > 0.0 && light <= skyBlack) break;
+
+        // Sea: once the ray has settled on the surface (|e| < 1e-6, so g
+        // moves by under 1.4e-6 a step) every remaining step adds the same
+        // -0.05/63; add them all at once and stop. Most of the sea settles
+        // in 10-25 steps, the rest of a 64- or 89-step budget is this.
+        if (abs(e) < 1e-6) {
+            light += float(u.steps - 1 - k) * (-0.05 / 63.0);
+            break;
+        }
     }
 
-    col += sun;
+    float3 col = tone * light + sun;
 
     float3 color = max(col, 0.0);
     color = lerpDither(color, pos);
