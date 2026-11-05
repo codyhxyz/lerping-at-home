@@ -88,8 +88,15 @@
 // shrinks by the fold scale, from the orbit's detail at the orbit's distance,
 // less SP_FLY_LOD_BIAS (and a per-route bias for the costlier folds), so the
 // finest features stay ~10-20 reference pixels, and never below the verified
-// depth. Fog is measured in the route's local clearance, so every depth of
-// the descent fades the same way; the march ends where it reaches 95%.
+// depth. The depth is fractional: the distance estimate blends the solids of
+// the two whole depths either side (a geomorph, see spDE), and the shading
+// depths blend the same way, so a level grows in over a factor of the fold
+// scale in distance instead of popping in all at once at a fixed distance
+// from the camera (which made bands of the distant lattice visibly change
+// shape as the camera flew). The blend lies between two verified solids, so
+// the clearances above hold for it. Fog is measured in the route's local
+// clearance, so every depth of the descent fades the same way; the march ends
+// where it reaches 95%.
 // Lighting close up: no shadow rays (the key rides over the camera's
 // shoulder), a lamp just above the camera with distance falloff, one
 // occlusion probe deepened by the crevice trap, and a prefiltered normal two
@@ -103,6 +110,10 @@
 // 14.8 ms; pull-backs cost 4-9, a face filling the screen 19-24. At the
 // bench's own moment (t 6-8, seed 0.37): Defaults 13, Jade 15, Crystal Bloom
 // 15.5, Amethyst 17, Stone 18.5, Rose Quartz 19.5. Orbit 5.1 (it was 4.7).
+// (These predate the prefiltered normal, which added 1.5-5 ms, and the
+// geomorph and capped hit tolerance, which are not measured yet: above the
+// floor depth each estimate pays one more fold, half a level more than the
+// rounded depth did on average, and grazing rays take more steps to settle.)
 // That is over the ~12 ms aimed for. Close up nearly every pixel hits the
 // fractal, and the floor is the depth the routes were verified at times the
 // steps: shading at a fifth of the depth cost only a third less, and half
@@ -1119,12 +1130,22 @@ static inline float spSolid(float3 p, int form) {
     return dot(p, form == 2 ? SP_C3 : SP_C5) - SP_IN_ICO;
 }
 
-// Distance estimate to depth `lod` (rounded to a whole depth: blending two
-// depths cost a third of the frame in register pressure). Bails out once the point
-// is clear of the level's bounding sphere: the attractor lies within `bound`
-// at every level, so (|p| - bound) / s^i is still a lower bound.
+// Distance estimate to a fractional depth `lod` (a geomorph): the solid at
+// depth n = floor(lod), blended toward depth n + 1 by the fraction. A whole
+// depth popped a level of detail in at a fixed camera distance, so a band of
+// the surface visibly changed shape as the camera moved through it; blended,
+// each level grows in over a factor of the fold scale in distance. The two
+// depths share their first n folds, so the blend costs one more fold and one
+// more solid, not a second estimate, and keeps one point live, not two (an
+// earlier blend of two depths cost a third of the frame in register
+// pressure); a whole `lod` (the orbit; the flight at its floor depth) skips
+// it. Bails out once the
+// point is clear of the level's bounding sphere: the attractor lies within
+// `bound` at every level, so (|p| - bound) / s^i is still a lower bound for
+// both depths.
 static float spDE(float3 p, thread const SpFrac& F, float lod) {
-    int n = int(lod + 0.5);
+    int n = int(lod);
+    float f = lod - float(n);
     float k = 1.0;
     float lim = 4.0 * F.bound * F.bound;
     for (int i = 0; i < n; i++) {
@@ -1135,14 +1156,23 @@ static float spDE(float3 p, thread const SpFrac& F, float lod) {
         p = p * F.scale - F.off;
         k /= F.scale;
     }
-    return spSolid(p, F.form) * k;
+    float d = spSolid(p, F.form) * k;
+    if (f > 0.0) {
+        p = spFold(p, F.form);
+        if (F.twisted) p = F.rot * p;
+        p = p * F.scale - F.off;
+        d = mix(d, spSolid(p, F.form) * (k / F.scale), f);
+    }
+    return d;
 }
 
 // The same, with orbit traps for colouring: x = the closest any level came to
 // the origin (crevices), y = the deepest level's position on its solid (face
-// shading).
+// shading). Fractional depths blend the traps of the two whole depths, as
+// spDE blends their solids.
 static float2 spTrap(float3 p, thread const SpFrac& F, float lod) {
-    int n = int(lod + 0.5);
+    int n = int(lod);
+    float f = lod - float(n);
     float trap = 1e9;
     for (int i = 0; i < n; i++) {
         p = spFold(p, F.form);
@@ -1150,7 +1180,15 @@ static float2 spTrap(float3 p, thread const SpFrac& F, float lod) {
         p = p * F.scale - F.off;
         trap = min(trap, dot(p, p) / (F.bound * F.bound));
     }
-    return float2(sqrt(trap), clamp(length(p) / F.bound, 0.0, 1.5));
+    float2 tr = float2(sqrt(trap), clamp(length(p) / F.bound, 0.0, 1.5));
+    if (f > 0.0) {
+        p = spFold(p, F.form);
+        if (F.twisted) p = F.rot * p;
+        p = p * F.scale - F.off;
+        trap = min(trap, dot(p, p) / (F.bound * F.bound));
+        tr = mix(tr, float2(sqrt(trap), clamp(length(p) / F.bound, 0.0, 1.5)), f);
+    }
+    return tr;
 }
 
 static inline float3 spNormal(float3 p, float e, thread const SpFrac& F, float lod) {
@@ -1242,6 +1280,12 @@ static inline float spLod(float t, float lodK, float invLogS, float lodMin) {
 //   - the hit tolerance widens with the step count, so rays that graze the
 //     lattice settle on it instead of creeping along it, and the march ends
 //     where the fog is ~95%.
+// The widening stops at 3 reference px (step 10). Uncapped it reached 7.5 px
+// by the last step, and since a distant edge is reached late in the march,
+// every ray passing within 7.5 px of one counted as a hit: distant edges grew
+// fat, by an amount that changed with the step count as the camera moved. A
+// ray that spends the whole budget still within that old 7.5 px is grazing a
+// wall, not passing an edge, so it counts as a hit rather than a hole.
 static float spMarchFly(float3 ro, float3 rd, float t, float tEnd, thread const SpFrac& F,
                         float lodK, float invLogS, float lodMin, thread float& dHit) {
     int i = 0;
@@ -1271,6 +1315,7 @@ static float spMarchFly(float3 ro, float3 rd, float t, float tEnd, thread const 
         t = max(t, tq);
     }
     float omega = 1.5, prevD = 0.0, stepLen = 0.0;
+    float tLast = t, dLast = 1e9;
     for (; i < SP_FLY_STEPS; i++) {
         float d = spDE(ro + rd * t, F, spLod(t, lodK, invLogS, lodMin));
         if (omega > 1.0 && d + prevD < stepLen) {
@@ -1280,12 +1325,16 @@ static float spMarchFly(float3 ro, float3 rd, float t, float tEnd, thread const 
             omega = 1.0;
             continue;
         }
-        if (d < SP_PIXEL * t * (1.5 + 0.15 * float(i))) { dHit = d; return t; }
+        if (d < SP_PIXEL * t * min(1.5 + 0.15 * float(i), 3.0)) { dHit = d; return t; }
+        tLast = t;
+        dLast = d;
         stepLen = d * omega;
         prevD = d;
         t += stepLen;
-        if (t > tEnd) break;
+        if (t > tEnd) return -1.0;
     }
+    // Out of steps: still grazing a wall (see above) counts as a hit.
+    if (dLast < SP_PIXEL * tLast * (1.5 + 0.15 * float(SP_FLY_STEPS - 1))) { dHit = dLast; return tLast; }
     return -1.0;
 }
 
@@ -1435,9 +1484,16 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     if (tHit > 0.0) {
         float3 p = roF + rdF * tHit;
-        float lodH = fly ? clamp((lodK - log(tHit)) * invLogS + SP_FLY_LOD_BIAS, lodMin, SP_LOD_MAX) : float(F.iters);
+        float lodH = fly ? spLod(tHit, lodK, invLogS, lodMin) : float(F.iters);
         float eN = max(0.25 * SP_PIXEL * tHit, 1e-6);
-        // Flying, the normal is prefiltered: two levels shallower than the
+        // Flying, lodH is fractional, and so are the depths derived from it
+        // below (normal, colour traps, occlusion): spDE and spTrap blend the
+        // two whole depths either side by the same fraction as the hit's own
+        // surface, so shading moves through a level as smoothly as the shape
+        // does. As whole depths they switched at the same camera distances
+        // as the surface but on solids 4-8x larger, and a band of the frame
+        // tens of pixels across changed its light and colour at once.
+        // The normal is prefiltered: two levels shallower than the
         // hit, over a few of the drawable's pixels. Past the camera's own
         // neighbourhood the flight sits at its verified floor depth, where
         // the deepest solids and the gaps between them are 2-4 px, and a
