@@ -116,42 +116,115 @@ struct Topo4DIn {
 //   lattice hash with the prelude's trig-free `hash21` (same role: a random
 //   value per lattice corner). `steps` (added by this port) restores
 //   upstream's 37, as does the "Upstream" preset.
-//
+// - Lattice cache. A step moves about a tenth of a noise cell (8.6 steps
+//   per cell at upstream's stride), so each noise keeps its cell's eight
+//   corner hashes and only rehashes on entering a new cell; neighbouring
+//   pixels' rays cross cells at the same step, so the branch is coherent.
+//   The picture is unchanged (with the filtering below disabled it matched
+//   the uncached march in all but 0.02% of pixels, the singular points) and
+//   the march costs half: at 2704x1756 on an M5, 9.5 -> 5.9 ms mean for the
+//   default and 22.0 -> 11.3 ms for "Upstream", in the same contended runs
+//   (cache alone, before the filtering below; the filtering spends part of
+//   that saving back, and was written after GPU benching was frozen: its
+//   cost is not yet measured. If "Upstream" lands over 13 ms p95, set
+//   TOPO_SS to 4).
+// - Filaments are supersampled, analytically. Upstream point-samples
+//   0.1/|a^2 b|, whose glowing cores (a = 0 is a 1/a^2 spike) are far
+//   thinner than a pixel, so a pixel lit up only when its centre landed in
+//   one: lines drew as dotted, stair-stepped strings of single bright pixels
+//   that sparkled as they moved. Widening the zeros by the pixel footprint
+//   (1/(a^2 + eps^2)) cannot fix that: the energy is in sub-pixel cores
+//   that saturate under the clamp, so softening dimmed the picture (mean
+//   -3 to -9 levels against a 16x supersampled render). Instead each step
+//   takes the noises' gradients with their values (same eight corners), the
+//   noises are linear across a pixel (a cell spans 100+ pixels), and the
+//   density is evaluated at 8 sub-pixel offsets of the linearised field, each
+//   accumulated, clamped and gamma'd on its own, then averaged: true 8x
+//   supersampling of the brightness for the price of one noise lookup. More
+//   than 3 pixels from either zero the 8 values differ by under 15% and their
+//   mean is the centre value times a second-order Taylor factor (exact to
+//   ~0.3% at 3 pixels, so the switch leaves no seam), so only steps near a
+//   filament pay for 8 divides.
+// - The ray's step length. Upstream lengthens each step by the density
+//   there ("this makes it look extra crazy!"), so after passing near a core a
+//   ray jumps ahead and every later sample moves. That jump, taken from the
+//   point-sampled density, is singular too, and it differs between adjacent
+//   pixels: with supersampled brightness alone, isolated bright pixels
+//   remained exactly where the jump varied (with a fixed step they vanished,
+//   but the picture changed, MAE 12 levels). So each step's length uses the
+//   density with both zeros widened by one pixel, which neighbouring pixels
+//   agree on, while each sub-pixel keeps upstream's own step weight in its
+//   brightness. Against a 16x supersampled render of the original at
+//   1352x878, mean absolute error 2.8 -> 1.8 levels (p99 50 -> 35) for the
+//   default and 3.1 -> 2.1 (p99 54 -> 41) for "Upstream", mean bias still
+//   0.0-0.1; the dotted lines draw as continuous filaments. (Measured with
+//   every step supersampled, before the Taylor shortcut was added.)
 
 static float topoHash3d(float3 uv) {
     return hash21(float2(uv.x + uv.z * 57.0, uv.y - uv.z * 113.0));
 }
 
-static float topoMixP(float f0, float f1, float a) {
-    return mix(f0, f1, a * a * (3.0 - 2.0 * a));
+// The eight corner values of the lattice cell a noise lookup last landed in.
+// A march step moves about a tenth of a cell, so consecutive steps nearly
+// always share a cell and the 8 hashes are reused (see header).
+struct TopoCell {
+    float3 id;   // floor of the cell's lower corner; NaN-free sentinel first
+    float4 lo;   // corners at z = 0: 000, 100, 010, 110
+    float4 hi;   // corners at z = 1: 001, 101, 011, 111
+};
+
+static void topoFetch(thread TopoCell& c, float3 fl) {
+    if (all(fl == c.id)) return;
+    c.id = fl;
+    const float2 zo = float2(0.0, 1.0);
+    c.lo = float4(topoHash3d(fl), topoHash3d(fl + zo.yxx),
+                  topoHash3d(fl + zo.xyx), topoHash3d(fl + zo.yyx));
+    c.hi = float4(topoHash3d(fl + zo.xxy), topoHash3d(fl + zo.yxy),
+                  topoHash3d(fl + zo.xyy), topoHash3d(fl + zo.yyy));
 }
 
-static float topoNoise(float3 uv) {
-    const float2 zeroOne = float2(0.0, 1.0);
-    float3 fr = fract(uv);
+// Upstream's trilinear value noise with smoothstep weights, and its gradient
+// (per lattice unit): (n, dn/dx, dn/dy, dn/dz).
+static float4 topoNoiseGrad(float3 uv, thread TopoCell& c) {
     float3 fl = floor(uv);
-    float h000 = topoHash3d(fl);
-    float h100 = topoHash3d(fl + zeroOne.yxx);
-    float h010 = topoHash3d(fl + zeroOne.xyx);
-    float h110 = topoHash3d(fl + zeroOne.yyx);
-    float h001 = topoHash3d(fl + zeroOne.xxy);
-    float h101 = topoHash3d(fl + zeroOne.yxy);
-    float h011 = topoHash3d(fl + zeroOne.xyy);
-    float h111 = topoHash3d(fl + zeroOne.yyy);
-    return topoMixP(
-        topoMixP(topoMixP(h000, h100, fr.x), topoMixP(h010, h110, fr.x), fr.y),
-        topoMixP(topoMixP(h001, h101, fr.x), topoMixP(h011, h111, fr.x), fr.y),
-        fr.z);
+    topoFetch(c, fl);
+    float3 fr = fract(uv);
+    float3 w = fr * fr * (3.0 - 2.0 * fr);
+    float3 dw = 6.0 * fr * (1.0 - fr);
+    float4 x0 = float4(c.lo.x, c.lo.z, c.hi.x, c.hi.z);   // h0yz: 00 10 01 11
+    float4 dx = float4(c.lo.y, c.lo.w, c.hi.y, c.hi.w) - x0;
+    float4 e = x0 + dx * w.x;                              // x-lerps, by (y, z)
+    float2 dy = float2(e.y - e.x, e.w - e.z);
+    float2 f = e.xz + dy * w.y;                            // y-lerps, by z
+    float n = f.x + (f.y - f.x) * w.z;
+    float2 gx2 = dx.xz + (dx.yw - dx.xz) * w.y;
+    return float4(n,
+                  (gx2.x + (gx2.y - gx2.x) * w.z) * dw.x,
+                  (dy.x + (dy.y - dy.x) * w.z) * dw.y,
+                  (f.y - f.x) * dw.z);
 }
 
-static float topoDensity(float3 p) {
-    float final = topoNoise(p * 0.06125);
-    float other = topoNoise(p * 0.06125 + 1234.567);
-    other -= 0.5;
-    final -= 0.5;
-    final = 0.1 / (abs(final * final * other));
-    final += 0.5;
-    return final * 0.0001;
+// Sub-pixel samples per pixel near a filament (see header): 8, or 4 to
+// trade some smoothness for cost. topoSubM is the pattern's second moment,
+// mean(o o^T), as (xx, yy, xy), for the Taylor estimate away from filaments.
+#ifndef TOPO_SS
+#define TOPO_SS 8
+#endif
+#if TOPO_SS == 8
+// The 8x MSAA "rooks" pattern, in pixels: its projection onto any direction
+// is evenly spread, so a line at any angle is covered in even steps.
+constant float2 topoSub[8] = {
+    float2( 1, -3) / 16.0, float2(-1,  3) / 16.0, float2( 5,  1) / 16.0, float2(-3, -5) / 16.0,
+    float2(-5,  5) / 16.0, float2(-7, -1) / 16.0, float2( 3,  7) / 16.0, float2( 7, -7) / 16.0 };
+constant float3 topoSubM = float3(168.0, 168.0, -32.0) / (8.0 * 256.0);
+#else
+constant float2 topoSub[4] = {
+    float2(-2, -6) / 16.0, float2( 6, -2) / 16.0, float2(-6,  2) / 16.0, float2( 2,  6) / 16.0 };
+constant float3 topoSubM = float3(80.0, 80.0, 0.0) / (4.0 * 256.0);
+#endif
+
+static float topoSubQ(float2 x, float2 y) {
+    return x.x * y.x * topoSubM.x + x.y * y.y * topoSubM.y + (x.x * y.y + x.y * y.x) * topoSubM.z;
 }
 
 static half4 topoClassic(float4 pos, TopoClassicIn u) {
@@ -174,25 +247,72 @@ static half4 topoClassic(float4 pos, TopoClassicIn u) {
     float3 worldPix = worldFacing + uv.x * sideNorm * (u.resolution.x / u.resolution.y) + uv.y * upNorm;
     float3 relVec = normalize(worldPix - camPos);
 
+    // How far a point at ray distance 1 moves, in noise-lattice units, when
+    // the pixel moves one pixel right (dX) or up (dY): the image plane is
+    // 2 units tall at distance |worldPix - camPos|, and only the part of the
+    // step across the ray counts.
+    float ppx = 2.0 / u.resolution.y / length(worldPix - camPos) * 0.06125;
+    float3 dX = (sideNorm - dot(sideNorm, relVec) * relVec) * ppx;
+    float3 dY = (upNorm - dot(upNorm, relVec) * relVec) * ppx;
+
     float t = 0.0;
     float inc = 0.02;
     const float maxDepth = 70.0;
-    float density = 0.0;
+    float common = 0.0;               // density shared by all sub-pixels
+    float density[TOPO_SS];           // and each one's own
+    for (int j = 0; j < TOPO_SS; j++) density[j] = 0.0;
     // Fewer steps than upstream's 37 each stride proportionally further, so
     // the march still spans the same depth.
     float stride = 37.0 / float(u.steps);
+    TopoCell ca, cb;
+    ca.id = cb.id = float3(-1e9);
+    ca.lo = ca.hi = cb.lo = cb.hi = 0.0;
     for (int i = 0; i < u.steps; i++) {
         if (t > maxDepth) break;
-        float3 p = camPos + relVec * t;
-        float temp = topoDensity(p);
-        inc = (1.9 + temp * 0.05) * stride; // upstream: "this makes it look extra crazy!"
-        density += temp * inc;
+        float3 q = (camPos + relVec * t) * 0.06125;
+        float4 na = topoNoiseGrad(q, ca);
+        float4 nb = topoNoiseGrad(q + 1234.567, cb);
+        float a = na.x - 0.5;
+        float b = nb.x - 0.5;
+        // Each noise's change per pixel, right and up, at this depth.
+        float2 sa = float2(dot(na.yzw, dX), dot(na.yzw, dY)) * t;
+        float2 sb = float2(dot(nb.yzw, dX), dot(nb.yzw, dY)) * t;
+        float sa2 = dot(sa, sa);
+        float sb2 = dot(sb, sb);
+        // upstream: "this makes it look extra crazy!": a step's weight, and
+        // its length, grow with the density there.
+        if (a * a <= 9.0 * sa2 || b * b <= 9.0 * sb2) {
+            // Within 3 pixels of a filament: upstream's density,
+            // 0.1/|a^2 b| + 0.5 scaled by 1e-4, at each sub-pixel offset (the
+            // noises are linear across a pixel), each with its own weight.
+            for (int j = 0; j < TOPO_SS; j++) {
+                float aj = a + dot(sa, topoSub[j]);
+                float bj = b + dot(sb, topoSub[j]);
+                float temp = (0.1 / abs(aj * aj * bj) + 0.5) * 0.0001;
+                density[j] += temp * (1.9 + temp * 0.05) * stride;
+            }
+        } else {
+            // Further out the sub-pixels vary smoothly, and their mean is the
+            // centre value times a second-order Taylor factor (within ~0.3%
+            // of the sum above at 3 pixels, so the switch leaves no seam).
+            float f = 0.1 / abs(a * a * b);
+            f *= 1.0 + 3.0 * topoSubQ(sa, sa) / (a * a) + topoSubQ(sb, sb) / (b * b)
+                     + 2.0 * topoSubQ(sa, sb) / (a * b);
+            float temp = (f + 0.5) * 0.0001;
+            common += temp * (1.9 + temp * 0.05) * stride;
+        }
+        // The ray steps by the density with each zero widened by a pixel, so
+        // neighbouring pixels jump alike (see header).
+        float soft = (0.1 / ((a * a + sa2) * sqrt(b * b + sb2)) + 0.5) * 0.0001;
+        inc = (1.9 + soft * 0.05) * stride;
         t += inc;
     }
 
-    float3 finalColor = u.color.rgb * density * u.gain;
-    // Upstream's sqrt "gamma correction".
-    float3 color = sqrt(clamp(finalColor, 0.0, 1.0));
+    // Upstream's sqrt "gamma correction", per sub-pixel, then averaged.
+    float3 color = 0.0;
+    for (int j = 0; j < TOPO_SS; j++)
+        color += sqrt(clamp(u.color.rgb * (common + density[j]) * u.gain, 0.0, 1.0));
+    color *= 1.0 / float(TOPO_SS);
 
     color = lerpDither(color, pos);
     return half4(half3(color), 1.0h);
