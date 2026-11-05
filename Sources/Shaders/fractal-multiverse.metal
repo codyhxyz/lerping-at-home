@@ -215,9 +215,10 @@ static float3 fmPort(float4 pos, MvPortIn u) {
 // 14 layers through the slab runs 8 folds and keeps the closest its orbit
 // comes to the unit sphere: that orbit trap draws the thin tracery (a sharp
 // exp falloff) over a soft haze (a broad one). The picture is mirrored about
-// the vertical axis, as a nave is, and the slab glides slowly through the
-// box while it turns, so arcades open, close and re-form. Near layers are
-// amber, far layers rose, so the depth of each line is its colour.
+// the vertical axis, as a nave is, and the slab glides through the box
+// while it turns, so arcades open, close and re-form every few seconds.
+// Near layers are amber, far layers rose, so the depth of each line is its
+// colour.
 //
 // u.seed picks where on the route each activation begins. `foldScale`
 // drifts slowly (lerp-animate), which morphs the tracery continuously.
@@ -242,9 +243,14 @@ static float3 mcCathedral(float4 pos, MvCathedralIn u) {
     uv.x = abs(uv.x);                                   // the nave's mirror
 
     float2 xy = uv * u.zoom * (1.0 + 0.08 * sin(0.13 * t));
-    float3x3 turn = mcRotY(0.05 * t, 0.12 * sin(0.041 * t));
-    // The slab's route through the box: a slow, never-repeating glide.
-    float3 route = float3(0.25 * sin(0.017 * t), 0.6 * sin(0.031 * t), 1.5 * sin(0.023 * t));
+    // The turn and the glide run five times faster than the zoom's breath.
+    // At the old 1x pace the arcades re-formed over minutes, so on screen the
+    // look read as a still, mirrored picture; at 5x they open and close
+    // every few seconds while the breath stays slow.
+    float m = 5.0 * t;
+    float3x3 turn = mcRotY(0.05 * m, 0.12 * sin(0.041 * m));
+    // The slab's route through the box: a never-repeating glide.
+    float3 route = float3(0.25 * sin(0.017 * m), 0.6 * sin(0.031 * m), 1.5 * sin(0.023 * m));
 
     const float S = u.foldScale;
     const float minR2 = 0.09;                           // inner sphere radius 0.3
