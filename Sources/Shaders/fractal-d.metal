@@ -25,11 +25,14 @@
 // out of the centre. The product of the radii is the step; light gathers
 // wherever the step gets tiny, hue from the last radius, saturation running
 // negative with depth (that is what turns the far glow violet and gold).
-// The view keeps upstream's per-axis screen scaling, so the spiral is an
-// ellipse that fills the frame. Time only scrolls the log radius, so upstream
+// Time only scrolls the log radius, so upstream
 // is an endless zoom that repeats exactly every 1/0.3 time units.
 //
-// Port changes: time is slowed and offset by u.seed (house style). `speed`,
+// Port changes: time is slowed and offset by u.seed (house style). Upstream
+// divides the screen by the resolution per axis, which squashes the spiral
+// into an ellipse stretched to the frame (1.6:1 on a 16:10 screen); this port
+// divides by the short side, so the spiral is round, fills the height and
+// the outer arms and star-dust fill the rest of the width. `speed`,
 // `ring` and `knee` are this port's own parameters; upstream has none.
 // `ring` is upstream's fixed 0.4 in log2(radius + 0.4) — it sets how the
 // rings of one level turn into the arms of the next (lower: long open arms;
@@ -54,9 +57,9 @@
 // packs more of those tiles into a pixel the nearer it is to the centre, so
 // the radial streaks there stair-step and crawl as the zoom scrolls. The
 // core is supersampled: 4 samples (rotated grid) within |xy| < 0.1 and 2 out
-// to 0.3, 1 beyond, where the arms are smooth at one sample. |xy| is
-// upstream's per-axis radius, so the rings follow the elliptical spiral;
-// that covers ~1.4% and ~11% of the frame, and it is smooth across the
+// to 0.3, 1 beyond, where the arms are smooth at one sample. |xy| is the
+// spiral's own radius, so the rings follow it; on a 16:10 screen that
+// covers ~0.9% and ~8% of the frame, and it is smooth across the
 // screen, so whole SIMD groups take the same branch. Each sample is
 // shouldered before the average, so the average is of what the screen
 // would show. Clamping the plate used to hide most of this aliasing, which
@@ -120,10 +123,11 @@ static inline float fdAtan2(float y, float x) {
 static float3 fdSample(float2 fc, float scroll, constant LerpUniforms& u) {
     float2 r = u.resolution;
 
-    // Upstream's sample is p = (xy, 1 - g) with xy fixed per pixel (divided
-    // by the resolution per axis, on purpose). The first fold only needs
+    // Upstream's sample is p = (xy, 1 - g) with xy fixed per pixel. Upstream
+    // divides by the resolution per axis, which squashes the spiral; this
+    // divides by the short side so it stays round. The first fold only needs
     // |xy|, log2 and atan2 of it, so that part is computed once here.
-    float2 xy = (fc - 0.5 * r) / r * 1.5;
+    float2 xy = (fc - 0.5 * r) / min(r.x, r.y) * 1.5;
     float l0 = length(xy);
     float2 first = float2(log2(l0 + u.ring) - scroll, atan2(xy.y, xy.x) / 3.1415 * 4.0);
 
@@ -184,12 +188,12 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     // Supersampling where the log-polar folds put the most detail into a
     // pixel: the core, where every fold's tiles shrink towards the centre
-    // and the radial streaks stair-step. The radius is upstream's own
-    // (per-axis) |xy|, so the rings follow the elliptical spiral, and it
+    // and the radial streaks stair-step. The radius is fdSample's own |xy|,
+    // so the rings follow the spiral, and it
     // changes slowly enough across the screen that whole SIMD groups take
     // the same branch. Each sample is shouldered before averaging, so the
     // average is of what the screen would show.
-    float l0 = length((fc - 0.5 * r) / r * 1.5);
+    float l0 = length((fc - 0.5 * r) / min(r.x, r.y) * 1.5);
     float3 color;
     if (l0 < 0.1) {
         // Rotated grid, 4 samples.

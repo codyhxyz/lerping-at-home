@@ -22,13 +22,14 @@
 // (each of 9 octaves rotates the xz plane by its own frequency before adding
 // |sin| waves), steps by that distance, and adds a little HSV light — blue-
 // grey below the horizon, hue rising with height above it. A 1/r glow at the
-// screen centre is the sun sitting on the horizon. The screen mapping is
-// deliberately anisotropic (upstream divides by the full resolution).
+// screen centre is the sun sitting on the horizon.
 //
 // Port changes: time is slowed and offset by u.seed (house style). Upstream
-// picks the sun colour from the mouse x position (warm at the left, cool at
-// the right); a screensaver has no mouse, so `sunTint` replaces it with the
-// same mix and defaults to upstream's no-mouse value (warm). `speed` and
+// divides the screen by the resolution per axis, which stretches the sea
+// sideways and squashes the sun into an oval on a wide screen; this port
+// divides by the short side. Upstream picks the sun colour from the mouse x
+// position (warm at the left, cool at the right); a screensaver has no mouse,
+// so `sunTint` replaces it with the same mix and defaults to upstream's no-mouse value (warm). `speed` and
 // `steps` are this port's own parameters. Negative colour is clamped.
 //
 // GPU cost. This is the expensive kind of golf shader: upstream marches 89
@@ -81,8 +82,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float2 fc = float2(pos.x, r.y - pos.y);           // GLSL gl_FragCoord (y up)
     float t = u.speed * u.time + u.seed * 60.0;
 
-    // Screen coords in [-0.5, 0.5] per axis (slightly anisotropic on purpose).
-    float2 uv = (fc - 0.5 * r) / r;
+    // Screen coords, [-0.5, 0.5] on the short axis (see "Port changes").
+    float2 uv = (fc - 0.5 * r) / min(r.x, r.y);
 
     // Sun on the horizon (upstream: colour from mouse x), added after the march.
     float3 sunCol = mix(float3(1.2, 0.8, 0.5), float3(0.4, 0.7, 1.5), clamp(u.sunTint, 0.0, 1.0));
