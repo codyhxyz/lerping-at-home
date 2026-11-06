@@ -104,6 +104,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private let windowLabel = NSTextField(labelWithString: "")
     private let pager = NSSegmentedControl()
     private let fpsLabel = NSTextField(labelWithString: "— fps")
+    /// Fraction of native the picture is drawn at. A segmented control with
+    /// its name beside it rather than a menu: one click, and the readout to
+    /// its left shows the pixel count and frame rate change.
+    private let resolutionControl = NSSegmentedControl()
     /// Matches the saver: on by default, at the saver's own peak, and engaged
     /// only where `LerpEDR.blocker` allows, so what you tune here is what the
     /// screensaver will show. A toggle and nothing more — there was a peak
@@ -314,15 +318,16 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                             consoleScroll])
     }
 
-    /// The picture, with one strip under it: play, scrub and the clock, then
-    /// the frame rate and the HDR toggle at the far end, the way a player
-    /// keeps its display settings beside its transport.
+    /// The picture, then two strips under it: the transport (play, scrub, the
+    /// clock), and the render settings with their result — frame rate and
+    /// pixel size on the left, Resolution and HDR on the right — so changing
+    /// one shows its cost or saving right beside it.
     ///
-    /// There used to be a second strip above the picture holding a Seed
-    /// button, a render-scale menu, the HDR box and an HDR peak slider. Seed
-    /// became Randomize and moved onto the inspector's Parameters heading,
-    /// next to the values it changes; the scale menu and the peak slider are
-    /// gone; HDR came down here.
+    /// There used to be a strip above the picture holding a Seed button, an
+    /// unlabelled 100/75/50/25% menu, the HDR box and an HDR peak slider. Seed
+    /// became Randomize on the inspector's Parameters heading, next to the
+    /// values it changes; the peak slider is gone; the menu became the
+    /// labelled Resolution control here.
     private func renderPane() -> NSView {
         Chrome.configure(playButton, title: "Pause", target: self, action: #selector(togglePlayPause))
         playButton.widthAnchor.constraint(equalToConstant: 62).isActive = true
@@ -362,26 +367,31 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         windowLabel.textColor = EditorTheme.dim
         windowLabel.alignment = .right
         windowLabel.toolTip = "The minute shown by the scrubber"
-        // Gives way after the fps readout (300) and before the scrubber (750):
-        // it is an annotation, and the field beside it carries the number that
-        // matters.
-        windowLabel.setContentCompressionResistancePriority(.init(400), for: .horizontal)
+        // First thing to give way when the pane gets narrow: it is an
+        // annotation, and the field beside it carries the number that matters.
+        windowLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
         fpsLabel.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
         fpsLabel.textColor = EditorTheme.dim
-        fpsLabel.alignment = .right
-        // Sharing the transport strip, the readout gives way to the scrubber:
-        // 150 when the pane has room, narrower (truncated) when it does not.
-        // The width comes from the pane, never from the text, so a readout
-        // that changes twice a second does not nudge the scrubber.
-        let fpsWidth = fpsLabel.widthAnchor.constraint(equalToConstant: 150)
-        fpsWidth.priority = .init(300)
-        fpsWidth.isActive = true
+        fpsLabel.toolTip = "Frame rate, and the pixels each frame is drawn at"
         fpsLabel.lineBreakMode = .byTruncatingTail
         fpsLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        let scrubWidth = timeSlider.widthAnchor.constraint(greaterThanOrEqualToConstant: 180)
-        scrubWidth.priority = .defaultHigh
-        scrubWidth.isActive = true
+
+        resolutionControl.segmentStyle = .rounded
+        resolutionControl.controlSize = .small
+        resolutionControl.trackingMode = .selectOne
+        resolutionControl.segmentCount = Self.renderScales.count
+        for (index, choice) in Self.renderScales.enumerated() {
+            resolutionControl.setLabel(choice.title, forSegment: index)
+            resolutionControl.setWidth(index == 0 ? 34 : 24, forSegment: index)
+        }
+        resolutionControl.selectedSegment = 0
+        resolutionControl.target = self
+        resolutionControl.action = #selector(resolutionChanged)
+        resolutionControl.toolTip = "Draw fewer pixels to raise the frame rate"
+        resolutionControl.setContentHuggingPriority(.required, for: .horizontal)
+        let resolutionLabel = Chrome.label("Resolution", size: 11)
+        resolutionLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         edrCheckbox.controlSize = .small
         edrCheckbox.font = .systemFont(ofSize: 11)
@@ -402,9 +412,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
         syncTransport()
         return Chrome.pane([metalView,
-                            Chrome.bar([playButton, pager, timeField, timeSlider, windowLabel,
-                                        fpsLabel, edrCheckbox],
-                                       height: 34)])
+                            Chrome.bar([playButton, pager, timeField, timeSlider, windowLabel],
+                                       height: 34),
+                            Chrome.bar([fpsLabel, Chrome.flexible(),
+                                        resolutionLabel, resolutionControl, edrCheckbox],
+                                       height: 28)])
     }
 
     // MARK: - Transport
@@ -1555,6 +1567,30 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     @objc private func edrChanged() {
         metalView.config.extendedDynamicRange = edrCheckbox.state == .on
         if isPaused { metalView.renderOnce() }
+        refreshReadout()
+    }
+
+    /// Fraction of native. ¼ is lower than the saver offers: a useful thing
+    /// to edit an expensive shader against, not a thing anybody wants left on
+    /// their screen all night.
+    private static let renderScales: [(title: String, scale: Double)] =
+        [("Full", 1.0), ("¾", 0.75), ("½", 0.5), ("¼", 0.25)]
+
+    @objc private func resolutionChanged() {
+        let index = max(0, min(resolutionControl.selectedSegment, Self.renderScales.count - 1))
+        metalView.config.renderScale = Self.renderScales[index].scale
+        if isPaused { metalView.renderOnce() }
+        refreshReadout()
+    }
+
+    /// "60 fps · 2624×1600 · EDR 2.0x" under the picture. The pixel size is
+    /// there so Resolution shows its effect at once, even on a shader light
+    /// enough to sit at the frame-rate cap whatever it is drawn at.
+    private func refreshReadout() {
+        let size = metalView.renderSize
+        fpsLabel.stringValue = metalView.statusText
+            + String(format: " · %d×%d", Int(size.width), Int(size.height))
+            + (metalView.isEDRActive ? String(format: " · EDR %.1fx", metalView.edrHeadroomInUse) : "")
     }
 
     // MARK: - System audio
@@ -1742,8 +1778,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         timers.append(.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self else { return }
             syncTransport()
-            fpsLabel.stringValue = metalView.statusText
-                + (metalView.isEDRActive ? String(format: " · EDR %.1fx", metalView.edrHeadroomInUse) : "")
+            refreshReadout()
         })
 
         // Animated parameters' controls follow the drift. A no-op unless

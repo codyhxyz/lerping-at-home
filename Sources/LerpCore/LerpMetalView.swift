@@ -338,6 +338,12 @@ public final class LerpMetalView: NSView {
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
 
+    /// The pixels each frame is drawn at — the view's backing size times
+    /// `config.renderScale`. For a readout beside a resolution control, so
+    /// lowering it visibly does something even when the frame rate is
+    /// already at the display's cap.
+    public var renderSize: CGSize { metalLayer.drawableSize }
+
     public init?(frame: NSRect, extraSearchURLs: [URL] = []) {
         guard let renderer = LerpRenderer() else { return nil }
         self.renderer = renderer
