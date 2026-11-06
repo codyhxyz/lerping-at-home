@@ -339,7 +339,7 @@ public final class LerpMetalView: NSView {
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
 
     /// The pixels each frame is drawn at — the view's backing size times
-    /// `config.renderScale`. For a readout beside a resolution control, so
+    /// `config.renderScale`. For a readout beside a playback-resolution menu, so
     /// lowering it visibly does something even when the frame rate is
     /// already at the display's cap.
     public var renderSize: CGSize { metalLayer.drawableSize }
