@@ -417,7 +417,7 @@ function drawControl(grabbed, now) {
   if (learning) {
     lines.push([`LEARN → ${learning.toUpperCase()}`, 11, 1, accent], ['twist, or move, to bind it', 10, 0.7]);
   } else if (readout && !rows.length) {
-    lines.push(['NOTHING BOUND', 11, 0.9], ['click Learn… on a parameter', 10, 0.6]);
+    lines.push(['NOTHING BOUND', 11, 0.9], ['right-click a parameter, Learn…', 10, 0.6]);
   }
   for (const row of rows) {
     const lit = row === focus && now - row.at < 1200;

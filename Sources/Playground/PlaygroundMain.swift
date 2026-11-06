@@ -386,9 +386,7 @@ enum MainMenu {
             item("Track Head with Camera",
                  #selector(PlaygroundWindowController.toggleHeadTracking(_:)), ""),
             item("Recentre Head", #selector(PlaygroundWindowController.recenterHead(_:)), ""),
-            // Off at launch. Gestures arrive as CCs; bind them with Learn.
-            item("Control with Hands",
-                 #selector(PlaygroundWindowController.toggleHandControl(_:)), ""),
+            midiMenu(),
             .separator(),
             // Shaders on ⇧⌘, presets of the open shader on ⌥⌘: the toolbar's
             // ‹ › and the inspector's Presets list, from the keyboard.
@@ -404,8 +402,6 @@ enum MainMenu {
             item("Jump to First Error", Selector(("jumpToFirstError")), "e"),
             .separator(),
             item("Show / Hide Inspector", #selector(PlaygroundWindowController.toggleInspector(_:)), "i"),
-            item("Next MIDI Mapping", #selector(PlaygroundWindowController.nextMapping(_:)), "m",
-                 [.command, .option]),
         ]))
 
         main.addItem(submenu("Window", [
@@ -414,6 +410,30 @@ enum MainMenu {
         ]))
 
         return main
+    }
+
+    /// Marks the items `PlaygroundWindowController.menuNeedsUpdate` puts at
+    /// the top of Shader › MIDI, so it can take its own back out.
+    static let midiDynamicTag = 0x4D49_4449
+    static let midiMenuID = NSUserInterfaceItemIdentifier("midi-menu")
+
+    /// Everything MIDI that is not on a parameter row, out of the way for the
+    /// many who never plug a controller in. The device line and bank list are
+    /// filled in by the window controller each time this opens.
+    private static func midiMenu() -> NSMenuItem {
+        let holder = submenu("MIDI", [
+            item("New Mapping…", #selector(PlaygroundWindowController.newMapping(_:)), ""),
+            item("Rename Mapping…", #selector(PlaygroundWindowController.renameMapping(_:)), ""),
+            item("Delete Mapping", #selector(PlaygroundWindowController.deleteMapping(_:)), ""),
+            item("Next Mapping", #selector(PlaygroundWindowController.nextMapping(_:)), "m",
+                 [.command, .option]),
+            .separator(),
+            // Off at launch. Gestures arrive as CCs; bind them with Learn.
+            item("Control with Hands",
+                 #selector(PlaygroundWindowController.toggleHandControl(_:)), ""),
+        ])
+        holder.identifier = midiMenuID
+        return holder
     }
 
     private static func item(_ title: String, _ action: Selector, _ key: String,

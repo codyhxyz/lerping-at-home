@@ -46,8 +46,9 @@ final class ParameterPanel: NSView {
     /// The Parameters heading's Randomize: throw every held parameter to a
     /// random spot in its declared range.
     var onRandomize: (() -> Void)?
-    /// A row's MIDI menu was used. The component is nil for everything that is
-    /// not a colour, and names the axis for the ones that are.
+    /// A row's MIDI menu was used — its right-click menu, or the CC tag a bound
+    /// row shows. The component is nil for everything that is not a colour,
+    /// and names the axis for the ones that are.
     var onMIDICommand: ((String, ColorComponent?, MIDICommand) -> Void)?
     /// A row's animation toggle was clicked: true to let the parameter drift
     /// again, false to hold it where it is on screen.
@@ -82,32 +83,40 @@ final class ParameterPanel: NSView {
     /// Set while `show(values:)` is pushing values into controls, so the
     /// controls' own actions don't echo back out as user edits.
     private var isPushing = false
-    /// Shown when MIDI is unavailable: the per-row menus are hidden entirely
-    /// rather than offered and then failing.
+    /// Whether Core MIDI is up. Off, the rows carry no MIDI menu at all rather
+    /// than offering one that then fails. On, every row can be right-clicked to
+    /// Learn, and only a row that is *bound* shows anything: its CC tag.
     var showsMIDIControls = false { didSet { refreshMIDIVisibility() } }
 
     private final class TopClipView: NSClipView {
         override var isFlipped: Bool { true }
     }
 
-    /// Label, control, optional numeric echo, MIDI menu, and what that menu is
-    /// currently describing — a scalar has at most one binding, a colour up to
-    /// one per OKLCH axis.
+    /// Label, control, optional numeric echo, MIDI tag and right-click menu,
+    /// and what those menus are currently describing — a scalar has at most
+    /// one binding, a colour up to one per OKLCH axis.
     private final class Row {
         let param: LerpParam
         let control: NSControl
         let field: NSTextField?
+        /// The CC tag. Hidden until the parameter is bound: most people never
+        /// plug in a controller, and a "—" on every row was a column of noise.
         let midi: NSPopUpButton?
+        /// The same commands, on right-click anywhere on the row. This is how
+        /// an unbound parameter gets learned.
+        let contextMenu = NSMenu()
+        let label: NSTextField
         /// The `// lerp-animate:` toggle: lit while the parameter drifts,
         /// dim while it is held. Hidden when the look gives it no drift, and
         /// absent on the types that cannot have one.
         let animate: NSButton?
         let view: NSView
         var bindings: [MIDIBinding] = []
-        init(param: LerpParam, control: NSControl, field: NSTextField?,
+        init(param: LerpParam, label: NSTextField, control: NSControl, field: NSTextField?,
              midi: NSPopUpButton?, animate: NSButton?, view: NSView) {
-            self.param = param; self.control = control; self.field = field
+            self.param = param; self.label = label; self.control = control; self.field = field
             self.midi = midi; self.animate = animate; self.view = view
+            contextMenu.title = param.name     // `menuNeedsUpdate` finds the row by it
         }
     }
 
@@ -259,13 +268,15 @@ final class ParameterPanel: NSView {
         control.identifier = NSUserInterfaceItemIdentifier(param.name)
         field?.identifier = control.identifier
 
-        // Every row gets the same menu now, colours included — a colour's axes
-        // are a submenu inside it rather than a different kind of control.
+        // Every row gets the same menu, colours included — a colour's axes are
+        // a submenu inside it rather than a different kind of control. It is
+        // the row's right-click menu always, and this tag's menu once bound.
         let midi = NSPopUpButton(frame: .zero, pullsDown: true)
-        midi.controlSize = .small
-        midi.font = .systemFont(ofSize: 10)
+        midi.controlSize = .mini
+        midi.font = .monospacedSystemFont(ofSize: 9.5, weight: .regular)
         midi.identifier = control.identifier
-        midi.widthAnchor.constraint(equalToConstant: 68).isActive = true
+        midi.isHidden = true
+        midi.setContentHuggingPriority(.required, for: .horizontal)
 
         // Only the types `// lerp-animate:` accepts get one. It starts hidden;
         // `show(values:)` reveals it when the look on screen gives this
@@ -296,15 +307,26 @@ final class ParameterPanel: NSView {
         // A hidden toggle must not leave a gap where it would be.
         stack.detachesHiddenViews = true
         control.setContentHuggingPriority(.init(1), for: .horizontal)
-        let row = Row(param: param, control: control, field: field, midi: midi,
+        let row = Row(param: param, label: name, control: control, field: field, midi: midi,
                       animate: animate, view: stack)
+        row.contextMenu.delegate = self
         rows[param.name] = row          // `setBinding` looks the row up to read its colour
         setBinding([], for: param.name)
         return row
     }
 
     private func refreshMIDIVisibility() {
-        for row in rows.values { row.midi?.isHidden = !showsMIDIControls }
+        for row in rows.values { refreshMIDI(row) }
+    }
+
+    /// The tag shows only on a bound row; the right-click menu is on every row
+    /// whenever MIDI is up. The echo field keeps its own text menu.
+    private func refreshMIDI(_ row: Row) {
+        row.midi?.isHidden = !showsMIDIControls || row.bindings.isEmpty
+        let menu = showsMIDIControls ? row.contextMenu : nil
+        for view in [row.view, row.label, row.control] { view.menu = menu }
+        row.label.toolTip = "\(row.param.name) — \(row.param.type.rawValue)"
+            + (showsMIDIControls && row.bindings.isEmpty ? "\nRight-click to map a MIDI knob" : "")
     }
 
     // MARK: - Values in
@@ -437,6 +459,8 @@ final class ParameterPanel: NSView {
         menu.title = name
         populate(menu, row: row)
         if button.menu !== menu { button.menu = menu }
+        populate(row.contextMenu, row: row)
+        refreshMIDI(row)
         button.toolTip = bindings.isEmpty
             ? "Not mapped to MIDI"
             : bindings.map { "\($0.shortLabel) → \(name)\($0.component.map { c in " \(c.label)" } ?? "")" }
@@ -449,8 +473,12 @@ final class ParameterPanel: NSView {
         // Without this AppKit enables anything whose target answers the action,
         // which would offer Clear and the modes on an unbound parameter.
         menu.autoenablesItems = false
-        // A pull-down shows its first item as its title.
-        menu.addItem(withTitle: title(for: bindings), action: nil, keyEquivalent: "")
+        if menu === row.contextMenu {
+            menu.addItem(.sectionHeader(title: bindings.isEmpty ? "MIDI" : "MIDI · \(title(for: bindings))"))
+        } else {
+            // A pull-down shows its first item as its title.
+            menu.addItem(withTitle: title(for: bindings), action: nil, keyEquivalent: "")
+        }
 
         guard row.param.type == .color else {
             for entry in axisItems(name, nil, bindings.first) { menu.addItem(entry) }
@@ -489,9 +517,11 @@ final class ParameterPanel: NSView {
     /// axis is nil) and for each of a colour's four.
     private func axisItems(_ name: String, _ component: ColorComponent?,
                            _ binding: MIDIBinding?) -> [NSMenuItem] {
+        // Unbound, Learn is the only thing that can do anything; a column of
+        // greyed-out modes would just be more to read past.
+        guard binding != nil else { return [item("Learn…", name, component, .learn)] }
         var items = [item("Learn…", name, component, .learn),
                      item("Clear", name, component, .clear)]
-        items[1].isEnabled = binding != nil
         items.append(.separator())
         for mode in MIDIBindingMode.choices {
             let entry = item(mode.label, name, component, .mode(mode))

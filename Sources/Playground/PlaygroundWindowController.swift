@@ -111,7 +111,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private let edrCheckbox = NSButton(checkboxWithTitle: "HDR", target: nil, action: nil)
 
     let inspector = ParameterPanel(frame: NSRect(x: 0, y: 0, width: 320, height: 700))
-    let midiPanel = MIDIPanel(frame: .zero)
     private var inspectorItem: NSSplitViewItem!
 
     /// Parameter values the user has moved away from the declared defaults.
@@ -161,7 +160,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// The camera feeding `u.viewer`, while Shader › Track Head with Camera is
     /// on. Off at every launch and never persisted, like `audioTap`.
     private var headTracker: HeadTracker?
-    /// The camera, while Shader › Control with Hands is on. Off at every
+    /// The camera, while Shader › MIDI › Control with Hands is on. Off at every
     /// launch for the same reason as system audio. Its gestures arrive as CCs
     /// through `receive`, exactly like a knob's.
     private var hands: HandControl?
@@ -476,8 +475,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Parameter controls above, MIDI strip below. Both are driven entirely by
-    /// callbacks, so neither knows about the metal view or the shader library.
+    /// The parameter controls, driven entirely by callbacks, so they know
+    /// nothing of the metal view or the shader library. MIDI has no strip of
+    /// its own here: Learn is each row's right-click menu, a bound row shows
+    /// its CC, and banks live in Shader › MIDI.
     private func inspectorPane() -> NSView {
         inspector.onChange = { [weak self] name, value in self?.setParameter(name, value) }
         inspector.onPreset = { [weak self] name in self?.applyPreset(name) }
@@ -487,10 +488,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         inspector.onMIDICommand = { [weak self] name, component, command in
             self?.midiCommand(name, component, command)
         }
-        midiPanel.onAction = { [weak self] action in self?.mappingCommand(action) }
         inspector.setContentHuggingPriority(.init(1), for: .vertical)
-        midiPanel.heightAnchor.constraint(equalToConstant: 82).isActive = true
-        return Chrome.pane([inspector, midiPanel])
+        return Chrome.pane([inspector])
     }
 
     // MARK: - Shader list
@@ -806,6 +805,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         router.load(activeMapping?.bindings ?? [])
         inspector.showsMIDIControls = midi.isAvailable
         midiSourcesChanged()
+        NSApp.mainMenu?.items.lazy.compactMap(\.submenu)
+            .compactMap { $0.items.first { $0.identifier == MainMenu.midiMenuID } }
+            .first?.submenu?.delegate = self
     }
 
     /// A device appeared or went away. Auto-select the bank that was made for
@@ -816,21 +818,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }), match.name != activeMapping?.name {
             select(mapping: match.name)
         }
-        refreshMappingList()
-    }
-
-    private func refreshMappingList() {
-        midiPanel.showDevices(hands == nil ? midi.summary : midi.summary + " · Hands")
-        midiPanel.showMappings(mappings.map(\.name), selected: activeMapping?.name,
-                               enabled: midi.isAvailable)
-        guard midi.isAvailable else {
-            midiPanel.showStatus(midi.unavailableReason ?? "", tint: EditorTheme.error)
-            return
-        }
-        let count = activeMapping?.bindings.count ?? 0
-        midiPanel.showStatus(activeMapping == nil
-            ? "No mapping yet — use a parameter's Learn…"
-            : "\(count) binding\(count == 1 ? "" : "s")")
     }
 
     /// Adds an empty mapping bank and makes it live.
@@ -862,8 +849,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// The bank list and device line are Shader › MIDI, which is built when
+    /// it opens; the binding tags on the rows are all there is to redraw.
     private func refreshMappingUI() {
-        refreshMappingList()
         refreshBindingLabels()
     }
 
@@ -879,8 +867,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         do {
             try MIDIMappingStore.save(preset)
         } catch {
-            midiPanel.showStatus("Could not save mapping: \(error.localizedDescription)",
-                                 tint: EditorTheme.error)
+            setStatus("Could not save mapping: \(error.localizedDescription)", tint: EditorTheme.error)
         }
         refreshMappingUI()
     }
@@ -899,8 +886,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                       cc: message.cc, mode: message.learnMode, component: component)
             preset.bind(binding)
             commit(preset)
-            midiPanel.showStatus("Learned \(binding.shortLabel) → \(target.param)",
-                                 tint: EditorTheme.text)
+            setStatus("Learned \(binding.shortLabel) → \(target.param)", tint: EditorTheme.text)
             return
         }
         guard let routed = router.route(channel: message.channel, cc: message.cc, value: message.value),
@@ -910,16 +896,18 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             // sideways ticks would otherwise flash this over every Y update.
             if message.sourceID == HandControl.sourceID,
                activeMapping?.bindings.contains(where: { HandControl.Axis(channel: $0.channel, cc: $0.cc) != nil }) != true {
-                midiPanel.showStatus("\(HandControl.Axis(channel: message.channel, cc: message.cc)?.label ?? "Hand") "
-                                     + "is not bound here — click a parameter's Learn…, then pinch and move")
+                setStatus("\(HandControl.Axis(channel: message.channel, cc: message.cc)?.label ?? "Hand") "
+                          + "is not bound here — right-click a parameter, Learn…, then pinch and move",
+                          tint: EditorTheme.dim)
             }
             return
         }
         // A knob is a hand on the control: bound to an animated parameter, it
         // takes control of it exactly as dragging the slider does.
+        // No status echo per tick: the slider moving is the readout, and the
+        // status line is where compile results are read.
         setParameter(param.name, value)
         inspector.show(values: metalView.liveParameterValues)
-        midiPanel.showStatus("\(routed.binding.shortLabel) → \(param.name) = \(value.literal)")
     }
 
     /// The axis a Learn binds. The menu says which one when the user picked it
@@ -995,11 +983,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             // accident does not sit there waiting to eat the next knob.
             let armed = learnTarget?.param == name && learnTarget?.component == component
             learnTarget = armed ? nil : (name, component)
-            midiPanel.showStatus(learnTarget == nil
+            setStatus(learnTarget == nil
                 ? "Learn cancelled"
                 : "Learning \(name)\(component.map { " \($0.label)" } ?? "")"
                     + (hands == nil ? " — move a knob" : " — move a knob, or pinch and move a hand"),
-                                 tint: EditorTheme.text)
+                      tint: EditorTheme.text)
         case .clear:
             guard var preset = activeMapping else { return }
             preset.unbind(name, component: component)
@@ -1012,8 +1000,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             guard var preset = activeMapping,
                   let binding = preset.binding(for: name, component: component) else { return }
             guard let updated = binding.withMode(mode) else {
-                midiPanel.showStatus("14-bit needs CC 0–31, not \(binding.shortLabel)",
-                                     tint: EditorTheme.error)
+                setStatus("14-bit needs CC 0–31, not \(binding.shortLabel)", tint: EditorTheme.error)
                 return
             }
             preset.bind(updated)
@@ -1024,8 +1011,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                   let scoped = promptForRange(binding) else { return }
             preset.bind(scoped)
             commit(preset)
-            midiPanel.showStatus(String(format: "%@ → %@ over %.2f–%.2f", binding.shortLabel, name,
-                                        scoped.range.lowerBound, scoped.range.upperBound))
+            setStatus(String(format: "%@ → %@ over %.2f–%.2f", binding.shortLabel, name,
+                             scoped.range.lowerBound, scoped.range.upperBound), tint: EditorTheme.dim)
         }
     }
 
@@ -1061,7 +1048,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func mappingCommand(_ action: MIDIPanel.Action) {
+    /// What Shader › MIDI's bank commands do.
+    enum MappingAction: Equatable { case select(String), new, rename, delete }
+
+    private func mappingCommand(_ action: MappingAction) {
         switch action {
         case .select(let name):
             select(mapping: name)
@@ -1176,8 +1166,23 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         inspectorItem.animator().isCollapsed.toggle()
     }
 
+    /// Steps to the next bank. The wrap is `ShaderLibrary.step`, which is
+    /// where every cycle in this project lives.
     @objc func nextMapping(_ sender: Any?) {
-        if midiPanel.cycleMapping() == nil { NSSound.beep() }
+        let names = mappings.map(\.name)
+        guard names.count > 1,
+              let next = ShaderLibrary.step(in: names, after: activeMapping?.name, offset: 1)
+        else { return NSSound.beep() }
+        select(mapping: next)
+        setStatus("MIDI mapping: \(next)", tint: EditorTheme.dim)
+    }
+
+    @objc func newMapping(_ sender: Any?) { mappingCommand(.new) }
+    @objc func renameMapping(_ sender: Any?) { mappingCommand(.rename) }
+    @objc func deleteMapping(_ sender: Any?) { mappingCommand(.delete) }
+    @objc private func chooseMapping(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        mappingCommand(.select(name))
     }
 
     @objc func jumpToFirstError() {
@@ -1651,7 +1656,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         } catch {
             return setStatus("Hand control unavailable: \(error)", tint: EditorTheme.error)
         }
-        refreshMappingList()
         setStatus("Hand control on: hold up an open hand, then pinch to grab", tint: EditorTheme.dim)
     }
 
@@ -1678,7 +1682,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func stopHandControl(_ reason: String?) {
         hands?.stop()
         hands = nil
-        refreshMappingList()
         liveInputStopped("Hand control", reason: reason)
     }
 
@@ -1867,7 +1870,48 @@ extension PlaygroundWindowController: NSMenuItemValidation {
             item.state = headTracker == nil ? .off : .on
             return true
         case #selector(recenterHead(_:)): return headTracker != nil
+        case #selector(newMapping(_:)): return midi.isAvailable
+        case #selector(renameMapping(_:)), #selector(deleteMapping(_:)): return activeMapping != nil
+        case #selector(nextMapping(_:)): return mappings.count > 1
         default: return true
+        }
+    }
+}
+
+/// Shader › MIDI. Its fixed commands are built with the main menu, so their
+/// key equivalents work whether or not it has been opened; what is connected
+/// and which bank is live are read here, each time it opens.
+extension PlaygroundWindowController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        while let first = menu.items.first, first.tag == MainMenu.midiDynamicTag {
+            menu.removeItem(first)
+        }
+        let device = NSMenuItem(title: midi.isAvailable
+                                    ? (hands == nil ? midi.summary : midi.summary + " · Hands")
+                                    : "MIDI off: \(midi.unavailableReason ?? "Core MIDI unavailable")",
+                                action: nil, keyEquivalent: "")
+        device.isEnabled = false
+        var items = [device, .separator()]
+        if mappings.isEmpty {
+            let none = NSMenuItem(title: "No mappings — right-click a parameter to Learn",
+                                  action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            items.append(none)
+        }
+        for preset in mappings {
+            let count = preset.bindings.count
+            let entry = NSMenuItem(title: preset.name, action: #selector(chooseMapping(_:)),
+                                   keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = preset.name
+            entry.state = preset.name == activeMapping?.name ? .on : .off
+            entry.toolTip = "\(count) binding\(count == 1 ? "" : "s")"
+            items.append(entry)
+        }
+        items.append(.separator())
+        for (index, item) in items.enumerated() {
+            item.tag = MainMenu.midiDynamicTag
+            menu.insertItem(item, at: index)
         }
     }
 }

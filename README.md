@@ -390,7 +390,14 @@ Keys:
 - `⇧⌘[` / `⇧⌘]` — previous/next shader.
 - `⌥⌘[` / `⌥⌘]` — previous/next preset of the open shader.
 
-Hand control (**Shader › Control with Hands**, off at every launch) makes your
+MIDI stays out of sight until you use it. Right-click any parameter and pick
+**Learn…**, then turn a knob; the row then shows the CC it is bound to, and that
+tag (or another right-click) holds Clear, the knob's mode and its range. Banks of
+bindings — new, rename, delete, and `⌥⌘M` for the next one — are in
+**Shader › MIDI**, which also says what is connected. A bank made for a device
+is picked automatically when that device is plugged in.
+
+Hand control (**Shader › MIDI › Control with Hands**, off at every launch) makes your
 hands a MIDI controller, so no device is needed. Hold up an open hand, then
 pinch to grab; values move only while you pinch, and letting go leaves them
 where they are. Move the pinch for **Hand X** and **Hand Y**, or turn it like a
@@ -398,7 +405,7 @@ knob for **Hand Twist** (half a turn sweeps a parameter end to end). A stroke
 is one or the other, judged by whether the pinch point travels, so twisting
 never nudges the Y-bound parameter. Pinch with both hands and the distance
 between them is **Hand Spread**, and turning the pair like a wheel is Hand
-Twist. The axes bind like knobs: click a parameter's Learn…, then pinch and
+Twist. The axes bind like knobs: right-click a parameter, Learn…, then pinch and
 move or turn. They are relative CCs 102–105 on channel 16, so they share
 banks, ranges and saving with real knobs.
 

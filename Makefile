@@ -168,7 +168,7 @@ MIDI_FLAGS := -I $(MIDI_BIN) -L $(MIDI_BIN) -lMIDIDeps
 # would otherwise read as "toolchain changed" on every invocation.
 MIDI_SWIFT_STAMP := $(BUILD)/midi-swift-version.stamp
 
-# Shader › Control with Hands (Sources/Playground/HandControl.swift). The page
+# Shader › MIDI › Control with Hands (Sources/Playground/HandControl.swift). The page
 # and coding cube's tracking code are in Sources/Playground/Hands; MediaPipe's
 # web runtime and its hand model are third-party and 18 MB, so like the splats
 # they are downloaded once into build/, checked against a pinned sha256, and
