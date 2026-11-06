@@ -1106,10 +1106,10 @@ public enum LerpPresetWriter {
     /// - Tabs and newlines cannot survive a line-oriented comment directive.
     /// - "Defaults" is refused because it is already taken by the look every
     ///   shader has: `LerpRotationEntry.displayName` calls the no-preset entry
-    ///   "Defaults", and the inspector's popup puts it at index 0 and reads
-    ///   index 0 as "no preset". A preset actually called that would draw two
-    ///   identically captioned tiles in both grids and be unselectable in the
-    ///   popup, because picking it would select the item above it.
+    ///   "Defaults", and the inspector's Presets list reads a row of that
+    ///   name as "no preset". A preset actually called that would draw two
+    ///   identically captioned rows and be unselectable, because picking it
+    ///   would apply the defaults instead.
     ///
     /// Case is not compared here — that is the *shader's* question, since
     /// `LerpShader.preset(named:)` matches case-insensitively — except against

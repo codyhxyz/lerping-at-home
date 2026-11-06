@@ -11,8 +11,10 @@ import Foundation
 ///   count, still walks every look, never repeats a look back to back, and is a
 ///   pure function of the clock.
 /// - `*` cannot be a preset name.
-/// - The gallery's cards, drawer and search do what the model says, and the
-///   floor still holds.
+/// - The Library is cards only — one per shader, no per-preset tiles — its
+///   badge and All / None switch shaders keeping their picks, search finds a
+///   shader by a preset's name and opens it wearing that preset, and the floor
+///   still holds.
 ///
 /// Writes only a scratch defaults domain, never the user's rotation.
 enum RotationSelfTest {
@@ -37,7 +39,7 @@ enum RotationSelfTest {
             PreviewMain.fail("rotation self-test: \(failures.count) check\(failures.count == 1 ? "" : "s") failed")
         }
         print("OK    rotation: shader switch keeps picks, shader/* round trip, per-shader airtime, "
-              + "no back-to-back repeats, * reserved, Library cards/drawer/search/floor")
+              + "no back-to-back repeats, * reserved, Library cards/search/floor")
     }
 
     // MARK: - Fixtures
@@ -189,9 +191,9 @@ enum RotationSelfTest {
 
     // MARK: - Snapshot
 
-    /// `LERP_GALLERY_SNAPSHOT=<dir>`: the Library with a drawer open, and a
-    /// search, as PNGs drawn with the stills the saver bundle ships — for
-    /// looking at, not for checking.
+    /// `LERP_GALLERY_SNAPSHOT=<dir>`: the Library, and a search, as PNGs drawn
+    /// with the stills the saver bundle ships — for looking at, not for
+    /// checking.
     static func snapshot(_ extraSearch: [URL], to dir: URL) {
         let shaders = PreviewMain.makeLibrary(extraSearch).library.discover()
         let entries = shaders.rotationEntries()
@@ -203,22 +205,20 @@ enum RotationSelfTest {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 900),
                               styleMask: [.titled], backing: .buffered, defer: false)
         let view = RotationGalleryView(frame: window.contentLayoutRect)
+        view.onOpen = { _ in }
+        view.onNew = {}
         window.contentView = view
         var picked = LerpRotationSelection(discovered: entries)
         let open = shaders.first { [$0].rotationEntries().count >= 8 }?.name ?? shaders[0].name
-        let looks = picked.looks(of: open)
-        picked.setLooks(looks.dropFirst(4), on: false)
+        picked.setLooks(picked.looks(of: open).dropFirst(4), on: false)
         picked.setShader(shaders[2].name, on: false)
         view.show(shaders: shaders, selection: picked)
+        view.showCurrent(picked.looks(of: open).first)
         for entry in entries {
             guard let shader = shaders.named(entry.shader),
                   let url = stills.existingURL(entry: entry, source: shader.source),
                   let image = RotationThumbnails.decodedImage(at: url) else { continue }
             view.show(image: image, for: entry)
-        }
-        view.layoutSubtreeIfNeeded()
-        if let card: RotationTile = find("card:" + open, in: view) {
-            _ = card.accessibilityCustomActions()?.first?.handler?()
         }
         func save(_ name: String) {
             view.layoutSubtreeIfNeeded()
@@ -241,78 +241,102 @@ enum RotationSelfTest {
         return nil
     }
 
+    static func all<T: NSView>(in view: NSView, as _: T.Type = T.self) -> [T] {
+        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { all(in: $0, as: T.self) }
+    }
+
     static func gallery(_ extraSearch: [URL], _ check: (Bool, @autoclosure () -> String) -> Void) {
         let shaders = PreviewMain.makeLibrary(extraSearch).library.discover()
         let entries = shaders.rotationEntries()
         guard let target = shaders.first(where: { [$0].rotationEntries().count > 3 })?.name,
               let other = shaders.first(where: { $0.name != target })?.name else {
-            return check(false, "gallery: the library needs a shader with more than three looks")
+            return check(false, "gallery: the library needs a shader with more than three presets")
         }
 
         let view = RotationGalleryView(frame: NSRect(x: 0, y: 0, width: 1200, height: 900),
-                                       tileSize: RotationTile.size, showsRegenerate: false)
+                                       tileSize: RotationTile.size)
         var published: LerpRotationSelection?
+        var opened: LerpRotationEntry?
         view.onChange = { published = $0 }
+        view.onOpen = { opened = $0 }
         view.show(shaders: shaders, selection: LerpRotationSelection(discovered: entries))
         view.layoutSubtreeIfNeeded()
+
+        let tiles: [RotationTile] = all(in: view)
+        check(tiles.count == shaders.count, "one card per shader and nothing else: \(tiles.count) tiles for \(shaders.count) shaders")
+        check(find("drawer", in: view, as: NSView.self) == nil, "there is no drawer")
+        check(find("rotation-all", in: view, as: NSButton.self) != nil
+              && find("rotation-none", in: view, as: NSButton.self) != nil, "the header has All and None")
 
         guard let card: RotationTile = find("card:" + target, in: view) else {
             return check(false, "gallery: no card for \(target)")
         }
         let looksOf = entries.filter { $0.shader == target }
-        let tilesOf = looksOf.compactMap { find("entry:" + $0.key, in: view, as: RotationTile.self) }
-        check(tilesOf.count == looksOf.count, "every look has a tile")
-        check(tilesOf.allSatisfy(\.isHidden), "a closed Library shows cards, not looks")
-        check(card.lookCount == looksOf.count && card.summary == "all \(looksOf.count) looks",
-              "the card counts its looks: \(card.summary ?? "nil")")
+        check(card.summary == "all \(looksOf.count) presets", "the card counts its presets: \(card.summary ?? "nil")")
 
-        // Open the drawer.
-        _ = card.accessibilityCustomActions()?.first?.handler?()
-        view.layoutSubtreeIfNeeded()
-        check(view.expanded == target, "the count pill opens the drawer")
-        check(tilesOf.allSatisfy { !$0.isHidden }, "the drawer shows the shader's looks")
-        if let drawer: NSView = find("drawer", in: view) {
-            check(!drawer.isHidden && drawer.frame.minY >= card.frame.maxY, "the drawer opens under its card's row")
-            check(tilesOf.allSatisfy { drawer.frame.contains($0.frame) }, "the drawer holds its looks")
-        } else {
-            check(false, "no drawer view")
-        }
+        // Pressing a card opens its cover; the badge (show-menu) switches it.
+        _ = card.accessibilityPerformPress()
+        check(opened == looksOf.first && published == nil, "pressing a card opens its cover and changes nothing")
 
-        // Curate two looks in the drawer, switch the shader off and on.
-        _ = tilesOf[1].accessibilityPerformPress()
-        _ = tilesOf[2].accessibilityPerformPress()
-        check(published.map { !$0.isPicked(looksOf[1]) && !$0.isPicked(looksOf[2]) } == true,
-              "a look's tile takes that look out")
-        check(card.summaryIsPartial && card.summary == "\(looksOf.count - 2) of \(looksOf.count) looks",
+        // Curation made elsewhere (the inspector) shows on the card, and the
+        // badge keeps it across off and on.
+        var curated = LerpRotationSelection(discovered: entries)
+        curated.setLook(looksOf[1], on: false)
+        curated.setLook(looksOf[2], on: false)
+        view.show(shaders: shaders, selection: curated)
+        check(card.summaryIsPartial && card.summary == "\(looksOf.count - 2) of \(looksOf.count) presets",
               "the card says it is hand-picked: \(card.summary ?? "nil")")
-        _ = card.accessibilityPerformPress()
-        check(published?.isSwitchedOff(target) == true && !card.isOn, "the card switches the shader off")
-        _ = card.accessibilityPerformPress()
+        _ = card.accessibilityPerformShowMenu()
+        check(published?.isSwitchedOff(target) == true && !card.isOn, "the badge switches the shader off")
+        _ = card.accessibilityPerformShowMenu()
         check(published.map { $0.shaderPlays(target) && !$0.isPicked(looksOf[1]) && $0.isPicked(looksOf[3]) } == true,
-              "switching it back on brings back exactly the curated looks")
+              "switching it back on brings back exactly the curated presets")
 
-        // A look of a switched-off shader, clicked, switches it back on.
-        _ = card.accessibilityPerformPress()
-        _ = tilesOf[1].accessibilityPerformPress()
-        check(published.map { !$0.isSwitchedOff(target) && $0.plays(looksOf[1]) && !$0.plays(looksOf[2]) } == true,
-              "a click on a dimmed look switches its shader on, keeping the other picks")
+        // A preset ticked in a switched-off shader switches it back on.
+        var off = published!
+        off.setShader(target, on: false)
+        off.setLook(looksOf[1], on: true)
+        check(!off.isSwitchedOff(target) && off.plays(looksOf[1]) && !off.plays(looksOf[2]),
+              "ticking a preset of a switched-off shader switches it on, keeping the other picks")
 
-        // Search shows looks, grouped, and no cards.
-        view.setFilter(looksOf[1].displayName)
+        // Search by a preset's name shows that shader's card, which opens wearing it.
+        guard let preset = looksOf.dropFirst().first(where: { look in
+            look.preset != nil && !target.localizedCaseInsensitiveContains(look.displayName)
+        }) else { return check(false, "gallery: \(target) has no preset to search for") }
+        view.setFilter(preset.displayName)
         view.layoutSubtreeIfNeeded()
-        check(card.isHidden && !tilesOf[1].isHidden, "searching shows matching looks instead of cards")
+        check(!card.isHidden && card.summary == "▸ " + preset.displayName,
+              "searching a preset's name shows its shader's card, saying which: \(card.summary ?? "nil")")
+        opened = nil
+        _ = card.accessibilityPerformPress()
+        check(opened == preset || opened?.shader == target, "a card found by a preset opens wearing it")
+        view.setFilter(target)
+        check(!card.isHidden && card.summary?.hasPrefix("▸") == false, "searching a shader's name shows its card")
         view.setFilter("")
-        check(!card.isHidden, "clearing the search brings the cards back")
+        check(tiles.allSatisfy { !$0.isHidden }, "clearing the search brings every card back")
 
-        // The floor: with one look left, its shader's card is locked.
+        // All / None act on the shaders on screen, at the shader level.
+        view.show(shaders: shaders, selection: curated)
+        view.setFilter(target)
+        find("rotation-none", in: view, as: NSButton.self)?.performClick(nil)
+        check(published.map { $0.isSwitchedOff(target) && $0.shaderPlays(other) } == true,
+              "None switches off just the shaders the filter shows")
+        find("rotation-all", in: view, as: NSButton.self)?.performClick(nil)
+        check(published.map { !$0.isSwitchedOff(target) && !$0.isPicked(looksOf[1]) } == true,
+              "All switches them back on, keeping their picks")
+        view.setFilter("")
+        check(find("rotation-none", in: view, as: NSButton.self)?.isEnabled == false,
+              "None over every shader would empty the rotation, so it is off")
+
+        // The floor: with one preset left, its shader's card is locked.
         let only = entries.first { $0.shader == other }!
         var last = LerpRotationSelection(discovered: entries)
         last.setLooks(entries.filter { $0 != only }, on: false)
         view.show(shaders: shaders, selection: last)
         let otherCard: RotationTile? = find("card:" + other, in: view)
-        check(otherCard?.isLocked == true, "the card holding the last look cannot be switched off")
+        check(otherCard?.isLocked == true, "the card holding the last preset cannot be switched off")
         published = nil
-        _ = otherCard?.accessibilityPerformPress()
+        _ = otherCard?.accessibilityPerformShowMenu()
         check(published == nil, "a locked card does not change the rotation")
     }
 }

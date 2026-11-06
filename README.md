@@ -110,13 +110,11 @@ unattended: replacing it could discard unsaved editor state.
   allows" below. Anything the bundle does not have a still for (a custom shader,
   a shader edited since the build) is rendered on the spot, in parallel, into a
   cache inside the sandbox container. Nothing ever blocks the sheet.
-- The same gallery is a window of its own in the playground
-  (**Shader → Screensaver Rotation…**, ⌥⌘R), where clicking a tile writes the
-  screensaver's rotation immediately and **double-clicking one opens it in the
-  editor**, preset and all. It is one implementation, in
-  `Sources/LerpCore/RotationGallery.swift` — and the same tile is what the
-  playground's toolbar picker is made of, with its primary action inverted. See
-  "Shader playground".
+- The same Library of shader cards is the playground's selector (the toolbar's
+  shader button), where the badge writes the screensaver's rotation
+  immediately and a click opens the shader in the editor. Per-preset choices
+  are made in the playground's inspector. It is one implementation, in
+  `Sources/LerpCore/RotationGallery.swift`. See "Shader playground".
 - Options… has a **Set desktop picture to the last frame** checkbox, off by default.
   See "Desktop picture handoff" below.
 
@@ -290,41 +288,39 @@ make playground
 - On a compile error the last successful pipeline keeps rendering; the view does not blank and the process does not exit.
 - Compile errors are listed in a console below the editor as `line:column`; the offending lines are highlighted, and `⌘E` (or clicking the status bar) jumps to the first one.
 - Metal's reported line numbers match the shader file, because the prelude ends with `#line 1`.
-- The shader picker is a popover of tiles, not a text dropdown. Opened from the
-  toolbar button, `⌘O`, or **Shader → Open Look…**, built from the same tile as
-  the rotation gallery, over `Sources/Shaders/` plus the custom shader
-  directory, refreshed when files change on disk. It lists all 123 looks; the
-  previous text dropdown listed 31 shader names.
-  - The two surfaces invert each other. In the gallery, a click toggles the look
-    in or out of the rotation and a double-click opens it. In the popover, a
-    click opens it and the corner badge toggles the rotation.
-  - A look that is out of the rotation is drawn dimmed and opens on the same
-    click as any other.
-  - The popover opens with the caret in a filter field; typing filters, and ⏎
-    opens the first look still showing.
+- Navigation is three controls, each with one job:
+  - **The selector** — the toolbar button, `⌘O`, or **Shader → Open Shader…** —
+    is a popover Library of one card per shader, over `Sources/Shaders/` plus
+    the custom shader directory, refreshed when files change on disk. A click
+    opens the shader at its cover (the preset its picture shows). The badge in
+    the corner switches the whole shader in or out of the screensaver, keeping
+    any per-preset curation; **All** / **None** in the header do the same for
+    every shader shown. A shader that is out of the rotation is drawn dimmed
+    and opens on the same click. The caption says how much of it plays: "all 5
+    presets", or "4 of 11 presets" in amber when hand-picked.
+  - **`‹` `›`** beside the button step to the previous or next shader, in the
+    selector's order, wrapping at both ends — `⇧⌘[` / `⇧⌘]`, **Shader → Next
+    Shader** / **Previous Shader**.
+  - **The inspector's Presets list** picks one of the open shader's presets
+    (click its name), ticks each in or out of the screensaver, and saves the
+    values on screen as a new one (**+**, the same as `⇧⌘S`). `⌥⌘[` / `⌥⌘]`
+    step through it. Ticking a preset of a shader switched off in the selector
+    switches it back on. Defaults is left out when a named preset draws the
+    same picture, as the rotation leaves it out.
+  - The selector opens with the caret in a filter field. Typing matches shader
+    names *and* preset names; a card found by a preset says which (`▸ Molten`)
+    and opens wearing it. ⏎ opens the first card still showing.
   - The grid leads with a dashed **+** card, "New Shader…" — the same scaffold
-    `⌘N` runs, in the grid you are already reading when the look you wanted turns
-    out not to exist. It is not a look: it is in no count, no rotation and no
-    filter, and `‹` `›` step straight past it. It appears only in the popover,
-    the one surface that can open what it makes, so the toolbar no longer carries
-    a New… button.
-  - Pointing at a tile plays it, as in the gallery — it is the same tile.
-  - Both grids mark the look the editor has open and share one cache of stills,
-    so opening the popover after the gallery renders nothing new.
-  - `‹` and `›` sit beside the button: one **look** back or forward through the
-    same list the popover shows — all 123, presets included, in the same order —
-    wrapping at both ends and loaded the way a click in the popover loads it.
-    They are `⇧⌘[` / `⇧⌘]` as buttons (**Shader → Next Look** / **Previous
-    Look**). Stepping over a shader's presets rather than over shader names is
-    the point: the presets of one shader are what you want to flip between to
-    compare, and they are the entries a walk over names skips. Landing on the
-    look already open does nothing rather than re-opening it.
-- The rotation gallery window opens from **Shader → Screensaver Rotation…**
-  (`⌥⌘R`). The toolbar has no button for it. It holds Select All, Deselect All,
-  and a wider grid than the popover.
-- **Shortcuts and Spotlight** get three LerpPlayground actions: **Add Look to
-  Rotation**, **Remove Look from Rotation** and **List Looks** (all, in the
-  rotation, or switched off). A *Look* is a shader plus one of its presets, or
+    `⌘N` runs. It is not a shader: it is in no count, no rotation and no
+    filter, and `‹` `›` step straight past it.
+  - Pointing at a card plays it. The card for the shader the editor has open is
+    marked.
+  - The last thing playing cannot be switched off from either place.
+  - **Shader → Regenerate Stills** throws every card's still away and draws it
+    again.
+- **Shortcuts and Spotlight** get three LerpPlayground actions: **Add Preset to
+  Rotation**, **Remove Preset from Rotation** and **List Presets** (all, in the
+  rotation, or switched off). A *Preset* is a shader plus one of its presets, or
   its Defaults. The actions run inside the playground, launching it if needed,
   and write through the same path a gallery click does, so the playground is
   still the rotation's only writer; open grids update straight away. Removing
@@ -353,11 +349,11 @@ make playground
     keystroke, and Revert puts both halves back. Only the text raises the
     close-the-window prompt: switching looks is how this window is browsed, and a
     question on every step of it would be unusable.
-- **Shader → Save Look as Preset…** (`⇧⌘S`) writes the values on screen back into
-  the shader as a named `// lerp-preset:` block. A new name adds a look;
-  entering an existing name replaces it after confirmation. The look gets a tile
-  in the picker and gallery straight away, joins the screensaver's rotation, and
-  the editor ends up wearing it. The toolbar has no button for it either.
+- **Shader → Save as Preset…** (`⇧⌘S`, or **+** in the Presets list) writes the
+  values on screen back into the shader as a named `// lerp-preset:` block. A
+  new name adds a preset; entering an existing name replaces it after
+  confirmation. The preset joins the Presets list and the screensaver's
+  rotation straight away, and the editor ends up wearing it.
   - Only parameters that differ from the shader's declared defaults are written,
     because a preset is an overlay and a line restating a default freezes today's
     value into a file whose author may move it tomorrow.
@@ -382,7 +378,7 @@ make playground
 
 Keys:
 
-- `⌘O` — open the shader picker; type to filter, ⏎ opens the first match.
+- `⌘O` — open the selector; type to filter, ⏎ opens the first match.
 - `⌘N` — scaffold a new starter shader into `Sources/Shaders/`, as the picker's
   **+** card does.
 - `⌘S` — save the `.metal` file: the text, and the look on screen back into the
@@ -392,8 +388,8 @@ Keys:
 - `⌘R` — recompile.
 - `⌘\` — play/pause.
 - `⇧⌘R` — re-roll seed.
-- `⌥⌘R` — open the screensaver rotation gallery window.
-- `⇧⌘[` / `⇧⌘]` — previous/next look.
+- `⇧⌘[` / `⇧⌘]` — previous/next shader.
+- `⌥⌘[` / `⌥⌘]` — previous/next preset of the open shader.
 
 Hand control (**Shader › Control with Hands**, off at every launch) makes your
 hands a MIDI controller, so no device is needed. Hold up an open hand, then
@@ -490,7 +486,7 @@ its parameters and presets wherever the file goes.
   with spaces, and repeat the name on later lines to split a long preset. A
   preset is an *overlay*: anything it does not name keeps the declared default,
   and follows it if the default later changes.
-- The playground writes this form for you — **Shader → Save Look as Preset…**
+- The playground writes this form for you — **Shader → Save as Preset…**
   turns the values on screen into a new named block in the file. See "Shader
   playground".
 - `// lerp-animate: NAME LOW HIGH [period=SECONDS]` makes a `float` or `color`
@@ -514,7 +510,7 @@ its parameters and presets wherever the file goes.
 
 - The playground shows controls for all declared parameters. The screen saver
   can select named presets, but it does not store arbitrary control values.
-  Use **Shader → Save Look as Preset…** to make a tuned look available to it.
+  Use **Shader → Save as Preset…** to make a tuned look available to it.
   Details and porting guidance: `PORTING.md`.
 
 ### Shaders with CPU-computed data
@@ -618,11 +614,10 @@ Templates/          example shader
 
 `LerpCore` holds the rotation gallery (`RotationGallery.swift`,
 `RotationThumbnails.swift`, `RotationPreview.swift`) and the colours and control
-helpers it draws with (`UIChrome.swift`) because it has three hosts that cannot
-see each other's sources: the screensaver's Options… sheet, the playground's
-rotation window, and the playground's toolbar picker popover. What stays in
-`Sources/Playground/` is the part that is the playground's alone —
-`RotationWindow.swift` and `ShaderPicker.swift`, the two surfaces, and
+helpers it draws with (`UIChrome.swift`) because it has two hosts that cannot
+see each other's sources: the screensaver's Options… sheet and the playground's
+toolbar selector. What stays in `Sources/Playground/` is the part that is the
+playground's alone — `ShaderPicker.swift`, the popover, and
 `RotationStore.swift`, which writes the screensaver's ByHost domain the moment
 you click. `RotationStore` is
 *not* hoisted: it needs `-framework ScreenSaver`, and neither the preview app nor

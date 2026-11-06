@@ -260,22 +260,20 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         shaderButton.setContentCompressionResistancePriority(.init(2), for: .horizontal)
         shaderButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 178).isActive = true
         shaderButton.widthAnchor.constraint(lessThanOrEqualToConstant: 320).isActive = true
-        shaderButton.toolTip = "Pick a look to edit, by picture"
+        shaderButton.toolTip = "Pick a shader, and choose which play in the screensaver (⌘O)"
         shaderButton.identifier = NSUserInterfaceItemIdentifier("shader-picker-button")
 
-        // The picker's list, one step at a time, without opening the picker —
-        // the same ⇧⌘[ / ⇧⌘] the Shader menu carries, so an arrow loads a look by
-        // exactly the path a click in the popover takes. For walking neighbours;
-        // the grid is still how you get to a look you can picture.
+        // The selector's cards, one step at a time, without opening it — the
+        // same ⇧⌘[ / ⇧⌘] the Shader menu carries, so an arrow opens a shader by
+        // exactly the path a click on its card takes.
         //
-        // The list is the picker's, which means *looks* and not shaders: a
-        // shader's presets are the looks worth comparing side by side, and
-        // stepping over shader names skipped every one of them. Walking all of them
-        // in the order the grid shows them is the whole point of a next button.
-        let previousButton = Chrome.button("‹", target: self, action: #selector(previousLook))
-        let nextButton = Chrome.button("›", target: self, action: #selector(nextLook))
-        previousButton.toolTip = "Previous look (⇧⌘[)"
-        nextButton.toolTip = "Next look (⇧⌘])"
+        // Shaders, not presets. Presets have their own control — the inspector's
+        // Presets list, and ⌥⌘[ / ⌥⌘] — so the arrows no longer have to walk all
+        // ~280 shader×preset pairs to reach the next shader.
+        let previousButton = Chrome.button("‹", target: self, action: #selector(previousShader))
+        let nextButton = Chrome.button("›", target: self, action: #selector(nextShader))
+        previousButton.toolTip = "Previous shader (⇧⌘[)"
+        nextButton.toolTip = "Next shader (⇧⌘])"
 
         // No New… here any more: making a shader is something you do *among the
         // looks*, so it is the first card in the picker's grid — where you are
@@ -482,6 +480,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func inspectorPane() -> NSView {
         inspector.onChange = { [weak self] name, value in self?.setParameter(name, value) }
         inspector.onPreset = { [weak self] name in self?.applyPreset(name) }
+        inspector.onPresetRotation = { [weak self] name, on in self?.setPresetInRotation(name, on) }
+        inspector.onSavePreset = { [weak self] in self?.savePreset(nil) }
         inspector.onAnimate = { [weak self] name, on in self?.setAnimating(name, on) }
         inspector.onMIDICommand = { [weak self] name, component, command in
             self?.midiCommand(name, component, command)
@@ -511,9 +511,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     private var customShaderNames: Set<String> = []
 
-    /// The toolbar button says which look is open, the way the dropdown's
-    /// selected item used to — plus the preset, which the dropdown could not say
-    /// at all, and a chevron so it reads as something that opens.
+    /// The toolbar button says which shader is open, and which of its presets
+    /// it is wearing, with a chevron so it reads as something that opens.
     private func updateShaderButton() {
         let name = current.name.isEmpty ? "Shader" : current.name
         let preset = currentPreset.map { " · " + $0 } ?? ""
@@ -570,18 +569,17 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         showCurrentEverywhere()
     }
 
-    /// Both grids mark the look the editor has open, so "where am I in these
-    /// a few hundred pictures" is answerable without reading captions.
+    /// The selector marks the shader the editor has open, so "where am I in
+    /// these pictures" is answerable without reading captions; the Presets list
+    /// marks the preset.
     private func showCurrentEverywhere() {
-        rotation?.showCurrent(currentEntry)
         picker?.gallery.showCurrent(currentEntry)
+        inspector.showPreset(currentPreset)
     }
 
-    /// Opens a look — a (shader, preset) pair — from either grid: the gallery
-    /// window's double-click or the toolbar popover's click. The same `open` the
-    /// launch path takes, plus the unsaved-changes prompt and bringing the
-    /// editor back to the front, since the click may have come from another
-    /// window entirely.
+    /// Opens a (shader, preset) pair: a card in the selector, an arrow, or the
+    /// launch path's choice. The same `open` the launch path takes, plus the
+    /// unsaved-changes prompt and bringing the editor back to the front.
     func openEntry(_ entry: LerpRotationEntry) {
         guard entry != currentEntry else { return raise() }
         guard confirmDiscardIfDirty(),
@@ -680,10 +678,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             parameterState = parameterState.filter { declared.contains($0.key) }
             animationState = animationState.filter { declared.contains($0.key) }
             inspector.rebuild(shader: shader)
-            // A rebuild leaves the popup on "Defaults"; the look on screen has
-            // not changed, so put the label back on it rather than letting the
-            // one control that names the look be the one that lies about it.
+            // A rebuild marks "Defaults"; the preset on screen has not changed,
+            // so put the mark back on it rather than letting the one control
+            // that names the preset be the one that lies about it.
             inspector.showPreset(currentPreset)
+            showRotationInInspector()
             inspector.showsMIDIControls = midi.isAvailable
             refreshBindingLabels()
         }
@@ -1051,83 +1050,39 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Screensaver rotation
 
-    /// The gallery window, once it has been asked for. Built lazily: it renders
-    /// a few hundred stills, and an app that never opens it should never pay for them.
-    private(set) var rotation: RotationWindowController?
-
     /// The screensaver's rotation, as this window sees it. Written by the
-    /// gallery — the entire point of that feature — and *read* by `openingEntry`
-    /// on launch, which is the one place this app looks at the rotation without
-    /// being asked to.
+    /// selector's badges and the inspector's preset ticks, and *read* by
+    /// `openingEntry` on launch, which is the one place this app looks at the
+    /// rotation without being asked to.
     var rotationDefaults: UserDefaults?
 
-    /// The toolbar's picker popover, once it has been asked for. Same reason as
-    /// the gallery window: a few hundred stills is not a bill an app that never opens it
-    /// should pay.
+    /// The toolbar's selector popover, once it has been asked for. Built
+    /// lazily: it renders a still per shader, and an app that never opens it
+    /// should never pay for them.
     private(set) var picker: ShaderPicker?
 
-    /// One cache of stills for both grids. They show the same looks, and
-    /// `RotationThumbnails.start` supersedes the run in flight — two instances
-    /// would mean two copies of every decoded images, and one instance driven by
-    /// two hosts would mean whichever asked second silently stopping the first
-    /// one's deliveries. So there is one instance, and each host hands the
-    /// images it receives to the other; whichever run is live feeds both.
     private lazy var thumbnails = RotationThumbnails(searchURLs: RepoLocation.searchURLs)
 
-    /// The gallery window, built on first use. Deliberately does not load until
-    /// it is shown.
-    @discardableResult
-    func rotationGallery() -> RotationWindowController {
-        if let rotation { return rotation }
-        let made = RotationWindowController(searchURLs: RepoLocation.searchURLs,
-                                            defaults: rotationDefaults, hidden: hidden,
-                                            thumbnails: thumbnails)
-        made.onOpen = { [weak self] entry in self?.openEntry(entry) }
-        made.onChange = { [weak self] selection in
-            self?.persistRotation(selection)
-            self?.picker?.showSelection(selection)
-        }
-        made.onImage = { [weak self] entry, image in self?.picker?.showImage(image, for: entry) }
-        made.showCurrent(currentEntry)
-        rotation = made
-        return made
-    }
-
-    /// Shader → Screensaver Rotation… (⌥⌘R), forwarded by the app delegate when
-    /// the gallery itself is key. The only entry point: the picker popover's
-    /// corner badges toggle the rotation, so the toolbar carries no button for
-    /// it, but Select All / Deselect All and the wider grid live only here.
-    @objc func showRotationGallery(_ sender: Any?) {
-        let gallery = rotationGallery()
-        gallery.load(shaders: metalView.shaderLibrary.discover())
-        gallery.showCurrent(currentEntry)
-        gallery.show()
-    }
-
-    /// The picker, built on first use.
+    /// The selector, built on first use.
     @discardableResult
     func shaderPicker() -> ShaderPicker {
         if let picker { return picker }
         let made = ShaderPicker(thumbnails: thumbnails)
         made.onOpen = { [weak self] entry in self?.openEntry(entry) }
-        // The "+" card at the head of the grid, which is where the toolbar's
-        // New… button went. Straight into the same action File → New Shader…
-        // (⌘N) sends, unsaved-edits prompt and all: a second way in must not
-        // become a second flow, or one of them will be the one that forgets to
-        // ask.
+        // The "+" card at the head of the grid. Straight into the same action
+        // File → New Shader… (⌘N) sends, unsaved-edits prompt and all: a second
+        // way in must not become a second flow, or one of them will be the one
+        // that forgets to ask.
         made.onNew = { [weak self] in self?.newShader(nil) }
         made.onChange = { [weak self] selection in
             self?.persistRotation(selection)
-            self?.rotation?.showSelection(selection)
-        }
-        made.onImage = { [weak self] entry, image in
-            self?.rotation?.gallery.show(image: image, for: entry)
+            self?.showRotationInInspector(selection)
         }
         picker = made
         return made
     }
 
-    /// The toolbar button, and the Shader menu's Open Look… item.
+    /// The toolbar button, and the Shader menu's Open Shader… item.
     @objc func showShaderPicker(_ sender: Any?) {
         preparePicker().present(from: shaderButton)
     }
@@ -1147,31 +1102,65 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                        current: currentEntry)
     }
 
-    /// A click in either grid changed the rotation. The one place the
-    /// playground writes it: through `RotationStore`, into the saver's own
-    /// ByHost domain, the moment you click. Each grid's callback then shows the
-    /// change in the *other* grid — not in its own, which already drew it and
-    /// would otherwise stop the preview under the pointer to redraw itself.
+    /// Shader → Regenerate Stills.
+    @objc func regenerateStills(_ sender: Any?) {
+        preparePicker().regenerate(shaders: metalView.shaderLibrary.discover())
+        setStatus("Redrawing every shader's still", tint: EditorTheme.dim)
+    }
+
+    /// What the screensaver plays, read fresh from the store.
+    private func storedSelection() -> LerpRotationSelection {
+        let entries = metalView.shaderLibrary.discover().rotationEntries()
+        return RotationStore.selection(discovered: entries, from: rotationDefaults)
+    }
+
+    /// The one place the playground writes the rotation: through
+    /// `RotationStore`, into the saver's own ByHost domain, the moment you
+    /// click. Both controls that change it — the selector's badges and the
+    /// inspector's ticks — come through here.
     private func persistRotation(_ selection: LerpRotationSelection) {
         RotationStore.save(selection, to: rotationDefaults)
     }
 
-    /// A Shortcuts action wrote the rotation (see `RotationIntents.swift`).
-    /// Both grids hold the selection in memory, so each is handed what is now
-    /// on disk — otherwise the next click in either would save its stale copy
-    /// straight over the action's change.
-    @objc private func rotationChangedElsewhere(_ note: Notification) {
-        let entries = metalView.shaderLibrary.discover().rotationEntries()
-        let selection = RotationStore.selection(discovered: entries, from: rotationDefaults)
-        rotation?.showSelection(selection)
-        picker?.showSelection(selection)
+    /// Ticks the inspector's Presets list from `selection`, or from the store.
+    private func showRotationInInspector(_ selection: LerpRotationSelection? = nil) {
+        guard !current.name.isEmpty else { return }
+        inspector.showRotation(selection ?? storedSelection(), shader: current.name)
     }
 
-    /// A shader was saved, or changed on disk. Both grids key their stills on
-    /// each shader's source, so handing them the fresh list is all it takes for
-    /// the edited shader's tiles — and only those — to be drawn again.
+    /// A tick in the inspector's Presets list. nil is the Defaults row.
+    ///
+    /// Refused, with the reason on the status line, when it would leave the
+    /// screensaver with nothing to play — the same floor the selector keeps.
+    /// Ticking a preset of a switched-off shader switches the shader back on;
+    /// that is `LerpRotationSelection.setLook`'s rule, not this one's.
+    func setPresetInRotation(_ preset: String?, _ on: Bool) {
+        let entry = LerpRotationEntry(shader: current.name, preset: preset)
+        let next = storedSelection().applying { $0.setLook(entry, on: on) }
+        guard !next.playable.isEmpty else {
+            NSSound.beep()
+            setStatus(RotationGalleryView.floorNote, tint: EditorTheme.dim)
+            return showRotationInInspector()
+        }
+        persistRotation(next)
+        showRotationInInspector(next)
+        picker?.showSelection(next)
+    }
+
+    /// A Shortcuts action wrote the rotation (see `RotationIntents.swift`).
+    /// The selector holds the selection in memory, so it is handed what is now
+    /// on disk — otherwise its next click would save its stale copy straight
+    /// over the action's change.
+    @objc private func rotationChangedElsewhere(_ note: Notification) {
+        let selection = storedSelection()
+        picker?.showSelection(selection)
+        showRotationInInspector(selection)
+    }
+
+    /// A shader was saved, or changed on disk. The selector keys its stills on
+    /// each shader's source, so handing it the fresh list is all it takes for
+    /// the edited shader's card — and only that one — to be drawn again.
     private func refreshRotation(_ shaders: [LerpShader]) {
-        rotation?.load(shaders: shaders)
         if let picker, picker.isShown { loadPicker(picker, shaders: shaders) }
     }
 
@@ -1432,11 +1421,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         } ?? PresetScaffold.inserting(declaration, into: editor.text)
         editor.replaceTextAsEdit(updated)
         guard writeBuffer() else { return false }
-        // `writeBuffer` has already re-read the directory and handed the fresh
-        // list to both grids, so the new look has a tile by the time we get
-        // here. Wearing it goes through the inspector's popup like every other
-        // preset change — that is what makes `currentPreset`, the toolbar
-        // button, the remembered look and both grids' current marks agree — and
+        // `writeBuffer` has already re-read the directory and recompiled, so
+        // the new preset has a row in the Presets list by the time we get
+        // here. Wearing it goes through that list like every other preset
+        // change — that is what makes `currentPreset`, the toolbar button, the
+        // remembered look and the selector's current mark agree — and
         // it is also the round trip proving itself in public: `writeBuffer`
         // recompiled the freshly written source before `applyPreset` reads the
         // updated preset, so a failed write cannot be reported as success.
@@ -1490,30 +1479,41 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         window?.makeFirstResponder(editor.textView)
     }
 
-    @objc func nextLook(_ sender: Any?) { step(1) }
-    @objc func previousLook(_ sender: Any?) { step(-1) }
+    @objc func nextShader(_ sender: Any?) { step(1) }
+    @objc func previousShader(_ sender: Any?) { step(-1) }
+    @objc func nextPreset(_ sender: Any?) { stepPreset(1) }
+    @objc func previousPreset(_ sender: Any?) { stepPreset(-1) }
 
-    /// Steps through *looks* — every (shader, preset) pair — in the order the
-    /// picker grid lists them, not through shader names. A shader's presets are
-    /// exactly the things worth flipping between to compare, and a walk over
-    /// names jumped past all of them: on a shader with six presets, five of its
-    /// seven looks were unreachable from the arrows.
+    /// Steps through shaders in the order the selector shows them, opening
+    /// each at its cover — the preset its card's picture shows, so the arrow
+    /// lands on what the card promised.
     ///
     /// Deliberately not `metalView.showNextShader` — that only swaps the
     /// pipeline, and the playground additionally has to prompt about unsaved
     /// edits and load the new file's source into the editor. It shares the
     /// wrap-around, which is the part that was worth having once.
     ///
-    /// Straight through `openEntry`, so this is the popover's click and nothing
-    /// beside it: it already refuses to re-open the look on screen — which is
-    /// what a one-look list wraps onto, and re-opening would throw away every
-    /// slider moved off it to arrive back where it started — and it already asks
-    /// about unsaved edits only when it is really going to discard them.
+    /// Straight through `openEntry`, so this is the card's click and nothing
+    /// beside it: it already refuses to re-open what is on screen — which is
+    /// what a one-shader list wraps onto — and it asks about unsaved edits only
+    /// when it is really going to discard them.
     private func step(_ direction: Int) {
-        let looks = metalView.shaderLibrary.discover().rotationEntries()
-        guard let next = ShaderLibrary.step(in: looks, after: currentEntry,
+        let shaders = metalView.shaderLibrary.discover()
+        guard let next = ShaderLibrary.step(in: shaders.map(\.name), after: current.name,
+                                            offset: direction),
+              let shader = shaders.named(next),
+              let cover = [shader].rotationEntries().first else { return }
+        openEntry(cover)
+    }
+
+    /// ⌥⌘[ / ⌥⌘]: the open shader's presets, in the order the Presets list
+    /// shows them.
+    private func stepPreset(_ direction: Int) {
+        guard let shader = compiled, shader.presetChoices.count > 1 else { return NSSound.beep() }
+        let names = shader.presetChoices
+        guard let next = ShaderLibrary.step(in: names, after: currentPreset,
                                             offset: direction) else { return }
-        openEntry(next)
+        inspector.choosePreset(next ?? LerpRotationEntry.defaultsName)
     }
 
     @objc func togglePlayPause(_ sender: Any?) {

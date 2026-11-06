@@ -52,7 +52,7 @@ enum RotationStore {
     }
 
     /// The saved rotation as something to ask and edit — the one spelling of
-    /// it the playground uses, so the gallery window and the toolbar popover
+    /// it the playground uses, so the selector and the inspector's Presets list
     /// cannot come up disagreeing about what is in.
     ///
     /// The policy is `LerpRotationSelection`'s; the cases it keeps:
@@ -103,7 +103,7 @@ enum RotationStore {
     // MARK: - One look at a time
 
     /// Posted after a write that did not come from a grid — a Shortcuts action
-    /// — so the gallery window and the picker popover, which hold the rotation
+    /// — so the selector and the Presets list, which hold the rotation
     /// in memory, show what is on disk instead of saving their stale copy over
     /// it on the next click.
     static let changedElsewhere = Notification.Name("LerpRotationChangedElsewhere")

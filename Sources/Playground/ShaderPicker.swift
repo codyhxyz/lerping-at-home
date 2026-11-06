@@ -1,51 +1,45 @@
 import AppKit
 
-/// The toolbar's shader picker: the same grid of stills the rotation gallery
-/// draws, in a popover hung off the button where a plain text dropdown used to be.
+/// The selector: the toolbar's shader button opens this popover, a Library of
+/// one card per shader.
 ///
-/// ## Why not keep the dropdown
+/// ## One job per control
 ///
-/// The dropdown listed 123 looks as 123 lines of text. Names are not what a look
-/// is — `voronoi/Molten` tells you nothing — and the gallery had already solved
-/// that problem next door with a picture per look. Two lists of the same thing,
-/// one of which you can actually read, is one too many.
+/// The playground navigates with three controls and each has one job:
 ///
-/// ## Why not merge it into the gallery either
+/// - **This popover** picks a shader, and switches whole shaders in or out of
+///   the screensaver (the badge on each card; All / None in the header).
+/// - **‹ ›** beside the button step to the previous or next shader without
+///   opening this.
+/// - **The inspector's Presets list** picks one of the open shader's presets,
+///   ticks each in or out of the screensaver, and saves new ones.
 ///
-/// They are different questions asked of the same set. The gallery asks *which
-/// of these should the screensaver shuffle through*; the picker asks *which one
-/// do I want to edit*. So this is the same tile component with its primary
-/// action inverted — a click opens, the corner badge toggles the rotation — and
-/// `RotationTile.Mode` is the whole of the difference. See the comment on that
-/// type for the reasoning; the short version is that each surface makes its own
-/// job one click and the other one deliberate.
+/// It used to be messier: every card had a "Looks" drawer of preset tiles,
+/// the arrows walked all ~280 shader×preset pairs, the inspector had its own
+/// preset popup, and a separate Rotation window drew the same grid with the
+/// click meaning "toggle" instead of "open". Four ways to the same presets, two
+/// meanings for one click. Shaders here, presets in the inspector.
 ///
-/// A look that is *out* of the rotation is drawn dimmed and opens on exactly the
-/// same click as any other. Not shuffling a look is no reason to be unable to
-/// edit it — quite the opposite, since the usual reason a look is out of the
-/// rotation is that you are still working on it.
+/// A shader that is *out* of the rotation is drawn dimmed and opens on exactly
+/// the same click as any other. Not shuffling a shader is no reason to be
+/// unable to edit it.
 ///
-/// ## What the dropdown did better, and is kept
+/// ## Typing
 ///
-/// Typing. A menu gives you type-select for free and a grid of pictures does
-/// not, so the popover opens with the caret already in the filter field and ⏎
-/// opens the first look still showing. That is `RotationGalleryView`'s doing —
-/// see `control(_:textView:doCommandBy:)` — and it is the reason the popover
-/// beats the carousel that was the other idea on the table: 123 items is too
-/// many to walk past one at a time, and a carousel has nowhere to type.
+/// A menu gives you type-select for free and a grid of pictures does not, so
+/// the popover opens with the caret already in the filter field and ⏎ opens the
+/// first card still showing. The filter matches preset names too, and a card
+/// found that way opens wearing the preset — see `RotationGalleryView`.
 ///
-/// ## Where New… went
+/// ## New…
 ///
-/// The editor toolbar's New… button is the first card in this grid — see
-/// `NewLookCard`. Asking for a shader that does not exist is what you do at the
-/// end of looking through the ones that do, and that search happens in here; a
-/// button on the bar behind the popover is a button you have to dismiss this to
-/// reach, having just proved you needed it. Nothing else changes: the card runs
-/// the same `newShader` the File menu's ⌘N runs, and it is not a look, so it
+/// The first card in the grid is "+": asking for a shader that does not exist
+/// is what you do at the end of looking through the ones that do. It runs the
+/// same `newShader` the File menu's ⌘N runs, and it is not a shader, so it
 /// never joins the rotation, the counts, or the arrows.
 final class ShaderPicker: NSObject, NSPopoverDelegate {
 
-    /// Narrower than the gallery window's tile, because this is a popover and
+    /// Narrower than the default card, because this is a popover and
     /// not a window: small enough that two or three shaders' groups sit side by
     /// side on a band, big enough that a still is still a picture of something.
     static let tileWidth: CGFloat = 96
@@ -53,21 +47,14 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
 
     let gallery = RotationGalleryView(
         frame: NSRect(origin: .zero, size: ShaderPicker.contentSize),
-        tileSize: RotationTile.size(width: ShaderPicker.tileWidth),
-        showsRegenerate: false,
-        mode: .picker)
+        tileSize: RotationTile.size(width: ShaderPicker.tileWidth))
 
-    /// Open this look in the editor.
+    /// Open this shader, wearing this preset, in the editor.
     var onOpen: ((LerpRotationEntry) -> Void)?
     /// The "+" card was clicked: make a shader there is no look for yet.
     var onNew: (() -> Void)?
-    /// The rotation was changed from here. The host writes it and tells the
-    /// gallery window, which is showing the same looks.
+    /// The rotation was changed from here. The host writes it.
     var onChange: ((LerpRotationSelection) -> Void)?
-    /// A still landed. See `RotationWindowController.onImage`: one
-    /// `RotationThumbnails` feeds both grids, so whichever run is live delivers
-    /// to both.
-    var onImage: ((LerpRotationEntry, NSImage) -> Void)?
 
     private let thumbnails: RotationThumbnails
     private let popover = NSPopover()
@@ -135,10 +122,20 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
         gallery.showCurrent(current)
         guard fingerprint != loadedFingerprint else { return }
         loadedFingerprint = fingerprint
-        gallery.populate(
-            using: thumbnails,
-            jobs: RotationThumbnails.jobs(for: shaders),
-            onImage: { [weak self] entry, image in self?.onImage?(entry, image) })
+        gallery.populate(using: thumbnails, jobs: RotationThumbnails.jobs(for: shaders))
+    }
+
+    /// Shader → Regenerate Stills: throws every still away and draws them
+    /// again, for when something the stills depend on changed outside the
+    /// shaders' own source — the prelude, the renderer.
+    func regenerate(shaders: [LerpShader]) {
+        thumbnails.evictAll()
+        gallery.clearImages()
+        loadedFingerprint = ""
+        loadedStamp = ""
+        gallery.show(shaders: shaders, selection: gallery.selection)
+        loadedFingerprint = RotationThumbnails.fingerprint(for: shaders)
+        gallery.populate(using: thumbnails, jobs: RotationThumbnails.jobs(for: shaders))
     }
 
     /// Someone else changed the rotation. Straight into the tiles; nothing goes
@@ -146,10 +143,6 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
     func showSelection(_ selection: LerpRotationSelection) {
         guard !gallery.entries.isEmpty else { return }
         gallery.show(shaders: gallery.shaders, selection: selection)
-    }
-
-    func showImage(_ image: NSImage, for entry: LerpRotationEntry) {
-        gallery.show(image: image, for: entry)
     }
 
     // MARK: - Presentation

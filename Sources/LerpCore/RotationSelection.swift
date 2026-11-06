@@ -67,7 +67,7 @@ public struct LerpRotationSelection: Equatable, Sendable {
     }
 
     /// The per-look choice on its own, ignoring the shader's switch: what a
-    /// shader's drawer shows, so a switched-off shader still shows which of its
+    /// card's "keeps 4 of 11" counts, so a switched-off shader still shows which of its
     /// looks would come back with it.
     public func isPicked(_ look: LerpRotationEntry) -> Bool {
         !disabled.contains(look)

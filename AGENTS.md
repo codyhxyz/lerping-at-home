@@ -83,7 +83,7 @@ this area came from having more than one of any of them.
   plays"; ask it rather than subtracting the set yourself, which would miss
   `shader/*`. `*` is a reserved preset name. `LerpPreview --rotation-selftest`
   (with `LERP_DEFAULTS_MODULE` set to a scratch domain) checks the model, the
-  schedule's per-shader airtime and the Library gallery.
+  schedule's per-shader airtime and the Library of shader cards.
 - **One writer.** LerpPlayground. The saver's Options… sheet shows the gallery
   read-only, because it runs sandboxed inside `legacyScreenSaver` and can only
   write Apple's container — not the file the saver reads.

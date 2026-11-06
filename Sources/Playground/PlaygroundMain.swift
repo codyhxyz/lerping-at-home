@@ -218,13 +218,6 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         return true
     }
-
-    /// The rotation gallery has a window of its own, so when *it* is key the
-    /// editor's window controller is not in the responder chain and the menu
-    /// item would grey out. NSApp asks its delegate last; this is that.
-    @objc func showRotationGallery(_ sender: Any?) {
-        controller?.showRotationGallery(sender)
-    }
 }
 
 // MARK: - `--capture`
@@ -373,13 +366,12 @@ enum MainMenu {
         ]))
 
         main.addItem(submenu("Shader", [
-            item("Open Look…", #selector(PlaygroundWindowController.showShaderPicker(_:)), "o"),
-            // Beside Open Look… because it is the same noun: one picks a look to
-            // edit, the other makes the edit into a look. ⇧⌘S is Save As
-            // everywhere on the platform and is what this is — the buffer's Save
-            // is ⌘S in the File menu, and this saves it *plus* a name for the
-            // values the file cannot otherwise remember.
-            item("Save Look as Preset…", #selector(PlaygroundWindowController.savePreset(_:)), "s",
+            item("Open Shader…", #selector(PlaygroundWindowController.showShaderPicker(_:)), "o"),
+            // ⇧⌘S is Save As everywhere on the platform and is what this is —
+            // the buffer's Save is ⌘S in the File menu, and this saves it *plus*
+            // a name for the values the file cannot otherwise remember. The
+            // Presets list's "+" sends the same action.
+            item("Save as Preset…", #selector(PlaygroundWindowController.savePreset(_:)), "s",
                  [.command, .shift]),
             .separator(),
             item("Recompile", Selector(("recompile:")), "r"),
@@ -397,8 +389,16 @@ enum MainMenu {
             item("Control with Hands",
                  #selector(PlaygroundWindowController.toggleHandControl(_:)), ""),
             .separator(),
-            item("Next Look", Selector(("nextLook:")), "]", [.command, .shift]),
-            item("Previous Look", Selector(("previousLook:")), "[", [.command, .shift]),
+            // Shaders on ⇧⌘, presets of the open shader on ⌥⌘: the toolbar's
+            // ‹ › and the inspector's Presets list, from the keyboard.
+            item("Next Shader", #selector(PlaygroundWindowController.nextShader(_:)), "]",
+                 [.command, .shift]),
+            item("Previous Shader", #selector(PlaygroundWindowController.previousShader(_:)), "[",
+                 [.command, .shift]),
+            item("Next Preset", #selector(PlaygroundWindowController.nextPreset(_:)), "]",
+                 [.command, .option]),
+            item("Previous Preset", #selector(PlaygroundWindowController.previousPreset(_:)), "[",
+                 [.command, .option]),
             .separator(),
             item("Jump to First Error", Selector(("jumpToFirstError")), "e"),
             .separator(),
@@ -406,8 +406,7 @@ enum MainMenu {
             item("Next MIDI Mapping", #selector(PlaygroundWindowController.nextMapping(_:)), "m",
                  [.command, .option]),
             .separator(),
-            item("Screensaver Rotation…", #selector(PlaygroundWindowController.showRotationGallery(_:)),
-                 "r", [.command, .option]),
+            item("Regenerate Stills", #selector(PlaygroundWindowController.regenerateStills(_:)), ""),
         ]))
 
         main.addItem(submenu("Window", [

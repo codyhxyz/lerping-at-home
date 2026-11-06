@@ -31,7 +31,7 @@ import Metal
 /// Shortcuts sees it. The identifier is `LerpRotationEntry.key`, the same
 /// string the `rotationState` record stores, so it round-trips exactly.
 struct LookEntity: AppEntity {
-    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Look"
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Preset"
     static let defaultQuery = LookQuery()
 
     var id: String
@@ -128,9 +128,9 @@ enum LookIntentError: Error, CustomLocalizedStringResourceConvertible {
         case .noLooks:
             return "LerpPlayground found no shaders, so there is no rotation to change."
         case let .unknownLook(key):
-            return "There is no look called \(key) any more."
+            return "There is no preset called \(key) any more."
         case let .lastLook(key):
-            return "\(key) is the last look in the rotation. The rotation must keep at least one look."
+            return "\(key) is the last preset in the rotation. The rotation must keep at least one preset."
         case let .notSaved(key):
             return "The rotation could not be saved, so \(key) was not changed."
         }
@@ -140,11 +140,11 @@ enum LookIntentError: Error, CustomLocalizedStringResourceConvertible {
 // MARK: - Intents
 
 struct AddLookToRotationIntent: AppIntent {
-    static let title: LocalizedStringResource = "Add Look to Rotation"
+    static let title: LocalizedStringResource = "Add Preset to Rotation"
     static let description = IntentDescription(
-        "Puts a look back into the Lerping@Home screensaver's shuffle rotation.")
+        "Puts a preset back into the Lerping@Home screensaver's shuffle rotation.")
 
-    @Parameter(title: "Look")
+    @Parameter(title: "Preset")
     var look: LookEntity
 
     static var parameterSummary: some ParameterSummary {
@@ -163,11 +163,11 @@ struct AddLookToRotationIntent: AppIntent {
 }
 
 struct RemoveLookFromRotationIntent: AppIntent {
-    static let title: LocalizedStringResource = "Remove Look from Rotation"
+    static let title: LocalizedStringResource = "Remove Preset from Rotation"
     static let description = IntentDescription(
-        "Switches a look off in the Lerping@Home screensaver's shuffle rotation. The last look cannot be removed.")
+        "Switches a preset off in the Lerping@Home screensaver's shuffle rotation. The last preset cannot be removed.")
 
-    @Parameter(title: "Look")
+    @Parameter(title: "Preset")
     var look: LookEntity
 
     static var parameterSummary: some ParameterSummary {
@@ -190,18 +190,18 @@ enum LookFilter: String, AppEnum {
     case inRotation
     case switchedOff
 
-    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Which Looks"
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Which Presets"
     static let caseDisplayRepresentations: [LookFilter: DisplayRepresentation] = [
-        .all: "All Looks",
+        .all: "All Presets",
         .inRotation: "In the Rotation",
         .switchedOff: "Switched Off",
     ]
 }
 
 struct ListLooksIntent: AppIntent {
-    static let title: LocalizedStringResource = "List Looks"
+    static let title: LocalizedStringResource = "List Presets"
     static let description = IntentDescription(
-        "Lists the Lerping@Home looks — every shader and preset — and whether each is in the screensaver rotation.")
+        "Lists the Lerping@Home presets of every shader, and whether each is in the screensaver rotation.")
 
     @Parameter(title: "Which", default: .all)
     var filter: LookFilter
@@ -226,16 +226,16 @@ struct ListLooksIntent: AppIntent {
 struct LerpShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: AddLookToRotationIntent(),
-                    phrases: ["Add a look to the \(.applicationName) rotation"],
+                    phrases: ["Add a preset to the \(.applicationName) rotation"],
                     shortTitle: "Add to Rotation",
                     systemImageName: "plus.circle")
         AppShortcut(intent: RemoveLookFromRotationIntent(),
-                    phrases: ["Remove a look from the \(.applicationName) rotation"],
+                    phrases: ["Remove a preset from the \(.applicationName) rotation"],
                     shortTitle: "Remove from Rotation",
                     systemImageName: "minus.circle")
         AppShortcut(intent: ListLooksIntent(),
-                    phrases: ["List \(.applicationName) looks"],
-                    shortTitle: "List Looks",
+                    phrases: ["List \(.applicationName) presets"],
+                    shortTitle: "List Presets",
                     systemImageName: "square.grid.3x3")
     }
 }

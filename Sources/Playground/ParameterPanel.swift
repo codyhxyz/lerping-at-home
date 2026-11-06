@@ -23,8 +23,15 @@ extension NSColor {
     }
 }
 
-/// The inspector: one stock control per `// lerp-param:` the open shader
-/// declares, plus a popup for its `// lerp-preset:` blocks.
+/// The inspector: the open shader's Presets list over one stock control per
+/// `// lerp-param:` it declares.
+///
+/// The Presets list is the one place a shader's presets are handled. A row's
+/// name applies it; its tick says whether it plays in the screensaver; "+"
+/// saves the values on screen as a new one. Shaders as a whole are picked and
+/// switched in the toolbar's selector — presets used to be reachable from
+/// there too, and from a popup here, and from the arrows, which was three ways
+/// to do one thing.
 ///
 /// Everything here is built from `LerpShader.parameters` at rebuild time. There
 /// is no per-shader knowledge in this file and no table of names — a shader that
@@ -36,6 +43,11 @@ final class ParameterPanel: NSView {
     var onChange: ((String, LerpParamValue) -> Void)?
     /// A preset was picked. nil is the "Defaults" entry.
     var onPreset: ((String?) -> Void)?
+    /// A preset's tick was clicked: put it in (`true`) or take it out of the
+    /// screensaver. nil is the "Defaults" entry.
+    var onPresetRotation: ((String?, Bool) -> Void)?
+    /// The Presets list's "+": save the values on screen as a preset.
+    var onSavePreset: (() -> Void)?
     /// A row's MIDI menu was used. The component is nil for everything that is
     /// not a colour, and names the axis for the ones that are.
     var onMIDICommand: ((String, ColorComponent?, MIDICommand) -> Void)?
@@ -55,7 +67,16 @@ final class ParameterPanel: NSView {
 
     private(set) var parameters: [LerpParam] = []
 
-    private let presetPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// The Presets list. One row per preset, "Defaults" (nil) first.
+    private let presetStack = NSStackView()
+    private let presetScroll = NSScrollView()
+    private var presetHeight: NSLayoutConstraint!
+    private var presetRows: [PresetRow] = []
+    private let presetNote = Chrome.label("", size: 10.5)
+    /// The preset the render is wearing; nil is Defaults.
+    private var markedPreset: String?
+    private static let presetRowHeight: CGFloat = 22
+    private static let presetRowsShown = 7
     private let scroll = NSScrollView()
     private let rowStack = NSStackView()
     private let empty = Chrome.label("", size: 11.5)
@@ -94,11 +115,25 @@ final class ParameterPanel: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        presetPopUp.controlSize = .small
-        presetPopUp.font = .systemFont(ofSize: 11)
-        presetPopUp.target = self
-        presetPopUp.action = #selector(presetChanged)
-        presetPopUp.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        presetStack.orientation = .vertical
+        presetStack.alignment = .width
+        presetStack.spacing = 0
+        presetStack.edgeInsets = NSEdgeInsets(top: 2, left: 6, bottom: 2, right: 6)
+        presetStack.translatesAutoresizingMaskIntoConstraints = false
+        presetStack.identifier = NSUserInterfaceItemIdentifier("preset-list")
+        presetScroll.contentView = TopClipView()
+        presetScroll.documentView = presetStack
+        presetScroll.hasVerticalScroller = true
+        presetScroll.autohidesScrollers = true
+        presetScroll.drawsBackground = true
+        presetScroll.backgroundColor = EditorTheme.background
+        presetScroll.borderType = .noBorder
+        presetHeight = presetScroll.heightAnchor.constraint(equalToConstant: Self.presetRowHeight + 4)
+        presetHeight.isActive = true
+        presetNote.identifier = NSUserInterfaceItemIdentifier("preset-note")
+        presetNote.maximumNumberOfLines = 2
+        presetNote.lineBreakMode = .byWordWrapping
+        presetNote.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
         rowStack.orientation = .vertical
         rowStack.alignment = .width
@@ -122,8 +157,17 @@ final class ParameterPanel: NSView {
         empty.lineBreakMode = .byWordWrapping
         empty.maximumNumberOfLines = 0
 
-        let body = Chrome.pane([Chrome.bar([Chrome.label("Preset"), presetPopUp,
-                                            Chrome.flexible()], height: 32),
+        let heading = Chrome.label("Presets", size: 11, color: EditorTheme.text)
+        heading.font = .systemFont(ofSize: 11, weight: .semibold)
+        let add = Chrome.button("+", target: self, action: #selector(addPreset))
+        add.toolTip = "Save the values on screen as a new preset (⇧⌘S)"
+        add.identifier = NSUserInterfaceItemIdentifier("preset-add")
+        let parametersHeading = Chrome.label("Parameters", size: 11, color: EditorTheme.text)
+        parametersHeading.font = .systemFont(ofSize: 11, weight: .semibold)
+        let body = Chrome.pane([Chrome.bar([heading, Chrome.flexible(), add], height: 30),
+                                presetScroll,
+                                Chrome.bar([presetNote, Chrome.flexible()], height: 26),
+                                Chrome.bar([parametersHeading, Chrome.flexible()], height: 26),
                                 scroll])
         body.translatesAutoresizingMaskIntoConstraints = false
         addSubview(body)
@@ -132,6 +176,9 @@ final class ParameterPanel: NSView {
             body.bottomAnchor.constraint(equalTo: bottomAnchor),
             body.leadingAnchor.constraint(equalTo: leadingAnchor),
             body.trailingAnchor.constraint(equalTo: trailingAnchor),
+            presetStack.topAnchor.constraint(equalTo: presetScroll.contentView.topAnchor),
+            presetStack.leadingAnchor.constraint(equalTo: presetScroll.contentView.leadingAnchor),
+            presetStack.trailingAnchor.constraint(equalTo: presetScroll.contentView.trailingAnchor),
             rowStack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             rowStack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             rowStack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
@@ -150,11 +197,7 @@ final class ParameterPanel: NSView {
         rows.removeAll()
         rowStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
-        presetPopUp.removeAllItems()
-        presetPopUp.addItem(withTitle: LerpRotationEntry.defaultsName)
-        for preset in shader?.presets ?? [] { presetPopUp.addItem(withTitle: preset.name) }
-        presetPopUp.selectItem(at: 0)
-        presetPopUp.isEnabled = !(shader?.presets.isEmpty ?? true)
+        buildPresets(shader)
 
         guard !parameters.isEmpty else {
             empty.stringValue = shader.map {
@@ -327,20 +370,86 @@ final class ParameterPanel: NSView {
             : "Held. Click to let it drift \(range) again."
     }
 
-    /// Puts the popup on `name` without applying anything — the display half of
-    /// `choosePreset`, for when the values are already right and only the label
+    /// Marks `name` without applying anything — the display half of
+    /// `choosePreset`, for when the values are already right and only the mark
     /// is behind.
     ///
-    /// `rebuild` throws the popup away and leaves it on "Defaults", so without
-    /// this every recompile that changes a declaration would leave the control
-    /// claiming the shader is at its defaults while the render, the toolbar
-    /// button and both grids say it is wearing a preset. A name the rebuilt
-    /// popup no longer lists falls back to "Defaults", which by then is the
-    /// truth: a preset the file stopped declaring is not being rendered either.
+    /// `rebuild` throws the list away and marks "Defaults", so without this
+    /// every recompile that changes a declaration would leave the list claiming
+    /// the shader is at its defaults while the render and the toolbar button
+    /// say it is wearing a preset. A name the rebuilt list no longer has falls
+    /// back to "Defaults", which by then is the truth: a preset the file stopped
+    /// declaring is not being rendered either.
     func showPreset(_ name: String?) {
-        let index = name.map { presetPopUp.indexOfItem(withTitle: $0) } ?? 0
-        presetPopUp.selectItem(at: index >= 0 ? index : 0)
+        markedPreset = presetRows.contains { $0.preset == name } ? name : nil
+        presetRows.forEach { $0.isMarked = $0.preset == markedPreset }
     }
+
+    /// Ticks each row from the screensaver's rotation.
+    ///
+    /// The tick is what *plays*, so a shader switched off in the selector shows
+    /// every box empty — with the note saying why, and that a tick brings it
+    /// back. A row whose look is not on disk (an unsaved preset, or Defaults
+    /// when a named preset draws the same picture) has no tick at all. The last
+    /// thing playing cannot be unticked, here as in the selector.
+    func showRotation(_ selection: LerpRotationSelection, shader: String) {
+        let discovered = Set(selection.discovered)
+        let playing = selection.playable
+        for row in presetRows {
+            let entry = LerpRotationEntry(shader: shader, preset: row.preset)
+            let exists = discovered.contains(entry)
+            let plays = selection.plays(entry)
+            // Invisible rather than hidden, so the names stay in one column.
+            row.tick.alphaValue = exists ? 1 : 0
+            row.tick.state = plays ? .on : .off
+            let last = plays && playing.count == 1
+            row.tick.isEnabled = !last
+            row.tick.toolTip = !exists
+                ? nil
+                : last ? "The screensaver needs at least one preset, and this is the last."
+                : plays ? "Plays in the screensaver. Click to take it out."
+                : "Not in the screensaver. Click to put it in."
+        }
+        if !presetRows.contains(where: { $0.tick.alphaValue > 0 }) {
+            presetNote.stringValue = "Save the shader to put it in the screensaver."
+        } else if selection.isSwitchedOff(shader) {
+            presetNote.stringValue = "This shader is switched off in the selector. "
+                + "Tick a preset to switch it back on."
+        } else {
+            let looks = selection.looks(of: shader)
+            presetNote.stringValue = "Ticked presets play in the screensaver: "
+                + "\(looks.filter(selection.plays).count) of \(looks.count)."
+        }
+    }
+
+    /// One row per preset, "Defaults" first, sized to show up to
+    /// `presetRowsShown` before the list scrolls.
+    private func buildPresets(_ shader: LerpShader?) {
+        presetRows.forEach { $0.removeFromSuperview() }
+        presetRows = []
+        markedPreset = nil
+        guard let shader else { return }
+        let names = shader.presetChoices
+        for name in names {
+            let row = PresetRow(preset: name)
+            row.onApply = { [weak self] in self?.choose(name) }
+            row.onTick = { [weak self] on in self?.onPresetRotation?(name, on) }
+            row.isMarked = name == nil
+            presetStack.addArrangedSubview(row)
+            row.heightAnchor.constraint(equalToConstant: Self.presetRowHeight).isActive = true
+            presetRows.append(row)
+        }
+        let shown = min(names.count, Self.presetRowsShown)
+        presetHeight.constant = CGFloat(shown) * Self.presetRowHeight + 4
+        presetNote.stringValue = ""
+    }
+
+    private func choose(_ name: String?) {
+        showPreset(name)
+        onPreset?(markedPreset)
+    }
+
+    @objc private func addPreset() { onSavePreset?() }
 
     private func format(_ value: Double, _ param: LerpParam) -> String {
         param.type == .int ? String(Int(value.rounded())) : String(format: "%.3g", value)
@@ -514,19 +623,16 @@ final class ParameterPanel: NSView {
         onAnimate?(name, sender.state == .on)
     }
 
-    @objc private func presetChanged() {
-        onPreset?(presetPopUp.indexOfSelectedItem <= 0 ? nil : presetPopUp.titleOfSelectedItem)
-    }
-
     @objc private func midiCommand(_ sender: NSMenuItem) {
         guard let box = sender.representedObject as? MIDICommandBox else { return }
         onMIDICommand?(box.name, box.component, box.command)
     }
 
-    /// Selects a preset after Save Look has written and re-read it.
+    /// Applies a preset by name — "Defaults" for none — and marks it: after
+    /// Save as Preset has written and re-read it, when a look is opened wearing
+    /// one, and for ⌥⌘[ / ⌥⌘].
     func choosePreset(_ title: String) {
-        presetPopUp.selectItem(withTitle: title)
-        presetChanged()
+        choose(title == LerpRotationEntry.defaultsName ? nil : title)
     }
 }
 
@@ -538,4 +644,88 @@ extension ParameterPanel: NSMenuDelegate {
         guard let row = rows[menu.title] else { return }
         populate(menu, row: row)
     }
+}
+
+extension LerpShader {
+    /// What the Presets list offers and ⌥⌘[ / ⌥⌘] step through: "Defaults"
+    /// (nil) and then each declared preset — except that Defaults is left out
+    /// when a named preset already draws the same picture, exactly as the
+    /// rotation leaves it out (`rotationEntries`), so the list and the
+    /// screensaver agree about how many presets a shader has.
+    var presetChoices: [String?] {
+        let defaults = LerpRotationEntry(shader: name)
+        let hasDefaults = presets.isEmpty || [self].rotationEntries().contains(defaults)
+        return (hasDefaults ? [nil] : []) + presets.map(\.name)
+    }
+}
+
+/// One row of the Presets list: a tick for the screensaver, and the name, which
+/// applies the preset when clicked. The row the render is wearing is marked.
+private final class PresetRow: NSView {
+    let preset: String?
+    let tick = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let name = NSButton()
+    var onApply: (() -> Void)?
+    var onTick: ((Bool) -> Void)?
+    private static let accent = NSColor(srgbRed: 0.36, green: 0.69, blue: 1.0, alpha: 1)
+
+    var isMarked = false {
+        didSet {
+            layer?.backgroundColor = isMarked ? Self.accent.withAlphaComponent(0.16).cgColor : nil
+            styleName()
+        }
+    }
+
+    init(preset: String?) {
+        self.preset = preset
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        identifier = NSUserInterfaceItemIdentifier("preset:" + (preset ?? LerpRotationEntry.defaultsName))
+
+        tick.controlSize = .small
+        tick.target = self
+        tick.action = #selector(ticked)
+        tick.identifier = NSUserInterfaceItemIdentifier("preset-tick")
+        tick.alphaValue = 0
+        tick.setContentHuggingPriority(.required, for: .horizontal)
+
+        name.isBordered = false
+        name.alignment = .left
+        name.target = self
+        name.action = #selector(applied)
+        name.cell?.lineBreakMode = .byTruncatingTail
+        name.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        name.toolTip = "Wear this preset"
+        styleName()
+
+        let stack = NSStackView(views: [tick, name, NSView()])
+        stack.orientation = .horizontal
+        stack.spacing = 4
+        stack.alignment = .centerY
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func styleName() {
+        name.attributedTitle = NSAttributedString(
+            string: preset ?? LerpRotationEntry.defaultsName,
+            attributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: isMarked ? .semibold : .regular),
+                         .foregroundColor: isMarked ? Self.accent : EditorTheme.text])
+    }
+
+    /// Anywhere on the row but the tick applies the preset, not just the text.
+    override func mouseDown(with event: NSEvent) { onApply?() }
+
+    @objc private func applied() { onApply?() }
+    @objc private func ticked() { onTick?(tick.state == .on) }
 }

@@ -104,7 +104,7 @@ on top of the *defaults*, so anything it doesn't mention returns to its
 declared default. Setting a parameter the file doesn't declare is an error.
 
 You don't have to type one. Get the look you want on the playground's sliders
-and **Shader → Save Look as Preset…** (`⇧⌘S`) writes exactly this form back into
+and **Shader → Save as Preset…** (`⇧⌘S`) writes exactly this form back into
 the file — only the parameters you moved off their defaults. A new name is
 appended after existing presets; reusing a name replaces that preset in place.
 

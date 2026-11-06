@@ -600,8 +600,7 @@ public final class LerpSaverView: ScreenSaverView {
         // true by construction rather than by merge.
         let gallery = RotationGalleryView(
             frame: NSRect(x: 0, y: 0, width: Self.sheetWidth - 40, height: Self.sheetGalleryHeight),
-            tileSize: RotationTile.size(width: Self.sheetTileWidth),
-            showsRegenerate: false)
+            tileSize: RotationTile.size(width: Self.sheetTileWidth))
         gallery.translatesAutoresizingMaskIntoConstraints = false
         gallery.wantsLayer = true
         gallery.layer?.cornerRadius = 6
