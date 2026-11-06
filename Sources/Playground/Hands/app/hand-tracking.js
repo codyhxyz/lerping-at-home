@@ -234,6 +234,13 @@ export function createHandTracking({ video, onInput, onStatus = () => {}, onFeed
   let lastVideoTime = -1;
   let lastState = '';
   let running = false;
+  // Camera open and the landmarker loaded. Until then a visibility change has
+  // nothing to resume: `handleActivity` used to set `running` and schedule a
+  // frame while `enable` was still awaiting, the frame loop died on the missing
+  // worker (or the worker dropped frames it could not yet read, never replying,
+  // so `workerBusy` stuck), and `enable`'s own `handleActivity` then found
+  // `running` already matching and did nothing. "Looking for hand", forever.
+  let ready = false;
 
   const feedbackById = new Map();
   const controllers = new Map(['left', 'right'].map((handedness) => {
@@ -259,14 +266,17 @@ export function createHandTracking({ video, onInput, onStatus = () => {}, onFeed
 
     enabled = true;
     generation += 1;
+    const startedAs = generation;
     lastState = '';
     running = false;
+    ready = false;
     onStatus('Starting…', true);
 
     try {
-      await openCamera(deviceId);
+      await openCamera(deviceId, startedAs);
       await ensureWorker();
-      if (!enabled) return false;
+      if (!enabled || generation !== startedAs) return false;
+      ready = true;
       handleActivity();
       return true;
     } catch (error) {
@@ -289,6 +299,7 @@ export function createHandTracking({ video, onInput, onStatus = () => {}, onFeed
 
   function stopTracking() {
     enabled = false;
+    ready = false;
     generation += 1;
     running = false;
     stopLoop();
@@ -312,9 +323,9 @@ export function createHandTracking({ video, onInput, onStatus = () => {}, onFeed
     onStatus(STATUS[state], true);
   }
 
-  async function openCamera(deviceId) {
+  async function openCamera(deviceId, startedAs) {
     closeCamera();
-    stream = await navigator.mediaDevices.getUserMedia({
+    const opened = await navigator.mediaDevices.getUserMedia({
       video: {
         ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'user' }),
         width: { ideal: 640 },
@@ -323,6 +334,14 @@ export function createHandTracking({ video, onInput, onStatus = () => {}, onFeed
       },
       audio: false,
     });
+    // Stopped, or restarted on another camera, while the permission prompt or
+    // the device was answering: this stream belongs to nobody, so close it
+    // rather than leave the camera light on behind the one that replaced it.
+    if (startedAs !== generation) {
+      opened.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    stream = opened;
     video.srcObject = stream;
     await video.play();
     lastVideoTime = -1;
@@ -398,7 +417,7 @@ export function createHandTracking({ video, onInput, onStatus = () => {}, onFeed
   }
 
   function handleActivity(active = isPageActive()) {
-    if (!enabled) return;
+    if (!enabled || !ready) return;
     if (running === active) return;
     running = active;
     stream?.getTracks().forEach((track) => { track.enabled = active; });

@@ -37,6 +37,13 @@ result() { # the one stdout line the playground parses
     echo "$line"
 }
 
+# A lock older than any run can last (one 300 s download plus the API call)
+# belongs to a run that died without its EXIT trap — SIGKILL, power loss — and
+# would otherwise make every later check "already running", forever.
+if [ -d "$LOCK" ] && [ -n "$(find "$LOCK" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
+    say "removing a stale update lock left by a run that never finished"
+    rmdir "$LOCK" 2>/dev/null || true
+fi
 if ! mkdir "$LOCK" 2>/dev/null; then
     say "another update is already running; skipping"
     result skipped REASON="another update already running"
@@ -76,6 +83,32 @@ fi
 
 if [ -n "$INSTALLED" ] && [ "$INSTALLED" = "$TAG" ]; then
     say "up to date ($INSTALLED)"
+    result up-to-date BUILD="$INSTALLED"
+    exit 0
+fi
+# Only a release replaces a release. `make saver` stamps `git describe --always
+# --dirty` — a bare hash, `<tag>-<n>-g<hash>`, or either with `-dirty` — and
+# that build is the developer's deploy, not something out of date. Comparing
+# for equality alone read every one of those as "behind the latest release" and
+# would have swapped the release in 15 s after the playground launched, undoing
+# the deploy and then doing it again every four hours.
+case "$INSTALLED" in
+    ""|v*) ;;
+    *) INSTALLED_LOCAL=1 ;;
+esac
+case "$INSTALLED" in
+    *-dirty|*-g[0-9a-f]*) INSTALLED_LOCAL=1 ;;
+esac
+if [ "${INSTALLED_LOCAL:-0}" = 1 ]; then
+    say "installed saver is a local build ($INSTALLED), not a release; leaving it alone"
+    result skipped REASON="installed saver is a local build ($INSTALLED)"
+    exit 0
+fi
+# A different release is not necessarily a newer one: tags are
+# vYYYY.MM.DD.HHMM, so version order is time order.
+if [ -n "$INSTALLED" ] \
+    && [ "$(printf '%s\n%s\n' "$INSTALLED" "$TAG" | sort -V | tail -n 1)" = "$INSTALLED" ]; then
+    say "installed $INSTALLED is newer than the latest release $TAG; leaving it alone"
     result up-to-date BUILD="$INSTALLED"
     exit 0
 fi

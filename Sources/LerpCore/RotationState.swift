@@ -299,16 +299,41 @@ public enum LerpRotation {
         var disabled = LerpRotationSelection(discovered: discovered,
                                              disabled: state.disabled).disabled
 
+        let listed = Set(discovered)
         for (shader, presets) in now {
             // Rename detection needs something to align against. A shader with
             // no roster entry is one nobody has catalogued, so its looks are new
             // — except for any the line above already carried, which were named
             // explicitly and are not new to anyone.
             guard let before = state.roster[shader] else { continue }
-            for pair in renamePairs(from: before, to: presets) {
+            let pairs = renamePairs(from: before, to: presets)
+            for pair in pairs {
                 guard state.disabled.contains(LerpRotationEntry(shader: shader, preset: pair.old))
                 else { continue }
                 disabled.insert(LerpRotationEntry(shader: shader, preset: pair.new))
+            }
+
+            // The Defaults look is a rename too, of a kind the roster cannot
+            // see. `rotationEntries` stops listing a shader's Defaults once a
+            // named preset renders the same look, because the name is the more
+            // useful label for it. So a user who switched Defaults off and then
+            // saved those values as "Classic" had their bare `shader` key
+            // dropped (nothing called that is on disk any more) while
+            // "Classic", being new, joined the rotation — the look they had
+            // switched off, back on screen under another name.
+            //
+            // The roster does not say which new name is the stand-in, so every
+            // name that appeared since it was written inherits the off: a
+            // preset that merely arrived in the same edit sits out with it,
+            // which is the side to err on. A preset that was already declared
+            // and has since been edited into the defaults keeps its own,
+            // explicit, opinion.
+            let defaults = LerpRotationEntry(shader: shader)
+            if state.disabled.contains(defaults), !listed.contains(defaults) {
+                let renamed = Set(pairs.map(\.new))
+                for preset in presets where !before.contains(preset) && !renamed.contains(preset) {
+                    disabled.insert(LerpRotationEntry(shader: shader, preset: preset))
+                }
             }
         }
 

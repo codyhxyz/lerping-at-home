@@ -16,6 +16,10 @@ import Foundation
 ///   shader by a preset's name and opens it wearing that preset, and the floor
 ///   still holds.
 ///
+/// - A view that was pinned and is set back to Shuffle while stopped — the
+///   saver's order of events, on a view `legacyScreenSaver` reuses — resumes
+///   the schedule; and a pin naming a shader that is not on disk is no pin.
+///
 /// Writes only a scratch defaults domain, never the user's rotation.
 enum RotationSelfTest {
 
@@ -30,6 +34,7 @@ enum RotationSelfTest {
         schedule(check)
         reserved(check)
         gallery(extraSearch, check)
+        pins(extraSearch, check)
         if let dir = ProcessInfo.processInfo.environment["LERP_GALLERY_SNAPSHOT"] {
             snapshot(extraSearch, to: URL(fileURLWithPath: dir))
         }
@@ -135,6 +140,22 @@ enum RotationSelfTest {
                                            in: LerpRotation.read(defaults, discovered: renamed))
         check(!after.isPicked(look("many", "Four")) && after.isSwitchedOff("pair"),
               "a renamed preset keeps its opinion and shader/* survives reconciling")
+
+        // Defaults switched off, then saved as a preset that renders the same
+        // look: `rotationEntries` lists the preset in place of Defaults, and the
+        // off has to follow it there rather than fall on the floor.
+        var noDefaults = LerpRotationSelection(discovered: fixture)
+        noDefaults.setLook(look("pair"), on: false)
+        LerpRotation.write(noDefaults, writer: "selftest", to: defaults)
+        let absorbed = fixture.filter { $0 != look("pair") } + [look("pair", "Classic")]
+        let standIn = LerpRotation.selection(discovered: absorbed,
+                                             in: LerpRotation.read(defaults, discovered: absorbed))
+        check(!standIn.plays(look("pair", "Classic")) && standIn.plays(look("pair", "Other")),
+              "a preset standing in for a switched-off Defaults look stays off; the shader's others play")
+        let carried = LerpRotation.write(standIn, writer: "selftest", to: defaults)
+        check(!LerpRotation.selection(discovered: absorbed, in: LerpRotation.read(defaults, discovered: absorbed))
+                .plays(look("pair", "Classic")) && carried.disabled.contains(look("pair", "Classic")),
+              "the stand-in's off survives the next write")
     }
 
     // MARK: - Schedule
@@ -231,6 +252,68 @@ enum RotationSelfTest {
         view.setFilter("Day")
         save("search.png")
         print("wrote \(dir.path)/library.png, search.png")
+    }
+
+    // MARK: - Pins
+
+    static func pins(_ extraSearch: [URL], _ check: (Bool, @autoclosure () -> String) -> Void) {
+        guard let view = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 160, height: 100),
+                                       extraSearchURLs: extraSearch) else {
+            return check(false, "pins: no Metal device")
+        }
+        // Three cheap 2D shaders, one look each, so the schedule has somewhere
+        // to go and the test compiles three pipelines rather than a library.
+        let wanted = ["spiral", "warp", "dot-grid", "waves", "swirl"]
+        let entries = view.shaderLibrary.discover().rotationEntries()
+        var looks: [LerpRotationEntry] = []
+        for name in wanted {
+            if let look = entries.first(where: { $0.shader == name }) { looks.append(look) }
+            if looks.count == 3 { break }
+        }
+        guard looks.count == 3 else { return check(false, "pins: need three of \(wanted) on disk") }
+
+        var shuffle = LerpMetalView.Config(shuffleInterval: 300)
+        shuffle.enabledEntries = Set(looks)
+        func due() -> LerpRotationEntry {
+            let r = LerpRotationSchedule.rotation(view.rotationNow, at: Date(), interval: 300)
+            return r.order[r.index]
+        }
+        view.config = shuffle
+        let pin = looks.first { $0 != due() }!
+        // Once a view has a pipeline, the next look compiles off the main
+        // thread and lands on it later; give it the time a real switch takes.
+        func settles(on want: @autoclosure () -> LerpRotationEntry) -> Bool {
+            let deadline = Date().addingTimeInterval(10)
+            while view.currentEntry != want(), Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            }
+            return view.currentEntry == want()
+        }
+
+        // Pinned for a session, then Shuffle chosen in Options…: the saver
+        // assigns the new config to the stopped view, then starts it.
+        var pinned = shuffle
+        pinned.shaderName = pin.shader
+        pinned.presetName = pin.preset
+        view.config = pinned
+        view.start()
+        check(view.currentEntry == pin, "pins: a pinned view shows its pin (\(String(describing: view.currentEntry)))")
+        view.stop()
+        view.config = shuffle
+        view.start()
+        check(settles(on: due()),
+              "pins: back to Shuffle, the next session plays what is due (\(due())), not the old pin "
+              + "(\(String(describing: view.currentEntry)))")
+        view.stop()
+
+        // A pin whose shader is not on disk shuffles rather than freezing.
+        var gone = shuffle
+        gone.shaderName = "no-such-shader-\(getpid())"
+        view.config = gone
+        view.start()
+        check(!view.rotationNow.isEmpty && settles(on: due()),
+              "pins: a pin to a missing shader is no pin — the rotation plays (\(view.rotationNow.count) looks)")
+        view.stop()
     }
 
     // MARK: - Gallery

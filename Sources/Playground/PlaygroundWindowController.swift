@@ -1233,6 +1233,21 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     private func writeBuffer() -> Bool {
         let url = ShaderPaths.saveURL(for: current)
+        // The file changed on disk while this buffer had edits — a pull, a
+        // fast-forward of this checkout, another editor. `pollDisk` will not
+        // reload over unsaved edits, so without this ⌘S silently wrote the
+        // buffer over whatever had landed.
+        if url == current.url,
+           let onDisk = try? String(contentsOf: url, encoding: .utf8),
+           onDisk != current.source, onDisk != editor.text {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "\(url.lastPathComponent) changed on disk since you opened it."
+            alert.informativeText = "Saving replaces the version on disk with yours."
+            alert.addButton(withTitle: "Save Anyway")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
@@ -1703,9 +1718,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// are made only when the string actually changed.
     ///
     /// The title's dot stays the *text's*: it is the file's name that is in the
-    /// title bar, and `isDocumentEdited` is the flag the close prompt reads —
-    /// and that prompt deliberately does not fire over moved sliders, because
-    /// browsing looks with the inspector open would then question every step.
+    /// title bar. `isDocumentEdited` follows everything unsaved, because that is
+    /// what closing the window asks about; switching looks still asks about the
+    /// text alone, so browsing with the inspector open is not questioned at
+    /// every step.
     private func updateChrome() {
         let dirty = isDirty, unsaved = hasUnsavedChanges
         saveButton.isEnabled = unsaved
@@ -1717,7 +1733,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         updateShaderButton()
         let title = "Lerping@Home Playground — \(current.name)\(dirty ? " •" : "")" + Self.repoSuffix
         if window?.title != title { window?.title = title }
-        window?.isDocumentEdited = dirty
+        // What the close prompt asks about, so the dot in the close button
+        // and the question it leads to agree.
+        window?.isDocumentEdited = unsaved
     }
 
     private func startTimers() {
@@ -1764,20 +1782,31 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Prompts and window lifecycle
 
-    /// Asked about the *text*, and answered by ⌘S.
+    /// Asked about the *text* while browsing, and about everything unsaved on
+    /// the way out; answered by ⌘S either way.
     ///
-    /// Moved sliders are deliberately not a reason to ask: switching looks is
-    /// how this window is browsed, and a prompt on every step of it would be
-    /// unusable. But once the question has been raised by an edit to the text,
+    /// Moved sliders are deliberately not a reason to ask when switching looks
+    /// (`includingLook: false`): that is how this window is browsed, and a
+    /// prompt on every step of it would be unusable. Closing the window or
+    /// quitting is different: nothing comes after it to carry the values, so
+    /// it asks about `hasUnsavedChanges`, the same predicate that lights Save.
+    /// It used to ask about the text alone, so a deploy's `--quit-bundle-id`
+    /// (which goes through `approveTermination`) quit a window whose Save
+    /// button was lit, and the moved look went with it.
+    ///
     /// Save here means what Save means everywhere else in the window — the whole
-    /// of what is on screen, look included. Nothing it does can ask a second
-    /// question, so a close cannot stall behind one.
+    /// of what is on screen, look included.
     @discardableResult
-    private func confirmDiscardIfDirty() -> Bool {
-        guard isDirty else { return true }
+    private func confirmDiscardIfDirty(includingLook: Bool = false) -> Bool {
+        guard includingLook ? hasUnsavedChanges : isDirty else { return true }
         let alert = NSAlert()
-        alert.messageText = "Save changes to \(current.name).metal?"
-        alert.informativeText = "Your edits will be lost if you don't save them."
+        if isDirty {
+            alert.messageText = "Save changes to \(current.name).metal?"
+            alert.informativeText = "Your edits will be lost if you don't save them."
+        } else {
+            alert.messageText = "Save the changed \(currentPreset ?? "Defaults") look of \(current.name)?"
+            alert.informativeText = "The values you moved will be lost if you don't save them."
+        }
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Discard")
         alert.addButton(withTitle: "Cancel")
@@ -1817,13 +1846,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) { pollDisk() }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        terminationApproved = confirmDiscardIfDirty()
+        terminationApproved = confirmDiscardIfDirty(includingLook: true)
         return terminationApproved
     }
 
     func approveTermination() -> Bool {
         if terminationApproved { return true }
-        terminationApproved = confirmDiscardIfDirty()
+        terminationApproved = confirmDiscardIfDirty(includingLook: true)
         return terminationApproved
     }
 

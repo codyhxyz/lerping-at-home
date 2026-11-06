@@ -102,7 +102,7 @@ public final class LerpMetalView: NSView {
             if config.enabledEntries != oldValue.enabledEntries
                 || config.shaderName != oldValue.shaderName
                 || config.presetName != oldValue.presetName {
-                rotationChanged()
+                rotationChanged(releasedPin: oldValue.shaderName != nil && config.shaderName == nil)
             }
         }
     }
@@ -424,7 +424,10 @@ public final class LerpMetalView: NSView {
 
         if pipeline == nil {
             selectInitialShader()
-        } else if followsSchedule {
+        } else if followsSchedule
+                    || (config.shaderName != nil && pin(in: library.discover()) == nil) {
+            // (The second case: the pinned shader left the disk since this view
+            // last ran, so there is no pin to keep and the schedule takes over.)
             // A view that already has a pipeline is one `legacyScreenSaver`
             // built for an earlier session and never destroyed. It used to
             // resume on whatever look it was showing hours ago and count five
@@ -552,15 +555,27 @@ public final class LerpMetalView: NSView {
     /// later change to `config` come through here.
     @discardableResult
     private func showPinned(from available: [LerpShader]) -> Bool {
-        guard let name = config.shaderName, available.named(name) != nil else { return false }
+        guard let name = pin(in: available) else { return false }
         return setEntry(LerpRotationEntry(shader: name, preset: config.presetName),
                         from: available, allowingDefaultsFallback: true)
+    }
+
+    /// The shader `config` pins, if it is on disk; nil means the schedule
+    /// decides. A pin whose shader has gone — renamed, deleted, no longer
+    /// building for this OS — is no pin at all. It used to be half of one: too
+    /// pinned for the shuffle timer to arm, too absent to show, so the saver
+    /// put up whatever was due at the start of the session and never moved
+    /// again, while Options… (which cannot select a name that is not there)
+    /// said "Shuffle". Every "is this view pinned?" question asks this.
+    private func pin(in available: [LerpShader]) -> String? {
+        guard let name = config.shaderName, available.named(name) != nil else { return nil }
+        return name
     }
 
     private func selectInitialShader() {
         let available = library.discover()
         guard !available.isEmpty else { return }
-        if let name = config.shaderName, available.named(name) != nil {
+        if pin(in: available) != nil {
             showPinned(from: available)
         } else {
             playScheduledEntry()
@@ -655,7 +670,7 @@ public final class LerpMetalView: NSView {
         cancelShuffleTimer()
         // Counted in looks, not in the order's length: a rotation of one
         // shader with several looks on still moves.
-        guard running, !frozen, config.shaderName == nil, shuffleLooks.count > 1,
+        guard running, !frozen, pin(in: available) == nil, shuffleLooks.count > 1,
               let next = LerpRotationSchedule.nextBoundary(after: Date(),
                                                            interval: config.shuffleInterval)
         else { return }
@@ -712,8 +727,9 @@ public final class LerpMetalView: NSView {
     /// cannot play" a thing a test in another module can check rather than a
     /// claim in a comment.
     public var rotationNow: [LerpRotationEntry] {
-        guard config.shaderName == nil else { return [] }
-        return pickedLooks(library.discover())
+        let available = library.discover()
+        guard pin(in: available) == nil else { return [] }
+        return pickedLooks(available)
     }
 
     /// What `config` selects from these shaders — the one spelling of it in
@@ -746,17 +762,33 @@ public final class LerpMetalView: NSView {
     /// user pressed OK on a sheet that says this look is out, and making them
     /// wait out the rest of a five-minute interval to find out whether it took
     /// is how a setting stops being believed.
-    private func rotationChanged() {
+    private func rotationChanged(releasedPin: Bool) {
+        if releasedPin {
+            // Back to Shuffle: the schedule owns the screen again. Said here,
+            // before the early return below, because the saver assigns its
+            // config to a view that is still stopped (and that is the normal
+            // case: legacyScreenSaver reuses yesterday's view). Missing this was
+            // a saver that, once pinned and then unpinned, kept the old pin up
+            // for every later session — `start()` resumes the schedule only for
+            // a view the schedule is driving, and nothing else ever said so.
+            followsSchedule = true
+        }
         guard pipeline != nil else { return }
-        guard config.shaderName == nil else {
+        let available = library.discover()
+        guard pin(in: available) == nil else {
             // Newly pinned: honour it immediately, the same way a fresh start
             // would have — and by the same call, so the two cannot disagree
             // about what a pin means. A pin has no rotation to keep time for.
             cancelShuffleTimer()
-            showPinned(from: library.discover())
+            showPinned(from: available)
             return
         }
-        let available = library.discover()
+        if releasedPin, running {
+            // Show what is due now rather than the old pin for up to a whole
+            // interval; `start()` does the same for a stopped view.
+            playScheduledEntry()
+            return
+        }
         let index = refreshShuffleOrder(available)
         // The interval may have changed with the selection, so the boundary
         // this view is waiting on has to be recomputed either way.
