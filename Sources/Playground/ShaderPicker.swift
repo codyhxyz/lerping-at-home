@@ -129,19 +129,6 @@ final class ShaderPicker: NSObject, NSPopoverDelegate {
         gallery.populate(using: thumbnails, jobs: RotationThumbnails.jobs(for: shaders))
     }
 
-    /// Shader → Regenerate Stills: throws every still away and draws them
-    /// again, for when something the stills depend on changed outside the
-    /// shaders' own source — the prelude, the renderer.
-    func regenerate(shaders: [LerpShader]) {
-        thumbnails.evictAll()
-        gallery.clearImages()
-        loadedFingerprint = ""
-        loadedStamp = ""
-        gallery.show(shaders: shaders, selection: gallery.selection)
-        loadedFingerprint = RotationThumbnails.fingerprint(for: shaders)
-        gallery.populate(using: thumbnails, jobs: RotationThumbnails.jobs(for: shaders))
-    }
-
     /// Someone else changed the rotation. Straight into the tiles; nothing goes
     /// back out through `onChange`.
     func showSelection(_ selection: LerpRotationSelection) {

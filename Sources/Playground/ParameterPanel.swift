@@ -43,6 +43,9 @@ final class ParameterPanel: NSView {
     var onPreset: ((String?) -> Void)?
     /// The Presets list's "+": save the values on screen as a preset.
     var onSavePreset: (() -> Void)?
+    /// The Parameters heading's Randomize: throw every held parameter to a
+    /// random spot in its declared range.
+    var onRandomize: (() -> Void)?
     /// A row's MIDI menu was used. The component is nil for everything that is
     /// not a colour, and names the axis for the ones that are.
     var onMIDICommand: ((String, ColorComponent?, MIDICommand) -> Void)?
@@ -74,6 +77,7 @@ final class ParameterPanel: NSView {
     private let scroll = NSScrollView()
     private let rowStack = NSStackView()
     private let empty = Chrome.label("", size: 11.5)
+    private let randomize = NSButton()
     private var rows: [String: Row] = [:]
     /// Set while `show(values:)` is pushing values into controls, so the
     /// controls' own actions don't echo back out as user edits.
@@ -154,9 +158,16 @@ final class ParameterPanel: NSView {
         add.identifier = NSUserInterfaceItemIdentifier("preset-add")
         let parametersHeading = Chrome.label("Parameters", size: 11, color: EditorTheme.text)
         parametersHeading.font = .systemFont(ofSize: 11, weight: .semibold)
+        // Beside the parameters it moves, not over the render: it is an edit to
+        // these sliders, so it sits on their heading the way "+" sits on the
+        // presets'.
+        Chrome.configure(randomize, title: "Randomize", target: self,
+                         action: #selector(randomizeParameters))
+        randomize.toolTip = "Randomize parameters (⇧⌘R)"
+        randomize.identifier = NSUserInterfaceItemIdentifier("parameters-randomize")
         let body = Chrome.pane([Chrome.bar([heading, Chrome.flexible(), add], height: 30),
                                 presetScroll,
-                                Chrome.bar([parametersHeading, Chrome.flexible()], height: 26),
+                                Chrome.bar([parametersHeading, Chrome.flexible(), randomize], height: 30),
                                 scroll])
         body.translatesAutoresizingMaskIntoConstraints = false
         addSubview(body)
@@ -187,6 +198,7 @@ final class ParameterPanel: NSView {
         rowStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
         buildPresets(shader)
+        randomize.isEnabled = !parameters.isEmpty
 
         guard !parameters.isEmpty else {
             empty.stringValue = shader.map {
@@ -400,6 +412,7 @@ final class ParameterPanel: NSView {
     }
 
     @objc private func addPreset() { onSavePreset?() }
+    @objc private func randomizeParameters() { onRandomize?() }
 
     private func format(_ value: Double, _ param: LerpParam) -> String {
         param.type == .int ? String(Int(value.rounded())) : String(format: "%.3g", value)

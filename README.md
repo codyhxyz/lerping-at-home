@@ -316,8 +316,6 @@ make playground
   - Pointing at a card plays it. The card for the shader the editor has open is
     marked.
   - The last thing playing cannot be switched off.
-  - **Shader → Regenerate Stills** throws every card's still away and draws it
-    again.
 - **Shortcuts and Spotlight** get three LerpPlayground actions: **Add Preset to
   Rotation**, **Remove Preset from Rotation** and **List Presets** (all, in the
   rotation, or switched off). A *Preset* is a shader plus one of its presets, or
@@ -373,7 +371,8 @@ make playground
     double quote or tab, and `Defaults` are still refused, because `Defaults` is what every
     shader's un-preset look is already called.
 - An externally modified open file reloads if there are no unsaved edits.
-- Time scrubber, render scale (100/75/50/25%), and fps readout map onto `LerpUniforms` and `LerpMetalView.Config`.
+- Time scrubber, fps readout and HDR toggle sit in one strip under the render and map onto `LerpUniforms` and `LerpMetalView.Config`. HDR runs at the saver's own peak.
+- **Randomize** on the inspector's Parameters heading moves every held parameter to a random value in its declared range; drifting parameters keep drifting.
 - Editor is a plain `NSTextView` with soft tabs, auto-indent, undo, and find. No syntax highlighting and no line-number gutter.
 
 Keys:
@@ -387,7 +386,7 @@ Keys:
   existing one.
 - `⌘R` — recompile.
 - `⌘\` — play/pause.
-- `⇧⌘R` — re-roll seed.
+- `⇧⌘R` — randomize parameters.
 - `⇧⌘[` / `⇧⌘]` — previous/next shader.
 - `⌥⌘[` / `⌥⌘]` — previous/next preset of the open shader.
 

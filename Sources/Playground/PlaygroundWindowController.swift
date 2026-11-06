@@ -103,13 +103,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private let timeField = NSTextField(string: "0:00.0")
     private let windowLabel = NSTextField(labelWithString: "")
     private let pager = NSSegmentedControl()
-    private let scalePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private let fpsLabel = NSTextField(labelWithString: "— fps")
-    /// Matches the saver: on by default, and engaged only where `LerpEDR.blocker`
-    /// allows, so what you tune here is what the screensaver will show.
+    /// Matches the saver: on by default, at the saver's own peak, and engaged
+    /// only where `LerpEDR.blocker` allows, so what you tune here is what the
+    /// screensaver will show. A toggle and nothing more — there was a peak
+    /// slider beside it, which is not a control anyone reaches for.
     private let edrCheckbox = NSButton(checkboxWithTitle: "HDR", target: nil, action: nil)
-    private let edrPeakSlider = NSSlider(value: Double(LerpEDR.defaultPeak), minValue: 1, maxValue: 16,
-                                         target: nil, action: nil)
 
     let inspector = ParameterPanel(frame: NSRect(x: 0, y: 0, width: 320, height: 700))
     let midiPanel = MIDIPanel(frame: .zero)
@@ -316,18 +315,18 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                             consoleScroll])
     }
 
-    /// Render settings on top, the picture, then the transport seated under it
-    /// spanning the picture's own width.
+    /// The picture, with one strip under it: play, scrub and the clock, then
+    /// the frame rate and the HDR toggle at the far end, the way a player
+    /// keeps its display settings beside its transport.
     ///
-    /// Seed and render scale used to sit in the same strip as the scrubber,
-    /// which made the scrubber as wide as whatever was left over. They are
-    /// settings of the render, not transport, so they stay above; play, scrub
-    /// and the clock go below, where a player's controls go.
+    /// There used to be a second strip above the picture holding a Seed
+    /// button, a render-scale menu, the HDR box and an HDR peak slider. Seed
+    /// became Randomize and moved onto the inspector's Parameters heading,
+    /// next to the values it changes; the scale menu and the peak slider are
+    /// gone; HDR came down here.
     private func renderPane() -> NSView {
         Chrome.configure(playButton, title: "Pause", target: self, action: #selector(togglePlayPause))
         playButton.widthAnchor.constraint(equalToConstant: 62).isActive = true
-
-        let seedButton = Chrome.button("Seed", target: self, action: #selector(rerollSeed))
 
         // Momentary, because a page is an action and not a state.
         pager.segmentStyle = .rounded
@@ -364,46 +363,48 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         windowLabel.textColor = EditorTheme.dim
         windowLabel.alignment = .right
         windowLabel.toolTip = "The minute shown by the scrubber"
-        // First thing to give way when the pane gets narrow: it is an
-        // annotation, and the field beside it carries the number that matters.
-        windowLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-
-        scalePopUp.controlSize = .small
-        scalePopUp.font = .systemFont(ofSize: 11)
-        scalePopUp.target = self
-        scalePopUp.action = #selector(scaleChanged)
-        scalePopUp.addItems(withTitles: Self.renderScales.map(\.title))
-        scalePopUp.widthAnchor.constraint(equalToConstant: 78).isActive = true
+        // Gives way after the fps readout (300) and before the scrubber (750):
+        // it is an annotation, and the field beside it carries the number that
+        // matters.
+        windowLabel.setContentCompressionResistancePriority(.init(400), for: .horizontal)
 
         fpsLabel.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
         fpsLabel.textColor = EditorTheme.dim
         fpsLabel.alignment = .right
-        fpsLabel.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        // Sharing the transport strip, the readout gives way to the scrubber:
+        // 150 when the pane has room, narrower (truncated) when it does not.
+        // The width comes from the pane, never from the text, so a readout
+        // that changes twice a second does not nudge the scrubber.
+        let fpsWidth = fpsLabel.widthAnchor.constraint(equalToConstant: 150)
+        fpsWidth.priority = .init(300)
+        fpsWidth.isActive = true
+        fpsLabel.lineBreakMode = .byTruncatingTail
+        fpsLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        let scrubWidth = timeSlider.widthAnchor.constraint(greaterThanOrEqualToConstant: 180)
+        scrubWidth.priority = .defaultHigh
+        scrubWidth.isActive = true
 
         edrCheckbox.controlSize = .small
         edrCheckbox.font = .systemFont(ofSize: 11)
         edrCheckbox.state = .on
         edrCheckbox.target = self
         edrCheckbox.action = #selector(edrChanged)
-        edrPeakSlider.controlSize = .small
-        edrPeakSlider.target = self
-        edrPeakSlider.action = #selector(edrChanged)
-        edrPeakSlider.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        edrCheckbox.toolTip = "Lift the brightest highlights above SDR white on an HDR screen, "
+            + "as the screensaver does. Held back on battery, in Low Power Mode and on SDR screens."
+        edrCheckbox.setContentHuggingPriority(.required, for: .horizontal)
 
         metalView.config = LerpMetalView.Config(shaderName: nil, framesPerSecond: 60,
                                                 renderScale: 1.0, shuffleInterval: .infinity)
         metalView.config.extendedDynamicRange = true
-        updateEDRTips()
         metalView.onCompileError = { name, message in
             FileHandle.standardError.write(Data("compile error in \(name):\n\(message)\n".utf8))
         }
         metalView.setContentHuggingPriority(.init(1), for: .vertical)
 
         syncTransport()
-        return Chrome.pane([Chrome.bar([seedButton, scalePopUp, edrCheckbox, edrPeakSlider,
-                                        Chrome.flexible(), fpsLabel]),
-                            metalView,
-                            Chrome.bar([playButton, pager, timeField, timeSlider, windowLabel],
+        return Chrome.pane([metalView,
+                            Chrome.bar([playButton, pager, timeField, timeSlider, windowLabel,
+                                        fpsLabel, edrCheckbox],
                                        height: 34)])
     }
 
@@ -481,6 +482,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         inspector.onChange = { [weak self] name, value in self?.setParameter(name, value) }
         inspector.onPreset = { [weak self] name in self?.applyPreset(name) }
         inspector.onSavePreset = { [weak self] in self?.savePreset(nil) }
+        inspector.onRandomize = { [weak self] in self?.randomizeParameters(nil) }
         inspector.onAnimate = { [weak self] name, on in self?.setAnimating(name, on) }
         inspector.onMIDICommand = { [weak self] name, component, command in
             self?.midiCommand(name, component, command)
@@ -709,6 +711,47 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
         // A moved value is an unsaved change to the look, so Save has to light
         // up on it exactly as it does on a keystroke in the editor.
+        updateChrome()
+        if isPaused { metalView.renderOnce() }
+    }
+
+    /// The Parameters heading's Randomize, and Shader → Randomize Parameters:
+    /// every held parameter to a uniformly random value in its declared range.
+    ///
+    /// A parameter that is drifting is left drifting — its own curve is already
+    /// moving it, and taking control of every one would freeze a look that is
+    /// meant to move. Colours keep their alpha. Like any moved value this is an
+    /// unsaved change to the look; Save or "+" keeps it, Revert drops it.
+    @objc func randomizeParameters(_ sender: Any?) {
+        guard let values = metalView.parameterValues, !inspector.parameters.isEmpty else {
+            return NSSound.beep()
+        }
+        var moved = 0
+        for param in inspector.parameters where !values.isAnimating(param.name) {
+            let value: LerpParamValue
+            switch param.type {
+            case .float:
+                value = .scalar(param.max > param.min ? .random(in: param.min...param.max) : param.min)
+            case .int:
+                let low = Int(param.min.rounded(.up)), high = Int(param.max.rounded(.down))
+                value = .scalar(Double(high > low ? .random(in: low...high) : low))
+            case .bool:
+                value = .scalar(Bool.random() ? 1 : 0)
+            case .color:
+                let alpha = values[param.name]?.colorValue?.w ?? param.defaultValue.colorValue?.w ?? 1
+                value = .color(SIMD4<Float>(.random(in: 0...1), .random(in: 0...1),
+                                            .random(in: 0...1), alpha))
+            }
+            let clamped = param.clamp(value)
+            parameterState[param.name] = clamped
+            metalView.setParameter(param.name, clamped)
+            moved += 1
+        }
+        guard moved > 0 else {
+            NSSound.beep()
+            return setStatus("Every parameter is drifting", tint: EditorTheme.dim)
+        }
+        inspector.show(values: metalView.liveParameterValues)
         updateChrome()
         if isPaused { metalView.renderOnce() }
     }
@@ -1097,12 +1140,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                        current: currentEntry)
     }
 
-    /// Shader → Regenerate Stills.
-    @objc func regenerateStills(_ sender: Any?) {
-        preparePicker().regenerate(shaders: metalView.shaderLibrary.discover())
-        setStatus("Redrawing stills", tint: EditorTheme.dim)
-    }
-
     /// What the screensaver plays, read fresh from the store.
     private func storedSelection() -> LerpRotationSelection {
         let entries = metalView.shaderLibrary.discover().rotationEntries()
@@ -1472,12 +1509,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         playButton.title = isPaused ? "Play" : "Pause"
     }
 
-    @objc func rerollSeed(_ sender: Any?) {
-        metalView.seed = Float.random(in: 0..<1)
-        if isPaused { metalView.renderOnce() }
-        setStatus(String(format: "seed = %.4f", metalView.seed), tint: EditorTheme.dim)
-    }
-
     @objc private func timeSliderChanged() {
         lastScrub = CACurrentMediaTime()
         metalView.time = timeSlider.doubleValue
@@ -1501,32 +1532,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         seek(to: seconds)
     }
 
-    /// Fraction of native. Goes one step further down than the saver's copy of
-    /// this menu: a quarter-scale render is a useful thing to edit against when
-    /// a shader is expensive, and it is not a thing anybody wants left on their
-    /// screen all night.
-    private static let renderScales: Chrome.Choices =
-        [("100%", 1.0), ("75%", 0.75), ("50%", 0.5), ("25%", 0.25)]
-
-    @objc private func scaleChanged() {
-        metalView.config.renderScale = Chrome.value(of: scalePopUp, in: Self.renderScales,
-                                                    default: 0)
-        if isPaused { metalView.renderOnce() }
-    }
-
     @objc private func edrChanged() {
         metalView.config.extendedDynamicRange = edrCheckbox.state == .on
-        metalView.config.edrPeak = Float(edrPeakSlider.doubleValue)
-        edrPeakSlider.isEnabled = edrCheckbox.state == .on
-        updateEDRTips()
         if isPaused { metalView.renderOnce() }
-    }
-
-    private func updateEDRTips() {
-        edrCheckbox.toolTip = "Lift the brightest highlights above SDR white on an HDR screen, "
-            + "as the screensaver does. Held back on battery, in Low Power Mode and on SDR screens."
-        edrPeakSlider.toolTip = String(format: "Highlight peak: %.1f× SDR white "
-            + "(further capped by what the screen offers)", edrPeakSlider.doubleValue)
     }
 
     // MARK: - System audio

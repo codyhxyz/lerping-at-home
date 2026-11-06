@@ -376,7 +376,8 @@ enum MainMenu {
             .separator(),
             item("Recompile", Selector(("recompile:")), "r"),
             item("Play / Pause", Selector(("togglePlayPause:")), "\\"),
-            item("Re-roll Seed", Selector(("rerollSeed:")), "r", [.command, .shift]),
+            item("Randomize Parameters",
+                 #selector(PlaygroundWindowController.randomizeParameters(_:)), "r", [.command, .shift]),
             // Off at launch. Feeds u.audioLevel/Bass/Mid/Treble; see PORTING.md.
             item("React to System Audio",
                  #selector(PlaygroundWindowController.toggleSystemAudio(_:)), ""),
@@ -405,8 +406,6 @@ enum MainMenu {
             item("Show / Hide Inspector", #selector(PlaygroundWindowController.toggleInspector(_:)), "i"),
             item("Next MIDI Mapping", #selector(PlaygroundWindowController.nextMapping(_:)), "m",
                  [.command, .option]),
-            .separator(),
-            item("Regenerate Stills", #selector(PlaygroundWindowController.regenerateStills(_:)), ""),
         ]))
 
         main.addItem(submenu("Window", [
