@@ -99,10 +99,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private let console = NSTextView()
     private let consoleScroll = NSScrollView()
     private var consoleHeight: NSLayoutConstraint!
-    private let timeSlider = NSSlider()
-    private let timeField = NSTextField(string: "0:00.0")
-    private let windowLabel = NSTextField(labelWithString: "")
-    private let pager = NSSegmentedControl()
     private let fpsLabel = NSTextField(labelWithString: "— fps")
     /// Playback resolution, the way Premiere's Program Monitor does it: one
     /// compact popup under the picture that shows its value — Full, 1/2, 1/4 —
@@ -151,7 +147,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// The view owns the play/pause state; keeping a copy here is how the two
     /// drift apart.
     private var isPaused: Bool { !metalView.isRunning }
-    private var lastScrub: CFTimeInterval = 0
     private var lastCompiledSource: String?
     private var firstErrorLine: Int?
     private var compileWork: DispatchWorkItem?
@@ -318,10 +313,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                             consoleScroll])
     }
 
-    /// The picture, then two strips under it: the transport (play, scrub, the
-    /// clock), and the render settings with their result — frame rate and
-    /// pixel size on the left, playback resolution and HDR on the right — so
-    /// changing one shows its cost or saving right beside it.
+    /// The picture, then one strip under it: Play / Pause and the frame rate
+    /// and pixel size on the left, playback resolution and HDR on the right —
+    /// so changing one shows its cost or saving right beside it.
     ///
     /// There used to be a strip above the picture holding a Seed button, an
     /// unlabelled 100/75/50/25% menu, the HDR box and an HDR peak slider. Seed
@@ -331,45 +325,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func renderPane() -> NSView {
         Chrome.configure(playButton, title: "Pause", target: self, action: #selector(togglePlayPause))
         playButton.widthAnchor.constraint(equalToConstant: 62).isActive = true
-
-        // Momentary, because a page is an action and not a state.
-        pager.segmentStyle = .rounded
-        pager.controlSize = .small
-        pager.trackingMode = .momentary
-        pager.segmentCount = 2
-        for (index, label) in ["‹", "›"].enumerated() {
-            pager.setLabel(label, forSegment: index)
-            pager.setWidth(23, forSegment: index)
-        }
-        pager.target = self
-        pager.action = #selector(pageWindow)
-        pager.toolTip = "Jump back or forward one minute"
-
-        timeSlider.controlSize = .small
-        timeSlider.isContinuous = true
-        timeSlider.target = self
-        timeSlider.action = #selector(timeSliderChanged)
-        timeSlider.toolTip = "Scrub this minute; type the clock to jump anywhere"
-        // No width constraint: the scrubber is what absorbs the pane's slack,
-        // so it spans the render however wide the render is.
-        timeSlider.setContentHuggingPriority(.init(1), for: .horizontal)
-        timeSlider.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-
-        timeField.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
-        timeField.alignment = .right
-        timeField.controlSize = .small
-        timeField.target = self
-        timeField.action = #selector(timeFieldChanged)
-        timeField.toolTip = "Absolute time. Type 90, 90.5 or 1:30.5 to jump there."
-        timeField.widthAnchor.constraint(equalToConstant: 68).isActive = true
-
-        windowLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        windowLabel.textColor = EditorTheme.dim
-        windowLabel.alignment = .right
-        windowLabel.toolTip = "The minute shown by the scrubber"
-        // First thing to give way when the pane gets narrow: it is an
-        // annotation, and the field beside it carries the number that matters.
-        windowLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
         fpsLabel.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
         fpsLabel.textColor = EditorTheme.dim
@@ -402,80 +357,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
         metalView.setContentHuggingPriority(.init(1), for: .vertical)
 
-        syncTransport()
+        // Play / Pause is the only control over time. There used to be a
+        // one-minute scrubber, a typed clock, minute-paging arrows and a
+        // "0:00–1:00" label; nobody needs to seek a screensaver.
         return Chrome.pane([metalView,
-                            Chrome.bar([playButton, pager, timeField, timeSlider, windowLabel],
-                                       height: 34),
-                            Chrome.bar([fpsLabel, Chrome.flexible(), resolutionPopUp, edrCheckbox],
-                                       height: 28)])
-    }
-
-    // MARK: - Transport
-
-    /// Time here is endless: the shaders do not loop, so a slider from zero to
-    /// “the end” either lies or loses precision as the app runs. The scrubber is
-    /// therefore a one-minute local ruler; its editable clock is the unbounded
-    /// navigation. Users choose a moment, not a unit conversion.
-    private static let timelineWindow = 60.0
-
-    /// Derived, never stored: the window is always the one containing the
-    /// clock. That is what keeps the thumb, the readout and the window from
-    /// ever disagreeing — there is no second source of truth to drift.
-    var windowStart: Double {
-        max(0, ((metalView.time - 1e-9) / Self.timelineWindow).rounded(.down)
-            * Self.timelineWindow)
-    }
-
-    /// Brings the scrubber, its window and the clock readout in step with
-    /// `metalView.time`. Cheap enough to call from the 0.2 s poll.
-    private func syncTransport() {
-        let start = windowStart
-        if timeSlider.minValue != start || timeSlider.maxValue != start + Self.timelineWindow {
-            timeSlider.minValue = start
-            timeSlider.maxValue = start + Self.timelineWindow
-            windowLabel.stringValue = "\(Self.clock(start))–\(Self.clock(start + Self.timelineWindow))"
-        }
-        // Leave the thumb alone briefly after a drag so it doesn't fight the
-        // user, and pin it right once the clock runs on past the scrubber.
-        if CACurrentMediaTime() - lastScrub > 0.4 { timeSlider.doubleValue = metalView.time }
-        refreshClock()
-    }
-
-    /// The readout is absolute time, always — it is the one thing that must not
-    /// be relative to the window.
-    private func refreshClock() {
-        guard timeField.currentEditor() == nil else { return }   // not while it is being typed in
-        timeField.stringValue = Self.clock(metalView.time, decimals: 1)
-    }
-
-    /// Moves the clock and its visible one-minute window.
-    func seek(to seconds: Double) {
-        metalView.time = max(0, seconds)
-        lastScrub = 0            // an explicit jump wants the thumb to follow now
-        syncTransport()
-        if isPaused { metalView.renderOnce() }
-    }
-
-    /// `1:30.5`, or `1:30` with no decimals. Minutes are unbounded — a shader
-    /// left running for an hour reads `60:00`, not a wrapped clock.
-    static func clock(_ seconds: Double, decimals: Int = 0) -> String {
-        let minutes = Int(seconds / 60)
-        let rest = seconds - Double(minutes) * 60
-        return decimals > 0 ? String(format: "%d:%04.1f", minutes, rest)
-                            : String(format: "%d:%02d", minutes, Int(rest.rounded()))
-    }
-
-    /// `90`, `90.5`, `1:30` and `1:30.5` all mean the same instant. nil for
-    /// anything else, which puts the real time back rather than jumping to 0.
-    static func seconds(fromClock text: String) -> Double? {
-        let parts = text.split(separator: ":").map { $0.trimmingCharacters(in: .whitespaces) }
-        switch parts.count {
-        case 1:  return Double(parts[0])
-        case 2:
-            guard let minutes = Double(parts[0]), let seconds = Double(parts[1]) else { return nil }
-            return minutes * 60 + seconds
-        default: return nil
-        }
+                            Chrome.bar([playButton, fpsLabel, Chrome.flexible(),
+                                        resolutionPopUp, edrCheckbox],
+                                       height: 34)])
     }
 
     /// The parameter controls, driven entirely by callbacks, so they know
@@ -1532,29 +1420,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         playButton.title = isPaused ? "Play" : "Pause"
     }
 
-    @objc private func timeSliderChanged() {
-        lastScrub = CACurrentMediaTime()
-        metalView.time = timeSlider.doubleValue
-        refreshClock()          // not the whole transport: the window is mid-drag
-        if isPaused { metalView.renderOnce() }
-    }
-
-    /// One minute back or forward. Because the window is derived from the
-    /// clock, paging *is* seeking — there is no separate "where the scrubber is
-    /// looking" that could disagree with where the shader is.
-    @objc private func pageWindow(_ sender: NSSegmentedControl) {
-        seek(to: metalView.time
-             + (sender.selectedSegment == 0 ? -Self.timelineWindow : Self.timelineWindow))
-    }
-
-    @objc private func timeFieldChanged(_ sender: NSTextField) {
-        guard let seconds = Self.seconds(fromClock: sender.stringValue) else {
-            return refreshClock()      // unparseable: put the real time back
-        }
-        window?.makeFirstResponder(nil)
-        seek(to: seconds)
-    }
-
     @objc private func edrChanged() {
         metalView.config.extendedDynamicRange = edrCheckbox.state == .on
         if isPaused { metalView.renderOnce() }
@@ -1768,7 +1633,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func startTimers() {
         timers.append(.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self else { return }
-            syncTransport()
             refreshReadout()
         })
 

@@ -371,7 +371,7 @@ make playground
     double quote or tab, and `Defaults` are still refused, because `Defaults` is what every
     shader's un-preset look is already called.
 - An externally modified open file reloads if there are no unsaved edits.
-- Under the render: the transport strip (play, scrubber, clock), then a settings strip — the readout (fps and the pixel size each frame is drawn at), the playback-resolution menu (Full / 1/2 / 1/4, as in Premiere's Program Monitor, to trade sharpness for frame rate on an expensive shader), and **HDR** at the saver's own peak. They map onto `LerpUniforms` and `LerpMetalView.Config`.
+- Under the render, one strip: Play / Pause (the only control over time), the readout (fps and the pixel size each frame is drawn at), the playback-resolution menu (Full / 1/2 / 1/4, as in Premiere's Program Monitor, to trade sharpness for frame rate on an expensive shader), and **HDR** at the saver's own peak. They map onto `LerpUniforms` and `LerpMetalView.Config`.
 - **Randomize** on the inspector's Parameters heading moves every held parameter to a random value in its declared range; drifting parameters keep drifting.
 - Editor is a plain `NSTextView` with soft tabs, auto-indent, undo, and find. No syntax highlighting and no line-number gutter.
 
