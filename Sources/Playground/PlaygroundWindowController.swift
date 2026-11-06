@@ -43,6 +43,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private(set) var metalView: LerpMetalView!
     private var compileState: CompileState = .pending
     private var knownShaderNames: [String] = []
+    /// The same list as shaders, for the switcher's neighbours and their stills.
+    private var knownShaders: [LerpShader] = []
 
     /// The open shader *as it is on disk*. `editor.text` is the working copy, so
     /// the two differing is exactly what "unsaved changes" means.
@@ -93,7 +95,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Opens the shader picker. Where a plain `NSPopUpButton` listing every look
     /// *names* used to be — see `ShaderPicker` for why a grid of stills replaced
     /// it, and for what the dropdown did better and had to be kept.
-    private let shaderButton = NSButton()
+    /// The selector's button and its ‹ › — see `LookSwitcher`.
+    private let switcher = LookSwitcher()
     private let saveButton = NSButton(), revertButton = NSButton(), playButton = NSButton()
     private let status = NSButton()
     private let console = NSTextView()
@@ -246,19 +249,18 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func editorPane() -> NSView {
-        Chrome.configure(shaderButton, title: "Shader", target: self,
-                         action: #selector(showShaderPicker))
-        shaderButton.alignment = .left
-        // The title carries a shader name *and* a preset name, either of which
-        // can be long, so it gives way rather than pushing New…, Save and Revert
-        // off the bar.
-        shaderButton.cell?.lineBreakMode = .byTruncatingTail
-        shaderButton.setContentHuggingPriority(.init(1), for: .horizontal)
-        shaderButton.setContentCompressionResistancePriority(.init(2), for: .horizontal)
-        shaderButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 178).isActive = true
-        shaderButton.widthAnchor.constraint(lessThanOrEqualToConstant: 320).isActive = true
-        shaderButton.toolTip = "Shaders (⌘O)"
-        shaderButton.identifier = NSUserInterfaceItemIdentifier("shader-picker-button")
+        switcher.current.target = self
+        switcher.current.action = #selector(showShaderPicker)
+        switcher.current.toolTip = "Shaders (⌘O)"
+        switcher.current.identifier = NSUserInterfaceItemIdentifier("shader-picker-button")
+        // The name and preset can both be long, so the switcher gives way
+        // rather than pushing Save and Revert off the bar.
+        switcher.current.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        switcher.current.setContentCompressionResistancePriority(.init(2), for: .horizontal)
+        switcher.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        switcher.setContentCompressionResistancePriority(.init(2), for: .horizontal)
+        switcher.widthAnchor.constraint(greaterThanOrEqualToConstant: 230).isActive = true
+        switcher.widthAnchor.constraint(lessThanOrEqualToConstant: 400).isActive = true
 
         // The selector's cards, one step at a time, without opening it — the
         // same ⇧⌘[ / ⇧⌘] the Shader menu carries, so an arrow opens a shader by
@@ -267,10 +269,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // Shaders, not presets. Presets have their own control — the inspector's
         // Presets list, and ⌥⌘[ / ⌥⌘] — so the arrows no longer have to walk all
         // ~280 shader×preset pairs to reach the next shader.
-        let previousButton = Chrome.button("‹", target: self, action: #selector(previousShader))
-        let nextButton = Chrome.button("›", target: self, action: #selector(nextShader))
-        previousButton.toolTip = "Previous shader (⇧⌘[)"
-        nextButton.toolTip = "Next shader (⇧⌘])"
+        switcher.previous.target = self
+        switcher.previous.action = #selector(previousShader)
+        switcher.next.target = self
+        switcher.next.action = #selector(nextShader)
 
         // No New… here any more: making a shader is something you do *among the
         // looks*, so it is the first card in the picker's grid — where you are
@@ -305,7 +307,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         editor.onEdit = { [weak self] in self?.scheduleCompile() }
         editor.setContentHuggingPriority(.init(1), for: .vertical)
 
-        return Chrome.pane([Chrome.bar([shaderButton, previousButton, nextButton,
+        return Chrome.pane([Chrome.bar([switcher,
                                         saveButton, revertButton,
                                         Chrome.flexible()]),
                             editor,
@@ -390,6 +392,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     private func refreshList(_ shaders: [LerpShader]) -> [LerpShader] {
         knownShaderNames = shaders.map(\.name)
+        knownShaders = shaders
         // Read off the discovered list rather than off `current`, because
         // `saveShader` rebuilds the open shader as `isBuiltIn: false` whether or
         // not it came from the drop folder — so `current` is not a witness to
@@ -402,14 +405,80 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     private var customShaderNames: Set<String> = []
 
-    /// The toolbar button says which shader is open, and which of its presets
-    /// it is wearing, with a chevron so it reads as something that opens.
+    /// The switcher says which shader is open, which of its presets it is
+    /// wearing and where it sits in the list, with pictures of it and of the
+    /// shaders either side. Cheap to call on every keystroke: nothing is
+    /// recomputed unless one of the things it shows has changed.
     private func updateShaderButton() {
-        let name = current.name.isEmpty ? "Shader" : current.name
-        let preset = currentPreset.map { " · " + $0 } ?? ""
-        let custom = customShaderNames.contains(current.name) ? "  · custom" : ""
-        let title = "◱  " + name + preset + custom + "  ▾"
-        if shaderButton.title != title { shaderButton.title = title }
+        let custom = customShaderNames.contains(current.name)
+        let stamp = [current.name, currentPreset ?? "\u{2}", "\(isDirty)", "\(custom)",
+                     "\(stillsArrived)"].joined(separator: "\u{1}")
+            + knownShaderNames.joined(separator: ",")
+        guard stamp != switcherStamp else { return }
+        switcherStamp = stamp
+
+        let names = knownShaderNames
+        let index = names.firstIndex(of: current.name)
+        let hasPresets = !(compiled ?? current).presets.isEmpty
+        let look = LookSwitcher.Look(
+            name: current.name.isEmpty ? "Shader" : current.name,
+            preset: hasPresets ? currentPreset ?? LerpRotationEntry.defaultsName : nil,
+            position: index.map { "\($0 + 1) of \(names.count)" } ?? "",
+            isCustom: custom, isEdited: isDirty)
+        // The preset's own still when there is one, else the shader's cover:
+        // the selector only renders covers until its cards are opened up.
+        let cover = [current].rotationEntries().first
+        switcher.show(look, still: still(for: currentEntry, source: current.source)
+                          ?? cover.flatMap { still(for: $0, source: current.source) })
+
+        for (button, offset) in [(switcher.previous, -1), (switcher.next, 1)] {
+            let name = names.count > 1
+                ? ShaderLibrary.step(in: names, after: current.name, offset: offset) : nil
+            let shader = name.flatMap { knownShaders.named($0) }
+            button.neighbour = name
+            button.isEnabled = name != nil
+            button.still = shader.flatMap { shader in
+                [shader].rotationEntries().first.flatMap { still(for: $0, source: shader.source) }
+            }
+            button.toolTip = name.map { (offset < 0 ? "Previous: " : "Next: ") + $0
+                + (offset < 0 ? " (⇧⌘[)" : " (⇧⌘])") }
+        }
+    }
+
+    private var switcherStamp = ""
+
+    // MARK: - Switcher stills
+
+    /// The switcher's pictures: the selector's own stills, decoded off the main
+    /// thread the first time each is wanted. A look with none on disk yet
+    /// (a new or just-edited shader) draws a placeholder until the selector
+    /// has rendered it.
+    private var stills: [String: NSImage] = [:]
+    private var stillsPending: Set<String> = []
+    /// Bumped when a still lands, so `updateShaderButton` redraws for it.
+    private var stillsArrived = 0
+
+    private func still(for entry: LerpRotationEntry, source: String) -> NSImage? {
+        let thumbnails = self.thumbnails
+        let key = thumbnails.key(entry: entry, source: source)
+        if let image = stills[key] ?? thumbnails.image(entry: entry, source: source) { return image }
+        guard !stillsPending.contains(key) else { return nil }
+        stillsPending.insert(key)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let image = thumbnails.existingURL(entry: entry, source: source)
+                .flatMap(RotationThumbnails.decodedImage(at:))
+            DispatchQueue.main.async {
+                guard let self, let image else { return }
+                // Three are on screen at a time. Walking the whole list should
+                // not keep seventy decoded stills alive.
+                if self.stills.count > 24 { self.stills.removeAll() }
+                self.stills[key] = image
+                self.stillsPending.remove(key)
+                self.stillsArrived += 1
+                self.updateShaderButton()
+            }
+        }
+        return nil
     }
 
     /// What this window opens on, and the only place the screensaver's rotation
@@ -1003,7 +1072,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     /// The toolbar button, and the Shader menu's Open Shader… item.
     @objc func showShaderPicker(_ sender: Any?) {
-        preparePicker().present(from: shaderButton)
+        preparePicker().present(from: switcher)
     }
 
     /// Prepares the picker before putting its popover on screen.
