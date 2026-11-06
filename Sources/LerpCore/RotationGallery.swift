@@ -83,6 +83,10 @@ public final class RotationTile: NSView {
 
     /// Put this look in or take it out of the screensaver's rotation.
     public var onToggle: ((LerpRotationEntry) -> Void)?
+    /// The badge was clicked. Where set, it replaces `onToggle` for the mouse —
+    /// the gallery uses it to offer a shader's presets — and the gallery
+    /// enforces the floor itself.
+    public var onBadge: ((RotationTile) -> Void)?
     /// Open this look in the editor.
     public var onOpen: ((LerpRotationEntry) -> Void)?
     /// The pointer arrived (`true`) or left (`false`). The gallery answers by
@@ -187,10 +191,7 @@ public final class RotationTile: NSView {
     /// The one place the tooltip is written, so a tile that was locked and
     /// then unlocked cannot be left saying the wrong thing.
     private func updateToolTip() {
-        let what = summary == nil ? "it" : "the whole shader"
-        toolTip = lookLabel + " — click to open it; the badge switches \(what) in or out of the screensaver"
-            + (isLocked ? ". The screensaver must keep at least one preset, and this is the last."
-                        : "")
+        toolTip = lookLabel
     }
 
     // MARK: Pointer
@@ -219,7 +220,7 @@ public final class RotationTile: NSView {
     public override func mouseDown(with event: NSEvent) {
         guard isLive, event.clickCount == 1 else { return }
         if badgeHitRect.contains(convert(event.locationInWindow, from: nil)) {
-            if isToggleable { onToggle?(entry) }
+            if let onBadge { onBadge(self) } else if isToggleable { onToggle?(entry) }
         } else {
             onOpen?(entry)
         }
@@ -400,7 +401,7 @@ public final class RotationTile: NSView {
     /// Where the badge is. It is the rotation toggle, so it is also a hit target
     /// and gets a little slack around it — 20 points is a small thing to ask
     /// someone to hit.
-    private var badgeRect: NSRect {
+    public var badgeRect: NSRect {
         let frame = pictureFrame, side: CGFloat = 20
         return NSRect(x: frame.maxX - side - 6, y: frame.minY + 6, width: side, height: side)
     }
@@ -510,7 +511,7 @@ public final class NewLookCard: NSView {
 
     public init(size: NSSize) {
         super.init(frame: NSRect(origin: .zero, size: size))
-        toolTip = "Make a new shader — asks for a name, writes the file, and opens it"
+        toolTip = "New shader"
     }
 
     public required init?(coder: NSCoder) { nil }
@@ -658,8 +659,6 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     public var previewsOnHover = true
 
     private let search = NSSearchField()
-    private let hint = Chrome.label("Click opens · the badge switches a shader in or out of the screensaver",
-                                    size: 11)
     private let countLabel = Chrome.label("", size: 11, color: EditorTheme.text)
     private let note = Chrome.label("", size: 11)
     private let progress = NSProgressIndicator()
@@ -705,7 +704,6 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     public var isEditable = true {
         didSet {
             bulk.forEach { $0.isHidden = !isEditable }
-            hint.isHidden = !isEditable
             guard !isEditable else { return }
             cards.values.forEach { $0.toolTip = Self.readOnlyNote }
         }
@@ -759,7 +757,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     // MARK: Construction
 
     private func build() {
-        search.placeholderString = "Filter shaders and presets — ⏎ opens the first"
+        search.placeholderString = "Search"
         search.controlSize = .small
         search.font = .systemFont(ofSize: 11)
         search.sendsWholeSearchString = false
@@ -768,7 +766,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         search.action = #selector(searchChanged)
         search.delegate = self
         search.identifier = NSUserInterfaceItemIdentifier("rotation-search")
-        search.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        search.widthAnchor.constraint(equalToConstant: 200).isActive = true
 
         progress.style = .bar
         progress.isIndeterminate = false
@@ -777,9 +775,6 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         progress.widthAnchor.constraint(equalToConstant: 130).isActive = true
 
         countLabel.identifier = NSUserInterfaceItemIdentifier("rotation-count")
-        hint.identifier = NSUserInterfaceItemIdentifier("rotation-hint")
-        hint.lineBreakMode = .byTruncatingTail
-        hint.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
         // Over the shaders on screen, so with a filter up they are "all the dark
         // ones" rather than a button that quietly ignores the search.
@@ -788,12 +783,11 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         let none = Chrome.button("None", target: self, action: #selector(deselectAllShaders))
         all.identifier = NSUserInterfaceItemIdentifier("rotation-all")
         none.identifier = NSUserInterfaceItemIdentifier("rotation-none")
-        all.toolTip = "Switch every shader shown here into the screensaver"
         selectAllButton = all
         deselectAllButton = none
         bulk = [label, all, none]
 
-        let bar = Chrome.bar([search, hint, Chrome.flexible()] + bulk + [progress, countLabel])
+        let bar = Chrome.bar([search, Chrome.flexible(), progress, countLabel] + bulk)
 
         canvas.onLayout = { [weak self] width in self?.reflow(width: width) ?? 0 }
         canvas.autoresizingMask = [.width]
@@ -856,6 +850,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
             let card = RotationTile(entry: cover, shaderTitle: shader.displayName, size: tileSize)
             card.summary = ""
             card.onToggle = { [weak self] _ in self?.toggleShader(name) }
+            card.onBadge = { [weak self] tile in self?.badgeClicked(name, tile) }
             card.onOpen = { [weak self] _ in self?.openCard(name) }
             card.onHover = { [weak self] tile, inside in self?.hovered(tile, inside) }
             card.identifier = NSUserInterfaceItemIdentifier("card:" + name)
@@ -894,12 +889,10 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         progress.isHidden = done >= total
         progress.maxValue = Double(max(total, 1))
         progress.doubleValue = Double(done)
-        countLabel.stringValue = done >= total
-            ? libraryCount
-            : "rendering \(done) of \(total)…"
+        // Only while there is something to say: a count of the library at
+        // rest is just more text in the bar.
+        countLabel.stringValue = done >= total ? "" : "Rendering \(done) of \(total)…"
     }
-
-    private var libraryCount: String { "\(shaders.count) shaders · \(entries.count) presets" }
 
     /// Starts one thumbnail run and wires its images and progress into this
     /// gallery. Only the covers are rendered, because only covers are drawn.
@@ -974,7 +967,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// Said out loud when a click is refused. Cleared by the next one that is
     /// not, so it reads as a response rather than as a state.
     private var refusal: String?
-    public static let floorNote = "The screensaver must keep at least one preset."
+    public static let floorNote = "At least one must stay in the screensaver."
 
     private func refuse(_ why: String) {
         refusal = why
@@ -1001,9 +994,53 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
 
     private func toggleShader(_ name: String) {
         let on = !selection.shaderPlays(name)
-        change(refusing: "\(name) is the whole rotation. " + Self.floorNote) {
-            $0.setShader(name, on: on)
+        change { $0.setShader(name, on: on) }
+    }
+
+    /// The badge. A shader with one preset just switches; one with several
+    /// offers a menu — the whole shader on top, then each preset — because
+    /// this badge is the one place anything is put in or out of the
+    /// screensaver. Items that would leave it with nothing to play are off.
+    private func badgeClicked(_ name: String, _ tile: RotationTile) {
+        guard canEdit else { return refuse(Self.readOnlyNote) }
+        let looks = selection.looks(of: name)
+        guard looks.count > 1 else {
+            return tile.isToggleable ? toggleShader(name) : refuse(Self.floorNote)
         }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let plays = selection.shaderPlays(name)
+        let whole = NSMenuItem(title: "In Screensaver", action: #selector(menuToggledShader(_:)),
+                               keyEquivalent: "")
+        whole.target = self
+        whole.representedObject = name
+        whole.state = plays ? .on : .off
+        whole.isEnabled = !(plays && wouldEmpty { $0.setShader(name, on: false) })
+        menu.addItem(whole)
+        menu.addItem(.separator())
+        for look in looks {
+            let item = NSMenuItem(title: look.displayName, action: #selector(menuToggledLook(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = look
+            let on = selection.plays(look)
+            item.state = on ? .on : .off
+            item.isEnabled = !(on && wouldEmpty { $0.setLook(look, on: false) })
+            menu.addItem(item)
+        }
+        let badge = tile.badgeRect
+        menu.popUp(positioning: nil, at: NSPoint(x: badge.minX, y: badge.maxY + 4), in: tile)
+    }
+
+    @objc private func menuToggledShader(_ item: NSMenuItem) {
+        guard let name = item.representedObject as? String else { return }
+        toggleShader(name)
+    }
+
+    @objc private func menuToggledLook(_ item: NSMenuItem) {
+        guard let look = item.representedObject as? LerpRotationEntry else { return }
+        let on = !selection.plays(look)
+        change { $0.setLook(look, on: on) }
     }
 
     /// Opens a card: its matched preset while a search found it by one, its
@@ -1025,9 +1062,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// does the opposite of what it says.
     @objc private func deselectAllShaders() {
         let shown = visibleShaders()
-        change(refusing: isSearching
-               ? "That would clear the whole rotation. " + Self.floorNote
-               : Self.floorNote + " Filter first, then switch off what you filtered.") { selection in
+        change { selection in
             shown.forEach { selection.setShader($0, on: false) }
         }
     }
@@ -1085,17 +1120,13 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// The shaders on screen, in grid order.
     public func visibleShaders() -> [String] { order.filter(isShown) }
 
-    /// "all 5 presets", "4 of 11 presets", "off".
+    /// "4 of 11 presets" while only some play, and nothing otherwise: the
+    /// badge already says on or off.
     private func summary(of name: String) -> (text: String, partial: Bool) {
         let looks = selection.looks(of: name)
-        let picked = looks.filter(selection.isPicked).count
-        if !selection.shaderPlays(name) {
-            return selection.isSwitchedOff(name) && picked > 0 && picked < looks.count
-                ? ("off · keeps \(picked) of \(looks.count)", false) : ("off", false)
-        }
-        if looks.count == 1 { return ("", false) }
-        if picked == looks.count { return ("all \(looks.count) presets", false) }
-        return ("\(picked) of \(looks.count) presets", true)
+        let playing = looks.filter(selection.plays).count
+        guard playing > 0, playing < looks.count else { return ("", false) }
+        return ("\(playing) of \(looks.count) presets", true)
     }
 
     /// Whether `edit` would leave nothing to play — what locks a control.
@@ -1137,9 +1168,6 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         selectAllButton?.isEnabled = isActive
         deselectAllButton?.isEnabled = isActive
             && !wouldEmpty { selection in shown.forEach { selection.setShader($0, on: false) } }
-        deselectAllButton?.toolTip = deselectAllButton?.isEnabled == true
-            ? "Switch every shader shown here out of the screensaver" : Self.floorNote
-        if progress.isHidden { countLabel.stringValue = libraryCount }
         // Inactive: the status line's job is to say why nothing here applies,
         // not to report a count that has no effect.
         if !isActive, let inactiveNote {
@@ -1151,23 +1179,12 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
             note.stringValue = "No shaders found."
         } else if playable.isEmpty {
             // Only reachable by hand-editing the defaults: every control here
-            // refuses to get there. Said plainly rather than papered over.
-            note.stringValue = "Nothing is switched on. The screensaver has nothing to show."
+            // refuses to get there.
+            note.stringValue = "Nothing is in the screensaver."
         } else {
-            note.stringValue = "Screensaver: \(shaderCount) of \(shaders.count) shaders, "
-                + "\(playable.count) of \(entries.count) presets."
+            note.stringValue = "\(shaderCount) of \(shaders.count) shaders in the screensaver"
         }
-        if isSearching {
-            note.stringValue += "  Filter “\(filter)”: \(shown.count) shown."
-        }
-        // Why the last one will not budge, said before it is pressed rather
-        // than only after. A control that refuses is only fair if the reason is
-        // already on screen.
-        if let refusal {
-            note.stringValue += "  " + refusal
-        } else if playable.count == 1 {
-            note.stringValue += "  " + Self.floorNote
-        }
+        if let refusal { note.stringValue += " · " + refusal }
     }
 
     // MARK: Layout

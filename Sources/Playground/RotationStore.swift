@@ -52,8 +52,7 @@ enum RotationStore {
     }
 
     /// The saved rotation as something to ask and edit — the one spelling of
-    /// it the playground uses, so the selector and the inspector's Presets list
-    /// cannot come up disagreeing about what is in.
+    /// it the playground uses.
     ///
     /// The policy is `LerpRotationSelection`'s; the cases it keeps:
     ///
@@ -103,9 +102,8 @@ enum RotationStore {
     // MARK: - One look at a time
 
     /// Posted after a write that did not come from a grid — a Shortcuts action
-    /// — so the selector and the Presets list, which hold the rotation
-    /// in memory, show what is on disk instead of saving their stale copy over
-    /// it on the next click.
+    /// — so the selector, which holds the rotation in memory, shows what is on
+    /// disk instead of saving its stale copy over it on the next click.
     static let changedElsewhere = Notification.Name("LerpRotationChangedElsewhere")
 
     /// Puts one look in or out of the rotation, the way clicking its tile does:

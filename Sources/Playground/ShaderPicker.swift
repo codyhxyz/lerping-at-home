@@ -7,18 +7,22 @@ import AppKit
 ///
 /// The playground navigates with three controls and each has one job:
 ///
-/// - **This popover** picks a shader, and switches whole shaders in or out of
-///   the screensaver (the badge on each card; All / None in the header).
+/// - **This popover** picks a shader, and is the *only* place anything goes
+///   in or out of the screensaver: a card's badge switches the shader, or —
+///   for a shader with several presets — opens a menu of the whole shader and
+///   each preset. All / None in the header do every shader shown.
 /// - **‹ ›** beside the button step to the previous or next shader without
 ///   opening this.
-/// - **The inspector's Presets list** picks one of the open shader's presets,
-///   ticks each in or out of the screensaver, and saves new ones.
+/// - **The inspector's Presets list** switches between the open shader's
+///   presets and saves new ones. No screensaver ticks: those sat beside the
+///   parameters and made two places that edited the same rotation.
 ///
 /// It used to be messier: every card had a "Looks" drawer of preset tiles,
 /// the arrows walked all ~280 shader×preset pairs, the inspector had its own
 /// preset popup, and a separate Rotation window drew the same grid with the
 /// click meaning "toggle" instead of "open". Four ways to the same presets, two
-/// meanings for one click. Shaders here, presets in the inspector.
+/// meanings for one click. Shaders and the screensaver here, presets in the
+/// inspector.
 ///
 /// A shader that is *out* of the rotation is drawn dimmed and opens on exactly
 /// the same click as any other. Not shuffling a shader is no reason to be

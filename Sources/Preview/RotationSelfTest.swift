@@ -272,13 +272,13 @@ enum RotationSelfTest {
             return check(false, "gallery: no card for \(target)")
         }
         let looksOf = entries.filter { $0.shader == target }
-        check(card.summary == "all \(looksOf.count) presets", "the card counts its presets: \(card.summary ?? "nil")")
+        check(card.summary == "", "a card with every preset playing says nothing extra: \(card.summary ?? "nil")")
 
         // Pressing a card opens its cover; the badge (show-menu) switches it.
         _ = card.accessibilityPerformPress()
         check(opened == looksOf.first && published == nil, "pressing a card opens its cover and changes nothing")
 
-        // Curation made elsewhere (the inspector) shows on the card, and the
+        // Curation (the badge's preset menu) shows on the card, and the
         // badge keeps it across off and on.
         var curated = LerpRotationSelection(discovered: entries)
         curated.setLook(looksOf[1], on: false)

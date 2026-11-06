@@ -293,20 +293,20 @@ make playground
     is a popover Library of one card per shader, over `Sources/Shaders/` plus
     the custom shader directory, refreshed when files change on disk. A click
     opens the shader at its cover (the preset its picture shows). The badge in
-    the corner switches the whole shader in or out of the screensaver, keeping
-    any per-preset curation; **All** / **None** in the header do the same for
-    every shader shown. A shader that is out of the rotation is drawn dimmed
-    and opens on the same click. The caption says how much of it plays: "all 5
-    presets", or "4 of 11 presets" in amber when hand-picked.
+    the corner is the one place anything goes in or out of the screensaver: on
+    a shader with one preset it switches it; on one with several it opens a
+    menu — **In Screensaver** for the whole shader (keeping per-preset picks),
+    then a check per preset. **All** / **None** in the header switch every
+    shader shown. A shader that is out of the rotation is drawn dimmed and
+    opens on the same click. A hand-picked shader's caption says "4 of 11
+    presets" in amber.
   - **`‹` `›`** beside the button step to the previous or next shader, in the
     selector's order, wrapping at both ends — `⇧⌘[` / `⇧⌘]`, **Shader → Next
     Shader** / **Previous Shader**.
   - **The inspector's Presets list** picks one of the open shader's presets
-    (click its name), ticks each in or out of the screensaver, and saves the
-    values on screen as a new one (**+**, the same as `⇧⌘S`). `⌥⌘[` / `⌥⌘]`
-    step through it. Ticking a preset of a shader switched off in the selector
-    switches it back on. Defaults is left out when a named preset draws the
-    same picture, as the rotation leaves it out.
+    (click its name) and saves the values on screen as a new one (**+**, the
+    same as `⇧⌘S`). `⌥⌘[` / `⌥⌘]` step through it. Defaults is left out when a
+    named preset draws the same picture, as the rotation leaves it out.
   - The selector opens with the caret in a filter field. Typing matches shader
     names *and* preset names; a card found by a preset says which (`▸ Molten`)
     and opens wearing it. ⏎ opens the first card still showing.
@@ -315,7 +315,7 @@ make playground
     filter, and `‹` `›` step straight past it.
   - Pointing at a card plays it. The card for the shader the editor has open is
     marked.
-  - The last thing playing cannot be switched off from either place.
+  - The last thing playing cannot be switched off.
   - **Shader → Regenerate Stills** throws every card's still away and draws it
     again.
 - **Shortcuts and Spotlight** get three LerpPlayground actions: **Add Preset to
@@ -345,7 +345,7 @@ make playground
   - A buffer that does not compile still saves its text. An editor that refuses
     your typing because the shader is mid-edit is an editor with a bug in it —
     it is the *values* that wait for a compile, and the console says why.
-  - Save and Revert light up for a moved slider exactly as they do for a
+  - Save and Revert appear only when there is something to save, and do for a
     keystroke, and Revert puts both halves back. Only the text raises the
     close-the-window prompt: switching looks is how this window is browsed, and a
     question on every step of it would be unusable.

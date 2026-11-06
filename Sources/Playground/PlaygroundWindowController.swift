@@ -260,7 +260,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         shaderButton.setContentCompressionResistancePriority(.init(2), for: .horizontal)
         shaderButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 178).isActive = true
         shaderButton.widthAnchor.constraint(lessThanOrEqualToConstant: 320).isActive = true
-        shaderButton.toolTip = "Pick a shader, and choose which play in the screensaver (⌘O)"
+        shaderButton.toolTip = "Shaders (⌘O)"
         shaderButton.identifier = NSUserInterfaceItemIdentifier("shader-picker-button")
 
         // The selector's cards, one step at a time, without opening it — the
@@ -280,9 +280,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // already looking when you want one that does not exist yet. File → New
         // Shader… (⌘N) is unchanged.
         Chrome.configure(saveButton, title: "Save", target: self, action: #selector(saveShader))
-        saveButton.toolTip = "Save the edits and the look on screen back into the .metal file (⌘S). "
-            + "Save the look under a new name with Shader → Save Look as Preset… (⇧⌘S)."
+        saveButton.toolTip = "Save (⌘S)"
         Chrome.configure(revertButton, title: "Revert", target: self, action: #selector(revertShader))
+        revertButton.toolTip = "Discard changes"
 
         status.isBordered = false
         status.target = self
@@ -480,7 +480,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func inspectorPane() -> NSView {
         inspector.onChange = { [weak self] name, value in self?.setParameter(name, value) }
         inspector.onPreset = { [weak self] name in self?.applyPreset(name) }
-        inspector.onPresetRotation = { [weak self] name, on in self?.setPresetInRotation(name, on) }
         inspector.onSavePreset = { [weak self] in self?.savePreset(nil) }
         inspector.onAnimate = { [weak self] name, on in self?.setAnimating(name, on) }
         inspector.onMIDICommand = { [weak self] name, component, command in
@@ -682,7 +681,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             // so put the mark back on it rather than letting the one control
             // that names the preset be the one that lies about it.
             inspector.showPreset(currentPreset)
-            showRotationInInspector()
             inspector.showsMIDIControls = midi.isAvailable
             refreshBindingLabels()
         }
@@ -1051,7 +1049,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Screensaver rotation
 
     /// The screensaver's rotation, as this window sees it. Written by the
-    /// selector's badges and the inspector's preset ticks, and *read* by
+    /// selector's badges, and *read* by
     /// `openingEntry` on launch, which is the one place this app looks at the
     /// rotation without being asked to.
     var rotationDefaults: UserDefaults?
@@ -1074,10 +1072,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // way in must not become a second flow, or one of them will be the one
         // that forgets to ask.
         made.onNew = { [weak self] in self?.newShader(nil) }
-        made.onChange = { [weak self] selection in
-            self?.persistRotation(selection)
-            self?.showRotationInInspector(selection)
-        }
+        made.onChange = { [weak self] selection in self?.persistRotation(selection) }
         picker = made
         return made
     }
@@ -1105,7 +1100,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Shader → Regenerate Stills.
     @objc func regenerateStills(_ sender: Any?) {
         preparePicker().regenerate(shaders: metalView.shaderLibrary.discover())
-        setStatus("Redrawing every shader's still", tint: EditorTheme.dim)
+        setStatus("Redrawing stills", tint: EditorTheme.dim)
     }
 
     /// What the screensaver plays, read fresh from the store.
@@ -1116,35 +1111,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     /// The one place the playground writes the rotation: through
     /// `RotationStore`, into the saver's own ByHost domain, the moment you
-    /// click. Both controls that change it — the selector's badges and the
-    /// inspector's ticks — come through here.
+    /// click. The selector's badges are the only control that changes it.
     private func persistRotation(_ selection: LerpRotationSelection) {
         RotationStore.save(selection, to: rotationDefaults)
-    }
-
-    /// Ticks the inspector's Presets list from `selection`, or from the store.
-    private func showRotationInInspector(_ selection: LerpRotationSelection? = nil) {
-        guard !current.name.isEmpty else { return }
-        inspector.showRotation(selection ?? storedSelection(), shader: current.name)
-    }
-
-    /// A tick in the inspector's Presets list. nil is the Defaults row.
-    ///
-    /// Refused, with the reason on the status line, when it would leave the
-    /// screensaver with nothing to play — the same floor the selector keeps.
-    /// Ticking a preset of a switched-off shader switches the shader back on;
-    /// that is `LerpRotationSelection.setLook`'s rule, not this one's.
-    func setPresetInRotation(_ preset: String?, _ on: Bool) {
-        let entry = LerpRotationEntry(shader: current.name, preset: preset)
-        let next = storedSelection().applying { $0.setLook(entry, on: on) }
-        guard !next.playable.isEmpty else {
-            NSSound.beep()
-            setStatus(RotationGalleryView.floorNote, tint: EditorTheme.dim)
-            return showRotationInInspector()
-        }
-        persistRotation(next)
-        showRotationInInspector(next)
-        picker?.showSelection(next)
     }
 
     /// A Shortcuts action wrote the rotation (see `RotationIntents.swift`).
@@ -1152,9 +1121,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// on disk — otherwise its next click would save its stale copy straight
     /// over the action's change.
     @objc private func rotationChangedElsewhere(_ note: Notification) {
-        let selection = storedSelection()
-        picker?.showSelection(selection)
-        showRotationInInspector(selection)
+        picker?.showSelection(storedSelection())
     }
 
     /// A shader was saved, or changed on disk. The selector keys its stills on
@@ -1213,9 +1180,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         case .cannot:
             guard writeBuffer() else { return false }
             guard !compileFailed else { return true }   // the console is already saying it
-            setStatus("✓  saved — “\(currentPreset ?? LerpRotationEntry.defaultsName)” is unchanged: every control is at "
-                        + "\(current.name)'s declared default, and a preset records only what differs",
-                      tint: EditorTheme.dim)
+            setStatus("✓  saved", tint: EditorTheme.dim)
             return true
         }
     }
@@ -1279,12 +1244,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
         guard let compiled else { return }
 
-        let detail = "The values on screen become a `// lerp-preset:` block in "
-            + "\(current.name).metal. A new name adds a look; an existing name is "
-            + "replaced after confirmation."
-            + (isDirty ? "\n\nYour unsaved edits are saved with it: a preset can only name parameters "
-                            + "the file itself declares." : "")
-        guard let name = prompt("Save look as preset", detail, currentPreset ?? "",
+        let detail = isDirty ? "Your code changes will be saved too." : ""
+        guard let name = prompt("New Preset", detail, currentPreset ?? "",
                                 placeholder: "Lagoon") else { return }
         if let problem = LerpPresetWriter.problem(withName: name) {
             return presentError("“\(name)” cannot be a preset name", problem)
@@ -1293,8 +1254,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if let clash {
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "Replace preset “\(clash.name)”?"
-            alert.informativeText = "This replaces its saved values and keeps its current rotation setting."
+            alert.messageText = "Replace “\(clash.name)”?"
             alert.addButton(withTitle: "Replace")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -1374,30 +1334,22 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// what it *differs* from the defaults in, so moving a default moves every
     /// preset that stays silent about that parameter. That is the same thing
     /// editing the declaration by hand does, and it is what saving the Defaults
-    /// look can honestly mean; the status line says how many lines moved, and
-    /// ⌘Z takes the buffer back.
+    /// look can honestly mean; ⌘Z takes the buffer back.
     ///
     /// The one thing it cannot save is a parameter you took control of from
     /// its `// lerp-animate:`. The Defaults look's drift *is* that line, and
     /// rewriting someone's declarations to delete it is not what Save is for —
-    /// so the held value becomes the default, the drift resumes, and the status
-    /// line says so and names the two ways to keep it still.
+    /// so the held value becomes the default and the drift resumes. A preset
+    /// (⇧⌘S) is the way to keep it still.
     @discardableResult
     private func writeDefaults(_ overrides: LookOverrides) -> Bool {
-        let declared = compiled?.parameters.count ?? overrides.count
-        let stillDrifting = overrides.values.filter { $0.param.animation != nil }.map(\.param.name)
         editor.replaceTextAsEdit(ParamScaffold.settingDefaults(overrides.values, in: editor.text))
         guard writeBuffer() else { return false }
         // The round trip in public, as in `writePreset`: the file has been
         // re-read and recompiled, and this puts the freshly declared defaults
         // on screen — so a write that did not take cannot look like one that did.
         applyPreset(nil)
-        setStatus("✓  saved \(overrides.values.count) of \(declared)"
-                    + " parameter\(declared == 1 ? "" : "s") as \(current.name)'s defaults"
-                    + (stillDrifting.isEmpty ? "" : " — \(stillDrifting.joined(separator: ", ")) still "
-                        + "animate\(stillDrifting.count == 1 ? "s" : ""): delete the `// lerp-animate:` line, "
-                        + "or save a preset (⇧⌘S), to keep \(stillDrifting.count == 1 ? "it" : "them") still"),
-                  tint: stillDrifting.isEmpty ? EditorTheme.text : EditorTheme.dim)
+        setStatus("✓  saved", tint: EditorTheme.text)
         return true
     }
 
@@ -1409,7 +1361,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func writePreset(named name: String,
                              _ overrides: LookOverrides,
                              replacing existing: LerpPreset?) -> Bool {
-        let declared = compiled?.parameters.count ?? overrides.count
         let declaration = LerpPresetWriter.declaration(name: name, overrides: overrides.values,
                                                        animations: overrides.animations)
 
@@ -1430,10 +1381,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // recompiled the freshly written source before `applyPreset` reads the
         // updated preset, so a failed write cannot be reported as success.
         inspector.choosePreset(name)
-        setStatus("✓  \(existing == nil ? "saved" : "updated") preset “\(name)” — "
-                    + "\(overrides.count) of \(declared)"
-                    + " parameter\(declared == 1 ? "" : "s")",
-                  tint: EditorTheme.text)
+        setStatus("✓  saved “\(name)”", tint: EditorTheme.text)
         return true
     }
 
@@ -1454,16 +1402,14 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     @objc func newShader(_ sender: Any?) {
         guard confirmDiscardIfDirty() else { return }
         let directory = ShaderPaths.newShaderDirectory
-        guard let typed = prompt("New shader",
-                                 "The file name becomes the shader name.\nSaving to \(directory.path)",
-                                 "", placeholder: "aurora-veil") else { return }
+        guard let typed = prompt("New Shader", "", "", placeholder: "aurora-veil") else { return }
         guard let stem = ShaderScaffold.sanitize(name: typed) else {
             presentError("Invalid name", "Use letters, numbers and dashes, e.g. aurora-veil.")
             return
         }
         let url = directory.appendingPathComponent(stem + ".metal")
         guard !FileManager.default.fileExists(atPath: url.path) else {
-            presentError("\(stem).metal already exists", "Pick a different name or edit the existing shader.")
+            presentError("“\(stem)” already exists", "Pick a different name.")
             return
         }
         do {
@@ -1753,6 +1699,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         let dirty = isDirty, unsaved = hasUnsavedChanges
         saveButton.isEnabled = unsaved
         revertButton.isEnabled = unsaved && current.url != nil
+        // Only there when they would do something: two greyed-out buttons
+        // permanently on the bar are noise, not information.
+        if saveButton.isHidden == unsaved { saveButton.isHidden = !unsaved }
+        if revertButton.isHidden == revertButton.isEnabled { revertButton.isHidden = !revertButton.isEnabled }
         updateShaderButton()
         let title = "Lerping@Home Playground — \(current.name)\(dirty ? " •" : "")" + Self.repoSuffix
         if window?.title != title { window?.title = title }
