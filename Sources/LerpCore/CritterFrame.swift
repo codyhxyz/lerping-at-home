@@ -102,5 +102,74 @@ public struct CritterFrame: Equatable, Sendable {
     public var bang: Float = 0             // "!" double-take
     public var time: Float = 0
 
+    // ---- added by Lane BEHAVIOR (add-only)
+    /// The scribble ball's amount: `storm`, but not while asleep, during the
+    /// double-take or for an egg (fxScribble's `frazzle`). `storm` itself
+    /// drives the lightning.
+    public var frazzle: Float = 0
+    /// The session-opening double-take, 1…0 over its first ~4 s (0 when it is
+    /// asleep or an egg). Hearts and "!" are already folded into love/bang.
+    public var dtake: Float = 0
+    /// The camera's up (unit). `camTarget` is on its forward axis; up is the
+    /// world-up look-at basis for every turn the `yaw`/`pitch` range allows,
+    /// given here so nothing has to assume it.
+    public var camUp = SIMD3<Float>(0, 1, 0)
+    /// Unit direction from shoulder to mitten, in the critter's own frame
+    /// (+Z its face, +Y up, unscaled): the shader's arm, built from
+    /// `armL`/`armR` and `reach`.
+    public var armDirL = SIMD3<Float>(-0.34, -0.94, 0.3)
+    public var armDirR = SIMD3<Float>(0.34, -0.94, 0.3)
+    /// World y of each tree's base, one per `trees` entry: the ground there,
+    /// less `sink`·2.1·size (the shader's sinking, so the canopy goes under).
+    public var treeBase: [Float] = []
+    /// World y of each rock's centre, one per `rocks` entry.
+    public var rockBase: [Float] = []
+    /// The butterfly's dotted trail, oldest last (world, unbent).
+    public var butterflyTrail: [SIMD3<Float>] = []
+
     public init() {}
+}
+
+// ---- added by Lane BEHAVIOR: the critter's frame, as the shader composed it.
+extension CritterFrame {
+    /// The critter node's rotation: yaw about +Y, then `lean` about its +X
+    /// (positive tips the top toward its face), then `roll` about its +Z —
+    /// node orientation = Ry(yaw) · Rx(lean) · Rz(−roll). (The minus is the
+    /// shader's: its roll turned a local point by Rz(+roll) on the way in.)
+    public var critterOrientation: simd_quatf {
+        simd_quatf(angle: yaw, axis: SIMD3(0, 1, 0))
+            * simd_quatf(angle: lean, axis: SIMD3(1, 0, 0))
+            * simd_quatf(angle: -roll, axis: SIMD3(0, 0, 1))
+    }
+
+    /// A world point in the critter's frame (origin at its feet, unscaled):
+    /// the shader's critterLocal.
+    public func critterLocal(_ q: SIMD3<Float>) -> SIMD3<Float> {
+        var p = q - position
+        let c = cos(yaw), s = sin(yaw)
+        p = SIMD3(c * p.x - s * p.z, p.y, s * p.x + c * p.z)
+        let cl = cos(lean), sl = sin(lean)
+        p = SIMD3(p.x, p.y * cl + p.z * sl, -p.y * sl + p.z * cl)
+        let cr = cos(roll), sr = sin(roll)
+        return SIMD3(p.x * cr - p.y * sr, p.x * sr + p.y * cr, p.z)
+    }
+
+    /// The inverse of `critterLocal`: the shader's critterWorld.
+    public func critterWorld(_ local: SIMD3<Float>) -> SIMD3<Float> {
+        var p = local
+        let cr = cos(roll), sr = sin(roll)
+        p = SIMD3(p.x * cr + p.y * sr, -p.x * sr + p.y * cr, p.z)
+        let cl = cos(lean), sl = sin(lean)
+        p = SIMD3(p.x, p.y * cl - p.z * sl, p.y * sl + p.z * cl)
+        let c = cos(yaw), s = sin(yaw)
+        p = SIMD3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z)
+        return p + position
+    }
+
+    /// Where a world point is drawn once the world is rolled (the shader's
+    /// unbendP): the space the camera and the 2D overlays live in.
+    public func rolled(_ q: SIMD3<Float>) -> SIMD3<Float> {
+        let d = SIMD2(q.x, q.z) - focus
+        return SIMD3(q.x, q.y - bend * simd_dot(d, d), q.z)
+    }
 }

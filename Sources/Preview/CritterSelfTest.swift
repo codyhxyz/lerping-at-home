@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 /// `LerpPreview --critter-selftest`: the critter's ledger and vitals, driven by
 /// a synthetic clock. CPU only — nothing is rendered, and the real ledger is
@@ -34,6 +35,7 @@ enum CritterSelfTest {
         persistence()
         returnsAndRelief()
         moods()
+        behavior()
         guard failures == 0 else {
             PreviewMain.fail("critter self-test: \(failures) check\(failures == 1 ? "" : "s") failed")
         }
@@ -465,5 +467,361 @@ enum CritterSelfTest {
             let (want, label) = intended[mood]!
             check(want.contains(top), "mood \(mood) \(label): top weight is \(names[top]) (\(f(w[top])))")
         }
+    }
+
+    // MARK: 10. Behaviour (CritterBehavior, the port of the shader's story)
+
+    typealias B = CritterBehavior
+
+    /// critter.metal's parameters, at their declared defaults.
+    static func critterParams(act: Int? = nil, drift: Double? = nil, yaw: Double? = nil,
+                              pitch: Double? = nil, magnify: Double? = nil) -> LerpParameterValues {
+        var v = LerpParameterValues([
+            LerpParam(name: "mood", type: .int, min: 0, max: 6, defaultValue: .scalar(0), label: "Mood"),
+            LerpParam(name: "clock", type: .float, min: -1, max: 24, defaultValue: .scalar(-1), label: "Hour"),
+            LerpParam(name: "drift", type: .float, min: 0, max: 1, defaultValue: .scalar(0.35), label: "Drift"),
+            LerpParam(name: "act", type: .int, min: -1, max: 9, defaultValue: .scalar(-1), label: "Activity"),
+            LerpParam(name: "yaw", type: .float, min: -180, max: 180, defaultValue: .scalar(0), label: "Turn"),
+            LerpParam(name: "pitch", type: .float, min: -35, max: 20, defaultValue: .scalar(0), label: "Tilt"),
+            LerpParam(name: "magnify", type: .float, min: -0.7, max: 0.6, defaultValue: .scalar(0), label: "Zoom"),
+        ])
+        if let act { v.set("act", to: Double(act)) }
+        if let drift { v.set("drift", to: drift) }
+        if let yaw { v.set("yaw", to: yaw) }
+        if let pitch { v.set("pitch", to: pitch) }
+        if let magnify { v.set("magnify", to: magnify) }
+        return v
+    }
+
+    /// Every scalar in a frame, by name.
+    static func scalars(_ f: CritterFrame) -> [(String, Float)] {
+        var out: [(String, Float)] = [
+            ("size", f.size), ("identity", f.identity), ("health", f.health), ("bloom", f.bloom),
+            ("ageDays", f.ageDays), ("hatch", f.hatch), ("wobble", f.wobble), ("yaw", f.yaw),
+            ("lean", f.lean), ("roll", f.roll), ("squash", f.squash), ("armL", f.armL), ("armR", f.armR),
+            ("reach", f.reach), ("sit", f.sit), ("stride", f.stride), ("step", f.step), ("eye", f.eye),
+            ("lid", f.lid), ("lidTilt", f.lidTilt), ("happy", f.happy), ("mouth", f.mouth),
+            ("mouthO", f.mouthO), ("bags", f.bags), ("droop", f.droop), ("cloud", f.cloud),
+            ("cloudDark", f.cloudDark), ("castle", f.castle), ("butterfly", f.butterfly),
+            ("butterflyYaw", f.butterflyYaw), ("flap", f.flap), ("camFocal", f.camFocal), ("bend", f.bend),
+            ("hour", f.hour), ("night", f.night), ("golden", f.golden), ("k", f.k), ("zzz", f.zzz),
+            ("love", f.love), ("glee", f.glee), ("sick", f.sick), ("storm", f.storm), ("flash", f.flash),
+            ("sweat", f.sweat), ("bang", f.bang), ("frazzle", f.frazzle), ("dtake", f.dtake), ("time", f.time),
+        ]
+        let vecs: [(String, SIMD3<Float>)] = [
+            ("position", f.position), ("cloudPos", f.cloudPos), ("castlePos", f.castlePos),
+            ("butterflyPos", f.butterflyPos), ("camPos", f.camPos), ("camTarget", f.camTarget),
+            ("camUp", f.camUp), ("sunDir", f.sunDir), ("moonDir", f.moonDir), ("lightDir", f.lightDir),
+            ("sunColor", f.sunColor), ("skyAmbient", f.skyAmbient), ("armDirL", f.armDirL), ("armDirR", f.armDirR),
+        ]
+        for (n, v) in vecs { out += [(n + ".x", v.x), (n + ".y", v.y), (n + ".z", v.z)] }
+        out += [("focus.x", f.focus.x), ("focus.y", f.focus.y)]
+        for (i, t) in f.trees.enumerated() { out += [("tree\(i).x", t.x), ("tree\(i).z", t.y), ("tree\(i).size", t.z), ("tree\(i).sink", t.w)] }
+        for (i, y) in f.treeBase.enumerated() { out.append(("treeBase\(i)", y)) }
+        for (i, r) in f.rocks.enumerated() { out += [("rock\(i).x", r.x), ("rock\(i).z", r.y), ("rock\(i).size", r.z)] }
+        for (i, y) in f.rockBase.enumerated() { out.append(("rockBase\(i)", y)) }
+        for (i, p) in f.butterflyTrail.enumerated() { out += [("trail\(i).x", p.x), ("trail\(i).y", p.y), ("trail\(i).z", p.z)] }
+        return out
+    }
+
+    /// What is wrong with a frame, or nil.
+    static func problem(_ f: CritterFrame) -> String? {
+        for (n, x) in scalars(f) where !x.isFinite { return "\(n) = \(x)" }
+        let unit: [(String, Float)] = [
+            ("k", f.k), ("zzz", f.zzz), ("love", f.love), ("glee", f.glee), ("sick", f.sick),
+            ("storm", f.storm), ("flash", f.flash), ("sweat", f.sweat), ("bang", f.bang), ("frazzle", f.frazzle),
+            ("dtake", f.dtake), ("butterfly", f.butterfly), ("cloudDark", f.cloudDark), ("castle", f.castle),
+            ("cloud", f.cloud), ("night", f.night), ("golden", f.golden), ("reach", f.reach), ("sit", f.sit),
+            ("hatch", f.hatch), ("bags", f.bags), ("droop", f.droop), ("mouthO", f.mouthO), ("health", f.health),
+        ]
+        for (n, x) in unit where !(x >= 0 && x <= 1.0001) { return "\(n) = \(x) outside 0…1" }
+        if !(f.lid >= 0 && f.lid <= 0.85) { return "lid = \(f.lid)" }
+        if !(f.happy >= -1 && f.happy <= 1) { return "happy = \(f.happy)" }
+        if !(f.eye >= 0 && f.eye <= 1.3) { return "eye = \(f.eye)" }
+        if !(f.mouth >= -1 && f.mouth <= 1) { return "mouth = \(f.mouth)" }
+        if !(f.squash > 0.6 && f.squash < 1.35) { return "squash = \(f.squash)" }
+        if !(f.size >= 0.3 && f.size <= 0.5) { return "size = \(f.size)" }
+        if !(f.stage >= 0 && f.stage <= 3 && f.season >= 0 && f.season <= 3) { return "stage/season" }
+        if !((0...9).contains(f.act) && (0...9).contains(f.prevAct)) { return "act \(f.act)/\(f.prevAct)" }
+        if !(f.hour >= 0 && f.hour < 24) { return "hour = \(f.hour)" }
+        if !(f.flap >= 0 && f.flap <= 1.33) { return "flap = \(f.flap)" }
+        if f.trees.count != f.treeCount || f.treeBase.count != f.treeCount || !(2...8).contains(f.treeCount) {
+            return "trees \(f.trees.count)/\(f.treeCount)"
+        }
+        for t in f.trees where !(t.w >= 0 && t.w <= 1 && t.z >= 0 && t.z <= 1.05) { return "tree \(t)" }
+        if f.rocks.count != 3 || f.rockBase.count != 3 || f.butterflyTrail.count != 5 { return "rocks/trail" }
+        for (n, v) in [("sunDir", f.sunDir), ("moonDir", f.moonDir), ("lightDir", f.lightDir), ("camUp", f.camUp),
+                       ("armDirL", f.armDirL), ("armDirR", f.armDirR)] where abs(simd_length(v) - 1) > 1e-3 {
+            return "\(n) not unit: \(v)"
+        }
+        let xz = simd_length(SIMD2(f.position.x, f.position.z))
+        if xz > 2.5 { return "critter wandered to r = \(xz)" }
+        if f.position.y < B.groundHeight(SIMD2(f.position.x, f.position.z), identity: f.identity) - 0.05 {
+            return "feet under the ground: \(f.position.y)"
+        }
+        let camD = simd_length(f.camPos - f.camTarget)
+        if !(camD > 1 && camD < 8) { return "camera distance \(camD)" }
+        if f.camPos.y < 0.3 { return "camera under the island: \(f.camPos.y)" }
+        return nil
+    }
+
+    static let poseFields: [(String, (CritterFrame) -> Float)] = [
+        ("x", { $0.position.x }), ("y", { $0.position.y }), ("z", { $0.position.z }),
+        ("lean", { $0.lean }), ("roll", { $0.roll }), ("squash", { $0.squash }), ("armL", { $0.armL }),
+        ("armR", { $0.armR }), ("reach", { $0.reach }), ("sit", { $0.sit }), ("lid", { $0.lid }),
+        ("happy", { $0.happy }), ("mouth", { $0.mouth }), ("mouthO", { $0.mouthO }), ("stride", { $0.stride }),
+        ("cam.x", { $0.camPos.x }), ("cam.y", { $0.camPos.y }), ("cam.z", { $0.camPos.z }),
+    ]
+
+    /// The biggest pose change between two frames (yaw by angle), and which field.
+    static func poseJump(_ a: CritterFrame, _ b: CritterFrame) -> (Float, String) {
+        var worst: (Float, String) = (0, "")
+        for (n, get) in poseFields {
+            let d = abs(get(a) - get(b))
+            if d > worst.0 { worst = (d, n) }
+        }
+        var dy = (b.yaw - a.yaw).truncatingRemainder(dividingBy: 2 * .pi)
+        if dy > .pi { dy -= 2 * .pi } else if dy < -.pi { dy += 2 * .pi }
+        if abs(dy) > worst.0 { worst = (abs(dy), "yaw") }
+        return worst
+    }
+
+    /// The lowest point of the body ellipsoid, sampled, and the ground under it.
+    static func lowestBodyPoint(_ f: CritterFrame) -> (Float, Float) {
+        let s = f.size, sq = f.squash, hz = 1 / sqrt(sq)
+        let bc = SIMD3<Float>(0, 0.95 * s * sq, 0)
+        let r = SIMD3<Float>(1.0 * hz, 0.95 * sq, 0.92 * hz) * s
+        var low = SIMD3<Float>(0, 1e5, 0)
+        for i in 0...90 {
+            let th = Float(i) / 90 * .pi
+            for j in 0..<180 {
+                let ph = Float(j) / 180 * 2 * .pi
+                let p = f.critterWorld(bc + r * SIMD3(sin(th) * cos(ph), cos(th), sin(th) * sin(ph)))
+                if p.y < low.y { low = p }
+            }
+        }
+        return (low.y, B.groundHeight(SIMD2(low.x, low.z), identity: f.identity))
+    }
+
+    static func behavior() {
+        let fixture = CritterVitals.fixture
+        let defaults = critterParams()
+        var vitalsSet: [(String, CritterVitals)] = [("fixture", fixture)]
+        for mood in 1...6 { vitalsSet.append(("mood \(mood)", CritterData.demo(mood))) }
+        var hatchling = CritterVitals.fixture; hatchling.growth = 1.2; vitalsSet.append(("baby", hatchling))
+        var unborn = CritterVitals(); unborn.unborn = true; vitalsSet.append(("unborn", unborn))
+        var winter = CritterVitals.fixture; winter.month = 12; winter.hour = 23.5; winter.ageDays = 40
+        vitalsSet.append(("winter night, old", winter))
+
+        // Determinism, and the defaults equal to no parameters at all.
+        var same = true
+        for (_, v) in vitalsSet {
+            for t: Float in [0, 1, 4.2, 37, 500] {
+                let a = B.frame(vitals: v, time: t, seed: 0.37, params: defaults)
+                same = same && a == B.frame(vitals: v, time: t, seed: 0.37, params: defaults)
+                    && a == B.frame(vitals: v, time: t, seed: 0.37, params: nil)
+            }
+        }
+        check(same, "behaviour: same inputs give the same frame (and nil params = the declared defaults)")
+
+        // Finite and in range over a grid.
+        let times: [Float] = [0, 0.3, 0.62, 1.0, 1.5, 2.0, 3.9, 5, 17.3, 35.99, 36.0, 37.2, 38.6, 72.5, 200, 1000.7, 3600 * 3 + 0.4]
+        let seeds: [Float] = [0, 0.137, 0.5, 0.913, 0.999]
+        var bad: String?
+        var count = 0
+        for (name, v) in vitalsSet {
+            for act in -1...9 {
+                let p = critterParams(act: act)
+                for t in times { for seed in seeds {
+                    count += 1
+                    if bad == nil, let why = problem(B.frame(vitals: v, time: t, seed: seed, params: p)) {
+                        bad = "\(name) act \(act) t \(t) seed \(seed): \(why)"
+                    }
+                } }
+            }
+        }
+        for (yaw, pitch, mag) in [(-180.0, -35.0, -0.7), (180, 20, 0.6), (90, 0, 0), (0, -35, 0.6)] {
+            let p = critterParams(yaw: yaw, pitch: pitch, magnify: mag)
+            for t in times {
+                count += 1
+                if bad == nil, let why = problem(B.frame(vitals: fixture, time: t, seed: 0.4, params: p)) {
+                    bad = "turn \(yaw)/\(pitch)/\(mag) t \(t): \(why)"
+                }
+            }
+        }
+        check(bad == nil, "behaviour: \(count) frames finite and in range" + (bad.map { " — \($0)" } ?? ""))
+
+        // Chapter edges: the frame either side of 36 s, 72 s, 108 s barely moves.
+        var worst: (Float, String) = (0, "")
+        var edges = 0
+        for (name, v) in vitalsSet where !v.unborn && v.growth >= 0.25 {
+            for i in 0..<60 {
+                let seed = Float(i) / 60 + 0.004
+                for edge: Float in [36, 72, 108] {
+                    edges += 1
+                    // The step across the edge, less what the activities
+                    // themselves move in the steps either side of it.
+                    let fr = [-3, -1, 1, 3].map {
+                        B.frame(vitals: v, time: edge + Float($0) / 120, seed: seed, params: defaults)
+                    }
+                    for (n, get) in poseFields + [("yaw", { $0.yaw })] {
+                        func d(_ i: Int) -> Float {
+                            var x = abs(get(fr[i + 1]) - get(fr[i]))
+                            if n == "yaw" { x = x.truncatingRemainder(dividingBy: 2 * .pi); x = min(x, 2 * .pi - x) }
+                            return x
+                        }
+                        let excess = d(1) - max(d(0), d(2))
+                        if excess > worst.0 {
+                            worst = (excess, "\(name) seed \(f(seed)) at \(Int(edge)) s: \(n) \(fr[0].act)→\(fr[3].act)")
+                        }
+                    }
+                }
+            }
+        }
+        check(worst.0 < 0.02, "behaviour: \(edges) chapter edges: no 1/60 s step across one moves a pose field more "
+              + "than the steps beside it (worst excess \(f(worst.0)), \(worst.1))")
+
+        // The blend itself: over 2.5 s, no step bigger than the activities' own motion.
+        var blendWorst: (Float, String) = (0, "")
+        for i in 0..<12 {
+            let seed = Float(i) / 12 + 0.01
+            var prev = B.frame(vitals: fixture, time: 36, seed: seed, params: defaults)
+            for n in 1...150 {
+                let t = 36 + Float(n) / 60
+                let cur = B.frame(vitals: fixture, time: t, seed: seed, params: defaults)
+                let j = poseJump(prev, cur)
+                if j.0 > blendWorst.0 && j.1 != "squash" {   // a hop's landing squash snaps by design
+                    blendWorst = (j.0, "seed \(f(seed)) t \(f(t)): \(j.1) \(cur.prevAct)→\(cur.act)")
+                }
+                prev = cur
+            }
+        }
+        check(blendWorst.0 < 0.25, "behaviour: through a chapter blend the biggest per-frame change is "
+              + "\(f(blendWorst.0)) (\(blendWorst.1))")
+
+        // Face-down sleep (a burnt-out week) rests its body on the grass.
+        let burnt = CritterData.demo(2)
+        var restWorst: Float = 0
+        for t: Float in [3, 10, 20.5, 33] { for seed: Float in [0.1, 0.6] {
+            let fr = B.frame(vitals: burnt, time: t, seed: seed, params: critterParams(act: B.actSleep))
+            let (low, ground) = lowestBodyPoint(fr)
+            restWorst = max(restWorst, abs(low - ground))
+        } }
+        let lying = B.frame(vitals: burnt, time: 10, seed: 0.1, params: critterParams(act: B.actSleep))
+        check(restWorst < 0.006 && lying.lean > 0.5,
+              "behaviour: face-down sleep (lean \(f(lying.lean))) rests on the ground: lowest body point "
+              + "within \(String(format: "%.4f", restWorst)) of it")
+        var floatWorst: Float = 1e5
+        for act in 0...9 { for t: Float in [5, 12.3, 21.7] {
+            let fr = B.frame(vitals: fixture, time: t, seed: 0.3, params: critterParams(act: act))
+            let (low, ground) = lowestBodyPoint(fr)
+            floatWorst = min(floatWorst, low - ground)
+        } }
+        check(floatWorst > -0.006, "behaviour: no activity pushes the body into the ground (lowest "
+              + "\(String(format: "%.4f", floatWorst)) above it)")
+
+        // The first chapter opens with the double-take: a "!" while it is noticed.
+        var takes = 0, bangs = 0
+        for i in 0..<40 {
+            let seed = Float(i) / 40 + 0.003
+            let first = B.frame(vitals: fixture, time: 0, seed: seed, params: defaults)
+            guard first.act != B.actSleep else { continue }
+            takes += 1
+            let at1 = B.frame(vitals: fixture, time: 1.0, seed: seed, params: defaults)
+            let at5 = B.frame(vitals: fixture, time: 5.0, seed: seed, params: defaults)
+            let later = B.frame(vitals: fixture, time: 37.0, seed: seed, params: defaults)
+            if first.dtake == 1 && at1.bang > 0.9 && at5.bang == 0 && at5.dtake == 0
+                && later.bang == 0 && later.dtake == 0 { bangs += 1 }
+        }
+        let asleep = B.frame(vitals: fixture, time: 1, seed: 0.2, params: critterParams(act: B.actSleep))
+        let egg = B.frame(vitals: CritterData.demo(5), time: 1, seed: 0.2, params: defaults)
+        check(takes > 20 && bangs == takes && asleep.bang == 0 && egg.bang == 0,
+              "behaviour: the first chapter's double-take shows \"!\" (\(bangs)/\(takes) seeds; none asleep or in the egg)")
+
+        // Out of the double-take into every activity, without a snap.
+        var dtWorst: (Float, String) = (0, "")
+        for act in 0...9 where act != B.actSleep { for i in 0..<16 {
+            let seed = Float(i) / 16 + 0.02
+            let p = critterParams(act: act)
+            var prev = B.frame(vitals: fixture, time: 0, seed: seed, params: p)
+            for n in 1...300 {
+                let cur = B.frame(vitals: fixture, time: Float(n) / 60, seed: seed, params: p)
+                let j = poseJump(prev, cur)
+                if j.0 > dtWorst.0 && j.1 != "squash" { dtWorst = (j.0, "act \(act) seed \(f(seed)) t \(f(Float(n) / 60)): \(j.1)") }
+                prev = cur
+            }
+        } }
+        check(dtWorst.0 < 0.25, "behaviour: the double-take hands over to every activity smoothly (biggest "
+              + "per-frame change \(f(dtWorst.0)), \(dtWorst.1))")
+
+        // Pinning the activity.
+        var pinned = true
+        for act in 0...9 { for t: Float in [0.5, 20, 40, 95] { for seed: Float in [0.2, 0.7] {
+            let fr = B.frame(vitals: fixture, time: t, seed: seed, params: critterParams(act: act))
+            pinned = pinned && fr.act == act && fr.prevAct == act
+        } } }
+        let eggPinned = B.frame(vitals: CritterData.demo(5), time: 5, seed: 0.2, params: critterParams(act: B.actHop))
+        var eggQuiet = true
+        for i in 0..<20 { for t: Float in [0.5, 36.5, 73] {
+            let e = B.frame(vitals: CritterData.demo(5), time: t, seed: Float(i) / 20, params: defaults)
+            eggQuiet = eggQuiet && e.act == B.actIdle && e.prevAct == B.actIdle && e.castle == 0
+                && e.butterfly == 0 && e.cloud == 0 && e.zzz == 0 && e.bang == 0
+        } }
+        check(eggQuiet, "behaviour: an egg idles in every chapter, with no castle, butterfly, cloud or Zzz")
+        check(pinned && eggPinned.act == B.actIdle && eggPinned.stage == 0,
+              "behaviour: `act` pins every activity in every chapter (an egg still idles)")
+
+        // Each activity's own signature.
+        func at(_ act: Int, _ t: Float = 10, _ v: CritterVitals = fixture) -> CritterFrame {
+            B.frame(vitals: v, time: t, seed: 0.42, params: critterParams(act: act))
+        }
+        let sigs: [(String, Bool)] = [
+            ("asleep: zzz", at(B.actSleep).zzz == 1 && at(B.actSleep).eye == 0),
+            ("pacing: storm cloud, scribble, sweat", at(B.actPace).cloud > 0.3 && at(B.actPace).cloudDark == 1
+                && at(B.actPace).frazzle == 1 && at(B.actPace).sweat == 1),
+            ("unwell: rain cloud and sweat", at(B.actSick).sick == 1 && at(B.actSick).cloudDark == 0
+                && at(B.actSick).sweat == 1),
+            ("building: a castle beside it", at(B.actBuild, 30).castle > 0.9 && at(B.actBuild).castle > 0.3),
+            ("chasing: the butterfly", at(B.actChase).butterfly == 1 && at(B.actIdle).butterfly == 0),
+            ("waving / stretching: hearts", at(B.actWave).love == 1 && at(B.actStretch).love == 1),
+            ("hopping: sparkles on a happy week", at(B.actHop).glee > 0.9),
+            ("no sweat when content", at(B.actIdle).sweat == 0 && at(B.actHop).sweat == 0 && at(B.actWave).sweat == 0),
+        ]
+        let missing = sigs.filter { !$0.1 }.map(\.0)
+        check(missing.isEmpty, "behaviour: each activity brings its things" + (missing.isEmpty ? "" : " — not: \(missing)"))
+
+        // Cross-checks against critter.metal, worked by hand for the fixture at
+        // t = 5, seed 0 (see the report): chapter 0 draws BUILD (hash11(0) =
+        // 0.721 of the squared weights' 5.098 lands in w9), the double-take is
+        // over (dtake = 1 − smoothstep(3.4, 4.3, 5) = 0), BUILD's face weight is
+        // 0, so the camera sits at the bare azimuth 2π·0.31 + 5·0.02·0.35.
+        let x = B.frame(vitals: fixture, time: 5, seed: 0, params: nil)
+        let wantCam = SIMD3<Float>(2.5935002, 2.0058287, -1.0662413)
+        let wantTarget = SIMD3<Float>(-0.0103949, 0.5455256, 0.0716622)
+        let camErr = simd_length(x.camPos - wantCam) + simd_length(x.camTarget - wantTarget)
+        check(x.act == B.actBuild && x.stage == 2 && abs(x.size - 0.3595687) < 1e-5 && camErr < 1e-4
+              && x.treeCount == 5 && x.night == 0 && x.golden == 0 && x.dtake == 0,
+              "behaviour: matches the shader worked by hand at t = 5 (BUILD, s 0.3596, camera "
+              + "(\(f(x.camPos.x)), \(f(x.camPos.y)), \(f(x.camPos.z))), error \(String(format: "%.1e", camErr)), 5 trees, day)")
+
+        // The orientation helper composes as critterWorld does.
+        var orientErr: Float = 0
+        for t: Float in [3, 11, 50] {
+            let fr = at(B.actSleep, t, burnt)
+            for p in [SIMD3<Float>(0.3, 0.4, -0.2), SIMD3<Float>(-0.1, 0.9, 0.5)] {
+                orientErr = max(orientErr, simd_length(fr.critterWorld(p) - (fr.position + fr.critterOrientation.act(p))))
+                orientErr = max(orientErr, simd_length(fr.critterLocal(fr.critterWorld(p)) - p))
+            }
+        }
+        check(orientErr < 1e-5, "behaviour: critterOrientation and critterLocal/World agree "
+              + "(\(String(format: "%.1e", orientErr)))")
+
+        // Turning by hand swings the camera round what it looks at.
+        let turned = B.frame(vitals: fixture, time: 5, seed: 0, params: critterParams(yaw: 90))
+        let r0 = simd_length(x.camPos - x.camTarget), r1 = simd_length(turned.camPos - turned.camTarget)
+        let zoomed = B.frame(vitals: fixture, time: 5, seed: 0, params: critterParams(magnify: 1 / 2))
+        check(abs(r0 - r1) < 1e-4 && simd_length(turned.camPos - x.camPos) > 1
+              && abs(simd_length(zoomed.camPos - zoomed.camTarget) - r0 * pow(2, -0.5)) < 1e-4,
+              "behaviour: yaw turns the camera round its target, magnify brings it nearer")
     }
 }
