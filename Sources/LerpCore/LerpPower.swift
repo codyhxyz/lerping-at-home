@@ -2,24 +2,19 @@ import Foundation
 import IOKit.ps
 import os
 
-/// The machine conditions that cap how fast a `LerpMetalView` may draw.
+/// The machine conditions a `LerpMetalView` gives way to.
 ///
-/// A screensaver is the one thing on the machine nobody is waiting for, so it
-/// is the first thing that should give way: on battery it is spending charge
-/// the user will want later, in Low Power Mode the user has said so outright,
-/// and under thermal pressure every frame it draws is heat the fans have to
-/// move. None of these stop it — a black screensaver is a bug — they only
-/// lower the ceiling the host's own frame-rate setting is clamped to.
+/// Frame rate: only thermal pressure, where every frame is heat the fans have
+/// to move. There used to be our own caps on battery (20 fps) and in Low Power
+/// Mode (15), stacked on top of what macOS already does. macOS's screensavers
+/// have no such caps and no frame-rate setting: they draw at the panel's rate,
+/// and the system throttles them in Low Power Mode as it does every app
+/// (ProMotion held to 60 Hz) through the display link. Ours now do the same.
 ///
-/// The battery and Low Power Mode caps are our policy, stacked on top of
-/// what macOS already does. The system throttles every app on its own in Low
-/// Power Mode (ProMotion held to 60 Hz, some fullscreen vsync apps to 30), and
-/// does nothing to frame rate on battery alone. No native screensaver drops to
-/// 15 or 20 fps. So a host can opt out of both (`LerpPowerMonitor.savesPower`)
-/// and still get whatever the system imposes, through the display link. The
-/// playground does: it is the thing the user is looking at, and silently
-/// dropping it to 20 fps the moment the laptop was unplugged made it look
-/// broken. Thermal pressure caps every host regardless.
+/// EDR: held back on battery and in Low Power Mode in the screensaver, where
+/// a 16-bit pass to brighten highlights nobody is watching is the wrong trade.
+/// The playground opts out (`LerpPowerMonitor.savesPower`): it is the thing
+/// the user is looking at.
 public struct LerpPowerState: Equatable, Sendable {
     public var lowPowerMode: Bool
     /// The machine is running on battery. `onBattery` and `lowPowerMode` are
@@ -27,8 +22,8 @@ public struct LerpPowerState: Equatable, Sendable {
     /// `savesPower`.
     public var onBattery: Bool
     public var thermal: ProcessInfo.ThermalState
-    /// Whether battery and Low Power Mode lower the frame-rate cap and hold
-    /// back EDR in this process. False in the playground.
+    /// Whether battery and Low Power Mode hold back EDR in this process.
+    /// False in the playground.
     public var savesPower: Bool
 
     public init(lowPowerMode: Bool = false, onBattery: Bool = false,
@@ -45,8 +40,7 @@ public struct LerpPowerState: Equatable, Sendable {
     /// On battery, in a process that holds back for it.
     public var throttledByBattery: Bool { onBattery && savesPower }
 
-    /// The highest frame rate these conditions allow, or nil for no cap. The
-    /// strictest condition wins; they do not compound.
+    /// The highest frame rate these conditions allow, or nil for no cap.
     ///
     /// Every cap divides both 60 and 120, so a fixed-rate panel and a
     /// ProMotion one land on the same cadence instead of the display link
@@ -57,12 +51,10 @@ public struct LerpPowerState: Equatable, Sendable {
         case .serious: return 15
         default: break
         }
-        if throttledByLowPowerMode { return 15 }
-        if throttledByBattery { return 20 }
         return nil
     }
 
-    /// The rate to actually ask the display for, given what the host wants.
+    /// The rate to actually ask the display for, given the panel's.
     public func frameRate(for requested: Int) -> Int {
         frameRateCap.map { min(requested, $0) } ?? requested
     }
@@ -77,7 +69,7 @@ public struct LerpPowerState: Equatable, Sendable {
         case .critical: thermalName = "critical"
         @unknown default: thermalName = "unknown(\(thermal.rawValue))"
         }
-        let ignored = savesPower ? "" : " (battery and Low Power Mode not throttled here)"
+        let ignored = savesPower ? "" : " (EDR not held back here)"
         return "\(onBattery ? "battery" : "AC"), lowPower=\(lowPowerMode ? "on" : "off"), thermal=\(thermalName)\(ignored)"
     }
 }
@@ -92,8 +84,7 @@ public struct LerpPowerState: Equatable, Sendable {
 public final class LerpPowerMonitor {
     public static let shared = LerpPowerMonitor()
     public static let didChange = Notification.Name("LerpPowerStateDidChange")
-    /// Whether battery and Low Power Mode throttle this process (frame-rate
-    /// cap, EDR). Set it before anything touches `shared` — the first read, and
+    /// Whether battery and Low Power Mode hold back EDR in this process. Set it before anything touches `shared` — the first read, and
     /// its log line, happen then. The playground sets it false at launch.
     public static var savesPower = true
 

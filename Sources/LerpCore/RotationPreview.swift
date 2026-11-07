@@ -50,9 +50,6 @@ public final class RotationPreviewPlayer {
     /// How long the pointer has to rest on a tile before it starts playing.
     private let delay: TimeInterval = 0.11
 
-    /// A thumbnail-sized preview does not need 60 Hz.
-    private let framesPerSecond = 30
-
     private var view: LerpMetalView?
     private var madeView = false
     private weak var current: RotationTile?
@@ -141,8 +138,8 @@ public final class RotationPreviewPlayer {
         madeView = true
         guard let made = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 120, height: 180))
         else { return nil }
-        made.config = LerpMetalView.Config(shaderName: nil, framesPerSecond: framesPerSecond,
-                                           renderScale: 1.0, shuffleInterval: .infinity)
+        made.config = LerpMetalView.Config(shaderName: nil, renderScale: 1.0,
+                                           shuffleInterval: .infinity)
         made.onCompileError = { _, _ in }   // a broken shader shows its still, silently
         view = made
         return made

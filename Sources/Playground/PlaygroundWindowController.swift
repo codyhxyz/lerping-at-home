@@ -350,18 +350,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         edrToggle.state = .on
         edrToggle.toolTip = "Brighter highlights on an HDR screen, as the screensaver shows them"
 
-        // As fast as the screen goes, like any other app: 120 on a ProMotion
-        // panel, 60 on a 60 Hz one (the display link never exceeds the panel).
-        // It used to ask for 60, the screensaver's rate, which held the editor
-        // to half speed on the screen it is mostly used on. A look too heavy
-        // for the panel's rate is still paced down to a clean divisor of it.
-        metalView.config = LerpMetalView.Config(shaderName: nil, framesPerSecond: 120,
-                                                renderScale: 1.0, shuffleInterval: .infinity)
-        // The view keeps two drawables, sized for the screensaver at 30–60 fps
-        // where a third was only memory. At 120 fps a second frame in flight
-        // is the normal case, and two would make the CPU wait on the display;
-        // three is Core Animation's own default.
-        (metalView.layer as? CAMetalLayer)?.maximumDrawableCount = 3
+        metalView.config = LerpMetalView.Config(shaderName: nil, renderScale: 1.0,
+                                                shuffleInterval: .infinity)
         metalView.config.extendedDynamicRange = true
         metalView.onCompileError = { name, message in
             FileHandle.standardError.write(Data("compile error in \(name):\n\(message)\n".utf8))

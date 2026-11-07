@@ -498,8 +498,8 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
                                       extraSearchURLs: extraSearch) else {
             PreviewMain.fail("no Metal device")
         }
-        view.config = LerpMetalView.Config(shaderName: flag("--shader"), framesPerSecond: 60,
-                                          renderScale: 1.0, shuffleInterval: .infinity)
+        view.config = LerpMetalView.Config(shaderName: flag("--shader"), renderScale: 1.0,
+                                          shuffleInterval: .infinity)
         view.onCompileError = { name, error in
             print("compile error in \(name):\n\(error)")
         }

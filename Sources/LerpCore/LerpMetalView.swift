@@ -3,11 +3,16 @@ import Metal
 import os
 import QuartzCore
 
-/// CAMetalLayer-backed view that renders one Lerping@Home shader with strict power
-/// discipline: capped frame rate (lowered further by `LerpPowerMonitor`), full
-/// pause when the window is occluded or the view hidden, double-buffered
-/// drawables, optional reduced internal resolution, and a frozen clock while
-/// paused.
+/// CAMetalLayer-backed view that renders one Lerping@Home shader.
+///
+/// It draws at the panel's own refresh rate, as macOS's own screensavers and
+/// any other app do — there is no frame-rate setting, because the system
+/// offers none. Below that it gives way only to thermal pressure
+/// (`LerpPowerMonitor`) and to a look too heavy for the panel (`paceIfNeeded`);
+/// Low Power Mode's throttle is the system's, applied to the display link like
+/// every other app's. It pauses fully when the window is occluded or the view
+/// hidden, can render at a reduced internal resolution, and freezes its clock
+/// while paused.
 public final class LerpMetalView: NSView {
 
     /// Same subsystem the saver logs under, so one `log show` predicate covers
@@ -34,7 +39,6 @@ public final class LerpMetalView: NSView {
         /// Rotation entries — (shader, preset) pairs — eligible for shuffle. See
         /// `Config.rotation(of:from:)` for what nil, empty and stale sets mean.
         public var enabledEntries: Set<LerpRotationEntry>?
-        public var framesPerSecond: Int
         /// 1.0 = native. 0.5 renders quarter the pixels and upscales — usually
         /// indistinguishable for noise-type shaders, ~4x cheaper.
         public var renderScale: Double
@@ -52,13 +56,11 @@ public final class LerpMetalView: NSView {
 
         public init(shaderName: String? = nil,
                     presetName: String? = nil,
-                    framesPerSecond: Int = 30,
                     renderScale: Double = 1.0,
                     shuffleInterval: TimeInterval = 300,
                     freezeAfter: TimeInterval = 0) {
             self.shaderName = shaderName
             self.presetName = presetName
-            self.framesPerSecond = framesPerSecond
             self.renderScale = renderScale
             self.shuffleInterval = shuffleInterval
             self.freezeAfter = freezeAfter
@@ -96,7 +98,6 @@ public final class LerpMetalView: NSView {
     /// work off the assignment path entirely.)
     public var config = Config() {
         didSet {
-            if config.framesPerSecond != oldValue.framesPerSecond { applyFrameRate() }
             if config.renderScale != oldValue.renderScale { updateDrawableSize() }
             if config.extendedDynamicRange != oldValue.extendedDynamicRange { refreshDynamicRange(force: true) }
             if config.enabledEntries != oldValue.enabledEntries
@@ -135,7 +136,7 @@ public final class LerpMetalView: NSView {
     public private(set) var parameterValues: LerpParameterValues?
     private var displayLink: CADisplayLink?
     /// The rate the current look has been paced down to, or nil for the
-    /// requested rate. See `paceIfNeeded`.
+    /// panel's rate. See `paceIfNeeded`.
     private var pacedFPS: Int?
     private var lastPaceCheck: CFTimeInterval = 0
     private var lastPaceChange: CFTimeInterval = 0
@@ -351,18 +352,10 @@ public final class LerpMetalView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
-        // Two drawables, not the default three. Measured on a 2704x1756
-        // drawable (M5, 120 Hz panel): the layer only allocates a third when a
-        // frame is still in flight as the next is requested, so whether it
-        // does depends on load: some runs never did, but three paired runs of
-        // `heatmap` at 60 fps cost 30, 24 and 18 MB more footprint with three
-        // than with two — more in a 16-bit format, and once per display — for
-        // queue depth a screensaver has no use for. Two caps that. Cadence was
-        // unchanged: no late frames at 30 or 60 fps with either count, and the
-        // worst `nextDrawable()` wait with two was a single 18 ms stall at
-        // 60 fps on the heaviest shader. Set here rather than in
-        // `makeBackingLayer` because `wantsLayer` has already built the layer.
-        (layer as? CAMetalLayer)?.maximumDrawableCount = 2
+        // Core Animation's default of three drawables. It used to be two,
+        // measured as enough at 30–60 fps; at the panel's 120 a second frame
+        // in flight is the normal case, and two makes the CPU wait on the
+        // display.
         NotificationCenter.default.addObserver(self,
                                                selector: #selector(powerStateChanged),
                                                name: LerpPowerMonitor.didChange,
@@ -506,6 +499,7 @@ public final class LerpMetalView: NSView {
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: nil)
         guard let window else {
             tearDownDisplayLink()
             return
@@ -513,6 +507,12 @@ public final class LerpMetalView: NSView {
         NotificationCenter.default.addObserver(self,
                                                selector: #selector(occlusionChanged),
                                                name: NSWindow.didChangeOcclusionStateNotification,
+                                               object: window)
+        // The rate is the panel's, so a move to a screen with another refresh
+        // rate (120 Hz built-in to a 60 Hz external, or back) re-asks.
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(screenChanged),
+                                               name: NSWindow.didChangeScreenNotification,
                                                object: window)
         updateDrawableSize()
         refreshDynamicRange(force: true)
@@ -1033,7 +1033,7 @@ public final class LerpMetalView: NSView {
         currentShaderName = shader.name
         currentEntry = entry
         renderer.gpuCost.begin(look: entry.key)
-        // Every look starts at the requested rate and earns a lower one only
+        // Every look starts at the panel's rate and earns a lower one only
         // by being measured too slow for it.
         if pacedFPS != nil {
             pacedFPS = nil
@@ -1133,8 +1133,8 @@ public final class LerpMetalView: NSView {
         displayLink = nil
     }
 
-    /// The host's frame rate, clamped by `LerpPowerMonitor`, as a range the
-    /// display link can pace against.
+    /// The panel's refresh rate, clamped by `LerpPowerMonitor` and the pacer,
+    /// as a range the display link can pace against.
     ///
     /// `NSView.displayLink` rather than `CAMetalDisplayLink`, on purpose. Both
     /// are display-synced and take a `preferredFrameRateRange`, and this one
@@ -1149,26 +1149,27 @@ public final class LerpMetalView: NSView {
     /// The range lets the system drop a few frames below the cap under load
     /// rather than skip to a half rate; the preferred rate is the cap itself.
     private func applyFrameRate() {
-        let requested = max(1, min(config.framesPerSecond, 120))
-        let capped = LerpPowerMonitor.shared.state.frameRate(for: requested)
-        let fps = Float(min(capped, pacedFPS ?? capped))
+        let fps = Float(currentFPS)
         displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: min(max(10, fps - 6), fps),
                                                                 maximum: fps,
                                                                 preferred: fps)
     }
 
+    /// The panel's refresh rate: the most the display link can deliver, and
+    /// what it is asked for unless something below lowers it.
+    private var panelFPS: Int { max(window?.screen?.maximumFramesPerSecond ?? 60, 1) }
+
+    /// The panel's rate under the thermal cap, before any pacing.
+    private var cappedFPS: Int { LerpPowerMonitor.shared.state.frameRate(for: panelFPS) }
+
     /// The rate the display link is asking for right now.
-    private var currentFPS: Int {
-        let requested = max(1, min(config.framesPerSecond, 120))
-        let capped = LerpPowerMonitor.shared.state.frameRate(for: requested)
-        return min(capped, pacedFPS ?? capped)
-    }
+    private var currentFPS: Int { min(cappedFPS, pacedFPS ?? cappedFPS) }
 
     /// Rates that divide the panel's refresh exactly, at or below `ceiling`,
     /// fastest first: on a 120 Hz panel 60, 40, 30, 24, 20, 15. Each frame then
     /// stays on screen for the same whole number of refreshes.
     private func cleanRates(atMost ceiling: Int) -> [Int] {
-        let panel = max(window?.screen?.maximumFramesPerSecond ?? 60, 1)
+        let panel = panelFPS
         return stride(from: min(ceiling, panel), through: 15, by: -1).filter { panel % $0 == 0 }
     }
 
@@ -1182,14 +1183,13 @@ public final class LerpMetalView: NSView {
     /// the panel's refresh, where every frame lasts the same number of
     /// refreshes. It steps back up, at most every 10 s, when the faster rate
     /// would still leave 40% headroom. Every new look starts back at the
-    /// requested rate. Crossfades are skipped: they draw two looks.
+    /// panel's rate. Crossfades are skipped: they draw two looks.
     private func paceIfNeeded() {
         let now = CACurrentMediaTime()
         guard now - lastPaceCheck >= 1.0 else { return }
         lastPaceCheck = now
         guard fadingOut == nil, let p95 = renderer.gpuCost.recentP95() else { return }
-        let requested = max(1, min(config.framesPerSecond, 120))
-        let capped = LerpPowerMonitor.shared.state.frameRate(for: requested)
+        let capped = cappedFPS
         let fps = currentFPS
         let rates = cleanRates(atMost: capped)
         var next: Int?
@@ -1209,6 +1209,13 @@ public final class LerpMetalView: NSView {
 
     /// Posted on the main queue by `LerpPowerMonitor`, which also logs it.
     @objc private func powerStateChanged(_ note: Notification) {
+        applyFrameRate()
+    }
+
+    /// A new screen may refresh at a different rate; any pacing was measured
+    /// against the old one, so it starts over too.
+    @objc private func screenChanged(_ note: Notification) {
+        pacedFPS = nil
         applyFrameRate()
     }
 

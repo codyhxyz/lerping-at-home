@@ -30,8 +30,9 @@ import ScreenSaver
 ///   contract and ignore all of the above, so a real screensaver cycle cannot
 ///   freeze the System Settings thumbnail and no verdict can slow it down.
 /// - We ignore `animateOneFrame` entirely, and slow its timer to once a
-///   second; LerpMetalView drives its own display link with a capped frame
-///   rate, clamped further on battery, in Low Power Mode and when hot.
+///   second; LerpMetalView drives its own display link at the panel's refresh
+///   rate, as macOS's own screensavers do, lowered only when the machine is
+///   hot or a look is too heavy for it.
 @objc(LerpSaverView)
 public final class LerpSaverView: ScreenSaverView {
 
@@ -62,7 +63,6 @@ public final class LerpSaverView: ScreenSaverView {
     private var configPanel: NSPanel?
     private var shaderPopup: NSPopUpButton?
     private var presetPopup: NSPopUpButton?
-    private var fpsPopup: NSPopUpButton?
     private var scalePopup: NSPopUpButton?
     private var hdrCheckbox: NSButton?
     private var freezePopup: NSPopUpButton?
@@ -609,10 +609,6 @@ public final class LerpSaverView: ScreenSaverView {
         gallery.isEditable = false
         rotationGallery = gallery
 
-        let fpsPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        fpsPopup.addItems(withTitles: ["24", "30", "60"])
-        fpsPopup.selectItem(withTitle: String(settings.fps))
-
         let scalePopup = NSPopUpButton(frame: .zero, pullsDown: false)
         Chrome.fill(scalePopup, with: Self.renderScales,
                     selecting: settings.renderScale, default: 0)
@@ -634,13 +630,14 @@ public final class LerpSaverView: ScreenSaverView {
             return field
         }
 
-        // Two label/control pairs per row rather than one. Six stacked rows of
-        // settings above a gallery makes the gallery the afterthought; three
-        // short ones make it the page.
+        // Two label/control pairs per row rather than one. Five stacked rows of
+        // settings above a gallery makes the gallery the afterthought; short
+        // ones make it the page. No frame-rate row: like macOS's own
+        // screensavers, it draws at the panel's rate.
         let grid = NSGridView(views: [
-            [label("Shader:"), shaderPopup, label("Frame rate:"), fpsPopup],
-            [label("Preset:"), presetPopup, label("Render scale:"), scalePopup],
-            [label("Still image:"), freezePopup, NSGridCell.emptyContentView, hdrCheckbox],
+            [label("Shader:"), shaderPopup, label("Render scale:"), scalePopup],
+            [label("Preset:"), presetPopup, label("Still image:"), freezePopup],
+            [NSGridCell.emptyContentView, NSGridCell.emptyContentView, NSGridCell.emptyContentView, hdrCheckbox],
         ])
         grid.column(at: 0).width = 92
         grid.column(at: 2).leadingPadding = 26
@@ -684,7 +681,6 @@ public final class LerpSaverView: ScreenSaverView {
         self.configPanel = panel
         self.shaderPopup = shaderPopup
         self.presetPopup = presetPopup
-        self.fpsPopup = fpsPopup
         self.scalePopup = scalePopup
         self.hdrCheckbox = hdrCheckbox
         self.freezePopup = freezePopup
@@ -795,7 +791,6 @@ public final class LerpSaverView: ScreenSaverView {
             var settings = Settings()
             settings.shader = shaderPopup?.titleOfSelectedItem ?? Settings.shuffleTitle
             settings.preset = selectedPreset
-            settings.fps = Int(fpsPopup?.titleOfSelectedItem ?? "60") ?? 60
             settings.renderScale = Chrome.value(of: scalePopup, in: Self.renderScales, default: 0)
             settings.freezeMinutes = Chrome.value(of: freezePopup, in: Self.freezeChoices, default: 3)
             settings.hdr = (hdrCheckbox?.state ?? .on) == .on
@@ -844,7 +839,8 @@ private struct Settings {
     private static let shaderKey = "shader"
     /// Preset for the pinned shader. Absent means its declared defaults.
     private static let presetKey = "preset"
-    private static let fpsKey = "fps"
+    /// The old frame-rate setting. Never read; deleted on the next save.
+    private static let retiredFPSKey = "fps"
     private static let renderScaleKey = "renderScale"
     private static let shuffleMinutesKey = "shuffleMinutes"
     private static let freezeMinutesKey = "freezeAfterMinutes"
@@ -854,11 +850,6 @@ private struct Settings {
     var shader = shuffleTitle
     /// Preset for the pinned shader, or nil for its declared defaults.
     var preset: String?
-    /// 60, not 30: at 30 fps every camera move and drift on a 120 Hz panel
-    /// visibly steps. Battery and Low Power Mode still cap it (`LerpPower`),
-    /// and a look too heavy for 60 is paced to a clean 40 or 30 by the view
-    /// rather than dropping frames unevenly.
-    var fps = 60
     var renderScale = 1.0
     /// No UI offers this one; it is read but never written back.
     var shuffleMinutes = 5.0
@@ -876,7 +867,6 @@ private struct Settings {
         guard let defaults else { return settings }
         settings.shader = defaults.string(forKey: shaderKey) ?? settings.shader
         settings.preset = defaults.string(forKey: presetKey)
-        settings.fps = (defaults.object(forKey: fpsKey) as? Int) ?? settings.fps
         settings.renderScale = (defaults.object(forKey: renderScaleKey) as? Double) ?? settings.renderScale
         settings.shuffleMinutes = (defaults.object(forKey: shuffleMinutesKey) as? Double) ?? settings.shuffleMinutes
         settings.freezeMinutes = (defaults.object(forKey: freezeMinutesKey) as? Double) ?? settings.freezeMinutes
@@ -894,12 +884,12 @@ private struct Settings {
         } else {
             defaults.removeObject(forKey: Self.presetKey)
         }
-        defaults.set(fps, forKey: Self.fpsKey)
+        defaults.removeObject(forKey: Self.retiredFPSKey)
         defaults.set(renderScale, forKey: Self.renderScaleKey)
         defaults.set(freezeMinutes, forKey: Self.freezeMinutesKey)
         defaults.set(hdr, forKey: Self.hdrKey)
         defaults.synchronize()
-        LerpSaverView.log.notice("options: saved pinned=\(shader, privacy: .public) fps=\(fps) hdr=\(hdr)")
+        LerpSaverView.log.notice("options: saved pinned=\(shader, privacy: .public) hdr=\(hdr)")
     }
 
     /// What these settings ask the view to render.
@@ -908,7 +898,6 @@ private struct Settings {
         var config = LerpMetalView.Config(
             shaderName: pinned,
             presetName: pinned == nil ? nil : preset,
-            framesPerSecond: fps,
             renderScale: renderScale,
             shuffleInterval: shuffleMinutes * 60,
             freezeAfter: freezeMinutes * 60)
