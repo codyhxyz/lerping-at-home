@@ -4,7 +4,7 @@
 
 - Screensaver for macOS that renders procedural shaders with Metal.
 - Shaders are single `.metal` files compiled at runtime via `MTLDevice.makeLibrary(source:)`.
-- 70 built-in shaders in `Sources/Shaders/`: all 30 of Paper Shaders' looks ported to Metal, 23 photoreal Gaussian splat captures (`splat-*`), most with a museum-style caption, raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
+- 70 built-in shaders in `Sources/Shaders/`: all 30 of Paper Shaders' looks ported to Metal, 28 photoreal Gaussian splat captures (`splat-*`), most with a museum-style caption, raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
 - Custom `.metal` files are supported without rebuilding the engine.
 - No Xcode project. Builds with `swiftc` through a Makefile.
 - No build-time Metal toolchain and no precompiled shader archive.
@@ -82,7 +82,7 @@ unattended: replacing it could discard unsaved editor state.
 
 - Select **Lerping@Home** in System Settings → Screen Saver.
 - First activation can show black briefly while Gatekeeper verifies the bundle.
-- Shader, preset, frame rate, and render scale are set behind the saver's Options…
+- Shader, preset, and render scale are set behind the saver's Options…
   button. Pinning a shader also lets you pin one of its presets.
 - Options… also has an **In rotation** gallery: pick which *looks* Shuffle draws
   from, by looking at them. Shuffle rotates over (shader, preset) pairs, not just
@@ -587,9 +587,11 @@ its parameters and presets wherever the file goes.
   splats (3DGS): objects turned like pieces in a museum case (a strawberry, a
   triceratops skull, a carved owl, a grape, a bonsai, a rose, a fruit bowl, a
   jade Buddha, a Nuo mask, vanadinite, two quartzes, a bronze Justice, a tiny
-  planet, a castle on its lake) and places the camera stands inside (a shrine
+  planet, a castle on its lake, a Torah case, a Coke can, a 6 cm plot of
+  forest floor, the asteroid Vesta) and places the camera stands inside (a shrine
   approach, a parish church, a town square, an office lobby, a forest path, an
-  orchid greenhouse, a Milan basement kitchen, a room of Medinet Habu). Each declares
+  orchid greenhouse, a Milan basement kitchen, a room of Medinet Habu, the
+  Leake Street graffiti tunnel). Each declares
   `// lerp-data: splat:<move>:<capture>`; `<move>` is `orbit` (a turntable, or
   an eased arc) or `dolly` (a dolly zoom). A drag on the render swings the
   camera round what it looks at; a capture seen from inside, like the town
@@ -629,14 +631,10 @@ its parameters and presets wherever the file goes.
   tracked small capitals under a hairline; all sized from the drawable's
   height) into a mipmapped coverage
   texture at `texture(2)`, and `LerpSplatView.caption` says where its panel
-  sits. The look composites it with `lerpSplatCaption`, in one of four
-  treatments chosen by its `caption` parameter: 1 frosted (a panel of the
-  capture blurred through its mipmaps), 2 liquid glass (clear, with edges that
-  refract what lies beyond them, a lit rim and dispersion), 3 diffuse (no edge;
-  the capture dims and blurs in a soft cloud behind the type) and 4 label
-  (type alone over a soft halo). Frosted and glass switch to dark type over a
-  bright scene. A captioned look's splat texture is mipmapped; an uncaptioned
-  one is drawn exactly as before.
+  sits. The look composites it with `lerpSplatCaption`: one treatment for
+  every captioned look, with no per-look setting. A captioned look's splat
+  texture is mipmapped so the label can blur what is behind it; an
+  uncaptioned one is drawn exactly as before.
 - Some captures were published with no licence (`"license": "none"` in
   `captures.json`). They are fetched for this machine's saver, as SuperSplat's
   viewer streams them, and `make package` leaves them and their looks out.
@@ -666,7 +664,7 @@ Sources/LerpCore/     shared engine, no ScreenSaver dependency
   PipesData.swift      data provider for pipes: deterministic lattice walk
   LerpRenderer.swift   fullscreen-triangle pass encoder
   GPUDiagnostics.swift per-look GPU cost meter + signposts
-  LerpMetalView.swift  CAMetalLayer view: CADisplayLink, fps cap, occlusion pause
+  LerpMetalView.swift  CAMetalLayer view: CADisplayLink, pacing, occlusion pause
   Snapshot.swift       offscreen render to PNG (HEIC for gallery stills)
 Sources/Shaders/     built-in shaders, shipped as bundle Resources
 Sources/Saver/       ScreenSaverView shim + Info.plist
@@ -691,14 +689,19 @@ the snapshot renderer should have to link a framework they never use.
 
 ## Runtime behavior
 
-- Frame rate is 60 fps by default via `CADisplayLink.preferredFrameRateRange`, animated to
-  each frame's `targetTimestamp` so motion steps evenly. A look whose GPU time (p95 over its last
-  ~2 s) overruns 85% of the frame is paced down to the next rate that divides the panel's refresh
-  (60 → 40 → 30 on a 120 Hz panel) and logged as `pace:`; every new look starts back at 60.
+- Frame rate is the panel's refresh rate (120 on ProMotion, 60 on a 60 Hz screen), as macOS's
+  own screensavers do — there is no frame-rate setting, because the system offers none. Set via
+  `CADisplayLink.preferredFrameRateRange` and animated to each frame's `targetTimestamp` so motion
+  steps evenly. A look whose GPU time (p95 over its last ~2 s) overruns 85% of the frame is paced
+  down to the next rate that divides the panel's refresh (120 → 60 → 40 → 30) and logged as
+  `pace:`; every new look starts back at the panel's rate.
 - Frame rate drops to 0 fps when the window is occluded — but only where AppKit actually
   reports occlusion. It does not for a `legacyScreenSaver` host at the desktop-wallpaper
   layer, which is why the saver has a second, independent check; see below.
-- Low Power Mode caps the frame rate at 15 fps, and running on battery at 20.
+- No caps of our own for battery or Low Power Mode: macOS throttles Low Power Mode itself, for
+  every app, through the display link. Thermal pressure caps it at 15 fps (serious) or 10
+  (critical). The saver still holds back EDR on battery and in Low Power Mode; the playground
+  does not.
 - Internal render scale is selectable at 100%, 75%, or 50%; the compositor upscales.
 - The animation clock is frozen while paused, so time does not jump on resume.
 - "Still image" (default: after 30 minutes) stops rendering and holds the last frame.

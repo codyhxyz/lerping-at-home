@@ -26,7 +26,6 @@
 // lerp-param: yaw        float -180 180 = 0  "Turn"
 // lerp-param: pitch      float -30 30 = 0  "Tilt"
 // lerp-param: magnify    float -0.5 1 = 0 "Zoom"
-// lerp-param: caption    int 0 4 = 1  "Caption (1 frosted, 2 glass, 3 diffuse, 4 label)"
 // lerp-param: zenith     color         = (0.62, 0.74, 0.86) "Backdrop (top)"
 // lerp-param: horizon    color         = (0.24, 0.3, 0.18) "Backdrop (horizon)"
 // lerp-param: vignette   float 0 1 = 0.25  "Vignette"
@@ -43,6 +42,6 @@ fragment half4 lerpMain(float4 pos [[position]],
     float3 color = lerpSplatOver(s, bg);
     float2 q = (pos.xy - 0.5 * u.resolution) / u.resolution.y;
     color *= 1.0 - u.vignette * dot(q, q);
-    color = lerpSplatCaption(color, bg, pos.xy, u.resolution, V, splat, label, u.caption, 1.0);
+    color = lerpSplatCaption(color, bg, pos.xy, u.resolution, V, splat, label);
     return half4(half3(lerpDither(color, pos)), 1.0h);
 }

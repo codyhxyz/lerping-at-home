@@ -526,91 +526,35 @@ public final class SplatData: LerpDataProvider {
         return lerpSplatOver(acc / 16.0, bg);
     }
 
-    // The caption over `color` (the capture over `bg` at this pixel), in one
-    // of four treatments, faded by `fade`:
-    //   1 frosted       a rounded panel of heavily blurred, tinted capture
-    //   2 liquid glass  a clear slab: light blur, edges that refract what is
-    //                   beyond them, a lit rim and a soft shadow
-    //   3 diffuse       no edge at all; the capture blurs and dims in a soft
-    //                   cloud behind the type
-    //   4 label         type alone, held off the image by a soft dark halo
-    // Frosted and glass pick dark or light type from what is behind them.
+    // The look's caption over `color` (the capture over `bg` at this pixel).
+    // One treatment for every captioned look: a smoked panel of the capture
+    // blurred behind it, dark type instead over a bright scene.
     static inline float3 lerpSplatCaption(float3 color, float3 bg, float2 px, float2 res,
                                           constant LerpSplatView& V, texture2d<half> splat,
-                                          texture2d<half> label, int style, float fade) {
-        if (style <= 0 || V.caption.z <= 0.0 || fade <= 0.0) return color;
+                                          texture2d<half> label) {
+        if (V.caption.z <= 0.0) return color;
         float H = res.y;
         float2 org = V.caption.xy, size = V.caption.zw, c = org + 0.5 * size;
-        float radius = style == 2 ? min(0.5 * size.y, 0.04 * H) : 0.009 * H;
+        float radius = 0.009 * H;
         float d = lerpCaptionBox(px, c, 0.5 * size, radius);
         if (d > 0.12 * H) return color;
 
         constexpr sampler ts(filter::linear, mip_filter::linear, address::clamp_to_zero);
-        float2 tuv = (px - org) / size;
-        float glyph = float(label.sample(ts, tuv, level(0.0)).r);
-        float halo = saturate(1.8 * float(label.sample(ts, tuv, level(2.5)).r));
+        float glyph = float(label.sample(ts, (px - org) / size, level(0.0)).r);
         float inside = 1.0 - smoothstep(-0.75, 0.75, d);
-
         float3 behind = lerpSplatBlur(splat, c, res, 0.5 * max(size.x, size.y), bg);
         bool dark = dot(behind, float3(0.2126, 0.7152, 0.0722)) > 0.5;
         float3 ink = dark ? float3(0.05, 0.05, 0.06) : float3(1.0);
-        float3 out = color;
 
-        if (style == 1) {
-            // Smoked, not grey: the blurred capture under a dark tint that
-            // lifts a shade toward the top, a single lit edge along the top
-            // instead of an outline, and a shadow that only darkens.
-            float3 frost = lerpSplatBlur(splat, px, res, 0.035 * H, bg);
-            float rise = saturate((c.y - px.y) / (0.5 * size.y));      // 1 at the top edge
-            float3 tint = dark ? float3(0.97) : float3(0.035, 0.037, 0.042) + 0.018 * rise;
-            float3 panel = mix(frost, tint, dark ? 0.55 : 0.62);
-            panel += (fract(sin(dot(px, float2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.012;
-            float edge = 1.0 - smoothstep(0.0, 1.0, abs(d + 0.5));
-            panel += edge * (0.015 + 0.09 * pow(rise, 3.0));
-            float shadow = 0.35 * (1.0 - smoothstep(0.0, 0.03 * H, d)) * step(0.0, d);
-            out = mix(color * (1.0 - shadow), panel, inside);
-            out = mix(out, ink, glyph);
-        } else if (style == 2) {
-            // Outward normal of the panel's edge.
-            float e = 1.0;
-            float2 n = float2(lerpCaptionBox(px + float2(e, 0), c, 0.5 * size, radius) -
-                              lerpCaptionBox(px - float2(e, 0), c, 0.5 * size, radius),
-                              lerpCaptionBox(px + float2(0, e), c, 0.5 * size, radius) -
-                              lerpCaptionBox(px - float2(0, e), c, 0.5 * size, radius));
-            n = length(n) > 1e-4 ? normalize(n) : float2(0.0);
-            // A slab with a rounded rim: clear in the middle, and toward the
-            // edge it bends in what lies beyond it, fringed by dispersion.
-            float band = 0.9 * radius;
-            float t = saturate(1.0 + d / band);        // 0 in the middle, 1 at the edge
-            float bend = pow(t, 2.5) * band * 1.8;
-            float2 lens = c + (px - c) * 0.985;        // a touch of magnification
-            float blurPx = 0.0025 * H;
-            float3 slab = float3(lerpSplatBlur(splat, lens + n * bend * 1.12, res, blurPx, bg).r,
-                                 lerpSplatBlur(splat, lens + n * bend, res, blurPx, bg).g,
-                                 lerpSplatBlur(splat, lens + n * bend * 0.88, res, blurPx, bg).b);
-            slab = mix(slab, dark ? float3(1.0) : float3(0.0), dark ? 0.16 : 0.2) * 1.04 + 0.01;
-            float2 light = normalize(float2(-0.55, -0.85));
-            float rim = exp(-pow((d + 1.4) / 1.3, 2.0));
-            float lit = 0.25 + 0.75 * pow(saturate(dot(n, light)), 1.5)
-                      + 0.35 * pow(saturate(dot(n, -light)), 3.0);
-            slab += rim * lit * 0.55 + pow(t, 6.0) * 0.06;
-            float shadow = 0.22 * (1.0 - smoothstep(0.0, 0.05 * H, d)) * step(0.0, d);
-            out = mix(color * (1.0 - shadow), slab, inside);
-            out *= 1.0 - (dark ? 0.0 : 0.5 * halo * inside);
-            out = mix(out, ink, glyph);
-        } else if (style == 3) {
-            float feather = 0.08 * H;
-            float m = 1.0 - smoothstep(-0.35 * feather, feather, d);
-            float3 haze = lerpSplatBlur(splat, px, res, 0.045 * H, bg) * 0.5;
-            out = mix(color, haze, 0.9 * m * m);
-            out *= 1.0 - 0.45 * halo;
-            out = mix(out, float3(1.0), glyph);
-        } else {
-            float wide = saturate(2.2 * float(label.sample(ts, tuv, level(3.5)).r));
-            out = color * (1.0 - 0.45 * wide) * (1.0 - 0.55 * halo);
-            out = mix(out, float3(1.0), glyph);
-        }
-        return mix(color, out, fade);
+        float3 frost = lerpSplatBlur(splat, px, res, 0.035 * H, bg);
+        float rise = saturate((c.y - px.y) / (0.5 * size.y));
+        float3 tint = dark ? float3(0.97) : float3(0.035, 0.037, 0.042) + 0.018 * rise;
+        float3 panel = mix(frost, tint, dark ? 0.55 : 0.62);
+        float edge = 1.0 - smoothstep(0.0, 1.0, abs(d + 0.5));
+        panel += edge * (0.015 + 0.09 * pow(rise, 3.0));
+        float shadow = 0.35 * (1.0 - smoothstep(0.0, 0.03 * H, d)) * step(0.0, d);
+        float3 out = mix(color * (1.0 - shadow), panel, inside);
+        return mix(out, ink, glyph);
     }
     """
 }

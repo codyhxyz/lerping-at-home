@@ -25,7 +25,6 @@
 // lerp-param: yaw        float -180 180 = 0  "Turn"
 // lerp-param: pitch      float -30 30 = 0  "Tilt"
 // lerp-param: magnify    float -0.5 0.6 = 0 "Zoom"
-// lerp-param: caption    int 0 4 = 1  "Caption (1 frosted, 2 glass, 3 diffuse, 4 label)"
 // lerp-param: pool       float 0 1 = 0.3  "Light pool"
 // lerp-param: background color         = (0.03, 0.028, 0.026) "Background"
 
@@ -41,6 +40,6 @@ fragment half4 lerpMain(float4 pos [[position]],
     float2 d = (pos.xy - V.center) / max(V.radius, 1.0);
     bg += u.pool * u.background.rgb * 3.0 * exp(-dot(d - float2(0.0, 0.9), d - float2(0.0, 0.9)) * 0.9);
     float3 color = lerpSplatOver(s, bg);
-    color = lerpSplatCaption(color, bg, pos.xy, u.resolution, V, splat, label, u.caption, 1.0);
+    color = lerpSplatCaption(color, bg, pos.xy, u.resolution, V, splat, label);
     return half4(half3(lerpDither(color, pos)), 1.0h);
 }

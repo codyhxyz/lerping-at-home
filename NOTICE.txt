@@ -331,6 +331,15 @@ International license (https://creativecommons.org/licenses/by/4.0/):
   "Castle" by ethan3111 (Ethan), https://superspl.at/scene/d276acb9
   "Medinet Habu Royal Treasure 2" by liquiduslabs (Liquidus Labs), data from
       Open Heritage 3D, https://superspl.at/scene/06145dc7
+  "Dawn @ Vesta" by dtdtdt, from NASA Dawn imagery via the PhoMo dataset,
+      https://superspl.at/scene/61f1a877
+
+This one is published under the Creative Commons Attribution-ShareAlike 4.0
+International license (https://creativecommons.org/licenses/by-sa/4.0/); the
+converted .lsplat is an adaptation and is shipped under the same licence:
+
+  "Wood & Golden - Sefer Torah" by nathanar (Nathan Arditti),
+      https://superspl.at/scene/bd1449ce
 
 These two are published under the Creative Commons Attribution-NonCommercial
 4.0 International license (https://creativecommons.org/licenses/by-nc/4.0/),

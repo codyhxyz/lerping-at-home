@@ -627,6 +627,129 @@
       ],
       "scale": 0.1,
       "center_xz": true
+    },
+    "vesta": {
+      "title": "Dawn @ Vesta",
+      "author": "dtdtdt",
+      "page": "https://superspl.at/scene/61f1a877",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/61f1a877/v1/meta.json"
+      ],
+      "rotate": [
+        89.61,
+        -43.95,
+        116.43
+      ],
+      "center": [
+        6.7,
+        4.5,
+        -18.4
+      ],
+      "scale": 0.003745,
+      "max_splats": 4500000
+    },
+    "graffiti-tunnel": {
+      "title": "The Graffiti Tunnel, London, UK",
+      "author": "mlodyginesik (Radoslaw Boratynski)",
+      "page": "https://superspl.at/scene/6713317b",
+      "license": "none",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/6713317b/v1/0_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/6713317b/v1/0_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/6713317b/v1/0_2/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/6713317b/v1/0_3/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/6713317b/v1/0_4/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/6713317b/v1/0_5/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        4,
+        -2.0,
+        3.4
+      ],
+      "scale": 0.25,
+      "crop": {
+        "box": [
+          [
+            -4.3,
+            -0.6,
+            -0.25
+          ],
+          [
+            3.1,
+            1.1,
+            1.95
+          ]
+        ]
+      }
+    },
+    "forest-floor": {
+      "title": "Forest Floor Scenery",
+      "author": "danylyon (Dany Bittel)",
+      "page": "https://superspl.at/scene/ab5efa0e",
+      "license": "none",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/ab5efa0e/v2/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        -0.085,
+        -0.75,
+        -0.07
+      ],
+      "scale": 0.4,
+      "center_xz": true
+    },
+    "sefer-torah": {
+      "title": "Wood & Golden - Sefer Torah",
+      "author": "nathanar (Nathan Arditti)",
+      "page": "https://superspl.at/scene/bd1449ce",
+      "license": "CC BY-SA 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/bd1449ce/v1/0_0/meta.json"
+      ],
+      "rotate": [
+        180,
+        180,
+        0
+      ],
+      "center": [
+        0,
+        -0.36,
+        0
+      ],
+      "scale": 2.75,
+      "center_xz": true
+    },
+    "coke-can": {
+      "title": "Vintage Coke can",
+      "author": "jobesinvr (Joby Catto)",
+      "page": "https://superspl.at/scene/e54c6f73",
+      "license": "none",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/e54c6f73/v1/0_0/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        0,
+        0,
+        0
+      ],
+      "scale": 18,
+      "center_xz": true
     }
   }
 }
