@@ -16,6 +16,14 @@ import Metal
 /// pattern: coral, dividing spots, fingerprints, worms. Written from that
 /// description; no code is taken from anywhere.
 ///
+/// **Stirring.** Left alone, a Gray-Scott pattern settles and stops, and a
+/// settled field under a slow camera drift read on the lock screen as
+/// "completely still" (the user's words, of Worms). So both chemicals are
+/// also carried by a slow, incompressible flow, −(u, v)·∇ added to each
+/// update (see `Stirring`), which keeps bending and tearing the pattern while
+/// the reaction keeps mending it. The flow is closed-form in (column, row,
+/// step), so it changes nothing about the purity argument below.
+///
 /// **Purity.** Generation N of a simulation is only defined through N − 1, so
 /// the picture cannot be computed for an arbitrary time directly. Following
 /// `LifeData`, the clock is cut into epochs of `epochSteps` steps, each one
@@ -68,6 +76,12 @@ public final class ReactionDiffusionData: LerpDataProvider {
 
     static let diffusionA: Float = 1.0
     static let diffusionB: Float = 0.5
+
+    /// The stirring (see `Stirring`): the default RMS speed of the flow, in
+    /// cells per step, and the scale of its eddies, in cells. Half a
+    /// wavelength is one eddy, so about two of them span the short axis.
+    static let defaultStir: Float = 0.075
+    static let stirWavelength: Float = 100
 
     // MARK: - Timeline
 
@@ -130,12 +144,14 @@ public final class ReactionDiffusionData: LerpDataProvider {
         var feed: UInt32
         var kill: UInt32
         var colonies: Int
+        var stir: UInt32
     }
 
     private let device: MTLDevice?
     private var key: Key?
     private var feed: Float = 0
     private var kill: Float = 0
+    private var stirring = Stirring.none
 
     private var grid = GrayScottGrid(cols: 0, rows: 0)
     /// Steps applied since the reseed.
@@ -189,16 +205,19 @@ public final class ReactionDiffusionData: LerpDataProvider {
         let kill = min(0.08, max(0.001, scalar(params, "kill", 0.062)))
         let colonies = min(64, max(1, Int(scalar(params, "seeds", 8).rounded())))
         let speed = max(0, scalar(params, "speed", 16))
+        let stir = min(0.12, max(0, scalar(params, "stir", Self.defaultStir)))
         let (cols, rows) = Self.dimensions(for: uniforms.resolution)
         let moment = Self.moment(time: uniforms.time, speed: speed)
 
         let wanted = Key(seed: uniforms.seed.bitPattern, cols: cols, rows: rows,
                          epoch: moment.epoch, feed: feed.bitPattern, kill: kill.bitPattern,
-                         colonies: colonies)
+                         colonies: colonies, stir: stir.bitPattern)
         if key != wanted {
             key = wanted
             self.feed = feed
             self.kill = kill
+            stirring = Stirring(cols: cols, rows: rows, speed: stir,
+                                salt: Self.salt(wanted) ^ 0x68E3_1DA4)
             checkpoints.removeAll()
             reseed(wanted)
         }
@@ -249,7 +268,7 @@ public final class ReactionDiffusionData: LerpDataProvider {
 
     private func run(_ count: Int) {
         let (feed, kill, first) = (self.feed, self.kill, step)
-        grid.advance(count, feed: feed, bands: Self.bands) {
+        grid.advance(count, from: first, feed: feed, stirring: stirring, bands: Self.bands) {
             Self.killPlusFeed(step: first + $0, feed: feed, kill: kill)
         }
         step += count
@@ -267,7 +286,7 @@ public final class ReactionDiffusionData: LerpDataProvider {
         step = 0
         previousValid = false
         uploaded = nil
-        let salt = key.seed &+ UInt32(truncatingIfNeeded: key.epoch &* 0x9E37_79B9)
+        let salt = Self.salt(key)
         let cols = key.cols, rows = key.rows
         let spacing = 0.55 * (Float(cols * rows) / Float(key.colonies)).squareRoot()
 
@@ -328,7 +347,11 @@ public final class ReactionDiffusionData: LerpDataProvider {
         }
     }
 
-    private static func hash(_ x: UInt32, _ y: UInt32, _ salt: UInt32) -> Float {
+    private static func salt(_ key: Key) -> UInt32 {
+        key.seed &+ UInt32(truncatingIfNeeded: key.epoch &* 0x9E37_79B9)
+    }
+
+    fileprivate static func hash(_ x: UInt32, _ y: UInt32, _ salt: UInt32) -> Float {
         var h = x &* 0x27D4_EB2D ^ y &* 0x1656_67B1 ^ salt &* 0x9E37_79B9
         h ^= h >> 15
         h = h &* 0x2545_F491
@@ -394,14 +417,20 @@ public final class ReactionDiffusionData: LerpDataProvider {
     /// on top. Returns a description of the first failure, or nil.
     public static func selfTest() -> String? {
         // 1. Blocked stepping is bit-identical to plain stepping, across a
-        //    partial block, several band counts and the dissolve ramp.
+        //    partial block, several band counts, the dissolve ramp and a
+        //    stirring flow strong enough to matter on a grid this small.
+        let stirring = Stirring(cols: 40, rows: 29, speed: 0.15, salt: 0x51ED_270B)
         for bands in [1, 3, 5] {
             var blocked = GrayScottGrid(cols: 40, rows: 29)
             for i in 0..<40 { blocked.plant(x: (i * 7) % 40, y: (i * 11) % 29) }
             var plain = blocked
-            let kf: (Int) -> Float = { killPlusFeed(step: epochSteps - 30 + $0, feed: 0.04, kill: 0.06) }
-            blocked.advance(29, feed: 0.04, bands: bands, killPlusFeed: kf)
-            for n in 0..<29 { plain.referenceStep(feed: 0.04, killPlusFeed: kf(n)) }
+            let first = epochSteps - 30
+            let kf: (Int) -> Float = { killPlusFeed(step: first + $0, feed: 0.04, kill: 0.06) }
+            blocked.advance(29, from: first, feed: 0.04, stirring: stirring, bands: bands,
+                            killPlusFeed: kf)
+            for n in 0..<29 {
+                plain.referenceStep(feed: 0.04, killPlusFeed: kf(n), stirring: stirring, step: first + n)
+            }
             guard blocked.snapshot() == plain.snapshot() else {
                 return "blocked stepping (\(bands) bands) differs from plain stepping"
             }
@@ -538,9 +567,10 @@ struct GrayScottGrid {
         b.withUnsafeBufferPointer(body)
     }
 
-    /// Advances `count` steps. `killPlusFeed(i)` is k + f for the i-th of them.
-    mutating func advance(_ count: Int, feed: Float, bands requested: Int,
-                          killPlusFeed: (Int) -> Float) {
+    /// Advances `count` steps, the first of which takes state `first` to
+    /// `first + 1`. `killPlusFeed(i)` is k + f for the i-th of them.
+    mutating func advance(_ count: Int, from first: Int, feed: Float, stirring: Stirring,
+                          bands requested: Int, killPlusFeed: (Int) -> Float) {
         let cols = self.cols, rows = self.rows
         let block = ReactionDiffusionData.blockSteps
         // Steady playback advances a step or so per frame: a few tens of
@@ -549,13 +579,19 @@ struct GrayScottGrid {
         let bands = count < block ? 1 : max(1, min(requested, rows))
         let bandRows = (rows + bands - 1) / bands + 2 * block
         let plane = bandRows * cols
-        if scratch.count < bands * 4 * plane {
-            scratch = [Float](repeating: 0, count: bands * 4 * plane)
+        // Per band: A and B double-buffered, then the flow's u and v.
+        let slice = 6 * plane
+        if scratch.count < bands * slice {
+            scratch = [Float](repeating: 0, count: bands * slice)
         }
 
         var done = 0
         while done < count {
-            let steps = min(block, count - done)
+            // Blocks keep to whole runs of `block` steps counted from the
+            // reseed, the runs the stirring holds its flow over, so a band can
+            // work out its flow once per block.
+            let start = first + done
+            let steps = min(block - start % block, count - done)
             let rates = (0..<steps).map { killPlusFeed(done + $0) }
             a.withUnsafeBufferPointer { srcA in
             b.withUnsafeBufferPointer { srcB in
@@ -566,8 +602,9 @@ struct GrayScottGrid {
                                  dstA: dstA.baseAddress!, dstB: dstB.baseAddress!,
                                  work: work.baseAddress!)
                 DispatchQueue.concurrentPerform(iterations: bands) { band in
-                    io.run(band: band, of: bands, steps: steps, cols: cols, rows: rows,
-                           plane: plane, feed: feed, rates: rates)
+                    io.run(band: band, of: bands, steps: steps, from: start,
+                           cols: cols, rows: rows, plane: plane, slice: slice,
+                           feed: feed, rates: rates, stirring: stirring)
                 }
             }}}}}
             swap(&a, &nextA)
@@ -577,32 +614,41 @@ struct GrayScottGrid {
     }
 
     /// One whole-grid step with no blocking or threads: the definition the
-    /// blocked path is tested against.
-    mutating func referenceStep(feed: Float, killPlusFeed: Float) {
+    /// blocked path is tested against. `step` is the state it starts from.
+    mutating func referenceStep(feed: Float, killPlusFeed: Float, stirring: Stirring, step: Int) {
         let cols = self.cols, rows = self.rows
+        var flow = [Float](repeating: 0, count: 2 * cols)
         a.withUnsafeBufferPointer { srcA in
         b.withUnsafeBufferPointer { srcB in
         nextA.withUnsafeMutableBufferPointer { dstA in
         nextB.withUnsafeMutableBufferPointer { dstB in
+        flow.withUnsafeMutableBufferPointer { uv in
             let pa = srcA.baseAddress!, pb = srcB.baseAddress!
+            let u = uv.baseAddress!, v = u + cols
+            let clock = stirring.clock(step: step)
             for y in 0..<rows {
                 let up = ((y + rows - 1) % rows) * cols, row = y * cols, down = ((y + 1) % rows) * cols
+                stirring.velocity(row: y, clock: clock, u: u, v: v)
                 GrayScottGrid.row(cols: cols, feed: feed, killPlusFeed: killPlusFeed,
                          aUp: pa + up, a: pa + row, aDown: pa + down,
                          bUp: pb + up, b: pb + row, bDown: pb + down,
+                         u: u, v: v,
                          outA: dstA.baseAddress! + row, outB: dstB.baseAddress! + row)
             }
-        }}}}
+        }}}}}
         swap(&a, &nextA)
         swap(&b, &nextB)
     }
 
     /// One row of one step. Wraps horizontally; the caller supplies the rows
     /// above and below, so it serves both the toroidal grid and band scratch.
+    /// `u` and `v` are this row's flow, already halved for the central
+    /// difference (see `Stirring.velocity`).
     @inline(__always)
     static func row(cols: Int, feed: Float, killPlusFeed kf: Float,
                     aUp: UnsafePointer<Float>, a: UnsafePointer<Float>, aDown: UnsafePointer<Float>,
                     bUp: UnsafePointer<Float>, b: UnsafePointer<Float>, bDown: UnsafePointer<Float>,
+                    u: UnsafePointer<Float>, v: UnsafePointer<Float>,
                     outA: UnsafeMutablePointer<Float>, outB: UnsafeMutablePointer<Float>) {
         let da = ReactionDiffusionData.diffusionA, db = ReactionDiffusionData.diffusionB
         @inline(__always) func cell(_ x: Int, _ l: Int, _ r: Int) {
@@ -610,10 +656,13 @@ struct GrayScottGrid {
                      + 0.05 * (aUp[l] + aUp[r] + aDown[l] + aDown[r]) - a[x]
             let lapB = 0.2 * (bUp[x] + bDown[x] + b[l] + b[r])
                      + 0.05 * (bUp[l] + bUp[r] + bDown[l] + bDown[r]) - b[x]
+            // Carried by the stirring: −(u, v)·∇, central differences.
+            let carryA = u[x] * (a[r] - a[l]) + v[x] * (aDown[x] - aUp[x])
+            let carryB = u[x] * (b[r] - b[l]) + v[x] * (bDown[x] - bUp[x])
             let av = a[x], bv = b[x]
             let reaction = av * bv * bv
-            outA[x] = av + da * lapA - reaction + feed * (1 - av)
-            outB[x] = bv + db * lapB + reaction - kf * bv
+            outA[x] = av + da * lapA - reaction + feed * (1 - av) - carryA
+            outB[x] = bv + db * lapB + reaction - kf * bv - carryB
         }
         cell(0, cols - 1, 1)
         for x in 1..<(cols - 1) { cell(x, x - 1, x + 1) }
@@ -631,16 +680,20 @@ private struct BlockIO: @unchecked Sendable {
     let dstB: UnsafeMutablePointer<Float>
     let work: UnsafeMutablePointer<Float>
 
-    func run(band: Int, of bands: Int, steps: Int, cols: Int, rows: Int,
-             plane: Int, feed: Float, rates: [Float]) {
+    func run(band: Int, of bands: Int, steps: Int, from first: Int, cols: Int, rows: Int,
+             plane: Int, slice: Int, feed: Float, rates: [Float], stirring: Stirring) {
         let y0 = band * rows / bands, y1 = (band + 1) * rows / bands
         let height = y1 - y0 + 2 * steps
-        let base = work + band * 4 * plane
+        let base = work + band * slice
         var a = base, b = base + plane, nextA = base + 2 * plane, nextB = base + 3 * plane
+        let u = base + 4 * plane, v = base + 5 * plane
+        // The whole block lies in one run the flow is held over.
+        let clock = stirring.clock(step: first)
         for j in 0..<height {
-            let source = ((y0 - steps + j) % rows + rows) % rows * cols
-            (a + j * cols).update(from: srcA + source, count: cols)
-            (b + j * cols).update(from: srcB + source, count: cols)
+            let y = ((y0 - steps + j) % rows + rows) % rows
+            (a + j * cols).update(from: srcA + y * cols, count: cols)
+            (b + j * cols).update(from: srcB + y * cols, count: cols)
+            stirring.velocity(row: y, clock: clock, u: u + j * cols, v: v + j * cols)
         }
         // After step s only rows s..<(height − s) are still exact; after the
         // last one that is precisely this band's own rows.
@@ -649,6 +702,7 @@ private struct BlockIO: @unchecked Sendable {
                 GrayScottGrid.row(cols: cols, feed: feed, killPlusFeed: rates[s - 1],
                          aUp: a + (j - 1) * cols, a: a + j * cols, aDown: a + (j + 1) * cols,
                          bUp: b + (j - 1) * cols, b: b + j * cols, bDown: b + (j + 1) * cols,
+                         u: u + j * cols, v: v + j * cols,
                          outA: nextA + j * cols, outB: nextB + j * cols)
             }
             swap(&a, &nextA)
@@ -656,5 +710,140 @@ private struct BlockIO: @unchecked Sendable {
         }
         (dstA + y0 * cols).update(from: a + steps * cols, count: (y1 - y0) * cols)
         (dstB + y0 * cols).update(from: b + steps * cols, count: (y1 - y0) * cols)
+    }
+}
+
+// MARK: - Stirring
+
+/// A slow, incompressible flow that carries both chemicals, so a settled
+/// pattern is always being bent, sheared and pulled apart somewhere and the
+/// chemistry is always mending it: worms stretch, kink, break and rejoin,
+/// coral ridges bend and reconnect, spots drift, crowd and divide.
+///
+/// The stream function is three travelling plane waves about 120° apart,
+/// which make a lattice of eddies that wanders and deforms, never a fixed
+/// geometry the pattern could settle into (stripes lying along a steady
+/// flow's streamlines would be still again). Each wave's wavenumbers are
+/// whole cycles across the grid, so the flow is seamless on the torus.
+/// Directions and phases come from `(seed, epoch)`, and the velocity is a
+/// closed-form function of (column, row, step), so stirring keeps a frame a
+/// pure function of its inputs.
+///
+/// Velocity is perpendicular to each wave's wavevector, which makes it
+/// divergence-free: it moves the pattern around without piling chemical up
+/// or thinning it out. Central differences are stable here because diffusion
+/// dominates: the cell Péclet number stays under 1 even at the fastest
+/// "stir" the parameter allows.
+///
+/// Cost: the trigonometry is all in tables (per column and per row, built
+/// with the grid), the flow is worked out once per block of steps, and a
+/// cell pays four multiply-adds a step to be carried.
+struct Stirring {
+    static let waveCount = 3
+    static let none = Stirring(cols: 0, rows: 0, speed: 0, salt: 0)
+
+    /// The waves' temporal phases at one step: cos and sin of (phase − ω·step).
+    struct Clock {
+        var c: (Float, Float, Float) = (0, 0, 0)
+        var s: (Float, Float, Float) = (0, 0, 0)
+    }
+
+    private(set) var isStill = true
+    private let cols: Int
+    /// Radians per step for each wave; the sign sets which way it travels.
+    private var omega: [Double] = []
+    private var phase: [Double] = []
+    /// Per wave: cos(kx·x) for every column, then sin(kx·x), then the same
+    /// for ky·y over the rows. Velocity per unit cos θ, halved for the
+    /// central difference, is folded into the column tables.
+    private var uColumns: [Float] = []
+    private var vColumns: [Float] = []
+    private var rowTables: [Float] = []
+    private let rows: Int
+
+    /// `speed` is the flow's RMS speed in cells per step.
+    init(cols: Int, rows: Int, speed: Float, salt: UInt32) {
+        self.cols = cols
+        self.rows = rows
+        guard speed > 0, cols > 0, rows > 0 else { return }
+        isStill = false
+        let wavelength = ReactionDiffusionData.stirWavelength
+        // Three waves of amplitude A have RMS speed A·√1.5.
+        let amplitude = speed / Float(1.5).squareRoot()
+        let turn = Double(ReactionDiffusionData.hash(1, 7, salt)) * 2 * .pi
+        // Periods in steps: a minute or two at the presets' speeds, and
+        // incommensurate, so the eddies never repeat within an epoch.
+        let periods: [Double] = [1200, -1560, 1970]
+        var cosX: [Float] = [], sinX: [Float] = []
+        for i in 0..<Self.waveCount {
+            let heading = turn + Double(i) * 2 * .pi / 3
+                + 0.3 * (Double(ReactionDiffusionData.hash(UInt32(i), 8, salt)) - 0.5)
+            var p = (Float(cols) * Float(cos(heading)) / wavelength).rounded()
+            let q = (Float(rows) * Float(sin(heading)) / wavelength).rounded()
+            if p == 0 && q == 0 { p = cos(heading) < 0 ? -1 : 1 }
+            let kx = 2 * Float.pi * p / Float(cols), ky = 2 * Float.pi * q / Float(rows)
+            let k = (kx * kx + ky * ky).squareRoot()
+            // ψ = (A/k)·sin θ, so u = ∂ψ/∂y = A·(ky/k)·cos θ and
+            // v = −∂ψ/∂x = −A·(kx/k)·cos θ.
+            let wu = 0.5 * amplitude * ky / k, wv = -0.5 * amplitude * kx / k
+            omega.append(2 * .pi / periods[i])
+            phase.append(Double(ReactionDiffusionData.hash(UInt32(i), 9, salt)) * 2 * .pi)
+            cosX = (0..<cols).map { cos(kx * Float($0)) }
+            sinX = (0..<cols).map { sin(kx * Float($0)) }
+            uColumns += cosX.map { $0 * wu } + sinX.map { $0 * wu }
+            vColumns += cosX.map { $0 * wv } + sinX.map { $0 * wv }
+            rowTables += (0..<rows).map { cos(ky * Float($0)) }
+            rowTables += (0..<rows).map { sin(ky * Float($0)) }
+        }
+    }
+
+    /// The temporal phases for the step from state `step`. The flow is held
+    /// for each run of `blockSteps` steps counted from the reseed (a few
+    /// thousandths of its slowest period), so the blocked step works it out
+    /// once per block instead of once per step.
+    func clock(step: Int) -> Clock {
+        guard !isStill else { return Clock() }
+        let held = Double(step - step % ReactionDiffusionData.blockSteps)
+        func at(_ i: Int) -> (Float, Float) {
+            let angle = phase[i] - omega[i] * held
+            return (Float(cos(angle)), Float(sin(angle)))
+        }
+        let (c0, s0) = at(0), (c1, s1) = at(1), (c2, s2) = at(2)
+        return Clock(c: (c0, c1, c2), s: (s0, s1, s2))
+    }
+
+    /// The flow along grid row `y` at `clock`, halved for the central
+    /// difference: θ = kx·x + φ with φ = ky·y + (phase − ω·step), so
+    /// cos θ = cos(kx·x)·cos φ − sin(kx·x)·sin φ.
+    func velocity(row y: Int, clock t: Clock, u: UnsafeMutablePointer<Float>,
+                  v: UnsafeMutablePointer<Float>) {
+        guard !isStill else {
+            u.update(repeating: 0, count: cols)
+            v.update(repeating: 0, count: cols)
+            return
+        }
+        let rows = self.rows, cols = self.cols
+        rowTables.withUnsafeBufferPointer { r in
+        uColumns.withUnsafeBufferPointer { uc in
+        vColumns.withUnsafeBufferPointer { vc in
+            let r = r.baseAddress!, uc = uc.baseAddress!, vc = vc.baseAddress!
+            func phi(_ i: Int, _ c: Float, _ s: Float) -> (Float, Float) {
+                let cy = r[2 * i * rows + y], sy = r[(2 * i + 1) * rows + y]
+                return (cy * c - sy * s, sy * c + cy * s)
+            }
+            let (c0, s0) = phi(0, t.c.0, t.s.0)
+            let (c1, s1) = phi(1, t.c.1, t.s.1)
+            let (c2, s2) = phi(2, t.c.2, t.s.2)
+            let cu0 = uc, su0 = uc + cols, cu1 = uc + 2 * cols, su1 = uc + 3 * cols
+            let cu2 = uc + 4 * cols, su2 = uc + 5 * cols
+            let cv0 = vc, sv0 = vc + cols, cv1 = vc + 2 * cols, sv1 = vc + 3 * cols
+            let cv2 = vc + 4 * cols, sv2 = vc + 5 * cols
+            for x in 0..<cols {
+                u[x] = (cu0[x] * c0 - su0[x] * s0) + (cu1[x] * c1 - su1[x] * s1)
+                     + (cu2[x] * c2 - su2[x] * s2)
+                v[x] = (cv0[x] * c0 - sv0[x] * s0) + (cv1[x] * c1 - sv1[x] * s1)
+                     + (cv2[x] * c2 - sv2[x] * s2)
+            }
+        }}}
     }
 }
