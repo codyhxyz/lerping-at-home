@@ -411,6 +411,17 @@ depth-window: $(BUILD)/DepthWindow $(DEPTH_MODEL_STAMP)
 		} > "$$look" && echo "depth-window: wrote $$look"; \
 	fi
 
+# The `critter` look's 3D models (Sources/Critter/*.usdz), built procedurally
+# in Blender by tools/critter-assets. The committed .usdz files are what ships,
+# so this is not part of `saver`: run it after changing the scripts, look at
+# the result, and commit the regenerated files. CRITTER_SHEET=dir also renders
+# Workbench contact sheets of every model into dir (GPU: take the lock).
+BLENDER ?= /Applications/Blender.app/Contents/MacOS/Blender
+.PHONY: critter-assets
+critter-assets:
+	"$(BLENDER)" -b --factory-startup --python tools/critter-assets/build.py -- \
+		Sources/Critter $(if $(CRITTER_SHEET),--sheet $(CRITTER_SHEET))
+
 # `saver` means the saver the machine will actually run. Use `saver-build` only
 # when a staging bundle is explicitly wanted.
 saver: install pulse
