@@ -14,6 +14,9 @@ import simd
 ///     orbit   circle (or sweep an arc of) the subject — turntables, places
 ///     dolly   dolly zoom: the lens zooms while the camera backs off, so the
 ///             subject keeps its size and the background compresses
+///     path    the capture author's own keyframed camera, as SuperSplat plays
+///             it when the scene opens (`LerpSplatPath`; `make splats` writes
+///             it beside the capture for every scene published with one)
 ///
 /// A drag on the render (`LerpTurn`, for a look that declares `yaw`/`pitch`)
 /// swings the camera round the point it looks at, which is right wherever the
@@ -21,6 +24,7 @@ import simd
 /// mostly far beyond it, and would move against the hand; `:look` on the end
 /// (`splat:orbit:trogir-square:look`) turns that camera where it stands, and
 /// zooms it by lengthening the lens rather than walking it into the scene.
+/// A `path` camera is always turned that way: it is wherever the author flew it.
 ///
 /// The engine draws one fullscreen fragment function, so the splats are drawn
 /// here, in `encodeCompute`, into a texture this provider owns; the look's
@@ -33,7 +37,7 @@ import simd
 /// the decoded capture, which is input, not state.
 public final class SplatData: LerpDataProvider {
 
-    public enum Move: String { case orbit, dolly }
+    public enum Move: String { case orbit, dolly, path }
 
     let move: Move
     let captureName: String
@@ -55,6 +59,16 @@ public final class SplatData: LerpDataProvider {
         set { captionLayer.set(newValue) }
     }
 
+    /// The `path` move's keyframes: input, read once like the capture.
+    private lazy var path: LerpSplatPath? = {
+        guard move == .path else { return nil }
+        guard let url = LerpSplatAssets.url(for: captureName, extension: "path.json") else {
+            NSLog("Lerping: %@ has no camera path (run `make splats`)", captureName)
+            return nil
+        }
+        return LerpSplatPath.load(url)
+    }()
+
     // Sort scratch, reused every frame.
     private var depth: [Float] = []
     private var counts: [UInt32] = []
@@ -72,7 +86,7 @@ public final class SplatData: LerpDataProvider {
         self.device = device
         self.move = move
         self.captureName = parts[2]
-        self.turnsInPlace = parts.count == 4
+        self.turnsInPlace = parts.count == 4 || move == .path
         // Decode off the render thread as soon as the look is known, so the
         // first frame usually finds it ready.
         LerpSplatAssets.prefetch(captureName, device: device)
@@ -279,6 +293,23 @@ public final class SplatData: LerpDataProvider {
             let hand = held(eye: eye, target: target, params: params)
             return Camera(view: hand.view, focal: focal * hand.lens, fovy: Self.narrowed(2 * half, by: hand.lens),
                           near: max(0.02, hand.distance - clip))
+        case .path:
+            guard let path else {
+                // No path file: a slow turntable rather than nothing.
+                let angle = startAngle + seedTurn + 2 * .pi * t / period
+                let fovy: Float = 35 * .pi / 180
+                return Camera(view: Self.lookAt(eye: SIMD3(sin(angle) * 3, 0.5, cos(angle) * 3), target: .zero),
+                              focal: 0.5 * size.y / tan(fovy * 0.5), fovy: fovy)
+            }
+            // The seed picks where on the path a launch starts, as it picks
+            // where in a turntable's turn.
+            let pose = path.pose(at: t * speed + uniforms.seed * path.duration)
+            // The track's angle spans the wider side, as SuperSplat draws it.
+            let half = min(170, max(1, pose.fov)) * .pi / 360
+            let focal = 0.5 * max(size.x, size.y) / tan(half)
+            let fovy = 2 * atan(0.5 * size.y / focal)
+            let hand = held(eye: pose.eye, target: pose.target, up: path.up, params: params)
+            return Camera(view: hand.view, focal: focal * hand.lens, fovy: Self.narrowed(fovy, by: hand.lens))
         }
     }
 
@@ -286,14 +317,14 @@ public final class SplatData: LerpDataProvider {
     /// and brought nearer by `magnify`, or — for a `:look` capture — turned
     /// where it stands, with `lens` to lengthen the focal length by. The
     /// distance is the eye's from the target afterwards, for the clip plane.
-    private func held(eye: SIMD3<Float>, target: SIMD3<Float>, params: LerpParameterValues?)
+    private func held(eye: SIMD3<Float>, target: SIMD3<Float>, up: SIMD3<Float> = SIMD3(0, 1, 0),
+                      params: LerpParameterValues?)
         -> (view: simd_float4x4, distance: Float, lens: Float) {
         let yaw = param(params, LerpTurn.yawParameter, 0), pitch = param(params, LerpTurn.pitchParameter, 0)
         let magnify = param(params, LerpTurn.magnifyParameter, 0)
         guard yaw != 0 || pitch != 0 || magnify != 0 else {
-            return (Self.lookAt(eye: eye, target: target), simd_length(eye - target), 1)
+            return (Self.lookAt(eye: eye, target: target, up: up), simd_length(eye - target), 1)
         }
-        let up = SIMD3<Float>(0, 1, 0)
         var eye = eye, fwd = simd_normalize(target - eye)
         var right = simd_normalize(simd_cross(fwd, up))
         var lens: Float = 1
@@ -812,7 +843,7 @@ public enum LerpSplatAssets {
         }
     }
 
-    static func url(for name: String) -> URL? {
+    static func url(for name: String, extension ext: String = "lsplat") -> URL? {
         lock.lock()
         var dirs = extraDirectories
         lock.unlock()
@@ -821,7 +852,7 @@ public enum LerpSplatAssets {
                 .appendingPathComponent("build/splats"))
         }
         dirs = LerpBundleResources.directories(named: "Splats") + dirs
-        return dirs.map { $0.appendingPathComponent(name + ".lsplat") }
+        return dirs.map { $0.appendingPathComponent(name + "." + ext) }
             .first { FileManager.default.fileExists(atPath: $0.path) }
     }
 

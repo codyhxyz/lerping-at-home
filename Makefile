@@ -312,7 +312,8 @@ $(PLAYGROUND_ICNS): $(BUILD)/LerpPreview Sources/Shaders/mesh-gradient.metal
 # Photoreal Gaussian splat captures (Sources/Splats/captures.json). The source
 # files are third-party and large, so they are not in git: `splats` downloads
 # each one's SOG files once into build/splats-src and converts them to the
-# compact .lsplat that SplatData.swift reads. Re-running is a no-op unless
+# compact .lsplat that SplatData.swift reads, plus a .path.json for each scene
+# whose author drew a camera path. Re-running is a no-op unless
 # captures.json or the converter changed. Needs network the first time.
 SPLAT_OUT := $(BUILD)/splats
 SPLAT_STAMP := $(SPLAT_OUT)/.stamp
@@ -399,8 +400,8 @@ saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/
 	# and their old files went on reaching the screen as 27 extra looks.
 	rm -f $(SAVER_DIR)/Contents/Resources/Shaders/*.metal
 	cp $(SHADERS) $(SAVER_DIR)/Contents/Resources/Shaders/
-	rm -f $(SAVER_DIR)/Contents/Resources/Splats/*.lsplat
-	cp $(SPLAT_OUT)/*.lsplat $(SAVER_DIR)/Contents/Resources/Splats/
+	rm -f $(SAVER_DIR)/Contents/Resources/Splats/*.lsplat $(SAVER_DIR)/Contents/Resources/Splats/*.path.json
+	cp $(SPLAT_OUT)/*.lsplat $(SPLAT_OUT)/*.path.json $(SAVER_DIR)/Contents/Resources/Splats/
 	cp LICENSE NOTICE.txt $(SAVER_DIR)/Contents/Resources/
 	$(BUILD)/LerpPreview --snapshot $(BUILD)/thumb --size 180x116 --time 4 \
 		--shader mesh-gradient >/dev/null
@@ -573,6 +574,7 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 		for app in "$(RELEASE_SAVER)" "$(RELEASE_PLAYGROUND)"; do \
 			rm -f "$$app/Contents/Resources/Shaders/$$look.metal" \
 				"$$app/Contents/Resources/Splats/$$capture.lsplat" \
+				"$$app/Contents/Resources/Splats/$$capture.path.json" \
 				"$$app/Contents/Resources/Thumbnails/$$look"-*.heic; \
 		done; \
 		echo "package: left out $$look (capture $$capture has no licence)"; \

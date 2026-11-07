@@ -44,6 +44,10 @@ within each plane so neighbours compress together:
     u8[count]  label bits 0-7, 8-15, 16-23   palette entry per splat
     u8[entries][coeffs][3]                   codebook index per coefficient
 
+Beside it, for a SuperSplat scene whose author drew a camera path (the
+fly-through its viewer plays on opening), `<id>.path.json`: that path's keys,
+taken into the same frame as the splats, for `LerpSplatPath` to play.
+
 The transform in captures.json is applied here, once, so the runtime sees every
 capture the same way: y up, the subject at the origin, the subject's radius 1.
 The view-dependent colour stays in the capture's own frame; the renderer turns
@@ -317,7 +321,10 @@ def quat_mul(a, b):
                      aw * bz + ax * by - ay * bx + az * bw], 1)
 
 
-def apply_config(splats, cfg):
+def apply_config(splats, cfg, frame=None):
+    """The capture in Lerping's frame. `frame`, if given, is filled with the
+    affine that took it there (pos' = m @ (pos - center) * k + shift), so a
+    camera path published beside the capture can be taken there too."""
     pos, rgb, alpha, log_scale, quat = splats[:5]
     sh = dict(splats[5]) if len(splats) > 5 else None
     labels = sh["labels"] if sh else np.zeros(len(pos), dtype=np.int64)
@@ -357,6 +364,11 @@ def apply_config(splats, cfg):
         mid = (lo + hi) / 2
         pos[:, 0] -= mid[0]
         pos[:, 2] -= mid[1]
+    if frame is not None:
+        offset = np.array(cfg.get("shift", [0, 0, 0]), dtype=np.float64)
+        if cfg.get("center_xz"):
+            offset = offset - np.array([mid[0], 0, mid[1]])
+        frame.update(m=m, center=center, k=k, shift=offset)
 
     limit = int(cfg.get("max_splats", 50_000_000))
     if len(pos) > limit:
@@ -514,6 +526,77 @@ def fetch(cid, cfg, src_dir):
     return metas
 
 
+def fetch_settings(cid, cfg, src_dir):
+    """The scene's settings.json from SuperSplat (its camera path, if the
+    author drew one), or None for a capture published without one."""
+    import subprocess
+    if not cfg.get("sources") or "cloudfront" not in cfg["sources"][0]:
+        return None
+    path = os.path.join(src_dir, cid, "settings.json")
+    if not os.path.exists(path):
+        url = cfg["sources"][0].rsplit("/", 1)[0] + "/settings.json"
+        code = subprocess.run(["curl", "-sSL", "--retry", "3", "-o", path + ".part", "-w", "%{http_code}", url],
+                              check=True, capture_output=True, text=True).stdout
+        if code == "200":
+            os.replace(path + ".part", path)
+        elif code in ("403", "404"):
+            os.remove(path + ".part")
+            with open(path, "w") as f:
+                f.write("{}")   # none published; don't ask again
+        else:
+            raise RuntimeError(f"{cid}: settings.json answered HTTP {code}")
+    return json.load(open(path))
+
+
+def write_path(out, settings, frame):
+    """The author's camera path (SuperSplat's first animTrack), taken into the
+    capture's Lerping frame, as `SplatData`'s `splat:path:` move plays it.
+
+    SuperSplat's viewer turns every splat 180° about z before placing its
+    cameras, so a camera point goes back through that turn, then through the
+    same affine as the splats. Its "up" is the viewer's +y, taken the same
+    way. Removes `out` when the scene has no path."""
+    tracks = (settings or {}).get("animTracks") or []
+    track = next((t for t in tracks if len(t.get("keyframes", {}).get("times", [])) >= 2), None)
+    if track is None:
+        if os.path.exists(out):
+            os.remove(out)
+        return False
+    m, center, k, shift = frame["m"], frame["center"], frame["k"], frame["shift"]
+    viewer = np.diag([-1.0, -1.0, 1.0])     # Rz(180°), its own inverse
+
+    def place(flat):
+        p = np.asarray(flat, dtype=np.float64).reshape(-1, 3) @ viewer.T
+        return (((p - center) @ m.T) * k + shift).round(6).tolist()
+
+    up = m @ viewer @ np.array([0.0, 1.0, 0.0])
+    values = track["keyframes"]["values"]
+    n = len(track["keyframes"]["times"])
+    path = {
+        "duration": float(track["duration"]),
+        "frameRate": float(track.get("frameRate", 30)),
+        "loopMode": track.get("loopMode", "repeat"),
+        "smoothness": float(track.get("smoothness", 1)) if track.get("interpolation", "spline") == "spline" else 0.0,
+        "up": (up / np.linalg.norm(up)).round(6).tolist(),
+        "times": [float(t) for t in track["keyframes"]["times"]],
+        "position": place(values["position"]),
+        "target": place(values["target"]),
+        "fov": [float(f) for f in values.get("fov", [60] * n)],
+    }
+    with open(out, "w") as f:
+        json.dump(path, f, separators=(",", ":"))
+    return True
+
+
+def convert(cid, cfg, src_dir, out_dir):
+    src = fetch(cid, cfg, src_dir)
+    settings = fetch_settings(cid, cfg, src_dir)
+    frame = {}
+    n, size = write_lsplat(os.path.join(out_dir, cid + ".lsplat"), apply_config(read_any(src), cfg, frame))
+    pathed = write_path(os.path.join(out_dir, cid + ".path.json"), settings, frame)
+    print(f"{cid}: {n:,} splats, {size / 1e6:.1f} MB" + (", with its camera path" if pathed else ""))
+
+
 def source_mtime(src):
     paths = src if isinstance(src, list) else [src]
     return max(os.path.getmtime(p) for p in paths)
@@ -530,10 +613,11 @@ def convert_all(configs):
         out = os.path.join(out_dir, cid + ".lsplat")
         if os.path.exists(out) and os.path.getmtime(out) >= max(newest_input, source_mtime(src)):
             continue
-        n, size = write_lsplat(out, apply_config(read_any(src), cfg))
-        print(f"{cid}: {n:,} splats, {size / 1e6:.1f} MB")
+        convert(cid, cfg, src_dir, out_dir)
     # A capture dropped from captures.json leaves the bundle too.
     for name in os.listdir(out_dir) if os.path.isdir(out_dir) else []:
+        if name.endswith(".path.json") and name[:-len(".path.json")] + ".lsplat" not in wanted:
+            os.remove(os.path.join(out_dir, name))
         if name.endswith(".lsplat") and name not in wanted:
             os.remove(os.path.join(out_dir, name))
 
@@ -575,11 +659,8 @@ def main():
         convert_all(configs)
     elif cmd == "convert":
         cid = sys.argv[2]
-        cfg = configs["captures"][cid]
-        src = fetch(cid, cfg, os.path.join(ROOT, "build", "splats-src"))
-        out = os.path.join(ROOT, "build", "splats", cid + ".lsplat")
-        n, size = write_lsplat(out, apply_config(read_any(src), cfg))
-        print(f"{cid}: {n:,} splats, {size / 1e6:.1f} MB -> {out}")
+        convert(cid, configs["captures"][cid], os.path.join(ROOT, "build", "splats-src"),
+                os.path.join(ROOT, "build", "splats"))
     elif cmd == "inspect":
         path = sys.argv[2]
         prefix = None
