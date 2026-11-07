@@ -57,6 +57,7 @@
 // Tunnel coordinates wrap by the lattice period, so float precision holds
 // however long the look stays on screen.
 //
+// lerp-category: Fractals
 // lerp-param: shape      float 0 1   = 0.0  "Menger to Jerusalem"
 // lerp-animate: shape      0 0.25 period=240
 // lerp-param: twist      float 0 1   = 0.0  "Fold twist"

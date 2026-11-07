@@ -38,6 +38,7 @@
 // drift. `overprint` 1 multiplies the layers like transparent ink on paper;
 // 0 lays them on opaque.
 //
+// lerp-category: Patterns
 // lerp-param: colorBack   color          = (0.035, 0.030, 0.075) "Shadow"
 // lerp-param: colorLight  color          = (0.180, 0.420, 0.470) "Lit floor"
 // lerp-param: colorShape  color          = (0.950, 0.470, 0.360) "Cutouts"

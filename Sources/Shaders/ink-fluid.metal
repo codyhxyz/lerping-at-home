@@ -8,6 +8,7 @@
 // Fedkiw, Stam & Jensen, "Visual Simulation of Smoke" (SIGGRAPH 2001). No code
 // is taken from either; the paper's routines are named where they appear.
 //
+// lerp-category: Simulations
 // lerp-data: ink-fluid
 //
 // Sources/LerpCore/InkFluidData.swift runs the solver on the CPU on a coarse

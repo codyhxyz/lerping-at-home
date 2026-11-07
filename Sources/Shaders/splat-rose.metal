@@ -5,6 +5,7 @@
 // https://superspl.at/scene/4d837bca. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:rose
 //
 // lerp-caption-title: Rose

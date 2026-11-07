@@ -12,6 +12,7 @@
 // carries in its 8-digit hex colours. `offsetX`/`offsetY` are upstream's ray
 // origin, in this port's lerpUV space.
 //
+// lerp-category: Abstract
 // lerp-param: color1       color         = (0.651, 0.000, 1.000, 0.43) "Violet"
 // lerp-param: color2       color         = (0.384, 0.000, 1.000, 0.94) "Electric indigo"
 // lerp-param: color3       color         = (1.000, 1.000, 1.000, 0.60) "White core"

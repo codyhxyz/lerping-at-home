@@ -19,6 +19,7 @@
 // upstream's paper. `speed` is this port's own addition, driving the
 // procedural field that replaces the image.
 //
+// lerp-category: Patterns
 // lerp-param: colorBack    color        = (0.616, 0.588, 0.533) "Paper"
 // lerp-param: colorC       color        = (0.000, 0.663, 0.882) "Cyan ink"
 // lerp-param: colorM       color        = (0.925, 0.098, 0.514) "Magenta ink"

@@ -22,6 +22,7 @@ constant float3 HD_SOURCE_COLORS[HD_SOURCE_COUNT] = {
 // its colour from the source, not from a single front colour. `speed` is this
 // port's own addition, driving the procedural field that replaces the image.
 //
+// lerp-category: Patterns
 // lerp-param: colorBack    color        = (0.016, 0.018, 0.035) "Background"
 // lerp-param: size         float 0.01 1 = 0.76 "Size"
 // lerp-param: radius       float 0 2    = 1.00 "Radius"

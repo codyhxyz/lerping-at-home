@@ -4,6 +4,7 @@
 // Capture: "The Fruit Bowl" by superdelphi (SuperDelphi), CC BY 4.0,
 // https://superspl.at/scene/d8ba72a6. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:fruit-bowl
 //
 // lerp-caption-title: The Fruit Bowl

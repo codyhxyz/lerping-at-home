@@ -10,6 +10,7 @@
 // `speed` is this port's own addition — upstream's `positions` is a fixed
 // seed, and `speed` is the rate this port drifts it at.
 //
+// lerp-category: Gradients
 // lerp-param: color1       color         = (0.035, 0.047, 0.125) "Midnight blue"
 // lerp-param: color2       color         = (0.180, 0.106, 0.353) "Indigo"
 // lerp-param: color3       color         = (0.451, 0.157, 0.392) "Magenta plum"

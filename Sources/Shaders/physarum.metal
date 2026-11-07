@@ -20,6 +20,7 @@
 // The simulation reseeds every 480 steps (a minute at the default rate) so
 // any frame is reachable in bounded time; the picture fades through the seam.
 //
+// lerp-category: Simulations
 // lerp-data: physarum
 //
 // lerp-param: colorBack      color           = #03050a "Background"

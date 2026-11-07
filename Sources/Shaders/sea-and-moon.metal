@@ -20,6 +20,7 @@
 //   sky and sun from the same constants.
 // - GPU cost: 8 analytic waves per pixel, about the cheapest shader here.
 //
+// lerp-category: Scenes
 // lerp-param: gravity      float 0.2 4  = 1.0  "Gravity"
 // lerp-param: waterTension float 0 0.1  = 0.01 "Water tension"
 // lerp-param: skyCol1 color = (0.15, 0.175, 0.3) "Sky, horizon"

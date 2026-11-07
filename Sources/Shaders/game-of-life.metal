@@ -10,6 +10,7 @@
 // its epoch boundary, and starts again. Random stories get a new seed each cycle;
 // canonical stories mirror their stage so a longer watch is not one fixed GIF.
 //
+// lerp-category: Simulations
 // lerp-data: life
 //
 // lerp-param: colorBack  color          = #000000 "Background"

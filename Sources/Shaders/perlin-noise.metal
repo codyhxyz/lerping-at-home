@@ -7,6 +7,7 @@
 // port's units, not upstream's sizing system; `speed` is capped low because
 // the fBm multiplies the z slice by the octave frequency.
 //
+// lerp-category: Gradients
 // lerp-param: colorFront  color         = (0.902, 0.435, 0.204) "Front"
 // lerp-param: colorBack   color         = (0.035, 0.024, 0.086) "Background"
 // lerp-param: scale       float 0.02 1  = 0.16 "Scale"

@@ -9,6 +9,7 @@
 // is not ported (the frame always follows the canvas). Upstream takes a
 // variable-length `colors` array (max 5); this port fixes four tunable slots.
 //
+// lerp-category: Gradients
 // lerp-param: color1    color     = (0.941, 0.216, 0.639, 1.0) "Magenta"
 // lerp-param: color2    color     = (0.192, 0.847, 0.976, 1.0) "Cyan"
 // lerp-param: color3    color     = (1.000, 0.706, 0.243, 1.0) "Amber"

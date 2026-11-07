@@ -14,6 +14,7 @@
 // under the pixels, each pixel box-filters the (at most) 2x2 cells it covers;
 // nearest-cell sampling stepped every cell edge a whole pixel at a time.
 //
+// lerp-category: Simulations
 // lerp-data: sandpile
 // lerp-param: cells     int   96 400  = 220  "Cells (short side)"
 // lerp-param: speed     float 0 960   = 240  "Steps per second"

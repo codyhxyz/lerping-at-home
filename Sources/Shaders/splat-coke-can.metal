@@ -5,6 +5,7 @@
 // https://superspl.at/scene/e54c6f73. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:coke-can
 //
 // lerp-caption-title: Vintage Coke can

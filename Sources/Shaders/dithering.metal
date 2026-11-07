@@ -9,6 +9,7 @@
 // `scale` is in this port's units, not upstream's sizing system; `size` is the
 // dither cell in pixels, as upstream.
 //
+// lerp-category: Patterns
 // lerp-param: colorBack  color        = (0.031, 0.035, 0.063) "Background"
 // lerp-param: colorFront color        = (0.792, 0.851, 1.000) "Front"
 // lerp-param: size       float 1 20   = 2.0 "Pixel size"

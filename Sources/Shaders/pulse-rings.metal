@@ -30,6 +30,7 @@
 // for a screensaver) and the per-launch seed offset into time. `background` is
 // upstream's backgroundColor setting, black in the original.
 //
+// lerp-category: Abstract
 // lerp-param: speed      float 0 2 = 0.3        "Speed"
 // lerp-param: background color    = (0, 0, 0)  "Background"
 //

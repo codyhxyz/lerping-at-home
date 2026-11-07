@@ -19,6 +19,7 @@
 //     facets, shaded by the direction to each crystal's centre.
 //   - Bands creep outward from the hearts over time (`flow`).
 //
+// lerp-category: Gradients
 // lerp-param: colorDeep  color          = (0.020, 0.028, 0.050) "Deep band"
 // lerp-param: colorBand  color          = (0.150, 0.230, 0.330) "Chalcedony"
 // lerp-param: colorMilk  color          = (0.620, 0.690, 0.760) "Milky band"

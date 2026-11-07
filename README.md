@@ -589,9 +589,9 @@ its parameters and presets wherever the file goes.
   jade Buddha, a Nuo mask, vanadinite, two quartzes, a bronze Justice, a tiny
   planet, a castle on its lake, a Torah case, a Coke can, a 6 cm plot of
   forest floor, the asteroid Vesta) and places the camera stands inside (a shrine
-  approach, a parish church, a town square, an office lobby, a forest path, an
-  orchid greenhouse, a Milan basement kitchen, a room of Medinet Habu, the
-  Leake Street graffiti tunnel). Each declares
+  approach, a parish church, a town square, a forest path, a Milan basement
+  kitchen, a room of Medinet Habu, the Leake Street graffiti tunnel). Each
+  declares
   `// lerp-data: splat:<move>:<capture>`; `<move>` is `orbit` (a turntable, or
   an eased arc) or `dolly` (a dolly zoom). A drag on the render swings the
   camera round what it looks at; a capture seen from inside, like the town
@@ -617,16 +617,14 @@ its parameters and presets wherever the file goes.
   decodes them (`scripts/splat-convert.py`, checked against PlayCanvas's own
   reader), and writes a compact `.lsplat` to `build/splats`, which the saver
   bundles under `Resources/Splats`. **Every capture is used whole**, as it was
-  published: 0.2–8.9M splats, about 1.1 GB for all 27. The converter refuses
+  published: 0.2–8.9M splats, about 0.9 GB for all 25. The converter refuses
   the two settings that once thinned captures silently — a `max_splats` cap
   (which kept the largest splats, so fine detail went first) and a source at
   a coarser level of a streamed level-of-detail scene than level 0 — and
   positions are stored as exact 32-bit floats rather than re-quantized to 16
   bits across the scene. The download cache records each chunk's source URL,
   so changing a capture's sources fetches them again instead of reusing the
-  old chunks. Full detail has a cost on the largest interiors: at 4K, the
-  office lobby takes about 18 ms of GPU a frame and the orchid greenhouse
-  about 38. Needs network the first time.
+  old chunks. Needs network the first time.
 - A splat look can carry a caption, the way a museum labels a piece:
 
       // lerp-caption-title:  Seated Dari (Vairocana)

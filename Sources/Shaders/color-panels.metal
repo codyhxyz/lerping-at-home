@@ -8,6 +8,7 @@
 // The z clip plane and the 14-panel/density-normalizer table stay fixed:
 // upstream derives them from the colour count, which is fixed here at seven.
 //
+// lerp-category: Abstract
 // lerp-param: color1    color          = (1.000, 0.616, 0.000, 1.0) "Amber"
 // lerp-param: color2    color          = (0.992, 0.310, 0.188, 1.0) "Coral"
 // lerp-param: color3    color          = (0.502, 0.608, 1.000, 1.0) "Periwinkle"

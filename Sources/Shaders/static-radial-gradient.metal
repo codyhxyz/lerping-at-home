@@ -12,6 +12,7 @@
 // orbits/breathes around rather than fixed positions, and `speed` is this
 // port's own addition (upstream renders one still frame).
 //
+// lerp-category: Gradients
 // lerp-param: color1          color         = (0.078, 0.055, 0.208) "Deep violet"
 // lerp-param: color2          color         = (0.451, 0.125, 0.376) "Plum"
 // lerp-param: color3          color         = (0.898, 0.376, 0.243) "Ember"

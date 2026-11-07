@@ -7,6 +7,7 @@
 // https://superspl.at/scene/aa451b94 — the 660k-splat level of its streamed
 // level-of-detail set. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:shenley-church
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"

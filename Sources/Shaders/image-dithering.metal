@@ -48,6 +48,7 @@
 //
 // `type` is upstream's enum: 1 random, 2 Bayer 2x2, 3 Bayer 4x4, 4 Bayer 8x8.
 //
+// lerp-category: Patterns
 // lerp-param: colorFront     color      = #94ffaf "Front"
 // lerp-param: colorBack      color      = #000c38 "Background"
 // lerp-param: colorHighlight color      = #eaff94 "Highlight"

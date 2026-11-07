@@ -6,6 +6,7 @@
 // Capture: "Medinet Habu Royal Treasure 2" by liquiduslabs (Liquidus Labs), CC BY 4.0,
 // https://superspl.at/scene/06145dc7. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:medinet-habu:look
 //
 // lerp-caption-title: Medinet Habu

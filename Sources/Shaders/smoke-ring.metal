@@ -6,6 +6,7 @@
 // Parameters mirror the upstream <SmokeRing> props. Upstream takes a
 // variable-length `colors` array (max 10); this port fixes four tunable slots.
 //
+// lerp-category: Abstract
 // lerp-param: color1          color         = (0.980, 0.980, 0.996, 1.0) "Hot white core"
 // lerp-param: color2          color         = (0.965, 0.678, 0.333, 1.0) "Amber"
 // lerp-param: color3          color         = (0.769, 0.286, 0.580, 1.0) "Magenta"

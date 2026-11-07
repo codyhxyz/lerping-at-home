@@ -594,7 +594,16 @@ public final class NewLookCard: NSView {
 
 // MARK: - The gallery
 
-/// Search bar, a scrolling Library of shader cards, and a status line.
+/// Search bar, a scrolling Library of shader cards on named shelves, and a
+/// status line.
+///
+/// # Shelves
+///
+/// The cards sit under a heading per `// lerp-category:` — Scenes, Splats,
+/// Fractals and so on (`LerpShaderCategory`) — because a hundred cards in one
+/// grid is a wall to scroll past, not a choice. A search keeps the shelves and
+/// hides the ones it emptied. The "+" card sits on the last shelf, Other, which
+/// is where a shader made with it lands.
 ///
 /// # One card per shader, and nothing else
 ///
@@ -642,6 +651,7 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
             card.identifier = NSUserInterfaceItemIdentifier("new-look-card")
             canvas.addSubview(card)
             newCard = card
+            addHeading(LerpShaderCategory.other)
             canvas.needsLayout = true
         }
     }
@@ -679,8 +689,13 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     /// Present only where the host offered `onNew`. Deliberately not in `cards`
     /// — everything that iterates those is about shaders.
     private var newCard: NewLookCard?
-    /// Laid out in shader order, so the grid and the model cannot disagree.
+    /// Laid out shelf by shelf (`inShelfOrder`), so the grid, ⏎ and the
+    /// playground's ‹ › all agree on what comes next.
     private var order: [String] = []
+    /// Each shader's shelf, read once per `show`.
+    private var shelf: [String: String] = [:]
+    /// One heading per shelf that has a card on it.
+    private var headings: [String: NSTextField] = [:]
     private var filter = ""
     private var isSearching: Bool { !filter.isEmpty }
 
@@ -843,11 +858,20 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
             cards[name] = nil
         }
 
-        order = shaders.map(\.name)
+        let shelved = shaders.inShelfOrder()
+        order = shelved.map(\.name)
+        shelf = Dictionary(uniqueKeysWithValues: shelved.map { ($0.name, $0.category) })
+        var shelves = Set(shelf.values)
+        if onNew != nil { shelves.insert(LerpShaderCategory.other) }
+        for (name, heading) in headings where !shelves.contains(name) {
+            heading.removeFromSuperview()
+            headings[name] = nil
+        }
+        shelves.forEach(addHeading)
         for shader in shaders where cards[shader.name] == nil {
             let name = shader.name
             guard let cover = cover(of: name) else { continue }
-            let card = RotationTile(entry: cover, shaderTitle: shader.displayName, size: tileSize)
+            let card = RotationTile(entry: cover, shaderTitle: shader.cardTitle, size: tileSize)
             card.summary = ""
             card.onToggle = { [weak self] _ in self?.toggleShader(name) }
             card.onBadge = { [weak self] tile in self?.badgeClicked(name, tile) }
@@ -861,6 +885,15 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         }
         refresh()
         canvas.needsLayout = true
+    }
+
+    private func addHeading(_ name: String) {
+        guard headings[name] == nil else { return }
+        let heading = Chrome.label(name, size: 13, color: EditorTheme.text)
+        heading.font = .systemFont(ofSize: 13, weight: .semibold)
+        heading.identifier = NSUserInterfaceItemIdentifier("shelf:" + name)
+        canvas.addSubview(heading)
+        headings[name] = heading
     }
 
     /// The preset a shader's card shows and opens: its first, in display order.
@@ -1162,6 +1195,11 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
         // one was the answer. It does go when the whole gallery goes — a greyed
         // out grid with one live control left in it reads as broken.
         newCard?.isHidden = !isActive
+        let occupied = Set(visibleShaders().compactMap { shelf[$0] })
+        for (name, heading) in headings {
+            heading.isHidden = !(occupied.contains(name)
+                || (name == LerpShaderCategory.other && newCard?.isHidden == false))
+        }
         // None goes with them: a button that would clear the rotation is off,
         // not silently ignored.
         let shown = visibleShaders()
@@ -1192,25 +1230,48 @@ public final class RotationGalleryView: NSView, NSSearchFieldDelegate {
     private static let pad: CGFloat = 16
     private static let gap: CGFloat = 10
 
+    private static let headingHeight: CGFloat = 20
+    /// Above a heading that follows a shelf, so the heading reads as the start
+    /// of the next shelf rather than a caption under the last one.
+    private static let shelfGap: CGFloat = 22
+
     /// Lays the grid out for a given width and returns the height it needs:
-    /// the "+" card first, then every card still showing, in rows.
+    /// each shelf still showing as a heading over rows of its cards, the "+"
+    /// card last on Other.
     @discardableResult
     private func reflow(width: CGFloat) -> CGFloat {
         let tile = tileSize
         let usable = max(tile.width, width - 2 * Self.pad)
         let perRow = max(1, Int((usable + Self.gap) / (tile.width + Self.gap)))
-        var items: [NSView] = []
-        if let newCard, !newCard.isHidden { items.append(newCard) }
-        items += order.compactMap { cards[$0] }.filter { !$0.isHidden }
-
-        for (index, view) in items.enumerated() {
-            view.setFrameSize(tile)
-            view.setFrameOrigin(NSPoint(
-                x: Self.pad + CGFloat(index % perRow) * (tile.width + Self.gap),
-                y: Self.pad + CGFloat(index / perRow) * (tile.height + Self.gap)))
+        var groups: [(name: String, items: [NSView])] = []
+        for name in order {
+            guard let card = cards[name], !card.isHidden else { continue }
+            let home = shelf[name] ?? LerpShaderCategory.other
+            if groups.last?.name == home { groups[groups.count - 1].items.append(card) }
+            else { groups.append((home, [card])) }
         }
-        let rows = (items.count + perRow - 1) / perRow
-        let height = Self.pad * 2 + CGFloat(rows) * (tile.height + Self.gap) - (rows > 0 ? Self.gap : 0)
+        if let newCard, !newCard.isHidden {
+            if groups.last?.name == LerpShaderCategory.other { groups[groups.count - 1].items.append(newCard) }
+            else { groups.append((LerpShaderCategory.other, [newCard])) }
+        }
+
+        var y = Self.pad
+        for (index, group) in groups.enumerated() {
+            if index > 0 { y += Self.shelfGap }
+            if let heading = headings[group.name] {
+                heading.frame = NSRect(x: Self.pad, y: y, width: usable, height: Self.headingHeight)
+            }
+            y += Self.headingHeight + 6
+            for (i, view) in group.items.enumerated() {
+                view.setFrameSize(tile)
+                view.setFrameOrigin(NSPoint(
+                    x: Self.pad + CGFloat(i % perRow) * (tile.width + Self.gap),
+                    y: y + CGFloat(i / perRow) * (tile.height + Self.gap)))
+            }
+            let rows = (group.items.count + perRow - 1) / perRow
+            y += CGFloat(rows) * (tile.height + Self.gap) - Self.gap
+        }
+        let height = y + Self.pad
         return max(height, scroll.contentView.bounds.height)
     }
 

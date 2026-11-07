@@ -6,6 +6,7 @@
 // Decimated to 700k splats and converted by `make splats`
 // (Sources/Splats/captures.json); drawn by SplatData.swift.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:strawberry
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"

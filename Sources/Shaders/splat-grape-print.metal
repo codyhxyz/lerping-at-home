@@ -7,6 +7,7 @@
 // https://superspl.at/scene/4ae563ac — focus-stacked macro.
 // Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:grape
 //
 // lerp-param: filter     int 0 2       = 0     "Filter (0 halftone, 1 dither, 2 fluted glass)"

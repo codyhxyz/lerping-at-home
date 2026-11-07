@@ -6,6 +6,7 @@
 // variable-length `colors` array (max 10); this port fixes five tunable slots.
 // Upstream's grainMixer/grainOverlay are not ported — this file has no grain.
 //
+// lerp-category: Gradients
 // lerp-param: color1     color     = (0.043, 0.231, 0.290) "Deep teal"
 // lerp-param: color2     color     = (0.106, 0.604, 0.667) "Turquoise"
 // lerp-param: color3     color     = (0.498, 0.847, 0.745) "Seafoam"

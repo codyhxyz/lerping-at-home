@@ -29,6 +29,7 @@
 // which nothing here accumulates. LerpPreview (snapshots, gallery stills) is
 // always given a fixed fixture creature; see CritterData.
 //
+// lerp-category: Scenes
 // lerp-data: critter
 // lerp-param: mood  int   0 6   = 0    "Mood (0 = live)"
 // lerp-param: clock float -1 24 = -1   "Hour (-1 = now)"

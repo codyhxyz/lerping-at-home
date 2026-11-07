@@ -8,6 +8,7 @@
 // variable-length `colors` array (max 10); this port fixes five tunable slots.
 // `scale` is in this port's units, not upstream's sizing system.
 //
+// lerp-category: Patterns
 // lerp-param: color1        color        = (1.000, 0.788, 0.420) "Pale amber"
 // lerp-param: color2        color        = (1.000, 0.384, 0.000) "Orange"
 // lerp-param: color3        color        = (1.000, 0.184, 0.000) "Vermilion"

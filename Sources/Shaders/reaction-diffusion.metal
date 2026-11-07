@@ -1,6 +1,7 @@
 // Reaction-Diffusion — Gray-Scott coral, dividing spots and fingerprints,
 // grown slowly and reseeded every few minutes.
 //
+// lerp-category: Simulations
 // lerp-data: reaction-diffusion
 //
 // Original work, not a port. The model is the Gray-Scott reaction-diffusion

@@ -6,6 +6,7 @@
 // have); everything else matches upstream's ranges. Defaults are this port's
 // screensaver tuning, not upstream's — see the presets for upstream's looks.
 //
+// lerp-category: Patterns
 // lerp-param: colorBack      color       = (0.000, 0.078, 0.161) "Background"
 // lerp-param: colorFront     color       = (0.435, 0.765, 0.949) "Stroke"
 // lerp-param: scale          float 0.5 16 = 5.5  "Scale"

@@ -78,6 +78,7 @@
 // grouped (rho is far from steady there), which is why the 20-step default
 // marches every step as before.
 //
+// lerp-category: Fractals
 // lerp-param: speed float 0 2   = 0.5  "Speed"
 // lerp-param: swing float 0 1   = 0.02 "Fold swing"
 // lerp-param: steps int 20 100  = 20   "March steps"

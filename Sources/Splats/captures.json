@@ -232,26 +232,6 @@
       "scale": 0.08,
       "min_alpha": 0.2
     },
-    "office-lobby": {
-      "title": "Sunlit Office Lobby, Multi-level",
-      "author": "spaitial (spAItial)",
-      "page": "https://superspl.at/scene/942c5f7e",
-      "license": "none",
-      "sources": [
-        "https://d28zzqy0iyovbz.cloudfront.net/942c5f7e/v1/meta.json"
-      ],
-      "rotate": [
-        180,
-        180,
-        0
-      ],
-      "center": [
-        0,
-        1.6,
-        -1.0
-      ],
-      "scale": 0.25
-    },
     "rose": {
       "title": "Rose Flower",
       "author": "danylyon (Dany Bittel)",
@@ -287,33 +267,6 @@
         0
       ],
       "scale": 0.03
-    },
-    "orchid-greenhouse": {
-      "title": "Orchid Greenhouse",
-      "author": "vice (Shachar Weis)",
-      "page": "https://superspl.at/scene/2cf8a82c",
-      "license": "none",
-      "sources": [
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_0/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_1/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_2/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_3/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_4/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_5/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_6/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_7/meta.json"
-      ],
-      "rotate": [
-        180,
-        159.3,
-        0
-      ],
-      "center": [
-        -2.387,
-        0,
-        0.401
-      ],
-      "scale": 0.25
     },
     "fruit-bowl": {
       "title": "The Fruit Bowl",

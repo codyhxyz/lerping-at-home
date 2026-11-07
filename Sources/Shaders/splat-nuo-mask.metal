@@ -5,6 +5,7 @@
 // https://superspl.at/scene/0b382df2. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:nuo-mask
 //
 // lerp-caption-title: Nuo mask

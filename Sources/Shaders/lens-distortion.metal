@@ -34,6 +34,7 @@
 // fan, from a fixed per-pixel hash so frames stay pure. The jitter fades out
 // below ~8 layers, where the layers are meant to read as distinct (Duotone).
 //
+// lerp-category: Patterns
 // lerp-param: colorBack       color         = (0.012, 0.014, 0.024) "Background"
 // lerp-param: spread          float 0 1     = 0.6  "Spread"
 // lerp-param: bias            float -1 1    = 1.0  "Bias"

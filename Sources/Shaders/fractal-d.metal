@@ -91,6 +91,7 @@
 // Measured before this change, LerpPreview --bench, Apple M5, 2704x1756:
 // default ~5.6-6.5 ms p95.
 //
+// lerp-category: Fractals
 // lerp-param: speed float 0 2   = 0.5 "Speed"
 // lerp-param: steps int 20 100  = 24  "March steps"
 // lerp-param: ring  float 0.1 0.8 = 0.4 "Ring offset"

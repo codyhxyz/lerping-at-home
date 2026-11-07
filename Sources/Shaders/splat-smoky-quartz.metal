@@ -6,6 +6,7 @@
 // https://superspl.at/scene/8e3ae31f. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:smoky-quartz
 //
 // lerp-caption-title: Smoky quartz

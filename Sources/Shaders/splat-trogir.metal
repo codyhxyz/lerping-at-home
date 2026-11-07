@@ -8,6 +8,7 @@
 // https://superspl.at/scene/89f82474 — the 720k-splat level of its streamed
 // level-of-detail set. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:trogir-square:look
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"

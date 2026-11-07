@@ -61,6 +61,7 @@
 // load from other jobs: ~5.5 ms a sample, so the port, Upstream and Coral
 // read ~11 ms mean and ~12.3-12.8 p95, Cathedral and Lattice ~5.5.
 //
+// lerp-category: Fractals
 // lerp-param: form      int   0 3       = 0     "Form"
 // lerp-param: speed     float 0 2.5     = 0.5   "Speed"
 // lerp-param: morph     float -1 2      = 0.5   "Morph"

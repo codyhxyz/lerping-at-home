@@ -8,6 +8,7 @@
 // is not ported — this file is always the "metaballs" shape. `colorTint`'s
 // alpha is the colour-burn strength, as upstream.
 //
+// lerp-category: Abstract
 // lerp-param: colorBack  color        = (0.016, 0.018, 0.024) "Background"
 // lerp-param: colorTint  color        = (0.55, 0.62, 0.70, 0.7) "Tint"
 // lerp-param: scale      float 0.2 4  = 0.9  "Scale"

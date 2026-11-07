@@ -56,6 +56,7 @@
 //     along the normal times the orbit trap; no shadow rays (a lantern at the
 //     eye in the halls casts none that can be seen)
 //
+// lerp-category: Fractals
 // lerp-param: form    int 0 2        = 0    "Form: halls, box, slab"
 // lerp-param: scale   float -2.5 3.5 = 2.0  "Box scale (box, slab)"
 // lerp-param: breathe float 0 1      = 0.0  "Breathing"

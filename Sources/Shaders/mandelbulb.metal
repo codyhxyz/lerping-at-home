@@ -80,6 +80,7 @@
 //   2/3   iridescent shell — nacre, thin-film colour shifting with view angle
 //   1     coral — warm bone on the buds, deep red in the crevices, translucent
 //
+// lerp-category: Fractals
 // lerp-param: power    float 2 12  = 8.0  "Power"
 // lerp-param: breathe  float 0 3   = 2.0  "Power breathing"
 // lerp-param: speed    float 0 3   = 1.0  "Speed"

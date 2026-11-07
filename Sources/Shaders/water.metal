@@ -11,6 +11,7 @@
 // Upstream's `edges` prop controls the image frame, which this port drops, so
 // it is not exposed. `size` is in this port's units.
 //
+// lerp-category: Gradients
 // lerp-param: colorBack      color         = (0.006, 0.030, 0.052) "Abyss"
 // lerp-param: colorSurface   color         = (0.024, 0.128, 0.158) "Surface"
 // lerp-param: colorHighlight color         = (0.620, 0.910, 1.000) "Highlight"

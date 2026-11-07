@@ -5,6 +5,7 @@
 // https://superspl.at/scene/f07db9fd. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:diosa-justicia
 //
 // lerp-caption-title: La Diosa de la Justicia

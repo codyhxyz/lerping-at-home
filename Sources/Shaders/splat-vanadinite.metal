@@ -5,6 +5,7 @@
 // Capture: "Vanadinite" by doudoid (Yann de Couëssin), CC BY 4.0,
 // https://superspl.at/scene/663d6a97. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:vanadinite
 //
 // lerp-caption-title: Vanadinite

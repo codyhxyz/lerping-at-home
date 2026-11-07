@@ -27,6 +27,7 @@
 // GPU cost: negligible — no loops. LerpPreview --bench, Apple M5: ~0.06 ms
 // per frame at 1200x750, ~0.5 ms at 3840x2160.
 //
+// lerp-category: Abstract
 // lerp-param: speed float 0 2 = 0.5 "Speed"
 //
 // lerp-preset: Upstream speed=1.0

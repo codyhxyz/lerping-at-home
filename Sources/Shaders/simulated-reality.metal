@@ -58,6 +58,7 @@
 // 12.1 and 14.5 ms on a loaded GPU, and the model's SIMD-group step count
 // puts (4) at another ~12% of the octave work.
 //
+// lerp-category: Fractals
 // lerp-param: speed   float 0 2  = 0.35 "Speed"
 // lerp-param: sunTint float 0 1  = 0.0  "Sun warm/cool"
 // lerp-animate: sunTint 0 0.3 period=240

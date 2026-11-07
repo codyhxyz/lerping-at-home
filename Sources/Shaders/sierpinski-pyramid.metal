@@ -137,6 +137,7 @@
 //
 // form: 0 tetrahedron, 1 octahedron, 2 icosahedron, 3 dodecahedron.
 //
+// lerp-category: Fractals
 // lerp-param: form      int   0 3     = 0    "Form"
 // lerp-param: scale     float 1.5 3.0 = 2.0  "Fold scale"
 // lerp-param: twist     float 0 1     = 0.0  "Fold rotation"

@@ -34,6 +34,7 @@
 // Cost: CF_STEPS noise evaluations per pixel; `particles` = 0 skips the trace
 // and leaves the threads, at one evaluation.
 //
+// lerp-category: Simulations
 // lerp-param: colorBack     color          = (0.016, 0.020, 0.042) "Background"
 // lerp-param: color1        color          = (0.180, 0.620, 0.700) "Teal"
 // lerp-param: color2        color          = (0.420, 0.360, 0.820) "Iris"

@@ -1481,7 +1481,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// when it is really going to discard them.
     private func step(_ direction: Int) {
         let shaders = metalView.shaderLibrary.discover()
-        guard let next = ShaderLibrary.step(in: shaders.map(\.name), after: current.name,
+        guard let next = ShaderLibrary.step(in: shaders.inShelfOrder().map(\.name), after: current.name,
                                             offset: direction),
               let shader = shaders.named(next),
               let cover = [shader].rotationEntries().first else { return }

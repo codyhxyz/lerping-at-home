@@ -61,6 +61,7 @@
 // +15% on the packings and Zoom, +12% on Indra's Pearls, at 2704x1756 ~12.3 ms
 // mean on Pearl Halls (bench under contention, scaled by a reference look).
 //
+// lerp-category: Fractals
 // lerp-param: mode     int   0 3 = 0    "Fractal"
 // lerp-param: shape    float 0 1 = 0.5  "Shape"
 // lerp-animate: shape    0.3 0.7 period=220

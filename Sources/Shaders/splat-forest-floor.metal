@@ -6,6 +6,7 @@
 // https://superspl.at/scene/ab5efa0e. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:forest-floor
 //
 // lerp-caption-title: Forest Floor

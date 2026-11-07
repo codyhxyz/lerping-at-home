@@ -8,6 +8,7 @@
 // not ported — this file is always the "diamond" shape. Upstream takes a
 // variable-length `colors` array (max 6); this port fixes three tunable slots.
 //
+// lerp-category: Abstract
 // lerp-param: color1          color        = (0.290, 0.180, 0.760, 1.0) "Outer smoke"
 // lerp-param: color2          color        = (0.220, 0.620, 1.000, 1.0) "Azure"
 // lerp-param: color3          color        = (0.910, 0.965, 1.000, 1.0) "Ice white core"

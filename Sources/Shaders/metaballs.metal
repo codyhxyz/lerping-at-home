@@ -12,6 +12,7 @@
 // `audio`. Every audio uniform is 0 in the saver, in --snapshot and with the
 // toggle off, and then `ballSize` is exactly `size`: the look is unchanged.
 //
+// lerp-category: Abstract
 // lerp-param: color1    color     = (0.431, 0.200, 0.800, 1.0) "Deep violet"
 // lerp-param: color2    color     = (1.000, 0.333, 0.000, 1.0) "Ember orange"
 // lerp-param: color3    color     = (1.000, 0.757, 0.020, 1.0) "Amber"

@@ -32,6 +32,7 @@
 // always cost (checked with `LerpPreview --bench --looks` against the
 // separate shaders before they were removed).
 //
+// lerp-category: Fractals
 // lerp-param: form   int   0 9        = 0                  "Form"
 // lerp-param: color  color            = (0.01, 0.1, 1.0)   "Glow colour"
 // lerp-param: accent color            = (0.42, 0.06, 1.0)  "Accent colour"

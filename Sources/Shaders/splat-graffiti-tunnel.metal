@@ -6,6 +6,7 @@
 // https://superspl.at/scene/6713317b. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:graffiti-tunnel:look
 //
 // lerp-caption-title: The Graffiti Tunnel

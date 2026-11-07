@@ -51,6 +51,7 @@
 // ms p95; the 12-tap version is not yet benched (GPU benching was frozen),
 // and should land around 2-5 ms. TORQUE_TAPS 8 is within 2/255 if needed.
 //
+// lerp-category: Abstract
 // lerp-param:   speed float 0 2   = 0.3 "Speed"
 // lerp-param:   drift float 0 10  = 4   "Drift"
 //

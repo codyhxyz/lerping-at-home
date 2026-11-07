@@ -38,6 +38,7 @@
 //   keeps the bright clusters and nebula colour but marches less deep, so
 //   there are fewer faint far stars. The "Upstream" preset restores 20 x 17.
 //
+// lerp-category: Scenes
 // lerp-param: iterations int 4 24      = 14     "Iterations"
 // lerp-param: volsteps   int 4 24      = 14     "Volume steps"
 // lerp-param: formuparam float 0.4 0.65 = 0.53  "Formula param"

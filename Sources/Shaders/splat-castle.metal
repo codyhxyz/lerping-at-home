@@ -5,6 +5,7 @@
 // Capture: "Castle" by ethan3111 (Ethan), CC BY 4.0,
 // https://superspl.at/scene/d276acb9. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:castle
 //
 // lerp-caption-title: Castle at sunset

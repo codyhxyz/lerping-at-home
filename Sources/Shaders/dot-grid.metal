@@ -43,6 +43,7 @@
 //   that put up to 91/255 of per-pixel second difference between 1/60-s
 //   frames into "Tree line" (14/255 with both fixed, with a 1-px ramp).
 //
+// lerp-category: Patterns
 // lerp-param: colorBack    color        = (0.016, 0.020, 0.043) "Background"
 // lerp-param: colorFill    color        = (0.192, 0.310, 0.847) "Fill"
 // lerp-param: colorStroke  color        = (0.749, 0.847, 1.000) "Stroke"

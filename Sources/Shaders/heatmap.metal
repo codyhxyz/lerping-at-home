@@ -1,6 +1,7 @@
 // Heatmap — ported from paper-design/shaders (Apache-2.0)
 // https://github.com/paper-design/shaders
 //
+// lerp-category: Simulations
 // lerp-data: heatmap
 //
 // Upstream is an image filter with a CPU pre-pass in front of it: its

@@ -24,6 +24,7 @@ constant float3 FG_BACK_COLORS[FG_BACK_COUNT] = {
 //
 // (Upstream's `colorBack` is not exposed: the procedural backdrop is opaque
 // and covers it everywhere, so it would be a knob that does nothing.)
+// lerp-category: Patterns
 // lerp-param: colorShadow    color       = (0.012, 0.024, 0.055, 0.60) "Shadow"
 // lerp-param: colorHighlight color       = (0.925, 0.965, 1.000, 0.45) "Highlight"
 // lerp-param: size           float 0.01 1 = 0.86 "Size"

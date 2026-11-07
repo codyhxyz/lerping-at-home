@@ -5,6 +5,7 @@
 // Capture: "Dawn @ Vesta" by dtdtdt, CC BY 4.0,
 // https://superspl.at/scene/61f1a877. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:vesta
 //
 // lerp-caption-title: Vesta

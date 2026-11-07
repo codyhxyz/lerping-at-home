@@ -6,6 +6,7 @@
 // https://superspl.at/scene/e43c3c94. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:seated-dari
 //
 // lerp-caption-title: Seated Dari (Vairocana)

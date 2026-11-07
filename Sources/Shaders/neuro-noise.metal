@@ -5,6 +5,7 @@
 // Parameters mirror the upstream <NeuroNoise> props. `scale` is in this port's
 // units, not upstream's sizing system.
 //
+// lerp-category: Gradients
 // lerp-param: colorFront color       = (0.494, 0.910, 0.980) "Front"
 // lerp-param: colorMid   color       = (0.129, 0.267, 0.373) "Mid"
 // lerp-param: colorBack  color       = (0.012, 0.020, 0.043) "Background"

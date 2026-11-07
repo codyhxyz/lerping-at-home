@@ -3,6 +3,7 @@
 // camera, material table and lighting model are reproduced from its published
 // constants so the result matches what people remember.
 //
+// lerp-category: Scenes
 // lerp-data: pipes
 //
 // lerp-param: yaw      float -180 180 = 0 "Turn"

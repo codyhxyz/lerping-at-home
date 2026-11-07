@@ -5,6 +5,7 @@
 // Capture: "Quartz Crystal" by trilithon (Huib Schippers), CC BY 4.0,
 // https://superspl.at/scene/a91f39a1. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:quartz-crystal
 //
 // lerp-caption-title: Quartz Crystal

@@ -4,6 +4,7 @@
 // Parameters mirror the upstream <Swirl> props. Upstream takes a
 // variable-length `colors` array (max 10); this port fixes four tunable slots.
 //
+// lerp-category: Gradients
 // lerp-param: color1         color     = (0.043, 0.153, 0.200) "Deep petrol"
 // lerp-param: color2         color     = (0.078, 0.349, 0.369) "Dark teal"
 // lerp-param: color3         color     = (0.196, 0.522, 0.463) "Sea green"

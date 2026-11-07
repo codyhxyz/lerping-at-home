@@ -5,6 +5,7 @@
 // Capture: "Milano Subterranean Apartment" by argenzio (Corridori Ruggero), CC BY-NC 4.0,
 // https://superspl.at/scene/15b6b784. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:milano-apartment:look
 //
 // lerp-caption-title: Milano Subterranean Apartment

@@ -78,6 +78,7 @@
 // (The previous version: default 9.9, Cubic 5.9, Intersected 8.1, Glass
 // 10.9, Turned 8.8.)
 //
+// lerp-category: Fractals
 // lerp-param: speed  float 0 2       = 0.5   "Speed"
 // lerp-param: power  int   2 3       = 2     "Power"
 // lerp-param: cReal  float -1.2 0.5  = -0.48 "c real centre"

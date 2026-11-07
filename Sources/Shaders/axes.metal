@@ -30,6 +30,7 @@
 // GPU cost: negligible — no loops. LerpPreview --bench, Apple M5: ~0.32 ms
 // per frame at 3840x2160 (fractal-multiverse ~8.9 ms in the same run).
 //
+// lerp-category: Abstract
 // lerp-param: speed float 0 2 = 0.3 "Speed"
 //
 // lerp-preset: Upstream speed=1.0

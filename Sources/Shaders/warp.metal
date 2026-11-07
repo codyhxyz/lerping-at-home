@@ -8,6 +8,7 @@
 // variable-length `colors` array (max 10); this port fixes four tunable slots.
 // `scale` is in this port's units, not upstream's sizing system.
 //
+// lerp-category: Gradients
 // lerp-param: color1          color        = (0.071, 0.071, 0.078) "Charcoal"
 // lerp-param: color2          color        = (0.580, 0.439, 1.000) "Soft violet"
 // lerp-param: color3          color        = (0.071, 0.071, 0.078) "Charcoal"

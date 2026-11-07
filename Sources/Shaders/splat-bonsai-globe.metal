@@ -11,6 +11,7 @@
 // Capture: "Bonsai Tree" by garrettknelli, CC BY 4.0,
 // https://superspl.at/scene/4c461e7c. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:bonsai
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"

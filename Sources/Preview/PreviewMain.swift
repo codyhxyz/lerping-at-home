@@ -46,6 +46,7 @@ enum PreviewMain {
         }
 
         if args.contains("--rotation-selftest") {
+            ShelfSelfTest.run(extraSearch)
             RotationSelfTest.run(extraSearch)
             return
         }

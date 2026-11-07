@@ -9,6 +9,7 @@
 // no change to the lerpMain signature. `// lerp-preset:` lines name a set of
 // overrides. See PORTING.md for the full syntax.
 //
+// lerp-category: Scenes
 // lerp-param: colorSkyLow  color       = (0.004, 0.008, 0.028) "Sky, horizon"
 // lerp-param: colorSkyHigh color       = (0.016, 0.035, 0.090) "Sky, zenith"
 // lerp-param: colorLow     color       = (0.05, 0.85, 0.45) "Curtain, base"

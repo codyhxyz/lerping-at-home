@@ -24,6 +24,7 @@
 // upstream Waves has no speed prop because it does not animate. `scale` is in
 // this port's units, not upstream's sizing system.
 //
+// lerp-category: Patterns
 // lerp-param: colorBack  color        = (0.024, 0.035, 0.071) "Background"
 // lerp-param: colorFront color        = (0.184, 0.596, 0.588) "Front"
 // lerp-param: scale      float 0.25 30 = 3.0  "Scale"

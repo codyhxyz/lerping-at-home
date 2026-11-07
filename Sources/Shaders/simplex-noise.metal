@@ -7,6 +7,7 @@
 // variable-length `colors` array (max 10); this port fixes the palette at six
 // slots, all six tunable. `scale` is in this port's units.
 //
+// lerp-category: Gradients
 // lerp-param: color1        color      = (0.043, 0.043, 0.129) "Midnight"
 // lerp-param: color2        color      = (0.180, 0.106, 0.353) "Deep violet"
 // lerp-param: color3        color      = (0.427, 0.145, 0.478) "Plum"

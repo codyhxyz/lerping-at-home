@@ -5,6 +5,7 @@
 // Capture: "Owl Wood Sculpture" by pierrecharpentierdesign, CC BY 4.0,
 // https://superspl.at/scene/ac4eb719. Converted by `make splats`.
 //
+// lerp-category: Splats
 // lerp-data: splat:orbit:owl
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"

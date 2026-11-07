@@ -13,6 +13,7 @@
 // this port's own addition — upstream renders one still frame, and this is the
 // rate the light and fold anchors drift at.
 //
+// lerp-category: Patterns
 // lerp-param: colorFront   color        = (0.694, 0.596, 0.455) "Paper"
 // lerp-param: colorBack    color        = (0.043, 0.031, 0.043) "Shadow"
 // lerp-param: contrast     float 0 1    = 0.60 "Contrast"

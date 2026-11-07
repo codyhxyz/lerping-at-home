@@ -10,6 +10,7 @@
 // `colorGlow`'s alpha is the glow strength, as upstream. The gap's edge
 // softness stays hardcoded — upstream has no prop for it.
 //
+// lerp-category: Patterns
 // lerp-param: color1        color       = (0.173, 0.227, 0.388, 1.0) "Slate indigo"
 // lerp-param: color2        color       = (0.090, 0.341, 0.361, 1.0) "Deep teal"
 // lerp-param: color3        color       = (0.325, 0.227, 0.471, 1.0) "Rich violet"
