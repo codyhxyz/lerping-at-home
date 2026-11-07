@@ -739,13 +739,20 @@ a time, and keeps a record on the island — a flower in the meadow for each goo
 day of the last two weeks, a new tree every few days of its life. The sky is the
 real time of day and the trees the real season.
 
-What it is doing when the screensaver comes up is its strongest feeling at that
-moment: asleep at 3 am or after an eleven-hour day, pacing under a storm cloud
-after an hour of app-hopping, stretching when the screensaver started right
-after a long run with no break, under a rain cloud after a bad week, waving
-after days away, building a sandcastle on a day spent making things, hopping and
-chasing butterflies when things are good. Later 36-second chapters are drawn by
-weight, so it does not repeat itself.
+When the screensaver comes up it notices you first — a double-take, a "!", a
+wave — then gets on with how it feels, drawn with its strongest feeling the
+most likely: asleep at 3 am, or face-down after an eleven-hour day; pacing
+under a storm cloud with a scribble over its head after an hour of
+app-hopping; stretching when the screensaver started right after a long run
+with no break; sniffling under a rain cloud after a bad week; waving after days
+away; building a sandcastle on a day spent making things; hopping and chasing
+butterflies when things are good. Its face shows it (eyelids, ^^ eyes, a smile
+or a frown, bags under its eyes), and small moments — a yawn, a sneeze, sniffing
+a flower — interrupt whatever it is doing. Later 36-second chapters are drawn by
+weight, so it does not repeat itself. Its vitals are read once per session, so
+nothing about it changes mid-session; the camera stays close and comes round
+to its face, and the look takes the playground's drag to turn and pinch to
+zoom.
 
 **Where the data comes from.** The saver only runs while nobody is using the
 Mac, inside a sandbox that cannot write anywhere shared, so it cannot watch how
