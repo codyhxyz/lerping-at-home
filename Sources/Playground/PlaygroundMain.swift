@@ -164,6 +164,9 @@ enum PlaygroundMain {
     static func boot(_ delegate: NSApplicationDelegate,
                      policy: NSApplication.ActivationPolicy = .regular) -> Never {
         appDelegate = delegate
+        // ⌃⌘F belongs to Shader › Preview Full Screen. Without this AppKit adds
+        // its own Enter Full Screen on the same key, for the window.
+        UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
         let app = NSApplication.shared
         app.setActivationPolicy(policy)
         app.appearance = NSAppearance(named: .darkAqua)
@@ -376,6 +379,10 @@ enum MainMenu {
             .separator(),
             item("Recompile", Selector(("recompile:")), "r"),
             item("Play / Pause", Selector(("togglePlayPause:")), "\\"),
+            // ⌃⌘F is full screen everywhere on the platform. The window's own
+            // full screen gives up the key: it would only enlarge the editor.
+            item("Preview Full Screen", #selector(PlaygroundWindowController.togglePreview(_:)), "f",
+                 [.command, .control]),
             item("Randomize Parameters",
                  #selector(PlaygroundWindowController.randomizeParameters(_:)), "r", [.command, .shift]),
             // Off at launch. Feeds u.audioLevel/Bass/Mid/Treble; see PORTING.md.

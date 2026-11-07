@@ -112,6 +112,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// screensaver will show. A toggle and nothing more — there was a peak
     /// slider beside it, which is not a control anyone reaches for.
     private let edrCheckbox = NSButton(checkboxWithTitle: "HDR", target: nil, action: nil)
+    /// The render on a whole screen until Esc. Its button is the last thing on
+    /// the strip under the picture, where every video player keeps it.
+    private var preview: FullScreenPreview!
 
     let inspector = ParameterPanel(frame: NSRect(x: 0, y: 0, width: 320, height: 700))
     private var inspectorItem: NSSplitViewItem!
@@ -357,14 +360,23 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         metalView.onCompileError = { name, message in
             FileHandle.standardError.write(Data("compile error in \(name):\n\(message)\n".utf8))
         }
-        metalView.setContentHuggingPriority(.init(1), for: .vertical)
+        preview = FullScreenPreview(view: metalView)
+        preview.stage.setContentHuggingPriority(.init(1), for: .vertical)
+        preview.onChange = { [weak self] in
+            guard let self, isPaused else { return }
+            metalView.renderOnce()
+        }
+        let fullScreen = InspectorHeaderButton(symbol: "arrow.up.left.and.arrow.down.right",
+                                               title: nil, accessibility: "Preview Full Screen",
+                                               target: self, action: #selector(togglePreview(_:)))
+        fullScreen.toolTip = "Preview Full Screen (⌃⌘F) — Esc to return"
 
         // Play / Pause is the only control over time. There used to be a
         // one-minute scrubber, a typed clock, minute-paging arrows and a
         // "0:00–1:00" label; nobody needs to seek a screensaver.
-        return Chrome.pane([metalView,
+        return Chrome.pane([preview.stage,
                             Chrome.bar([playButton, fpsLabel, Chrome.flexible(),
-                                        resolutionPopUp, edrCheckbox],
+                                        resolutionPopUp, edrCheckbox, fullScreen],
                                        height: 34)])
     }
 
@@ -1479,6 +1491,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         inspector.choosePreset(next ?? LerpRotationEntry.defaultsName)
     }
 
+    /// On the screen the playground window is on, which is the one you are
+    /// looking at.
+    @objc func togglePreview(_ sender: Any?) {
+        guard let screen = window?.screen ?? NSScreen.main else { return NSSound.beep() }
+        preview.toggle(on: screen)
+    }
+
     @objc func togglePlayPause(_ sender: Any?) {
         if isPaused {
             metalView.start()
@@ -1805,6 +1824,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) { pollDisk() }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        preview.hide()
         terminationApproved = confirmDiscardIfDirty(includingLook: true)
         return terminationApproved
     }
@@ -1861,6 +1881,9 @@ extension PlaygroundWindowController: NSMenuItemValidation {
         case #selector(newMapping(_:)): return midi.isAvailable
         case #selector(renameMapping(_:)), #selector(deleteMapping(_:)): return activeMapping != nil
         case #selector(nextMapping(_:)): return mappings.count > 1
+        case #selector(togglePreview(_:)):
+            item.title = preview.isShown ? "Exit Full Screen Preview" : "Preview Full Screen"
+            return true
         default: return true
         }
     }
