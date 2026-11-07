@@ -165,7 +165,11 @@ public final class SplatData: LerpDataProvider {
 
         var u = LerpSplatUniforms(view: cam.view, focal: SIMD2(cam.focal, cam.focal),
                                   viewport: SIMD2(Float(w), Float(h)), principal: cam.principal,
-                                  deform: deform)
+                                  deform: deform,
+                                  // A look playing the author's SuperSplat path is drawn
+                                  // with that viewer's culls too (see `splatVertex`).
+                                  minContribution: move == .path ? 1 : 0,
+                                  minPixelSize: move == .path ? 2 : 0)
         if shaded == nil || shaded!.length < asset.count * 8 {
             shaded = device.makeBuffer(length: max(8, asset.count * 8), options: .storageModePrivate)
             shaded?.label = "splat.shaded"
@@ -768,6 +772,8 @@ struct LerpSplatUniforms {
     var viewport: SIMD2<Float>
     var principal: SIMD2<Float>
     var deform: LerpSplatDeform
+    var minContribution: Float
+    var minPixelSize: Float
 }
 
 /// Must match `SplatShade` in `LerpSplatPipeline.source`.
@@ -1072,6 +1078,8 @@ enum LerpSplatPipeline {
         float2 viewport;
         float2 principal;   // image-centre offset, pixels, y up (a tracked viewer)
         SplatDeform deform;
+        float minContribution;   // SuperSplat's culls; 0 draws every splat
+        float minPixelSize;
     };
     struct SplatOut {
         float4 position [[position]];
@@ -1214,6 +1222,14 @@ enum LerpSplatPipeline {
         float3x3 T = J * W;
         float3x3 C = T * S * transpose(T);
         float a = C[0][0] + 0.3, b = C[0][1], d = C[1][1] + 0.3;
+        // SuperSplat's viewer skips a splat with less than one pixel's worth
+        // of opacity (minContribution 1), or under 2 px in radius
+        // (minPixelSize 2). That skips most of a distant canopy and roughly
+        // doubles its frame rate. It also changes 1-12% of the pixels on our
+        // other captures, so it is on only for looks that play the author's
+        // path, where matching the site is the point.
+        if (float(color.a) * 6.283185 * sqrt(max(a * d - b * b, 0.0)) < U.minContribution) return o;
+        if (sqrt(2.0 * max(a, d)) < U.minPixelSize) return o;
 
         float mid = 0.5 * (a + d);
         float rad = length(float2(0.5 * (a - d), b));
