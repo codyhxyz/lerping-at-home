@@ -9,8 +9,8 @@
 // tools/critter-assets) and renders them with SceneKit into a texture before
 // this pass runs. See CritterFrame.swift for how the parts fit.
 //
-// This file is the compositor: the rendered island, then the sky where the
-// scene drew none, then the 2D things that float over it — Zzz, hearts,
+// This file is the compositor: the rendered island (CritterLook draws the
+// sky dome; the gradient here only fills what the scene left empty), then the 2D things that float over it — Zzz, hearts,
 // sparkles, rain, lightning, the scribble of a frazzled mind, a sweat drop,
 // the "!" of noticing you, fireflies — then the season in the air, a gentle
 // vignette and dither. Every overlay hangs off an anchor CritterData projects
@@ -91,7 +91,7 @@ struct FX {
     float  stage;
     float  nearW;      // this pixel's distance from the head, world units at its depth
     float  time;
-    float  zzz, love, glee, sick, storm, flash, sweat, bang;
+    float  zzz, love, glee, sick, storm, flash, sweat, bang, frazzle, butterfly;
     float  night;
 };
 
@@ -195,7 +195,7 @@ static inline void fxLightning(thread float3& col, thread const FX& fx) {
 // Frazzled, while it paces under its storm cloud: a tangled scribble ball
 // just above and beside its head, redrawn a few times a second.
 static inline void fxScribble(thread float3& col, thread const FX& fx) {
-    float frazzle = fx.storm * (1.0 - min(fx.zzz, 1.0)) * (1.0 - fx.bang) * step(0.5, fx.stage);
+    float frazzle = fx.frazzle;
     if (!(frazzle > 0.01 && fx.nearW < 0.9)) return;
     float3 pj = project(fx.head - float3(0.0, 0.05 * fx.s, 0.0) - fx.cam.rt * 0.75 * fx.s, fx.cam);
     float size = 0.1 * fx.cam.focal / pj.z;
@@ -216,7 +216,7 @@ static inline void fxScribble(thread float3& col, thread const FX& fx) {
 // A sweat drop, sliding down beside its head: a glossy bead of water with an
 // ink outline, a little light pooled in its bottom, a crisp highlight.
 static inline void fxSweat(thread float3& col, thread const FX& fx) {
-    float sweat = fx.sweat * (1.0 - min(fx.zzz, 1.0)) * step(0.5, fx.stage);
+    float sweat = fx.sweat;
     if (!(sweat > 0.01 && fx.nearW < 0.9)) return;
     float ph = fract(fx.time * 0.45);
     float3 pj = project(fx.head + float3(0.0, (-0.4 - 0.35 * ph) * fx.s, 0.0) + fx.cam.rt * 1.05 * fx.s, fx.cam);
@@ -253,6 +253,20 @@ static inline void fxBang(thread float3& col, thread const FX& fx) {
                   length(b - float2(0.0, -0.24)) - 0.12);
     col = mix(col, float3(0.3, 0.16, 0.1), bang * smoothstep(0.11, 0.07, d));
     col = mix(col, float3(1.0, 0.84, 0.25), bang * smoothstep(0.035, 0.0, d));
+}
+
+// The butterfly's dotted trail (the butterfly itself is in the scene).
+static inline void fxTrail(thread float3& col, thread const FX& fx, constant CritterState& S) {
+    if (fx.butterfly <= 0.01) return;
+    int n = int(S.fx2.w + 0.5);
+    for (int i = 0; i < 6; i++) {
+        if (i >= n) break;
+        float3 pj = project(S.trail[i].xyz, fx.cam);
+        float j = float(i + 2);
+        float d = length(fx.uv - pj.xy) - 0.007 * fx.cam.focal / pj.z;
+        float vis = step(pj.z, fx.depth + 0.2) * fx.butterfly;
+        col = mix(col, float3(1.0), vis * 0.55 * (1.0 - j / 7.0) * smoothstep(0.004, 0.0, d));
+    }
 }
 
 static inline void fxFireflies(thread float3& col, thread const FX& fx, constant CritterState& S) {
@@ -355,6 +369,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     fx.time = S.sky.w;
     fx.zzz = S.fx0.x; fx.love = S.fx0.y; fx.glee = S.fx0.z; fx.sick = S.fx0.w;
     fx.storm = S.fx1.x; fx.flash = S.fx1.y; fx.sweat = S.fx1.z; fx.bang = S.fx1.w;
+    fx.frazzle = S.fx2.x; fx.butterfly = S.fx2.z;
     fx.night = S.sky.x;
     // How far this pixel is from the critter's head, in world units at its
     // depth: the overlays near it are skipped beyond their reach.
@@ -369,6 +384,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     fxScribble(col, fx);
     fxSweat(col, fx);
     fxBang(col, fx);
+    fxTrail(col, fx, S);
     fxFireflies(col, fx, S);
     seasonInTheAir(col, fx, S);
 

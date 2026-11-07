@@ -52,20 +52,24 @@ public final class CritterData: LerpDataProvider {
         var cam0: SIMD4<Float>  = .zero   // camera position, focal
         var cam1: SIMD4<Float>  = .zero   // forward, zNear
         var cam2: SIMD4<Float>  = .zero   // right, zFar
-        var cam3: SIMD4<Float>  = .zero   // up, 1 when the scene drew a sky (no compositor sky)
+        var cam3: SIMD4<Float>  = .zero   // up, unused
         var head: SIMD4<Float>  = .zero   // just above its head, size s
         var feet: SIMD4<Float>  = .zero   // its feet, stage
         var cloud: SIMD4<Float> = .zero   // its cloud, cloud scale
         var body: SIMD4<Float>  = .zero   // where the season's particles keep clear of, radius (world)
         var fx0: SIMD4<Float>   = .zero   // zzz, love, glee, sick
         var fx1: SIMD4<Float>   = .zero   // storm, flash, sweat, bang
+        var fx2: SIMD4<Float>   = .zero   // frazzle, dtake, butterfly, trail points
         var sky: SIMD4<Float>   = .zero   // night, golden, season, time
         var light: SIMD4<Float> = .zero   // sun direction, health
         var fly: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
                   SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>)
             = (.zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero)
+        var trail: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>)
+            = (.zero, .zero, .zero, .zero, .zero, .zero)
     }
     static let fireflies = 14
+    static let trailPoints = 6
 
     /// No frame for this long means the next one starts a new session.
     static let sessionGap: TimeInterval = 20
@@ -95,14 +99,17 @@ public final class CritterData: LerpDataProvider {
     private var vitalsKey: VitalsKey?
     private var vitals = CritterVitals.fixture
 
-    // The 3D scene and what it rendered this frame.
-    private var scene: CritterScene?
+    // The 3D scene and what it rendered this frame. Built (and its
+    // pipelines compiled) off the render thread when the provider is made;
+    // the first frame waits for it.
+    private var built: CritterScene?
+    private let building = DispatchGroup()
+    private var builtScene: CritterScene?
     private var state = State()
     private struct Targets {
         let width: Int, height: Int
         let msColor: MTLTexture, msDepth: MTLTexture
-        let color: MTLTexture          // resolved, sRGB
-        let colorView: MTLTexture      // the same bytes read without decoding: gamma-encoded
+        let color: MTLTexture          // resolved; CritterLook writes display-encoded colour
         let depth: MTLTexture          // resolved
     }
     private var targets: Targets?
@@ -124,9 +131,14 @@ public final class CritterData: LerpDataProvider {
         live = mode == .live && (env == "1" || (env == nil && Bundle.main.bundleIdentifier != nil))
         loader = live ? Loader() : nil
         loader?.refresh()   // prefetch, so the first session rarely waits
-        // The models are read off the render thread too; the first frame
-        // waits for this if it has not finished.
-        DispatchQueue.global(qos: .userInitiated).async { _ = CritterAssets.templates() }
+        // The models are read, the graph built and its pipelines compiled
+        // off the render thread; the first frame waits for whatever is left.
+        DispatchQueue.global(qos: .userInitiated).async(group: building) { [self] in
+            let scene = CritterScene(device: device)
+            scene.apply(CritterBehavior.frame(vitals: .fixture, time: 0, seed: 0, params: nil), aspect: 1.6)
+            scene.precompile()
+            builtScene = scene
+        }
     }
 
     public var metalPrelude: String {
@@ -134,8 +146,9 @@ public final class CritterData: LerpDataProvider {
         struct CritterState {
             float4 cam0, cam1, cam2, cam3;
             float4 head, feet, cloud, body;
-            float4 fx0, fx1, sky, light;
+            float4 fx0, fx1, fx2, sky, light;
             float4 fly[\(Self.fireflies)];
+            float4 trail[\(Self.trailPoints)];
         };
         """
     }
@@ -150,26 +163,19 @@ public final class CritterData: LerpDataProvider {
         let res = uniforms.resolution
         let fit = min(1, (Float(Self.maxScenePixels) / max(res.x * res.y, 1)).squareRoot())
         let width = max(1, Int((res.x * fit).rounded())), height = max(1, Int((res.y * fit).rounded()))
-        if scene == nil { scene = CritterScene(device: device) }
-        guard let scene, let t = targets(width: width, height: height) else { return }
+        if built == nil {
+            building.wait()
+            built = builtScene
+        }
+        guard let scene = built, let t = targets(width: width, height: height) else { return }
         scene.apply(frame, aspect: res.x / max(res.y, 1))
 
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = t.msColor
-        pass.colorAttachments[0].resolveTexture = t.color
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
-        pass.colorAttachments[0].storeAction = .multisampleResolve
-        pass.depthAttachment.texture = t.msDepth
-        pass.depthAttachment.resolveTexture = t.depth
-        pass.depthAttachment.loadAction = .clear
-        pass.depthAttachment.clearDepth = 1
-        pass.depthAttachment.storeAction = .multisampleResolve
-        pass.depthAttachment.depthResolveFilter = .sample0
+        guard let pass = CritterScene.pass(color: t.msColor, depth: t.msDepth,
+                                           resolveColor: t.color, resolveDepth: t.depth) else { return }
         scene.renderer.render(atTime: TimeInterval(frame.time),
                               viewport: CGRect(x: 0, y: 0, width: width, height: height),
                               commandBuffer: commandBuffer, passDescriptor: pass)
-        state = Self.pack(frame, skyDrawn: scene.scene.background.contents != nil)
+        state = Self.pack(frame)
     }
 
     public func bind(to encoder: MTLRenderCommandEncoder, uniforms: LerpUniforms) {
@@ -179,15 +185,16 @@ public final class CritterData: LerpDataProvider {
     public func bind(to encoder: MTLRenderCommandEncoder,
                      uniforms: LerpUniforms,
                      params: LerpParameterValues?) {
-        encoder.setFragmentTexture(targets?.colorView ?? blank.color, index: 1)
+        encoder.setFragmentTexture(targets?.color ?? blank.color, index: 1)
         encoder.setFragmentTexture(targets?.depth ?? blank.depth, index: 2)
         var s = state
         encoder.setFragmentBytes(&s, length: MemoryLayout<State>.stride, index: 1)
     }
 
     /// The colour and depth the scene renders into, sized to the drawable
-    /// (under `maxScenePixels`). The multisampled attachments are memoryless:
-    /// they live in tile memory for the pass and cost no RAM.
+    /// (under `maxScenePixels`). Not sRGB: CritterLook's shaders write
+    /// display-encoded colour themselves. The multisampled attachments are
+    /// memoryless: they live in tile memory for the pass and cost no RAM.
     private func targets(width: Int, height: Int) -> Targets? {
         if let t = targets, t.width == width, t.height == height { return t }
         let memoryless = device.supportsFamily(.apple1)
@@ -199,40 +206,43 @@ public final class CritterData: LerpDataProvider {
             d.storageMode = samples > 1 && memoryless ? .memoryless : .private
             return device.makeTexture(descriptor: d)
         }
-        guard let msColor = make(.bgra8Unorm_srgb, samples: 4, usage: .renderTarget),
-              let msDepth = make(.depth32Float, samples: 4, usage: .renderTarget),
-              let color = make(.bgra8Unorm_srgb, samples: 1, usage: [.renderTarget, .shaderRead, .pixelFormatView]),
-              let colorView = color.makeTextureView(pixelFormat: .bgra8Unorm),
+        let n = CritterScene.samples
+        guard let msColor = make(CritterScene.colorFormat, samples: n, usage: .renderTarget),
+              let msDepth = make(.depth32Float, samples: n, usage: .renderTarget),
+              let color = make(CritterScene.colorFormat, samples: 1, usage: [.renderTarget, .shaderRead]),
               let depth = make(.depth32Float, samples: 1, usage: [.renderTarget, .shaderRead]) else { return nil }
         msColor.label = "critter scene MSAA"; color.label = "critter scene"; depth.label = "critter depth"
         targets = Targets(width: width, height: height, msColor: msColor, msDepth: msDepth,
-                          color: color, colorView: colorView, depth: depth)
+                          color: color, depth: depth)
         return targets
     }
 
     /// The compositor's view of a frame: the camera exactly as the scene's,
     /// and the anchors the overlays hang off, dropped into the rolled world.
-    static func pack(_ f: CritterFrame, skyDrawn: Bool) -> State {
+    static func pack(_ f: CritterFrame) -> State {
         let fw = simd_normalize(f.camTarget - f.camPos)
-        let rt = simd_normalize(simd_cross(fw, SIMD3(0, 1, 0)))
+        let rt = simd_normalize(simd_cross(fw, f.camUp))
         let up = simd_cross(rt, fw)
-        func drop(_ p: SIMD3<Float>) -> SIMD3<Float> {
-            let d = SIMD2(p.x, p.z) - f.focus
-            return SIMD3(p.x, p.y - f.bend * simd_dot(d, d), p.z)
-        }
+        let drop = f.rolled
         let s = f.size
         let egg = f.stage == 0
         var st = State()
         st.cam0 = SIMD4(f.camPos, f.camFocal)
         st.cam1 = SIMD4(fw, CritterScene.zNear)
         st.cam2 = SIMD4(rt, CritterScene.zFar)
-        st.cam3 = SIMD4(up, skyDrawn ? 1 : 0)
+        st.cam3 = SIMD4(up, 0)
         st.head = SIMD4(drop(f.position + SIMD3(0, 2.1 * s, 0)), s)
         st.feet = SIMD4(drop(f.position), Float(f.stage))
         st.cloud = SIMD4(drop(f.cloudPos), f.cloud)
         st.body = SIMD4(drop(f.position + SIMD3(0, egg ? 0.42 : s * f.squash, 0)), egg ? 0.5 : 1.25 * s)
         st.fx0 = SIMD4(f.zzz, f.love, f.glee, f.sick)
         st.fx1 = SIMD4(f.storm, f.flash, f.sweat, f.bang)
+        // The butterfly's dotted trail, newest first.
+        let trail = f.butterflyTrail.prefix(trailPoints).map { SIMD4(drop($0), 1) }
+        st.fx2 = SIMD4(f.frazzle, f.dtake, f.butterfly, Float(trail.count))
+        withUnsafeMutableBytes(of: &st.trail) { raw in
+            trail.withUnsafeBytes { raw.copyMemory(from: $0) }
+        }
         st.sky = SIMD4(f.night, f.golden, Float(f.season), f.time)
         st.light = SIMD4(simd_normalize(f.sunDir), f.health)
         // Fireflies over the meadow on a good night (the old fxFireflies).

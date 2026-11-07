@@ -163,8 +163,6 @@ final class CritterScene {
     let device: MTLDevice
 
     private let cameraNode = SCNNode()
-    private let sunNode = SCNNode()
-    private let ambientNode = SCNNode()
     private let groundNode = SCNNode()
     private let seaNode = SCNNode()
     private let treesGroup = SCNNode()
@@ -186,9 +184,10 @@ final class CritterScene {
     private struct Part {
         let node: SCNNode
         let rest: simd_float4x4
-        /// -1 when it sits on the −x side of its parent, +1 on +x: which way
-        /// round a limb, leaf or wing turns to go up.
-        var side: Float { rest.columns.3.x < 0 ? -1 : 1 }
+        /// -1 for an `…L` part (the −x side: arm, foot, leaf, wing), +1 for
+        /// `…R`: which way round it turns to go up. From the name, because
+        /// the two leaves share one pivot on the stem.
+        var side: Float { node.name?.hasSuffix("L") == true ? -1 : 1 }
         var restPosition: SIMD3<Float> { SIMD3(rest.columns.3.x, rest.columns.3.y, rest.columns.3.z) }
         var restLinear: simd_float4x4 { var m = rest; m.columns.3 = SIMD4(0, 0, 0, 1); return m }
     }
@@ -205,6 +204,7 @@ final class CritterScene {
     private struct Flower { let node: SCNNode; let base: SIMD3<Float>; let phase: Float; let spin: Float; let size: Float }
     private var flowers: [Flower] = []
     private var skyClouds: [SCNNode] = []
+    private var rebuilt = false
 
     static let islandRadius: Float = 7
     static let seaLevel: Float = -0.2
@@ -223,7 +223,6 @@ final class CritterScene {
         butterfly = templates["butterfly"]!
 
         let root = scene.rootNode
-        scene.background.contents = nil
         for (node, name) in [(groundNode, "ground"), (seaNode, "sea"), (treesGroup, "trees"),
                              (flowersGroup, "flowers"), (rocksGroup, "rocks"), (skyGroup, "sky")] {
             node.name = name
@@ -231,7 +230,7 @@ final class CritterScene {
         }
         for node in [critter, egg, nest, stormCloud, castle, butterfly] { root.addChildNode(node) }
 
-        for name in ["body", "eyeL", "eyeR", "armL", "armR", "footL", "footR", "sprout", "leafL", "leafR", "blossom"] {
+        for name in ["body", "armL", "armR", "footL", "footR", "sprout", "leafL", "leafR", "blossom"] {
             if let n = CritterAssets.breadthFirst(critter, named: name) { parts[name] = Part(node: n, rest: n.simdTransform) }
         }
         for name in ["wingL", "wingR"] {
@@ -259,35 +258,128 @@ final class CritterScene {
         cameraNode.name = "camera"
         root.addChildNode(cameraNode)
 
-        let sun = SCNLight()
-        sun.type = .directional
-        sun.castsShadow = true
-        sun.shadowMapSize = CGSize(width: 2048, height: 2048)
-        sun.orthographicScale = 9
-        sun.shadowRadius = 3
-        sun.shadowSampleCount = 8
-        sun.shadowMode = .forward
-        sun.zNear = 1
-        sun.zFar = 60
-        sun.shadowColor = NSColor(srgbRed: 0.42, green: 0.36, blue: 0.62, alpha: 0.55)
-        sunNode.light = sun
-        sunNode.name = "sun"
-        root.addChildNode(sunNode)
-
-        let ambient = SCNLight()
-        ambient.type = .ambient
-        ambientNode.light = ambient
-        ambientNode.name = "ambient"
-        root.addChildNode(ambientNode)
-
         renderer.scene = scene
         renderer.pointOfView = cameraNode
         renderer.autoenablesDefaultLighting = false
         renderer.usesReverseZ = false     // critter.metal linearises the depth it reads
         renderer.isJitteringEnabled = false
 
-        orderDraws(root)
+        // CritterLook adds the only light (`look.key`) and the sky dome
+        // (`look.sky`); nothing here lights the scene or sets a background.
+        prepareLook()
+    }
+
+    /// CritterLook's materials and ink hulls for every node not yet given
+    /// them (it skips the ones it has done), then a fresh draw order.
+    private func prepareLook() {
         CritterLook.prepare(scene: scene)
+        smoothInk()
+        orderDraws(scene.rootNode)
+    }
+
+    /// The castle's merlons and the rocks' facets have split, hard-edged
+    /// normals, and an inverted hull pushed out along them opens at every
+    /// crease. Their ink hulls get normals averaged over each position.
+    private var smoothedInk: [ObjectIdentifier: SCNGeometry] = [:]
+    private func smoothInk() {
+        let hard: Set<String> = ["castle", "rockA", "rockB"]
+        scene.rootNode.enumerateHierarchy { node, _ in
+            guard let name = node.name, name.hasSuffix(CritterLook.inkSuffix), let geo = node.geometry else { return }
+            var a = node.parent
+            while let x = a, !hard.contains(x.name ?? "") { a = x.parent }
+            guard a != nil else { return }
+            let key = ObjectIdentifier(geo)
+            if smoothedInk.values.contains(where: { $0 === geo }) { return }
+            let smooth = smoothedInk[key] ?? Self.smoothNormals(geo)
+            smoothedInk[key] = smooth
+            node.geometry = smooth
+        }
+    }
+
+    static func smoothNormals(_ geo: SCNGeometry) -> SCNGeometry {
+        guard let vs = geo.sources(for: .vertex).first, let ns = geo.sources(for: .normal).first,
+              vs.usesFloatComponents, vs.bytesPerComponent == 4, ns.bytesPerComponent == 4,
+              vs.componentsPerVector >= 3, ns.componentsPerVector >= 3, vs.vectorCount == ns.vectorCount
+        else { return geo }
+        func read(_ src: SCNGeometrySource) -> [SIMD3<Float>] {
+            src.data.withUnsafeBytes { raw in
+                (0..<src.vectorCount).map { i in
+                    let o = src.dataOffset + i * src.dataStride
+                    return SIMD3(raw.loadUnaligned(fromByteOffset: o, as: Float.self),
+                                 raw.loadUnaligned(fromByteOffset: o + 4, as: Float.self),
+                                 raw.loadUnaligned(fromByteOffset: o + 8, as: Float.self))
+                }
+            }
+        }
+        let p = read(vs), n = read(ns)
+        struct Key: Hashable { var x, y, z: Int32 }
+        func key(_ v: SIMD3<Float>) -> Key { Key(x: Int32((v.x * 1e4).rounded()), y: Int32((v.y * 1e4).rounded()), z: Int32((v.z * 1e4).rounded())) }
+        var sum: [Key: SIMD3<Float>] = [:]
+        for i in p.indices { sum[key(p[i]), default: .zero] += n[i] }
+        let smooth = p.map { v -> SIMD3<Float> in
+            let s = sum[key(v)] ?? SIMD3(0, 1, 0)
+            return simd_length(s) > 1e-6 ? simd_normalize(s) : SIMD3(0, 1, 0)
+        }
+        let flat = smooth.flatMap { [$0.x, $0.y, $0.z] }
+        let normals = SCNGeometrySource(data: flat.withUnsafeBytes { Data($0) }, semantic: .normal,
+                                        vectorCount: smooth.count, usesFloatComponents: true, componentsPerVector: 3,
+                                        bytesPerComponent: 4, dataOffset: 0, dataStride: 12)
+        let others = geo.sources.filter { $0.semantic != .normal }
+        let out = SCNGeometry(sources: others + [normals], elements: geo.elements)
+        out.materials = geo.materials
+        out.name = geo.name
+        return out
+    }
+
+    /// Compiles every pipeline the scene will draw with, off the render
+    /// thread (the first frame otherwise stalls ~0.7 s), by drawing it once,
+    /// small, into targets of the formats `CritterData` renders to. Call
+    /// after an `apply`, so the meadow, trees and rocks exist.
+    ///
+    /// Not `SCNRenderer.prepare(_:shouldAbortBlock:)`: after it, every later
+    /// render of this scene drew nothing but the sky.
+    func precompile() {
+        guard let queue = device.makeCommandQueue(), let cb = queue.makeCommandBuffer() else { return }
+        let w = 64, h = 40
+        func make(_ format: MTLPixelFormat, samples: Int) -> MTLTexture? {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: w, height: h, mipmapped: false)
+            d.textureType = samples > 1 ? .type2DMultisample : .type2D
+            d.sampleCount = samples
+            d.usage = samples > 1 ? .renderTarget : [.renderTarget, .shaderRead]
+            d.storageMode = .private
+            return device.makeTexture(descriptor: d)
+        }
+        guard let pass = Self.pass(color: make(Self.colorFormat, samples: Self.samples),
+                                   depth: make(.depth32Float, samples: Self.samples),
+                                   resolveColor: make(Self.colorFormat, samples: 1),
+                                   resolveDepth: make(.depth32Float, samples: 1)) else { return }
+        renderer.render(atTime: 0, viewport: CGRect(x: 0, y: 0, width: w, height: h), commandBuffer: cb, passDescriptor: pass)
+        cb.commit()
+        cb.waitUntilCompleted()
+    }
+
+    /// What the scene is rendered into: 4× MSAA (SceneKit's own
+    /// antialiasing does nothing offscreen), resolved to colour and depth.
+    /// Not sRGB: CritterLook writes display-encoded colour itself.
+    static let colorFormat = MTLPixelFormat.bgra8Unorm
+    static let samples = 4
+
+    static func pass(color: MTLTexture?, depth: MTLTexture?,
+                     resolveColor: MTLTexture?, resolveDepth: MTLTexture?) -> MTLRenderPassDescriptor? {
+        guard let color, let depth, let resolveColor, let resolveDepth else { return nil }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = color
+        pass.colorAttachments[0].resolveTexture = resolveColor
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        pass.colorAttachments[0].storeAction = .multisampleResolve
+        pass.depthAttachment.texture = depth
+        pass.depthAttachment.resolveTexture = resolveDepth
+        pass.depthAttachment.loadAction = .clear
+        pass.depthAttachment.clearDepth = 1
+        pass.depthAttachment.storeAction = .multisampleResolve
+        pass.depthAttachment.depthResolveFilter = .sample0
+        return pass
     }
 
     /// Every node gets its own `renderingOrder`, from a walk of the graph in
@@ -295,15 +387,15 @@ final class CritterScene {
     /// which differ from run to run, and wherever two surfaces tie for a
     /// sample (an eye set into the body, a flower's core in its petals) the
     /// first drawn wins — so a still came out a few pixels different each
-    /// time. `base` keeps a rebuilt group's nodes in their own range; the
-    /// range is 0…<1 000 000, so CritterLook can order anything that needs it
-    /// (water, outlines) after all of it.
-    private func orderDraws(_ node: SCNNode, base: Int = 0) {
-        var i = base
+    /// time. CritterLook's own nodes (`look.sky`, drawn first at −1000) keep
+    /// the order it gave them.
+    private func orderDraws(_ node: SCNNode) {
+        var i = 0
         var queue = [node]
         var k = 0
         while k < queue.count {
             let n = queue[k]; k += 1
+            if n.name?.hasPrefix("look.") == true { continue }
             n.renderingOrder = i; i += 1
             queue.append(contentsOf: n.childNodes)
         }
@@ -318,9 +410,11 @@ final class CritterScene {
         SCNTransaction.disableActions = true
         SCNTransaction.animationDuration = 0
 
+        rebuilt = false
         if f.identity != groundIdentity {
             groundNode.geometry = Self.groundGeometry(identity: f.identity)
             groundIdentity = f.identity
+            rebuilt = true
         }
         placeCritter(f)
         placeProps(f)
@@ -329,7 +423,7 @@ final class CritterScene {
         placeFlowers(f)
         placeSky(f)
         placeCamera(f, aspect: aspect)
-        placeLights(f)
+        if rebuilt { prepareLook() }
 
         CritterLook.update(scene: scene, frame: f)
         SCNTransaction.commit()
@@ -353,18 +447,15 @@ final class CritterScene {
         }
         let sq = max(f.squash, 0.05)
         let hz = 1 / sqrt(sq)
-        critter.simdTransform = translate(f.position) * yaw * rotX(f.lean) * rotZ(-f.roll)
+        critter.simdTransform = translate(f.position) * simd_float4x4(f.critterOrientation)
             * scale(SIMD3(f.size * hz, f.size * sq, f.size * hz))
 
-        // Arms: hanging (0), out to the side (π/2), overhead (~2.9); `reach`
-        // swings them forward. The direction is the old shader's hand vector.
+        // Arms: the model's arm hangs along −Y from the shoulder; turn it onto
+        // the frame's shoulder→mitten direction (critter frame).
         for name in ["armL", "armR"] {
             guard let p = parts[name] else { continue }
-            let a = name == "armL" ? f.armL : f.armR
-            let rc = f.reach
-            let d = simd_normalize(SIMD3<Float>(p.side * (sin(a) * (1 - rc) + 0.15 * rc),
-                                                -cos(a),
-                                                0.3 + (sin(a) - 0.3) * rc))
+            // Undo the root's squash, so the arm points where the frame says.
+            let d = simd_normalize((name == "armL" ? f.armDirL : f.armDirR) / SIMD3(hz, sq, hz))
             let q = simd_quatf(from: SIMD3(0, -1, 0), to: d)
             p.node.simdTransform = translate(p.restPosition) * simd_float4x4(q) * p.restLinear
         }
@@ -389,15 +480,6 @@ final class CritterScene {
             p.node.simdTransform = translate(p.restPosition) * rotZ(-p.side * droop) * p.restLinear
         }
         parts["blossom"]?.node.isHidden = f.stage < 3
-        // Eyes open and close, and flatten into arcs when it is happy or
-        // asleep (the arcs and lids themselves are CritterLook's).
-        let open = 0.12 * min(max(f.eye, 0), 1) + 0.02
-        let h = abs(min(max(f.happy, -1), 1))
-        let eyeY = max((open + (0.032 - open) * h) / 0.14, 0.05)
-        for name in ["eyeL", "eyeR"] {
-            guard let p = parts[name] else { continue }
-            p.node.simdTransform = p.rest * scale(SIMD3(1, eyeY, 1))
-        }
     }
 
     private func placeProps(_ f: CritterFrame) {
@@ -441,7 +523,7 @@ final class CritterScene {
                 treesGroup.addChildNode(n)
                 return n
             }
-            orderDraws(treesGroup, base: 100_000)
+            rebuilt = true
             treeKey = key
         }
         let fruit = f.health > 0.55 && f.season != 3
@@ -451,7 +533,7 @@ final class CritterScene {
             let size = t.z, sink = t.w
             if size <= 0 || sink > 0.995 { node.isHidden = true; continue }
             node.isHidden = false
-            let y = ground(t.x, t.y, f) - sink * 2.1 * size
+            let y = i < f.treeBase.count ? f.treeBase[i] : ground(t.x, t.y, f) - sink * 2.1 * size
             let spin = CritterHash.h11(Float(i) * 3.3 + f.identity * 17) * 2 * .pi
             node.simdTransform = translate(SIMD3(t.x, y, t.y)) * rotY(spin) * scale(SIMD3(repeating: size))
             node.enumerateHierarchy { n, _ in if n.name == "fruit" { n.isHidden = !fruit } }
@@ -469,7 +551,7 @@ final class CritterScene {
                 rocksGroup.addChildNode(n)
                 return n
             }
-            orderDraws(rocksGroup, base: 200_000)
+            rebuilt = true
             rockKey = key
         }
         for (i, node) in rockNodes.enumerated() {
@@ -477,7 +559,8 @@ final class CritterScene {
             let r = f.rocks[i]
             node.isHidden = false
             let spin = CritterHash.h11(Float(i) * 9.1 + f.identity * 5) * 2 * .pi
-            node.simdTransform = translate(SIMD3(r.x, ground(r.x, r.y, f) + 0.05, r.y)) * rotY(spin)
+            let y = i < f.rockBase.count ? f.rockBase[i] : ground(r.x, r.y, f) + 0.05
+            node.simdTransform = translate(SIMD3(r.x, y, r.y)) * rotY(spin)
                 * scale(SIMD3(repeating: r.z))
         }
     }
@@ -515,7 +598,7 @@ final class CritterScene {
                                           spin: 2 * .pi * CritterHash.h21(c + 2.3), size: size))
                 }
             }
-            orderDraws(flowersGroup, base: 300_000)
+            rebuilt = true
             flowerKey = key
         }
         // Sway: a slow gust over the whole meadow, each flower on its own beat.
@@ -534,7 +617,7 @@ final class CritterScene {
             let a = fi * 1.047 + f.identity * 3 + 0.004 * f.time + 0.3 * CritterHash.h11(fi * 7.7)
             let r = 17 + 5 * CritterHash.h11(fi * 3.1 + 1)
             let y = 6.5 + 2.5 * CritterHash.h11(fi * 5.3 + 2)
-            let s = 1.8 + 1.6 * CritterHash.h11(fi * 1.9 + 3)
+            let s = 0.9 + 0.8 * CritterHash.h11(fi * 1.9 + 3)
             puff.simdTransform = translate(SIMD3(cos(a) * r, y, sin(a) * r)) * rotY(-a) * scale(SIMD3(repeating: s))
         }
     }
@@ -545,24 +628,7 @@ final class CritterScene {
         camera.projectionDirection = aspect >= 1 ? .vertical : .horizontal
         camera.fieldOfView = CGFloat(2 * atan(1 / max(f.camFocal, 0.1)) * 180 / .pi)
         cameraNode.simdPosition = f.camPos
-        cameraNode.simdLook(at: f.camTarget, up: SIMD3(0, 1, 0), localFront: SIMD3(0, 0, -1))
-    }
-
-    private func placeLights(_ f: CritterFrame) {
-        let l = simd_normalize(f.lightDir)
-        sunNode.simdPosition = l * 25
-        sunNode.simdLook(at: .zero, up: abs(l.y) > 0.99 ? SIMD3(0, 0, 1) : SIMD3(0, 1, 0),
-                         localFront: SIMD3(0, 0, -1))
-        let sc = f.sunColor
-        let m = max(sc.x, sc.y, sc.z, 1e-3)
-        sunNode.light?.color = NSColor(srgbRed: CGFloat(sc.x / m), green: CGFloat(sc.y / m),
-                                       blue: CGFloat(sc.z / m), alpha: 1)
-        sunNode.light?.intensity = CGFloat(1000 * m * m * 1.05)
-        let a = f.skyAmbient
-        let am = max(a.x, a.y, a.z, 1e-3)
-        ambientNode.light?.color = NSColor(srgbRed: CGFloat(a.x / am), green: CGFloat(a.y / am),
-                                           blue: CGFloat(a.z / am), alpha: 1)
-        ambientNode.light?.intensity = CGFloat(1000 * am * am * 0.55)
+        cameraNode.simdLook(at: f.camTarget, up: f.camUp, localFront: SIMD3(0, 0, -1))
     }
 
     // MARK: Generated geometry

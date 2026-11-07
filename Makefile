@@ -10,6 +10,10 @@ SAVER_SRC  := Sources/Saver/LerpSaverView.swift
 PREVIEW    := $(wildcard Sources/Preview/*.swift)
 PLAYGROUND := $(wildcard Sources/Playground/*.swift)
 SHADERS    := $(wildcard Sources/Shaders/*.metal)
+# The `critter` look's 3D models. The saver bundle ships them in
+# Resources/Critter; the playground and LerpPreview read them from
+# Sources/Critter in the checkout (CritterAssets in CritterScene.swift).
+CRITTER_MODELS := $(wildcard Sources/Critter/*.usdz)
 FRAMEWORKS := -framework AppKit -framework Metal -framework QuartzCore \
               -framework CoreGraphics -framework ImageIO -framework SceneKit
 # The playground alone also links ScreenSaver, for one class: the rotation
@@ -479,9 +483,9 @@ uninstall-pulse:
 	@launchctl bootout gui/$$(id -u)/$(PULSE_LABEL) 2>/dev/null || true
 	rm -f "$(PULSE_PLIST)" "$(PULSE_BIN)" "$(PULSE_BIN).new"
 
-saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/Info.plist LICENSE NOTICE.txt splats images
+saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) $(CRITTER_MODELS) Sources/Saver/Info.plist LICENSE NOTICE.txt splats images
 	@mkdir -p $(SAVER_DIR)/Contents/MacOS $(SAVER_DIR)/Contents/Resources/Shaders $(SAVER_DIR)/Contents/Resources/Splats \
-		$(SAVER_DIR)/Contents/Resources/Images
+		$(SAVER_DIR)/Contents/Resources/Images $(SAVER_DIR)/Contents/Resources/Critter
 	swiftc -O -whole-module-optimization -parse-as-library -emit-object \
 		-target $(TARGET) -module-name LerpSaver \
 		-o $(BUILD)/LerpSaver.o $(CORE) $(SAVER_SRC)
@@ -503,6 +507,8 @@ saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/
 	cp $(SPLAT_OUT)/*.lsplat $(SPLAT_OUT)/*.path.json $(SAVER_DIR)/Contents/Resources/Splats/
 	rm -f $(SAVER_DIR)/Contents/Resources/Images/*.png
 	cp $(IMAGES_OUT)/*.png $(SAVER_DIR)/Contents/Resources/Images/
+	rm -f $(SAVER_DIR)/Contents/Resources/Critter/*.usdz
+	$(if $(CRITTER_MODELS),cp $(CRITTER_MODELS) $(SAVER_DIR)/Contents/Resources/Critter/)
 	cp LICENSE NOTICE.txt $(SAVER_DIR)/Contents/Resources/
 	$(BUILD)/LerpPreview --snapshot $(BUILD)/thumb --size 180x116 --time 4 \
 		--shader mesh-gradient >/dev/null
