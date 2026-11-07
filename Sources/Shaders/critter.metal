@@ -83,6 +83,8 @@ struct Pose {
 struct Scene {
     float3 cpos;
     float3 cs0, cs1;   // cos/sin of yaw, lean, roll
+    float3 bodyC;      // centre of its body, where the pose has put it (bent space)
+    float  bodyR;      // radius of the sphere that stands in for it in shadows and AO
     float  yaw, s, sq, lean, roll, armL, armR, eye, droop, step, mouth;
     int    stage;
     float  lid, lidTilt, happy, mouthO, stride, reach, sit;
@@ -173,6 +175,18 @@ static inline float3 critterLocal(float3 q, thread const Scene& sc) {
     p = float3(p.x, p.y * cl + p.z * sl, -p.y * sl + p.z * cl);
     float cr = sc.cs0.z, sr = sc.cs1.z;
     return float3(p.x * cr - p.y * sr, p.x * sr + p.y * cr, p.z);
+}
+
+// The inverse of critterLocal: a point in the critter's frame back into the
+// (bent) world.
+static inline float3 critterWorld(float3 p, thread const Scene& sc) {
+    float cr = sc.cs0.z, sr = sc.cs1.z;
+    p = float3(p.x * cr + p.y * sr, -p.x * sr + p.y * cr, p.z);
+    float cl = sc.cs0.y, sl = sc.cs1.y;
+    p = float3(p.x, p.y * cl - p.z * sl, p.y * sl + p.z * cl);
+    float c = sc.cs0.x, s = sc.cs1.x;
+    p = float3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+    return p + sc.cpos;
 }
 
 // ---------------------------------------------------------------- the critter
@@ -464,8 +478,8 @@ static float softShadow(float3 q, float3 L, thread const Scene& sc, int skip) {
         sh *= sphShadow(q, L, float4(T.x, T.y + 0.5 * T.w, T.z, 0.1 * T.w), 3.0);
     }
     if (skip != 8) {
-        float r = sc.stage == 0 ? 0.33 : 0.95 * sc.s;
-        sh *= sphShadow(q, L, float4(sc.cpos + float3(0.0, sc.stage == 0 ? 0.4 : 0.95 * sc.s * sc.sq, 0.0), r), 2.5);
+        float r = sc.stage == 0 ? 0.33 : sc.bodyR;
+        sh *= sphShadow(q, L, float4((sc.stage == 0 ? sc.cpos + float3(0.0, 0.4, 0.0) : sc.bodyC), r), 2.5);
     }
     if (sc.cloud > 0.01) sh *= sphShadow(q, L, float4(sc.cloudPos, 0.45 * sc.cloud), 1.5);
     if (sc.castle > 0.01) sh *= sphShadow(q, L, float4(sc.castlePos + float3(0.0, 0.15, 0.0), 0.25 * sc.castle), 2.5);
@@ -490,8 +504,8 @@ static float ambientOcc(float3 q, float3 n, thread const Scene& sc, int skip) {
         occ += sphOcc(q, n, float4(T.x, T.y + 0.3 * T.w, T.z, 0.13 * T.w));
     }
     if (skip != 8) {
-        float r = sc.stage == 0 ? 0.33 : 0.95 * sc.s;
-        occ += sphOcc(q, n, float4(sc.cpos + float3(0.0, sc.stage == 0 ? 0.4 : 0.95 * sc.s * sc.sq, 0.0), r));
+        float r = sc.stage == 0 ? 0.33 : sc.bodyR;
+        occ += sphOcc(q, n, float4((sc.stage == 0 ? sc.cpos + float3(0.0, 0.4, 0.0) : sc.bodyC), r));
     } else {
         // the critter's own feet and underside sit in its shadow
         occ += 0.6 * smoothstep(0.35 * sc.s, 0.0, q.y - sc.cpos.y) * smoothstep(0.2, -0.6, n.y);
@@ -892,7 +906,6 @@ struct FX {
     int    act, prevAct;
     float  dtake, sick, storm;
     float  zzz;        // asleep, blended
-    float  stress;     // frazzled from a scattered hour
     float  night;
 };
 
@@ -964,6 +977,20 @@ static inline __attribute__((always_inline)) void poseCritter(thread Scene& sc, 
     sc.cs1 = sin(float3(sc.yaw, sc.lean, sc.roll));
     float s = sc.s, hz = rsqrt(sc.sq);
     float3 bc = float3(0.0, 0.95 * s * sc.sq, 0.0);
+    // It turns about its feet, so a pose that tips it over (lying face down)
+    // would push its body into the ground: lift it until the lowest point of
+    // the body rests on the grass. Upright and in the air nothing changes.
+    if (sc.stage > 0) {
+        float3 upL = critterLocal(sc.cpos + float3(0.0, 1.0, 0.0), sc)
+                   - critterLocal(sc.cpos, sc);                  // world up, in its frame
+        float reach = length(upL * float3(1.0 * hz, 0.95 * sc.sq, 0.92 * hz) * s);
+        float lowest = critterWorld(bc, sc).y - reach;
+        sc.cpos.y += max(0.0, groundH(sc.cpos.xz, sc.ident) - lowest);
+    }
+    sc.bodyC = critterWorld(bc, sc);
+    // Kept clear of the ground: a proxy that dips below the grass would light
+    // the ground inside it (sphShadow calls a point inside its sphere lit).
+    sc.bodyR = clamp(sc.bodyC.y - groundH(sc.bodyC.xz, sc.ident) - 0.02, 0.1 * s, 0.95 * s);
     sc.shL = bc + float3(-0.74 * hz * s, 0.08 * s, 0.08 * s);
     sc.shR = bc + float3( 0.74 * hz * s, 0.08 * s, 0.08 * s);
     float rc = sc.reach;
@@ -1539,11 +1566,12 @@ static inline __attribute__((always_inline)) void fxLightning(thread float3& col
     col += 0.05 * flash;
 }
 
-// Frazzled: a tangled scribble ball just above and beside its head, redrawn
+// Frazzled, while it paces under its storm cloud: a tangled scribble ball
+// just above and beside its head, redrawn
 // a few times a second.
 static inline __attribute__((always_inline)) void fxScribble(thread float3& col, thread const FX& fx, thread const Scene& sc) {
     float zzzOff = 1.0 - min(fx.zzz, 1.0);
-    float frazzle = max(fx.storm, fx.stress * 0.8) * zzzOff * (1.0 - fx.dtake) * step(0.5, float(sc.stage));
+    float frazzle = fx.storm * zzzOff * (1.0 - fx.dtake) * step(0.5, float(sc.stage));
     if (!(frazzle > 0.01 && fx.nearW < 0.9)) return;
     float3 pj = project(unbendP(sc.cpos + float3(0.0, 2.05 * sc.s, 0.0), sc) - fx.cam.rt * 0.75 * sc.s, fx.cam);
     float size = 0.1 * fx.cam.focal / pj.z;
@@ -1561,10 +1589,12 @@ static inline __attribute__((always_inline)) void fxScribble(thread float3& col,
     col = mix(col, float3(0.24, 0.23, 0.28), frazzle * smoothstep(0.075, 0.04, d) * step(pj.z, fx.depth + 0.3));
 }
 
-// A sweat drop when it is stressed or poorly, sliding down by its head.
+// A sweat drop while it paces or is poorly, sliding down by its head. Both
+// belong to an activity, so they come and go with it rather than sitting on
+// the critter all session.
 static inline __attribute__((always_inline)) void fxSweat(thread float3& col, thread const FX& fx, thread const Scene& sc) {
     float zzzOff = 1.0 - min(fx.zzz, 1.0);
-    float sweat = max(max(fx.storm, fx.sick), fx.stress) * zzzOff * (1.0 - fx.dtake) * step(0.5, float(sc.stage));
+    float sweat = max(fx.storm, fx.sick) * zzzOff * (1.0 - fx.dtake) * step(0.5, float(sc.stage));
     if (!(sweat > 0.01 && fx.nearW < 0.9)) return;
     float ph = fract(fx.time * 0.45);
     float3 pj = project(unbendP(sc.cpos + float3(0.0, (1.7 - 0.35 * ph) * sc.s, 0.0), sc) + fx.cam.rt * 1.05 * sc.s, fx.cam);
@@ -1754,7 +1784,6 @@ fragment half4 lerpMain(float4 pos [[position]],
     fx.act = st.act; fx.prevAct = st.prevAct;
     fx.dtake = st.dtake; fx.sick = st.sick; fx.storm = st.storm;
     fx.zzz = (st.act == ACT_SLEEP ? st.k : 0.0) + (st.prevAct == ACT_SLEEP ? 1.0 - st.k : 0.0);
-    fx.stress = clamp((0.4 - S.calm) / 0.3, 0.0, 1.0);
     fx.night = lt.night;
     overlays(col, fx, sc, S);
     seasonInTheAir(col, fx, sc);

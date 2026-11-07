@@ -105,7 +105,9 @@ public final class CritterData: LerpDataProvider {
         let mood = Int(params?["mood"]?.scalarValue ?? 0)
         let clock = params?["clock"]?.scalarValue.map(Float.init) ?? -1
         var generation = 0, hour: Float = 0
-        if mood <= 0, live {
+        // The clock is the session's whatever the mood: a canned mood changes
+        // how the critter is, never what time it is (that is `clock`).
+        if live {
             let s = sessionVitals(uniforms)
             generation = s.generation; hour = s.hourAtZero
         }
@@ -114,6 +116,10 @@ public final class CritterData: LerpDataProvider {
             var v: CritterVitals
             if mood > 0 {
                 v = Self.demo(mood)
+                if live {
+                    v.hour = Self.wrapHour(hour + uniforms.time / 3600)
+                    if let month = session?.vitals?.month { v.month = month }
+                }
             } else if live {
                 v = session?.vitals ?? Self.unhatched()
                 v.hour = Self.wrapHour(hour + uniforms.time / 3600)   // now, for the weights
@@ -124,7 +130,7 @@ public final class CritterData: LerpDataProvider {
             // shader is handed the hour at u.time == 0 (see the type comment).
             if clock >= 0 { v.hour = clock }
             var state = Self.pack(v)
-            if clock < 0, mood <= 0, live { state.c.y = hour }
+            if clock < 0, live { state.c.y = hour }
             packed = state
             packedKey = key
         }
@@ -277,16 +283,16 @@ public final class CritterData: LerpDataProvider {
             v.calm = 0.9; v.bloom = 1; v.makeShare = 0.6; v.chatShare = 0.2
         case 2: // burnt out
             v.growth = 5; v.ageDays = 16; v.health = 0.22; v.joy = 0.2; v.energy = 0.15
-            v.calm = 0.45; v.bloom = 0.07; v.todayHours = 11.5; v.makeShare = 0.2; v.hour = 19.5
+            v.calm = 0.45; v.bloom = 0.07; v.todayHours = 11.5; v.makeShare = 0.2
         case 3: // night owl
             v.growth = 6; v.ageDays = 14; v.health = 0.5; v.joy = 0.45; v.energy = 0.1
-            v.calm = 0.6; v.bloom = 0.35; v.hour = 2.6
+            v.calm = 0.6; v.bloom = 0.35
         case 4: // scattered
-            v.health = 0.55; v.joy = 0.4; v.calm = 0.05; v.energy = 0.6; v.bloom = 0.4; v.hour = 11
+            v.health = 0.55; v.joy = 0.4; v.calm = 0.05; v.energy = 0.6; v.bloom = 0.4
         case 5: // about to hatch
-            v.growth = 0.2; v.ageDays = 0.2; v.health = 0.8; v.bloom = 0; v.hour = 8.5
+            v.growth = 0.2; v.ageDays = 0.2; v.health = 0.8; v.bloom = 0
         case 6: // a long run, finally a break
-            v.relief = 1; v.health = 0.7; v.joy = 0.6; v.energy = 0.55; v.hour = 16.5
+            v.relief = 1; v.health = 0.7; v.joy = 0.6; v.energy = 0.55
         default:
             break
         }
