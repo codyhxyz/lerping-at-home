@@ -655,6 +655,29 @@ its parameters and presets wherever the file goes.
   that leave that region (the dolly backing away, the town square's arc) set
   `clip`, which drops every splat nearer than the subject minus `clip`.
 
+### Depth window: a photo you can look round
+
+- `depth-window` puts a picture on the glass and its depth behind it. With
+  Shader › Track Head on, the near things swing against your head and the far
+  ones follow it, and leaning sideways looks round the pines at the lake.
+  Centred — the saver, every still, `--snapshot` without `--viewer` — it is the
+  picture, pixel for pixel. `sway` (the Drifting preset) moves an imagined head
+  slowly, for a saver that has no camera.
+- It declares `// lerp-data: image:<name>`. `ImageData.swift` binds
+  `<name>.jpg`/`.png`/`.heic` at `texture(1)` and `<name>.depth.png` (16-bit
+  grey nearness, 1 nearest) at `texture(2)`, found in
+  `~/Library/Application Support/Lerping/Images`, then `build/images`, then the
+  bundle's `Resources/Images`.
+- The default picture is drawn by `make images` (run by `make preview`,
+  `make saver` and the playground targets): a procedural dusk lake with its
+  exact depth, so there is no binary art or third-party image in the repo.
+- Your own photo: `make depth-window IMAGE=~/Pictures/beach.jpg NAME=beach`.
+  Depth Anything V2 Small, Core ML, runs on this Mac (about 25 ms); the 50 MB
+  model is downloaded once into `~/Documents/lerping-tools`, pinned by sha256.
+  It writes `beach.jpg` and `beach.depth.png` to the Images folder above and a
+  look, `depth-window-beach.metal`, to the custom Shaders folder. `make saver`
+  bakes that look into the saver like any custom shader.
+
 ### GLSL → Metal mapping
 
 | GLSL | Metal |

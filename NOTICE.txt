@@ -138,6 +138,21 @@ Patricio Gonzalez Vivo and Jen Lowe, chapters "Cellular Noise"
 (https://thebookofshaders.com/12/) and "Fractal Brownian Motion"
 (https://thebookofshaders.com/13/). None of the book's example code is copied.
 
+Depth Window (Sources/Shaders/depth-window.metal,
+Sources/LerpCore/ImageData.swift) is original work: relief mapping (Policarpo,
+Oliveira and Comba, "Real-Time Relief Mapping on Arbitrary Polygonal Surfaces",
+I3D 2005 — linear search, then binary refinement) of a photo's depth, seen
+through the project's own off-axis head-tracked camera. Its default picture is
+drawn procedurally, with its exact depth, by scripts/depth-window-default.swift
+at build time; no photograph or third-party image is included. `make
+depth-window` (scripts/depth-window.swift) gives a user's own photo depth with
+Depth Anything V2 Small (Lihe Yang et al., https://arxiv.org/abs/2406.09414),
+using Apple's Core ML conversion,
+https://huggingface.co/apple/coreml-depth-anything-v2-small, licensed under the
+Apache License, Version 2.0. The model is downloaded to the user's machine by
+that target, pinned by revision and sha256; it is not part of this repository
+or of any built product.
+
 Sandpile (Sources/Shaders/sandpile.metal, Sources/LerpCore/SandpileData.swift,
 Sources/LerpCore/GPUSimulation.swift) implements the Abelian sandpile model of
 Bak, Tang and Wiesenfeld (1987), stepped on the GPU.

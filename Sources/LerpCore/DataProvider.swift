@@ -125,6 +125,8 @@ public enum LerpDataProviders {
         if let factory { return factory(device, mode) }
         // `splat:<move>:<capture>[:look]` — one provider class, parameterised by name.
         if name.hasPrefix("splat:") { return SplatData(device: device, spec: name) }
+        // `image:<name>` — a photo and its depth (`ImageData.swift`).
+        if name.hasPrefix("image:") { return LerpImageData(device: device, spec: name) }
         return nil
     }
 
