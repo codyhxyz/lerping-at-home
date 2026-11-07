@@ -1072,8 +1072,9 @@ enum LerpSplatPipeline {
         float l1 = mid + rad, l2 = max(mid - rad, 0.1);
         float2 axis = abs(b) > 1e-7 ? normalize(float2(b, l1 - a))
                                     : (a >= d ? float2(1.0, 0.0) : float2(0.0, 1.0));
-        float2 major = min(sqrt(2.0 * l1), 2048.0) * axis;
-        float2 minor = min(sqrt(2.0 * l2), 2048.0) * float2(axis.y, -axis.x);
+        float cap = 2048.0 * U.viewport.y / 1080.0;
+        float2 major = min(sqrt(2.0 * l1), cap) * axis;
+        float2 minor = min(sqrt(2.0 * l2), cap) * float2(axis.y, -axis.x);
 
         float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0) * 2.0;
         float2 centre = float2(fx * v.x / z, fy * v.y / z) + U.principal;
