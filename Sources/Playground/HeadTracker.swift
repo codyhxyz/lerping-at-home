@@ -191,9 +191,20 @@ final class HeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         queue.async { [self] in session.startRunning() }
     }
 
+    /// Releases the camera (its light goes off) and drops `viewer` back to
+    /// `.centered`. The session keeps its configuration, so `resume()` can
+    /// pick the same camera back up.
     func stop() {
         queue.async { [self] in session.stopRunning() }
         viewer.reset()
+    }
+
+    /// Takes the camera back after a `stop()` without building a second
+    /// session — `start()` again would try to add the same input twice. The
+    /// calibrated centre is kept: the watcher has not moved because nothing
+    /// was looking. Desktop Mode pauses and resumes the tracker this way.
+    func resume() {
+        queue.async { [self] in if !session.isRunning { session.startRunning() } }
     }
 
     /// Wherever the watcher is now becomes the centre.

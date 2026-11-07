@@ -389,6 +389,10 @@ enum MainMenu {
             // full screen gives up the key: it would only enlarge the editor.
             item("Preview Full Screen", #selector(PlaygroundWindowController.togglePreview(_:)), "f",
                  [.command, .control]),
+            // Off at launch. The look behind the desktop icons on every
+            // screen, in windows that leave with the app; never the
+            // desktop picture. See DesktopMode.
+            item("Desktop Mode", #selector(PlaygroundWindowController.toggleDesktopMode(_:)), ""),
             // Off at launch: a look's caption shows for its first seconds and
             // when the pointer moves over the picture; this keeps it up.
             item("Show Captions", #selector(PlaygroundWindowController.toggleCaptions(_:)), ""),

@@ -283,6 +283,13 @@ things follow it, and leaning in widens the view. It is off at every launch,
 and everywhere else `u.viewer` is exactly 0 — the screensaver, `--snapshot`,
 the gallery stills.
 
+**Shader › Desktop Mode** puts the open look, with its current values, behind
+the desktop icons on every screen, and the head tracker steers it there too.
+They are the playground's own windows, gone when it quits: nothing writes the
+desktop picture. While Track Head is on, the camera is let go whenever neither
+the desktop nor the playground's view can be seen, and taken back when one
+can. See `Sources/Playground/DesktopMode.swift`.
+
 A look opts in by declaring one parameter, which is also its strength:
 
 ```

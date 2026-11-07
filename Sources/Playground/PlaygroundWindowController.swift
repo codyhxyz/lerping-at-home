@@ -1656,6 +1656,24 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         liveInputStopped("Head tracking", reason: reason)
     }
 
+    // MARK: - Desktop mode
+
+    /// Shader › Desktop Mode: this look behind the desktop icons on every
+    /// screen — see `DesktopMode`. Off at every launch and never persisted,
+    /// like the live inputs. Made on first use, so a launch that never turns
+    /// it on never builds it.
+    private var desktopMode: DesktopMode?
+
+    @objc func toggleDesktopMode(_ sender: Any?) {
+        let mode = desktopMode ?? DesktopMode(source: metalView, owner: window)
+        mode.headTracker = { [weak self] in self?.headTracker }
+        mode.onStatus = { [weak self] text in self?.setStatus(text) }
+        desktopMode = mode
+        mode.toggle()
+    }
+
+    var isDesktopModeOn: Bool { desktopMode?.isOn ?? false }
+
     // MARK: - Hands
 
     @objc func toggleHandControl(_ sender: Any?) {
@@ -1963,6 +1981,9 @@ extension PlaygroundWindowController: NSMenuItemValidation {
             item.state = headTracker == nil ? .off : .on
             return true
         case #selector(recenterHead(_:)): return headTracker != nil
+        case #selector(toggleDesktopMode(_:)):
+            item.state = isDesktopModeOn ? .on : .off
+            return true
         case #selector(newMapping(_:)): return midi.isAvailable
         case #selector(renameMapping(_:)), #selector(deleteMapping(_:)): return activeMapping != nil
         case #selector(nextMapping(_:)): return mappings.count > 1
