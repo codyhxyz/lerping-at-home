@@ -87,6 +87,10 @@ struct Scene {
     int    stage;
     float  lid, lidTilt, happy, mouthO, stride, reach, sit;
     float  bags;       // under-eye shadows, 0…1, from tiredness and a bad week
+    // Per-frame critter geometry, hoisted out of sdCritter (critter space).
+    float3 shL, shR, handL, handR, sTip, sDir;
+    float4 leafCS;     // cos/sin of the two leaves' lean
+    float  eyeH, lidH, lidK, arch;
     float  hatch, wobble;
     float2 focus;
     float  bend, ident, health, bloom, ageDays;
@@ -201,45 +205,42 @@ static float3 sdCritter(float3 q, thread const Scene& sc) {
     float feet = min(sdEll(p - float3(-fx, fy, fz + sw) * s, float3(0.21, 0.13, 0.27) * s),
                      sdEll(p - float3( fx, fy, fz - sw) * s, float3(0.21, 0.13, 0.27) * s));
     body = smin(body, feet, 0.07 * s);
-    // Arms long enough to wave over its head, a mitten on each. `reach`
-    // swings them forward (patting, reaching) instead of out to the side.
-    float3 shL = bc + float3(-0.74 * hz * s, 0.08 * s, 0.08 * s);
-    float3 shR = bc + float3( 0.74 * hz * s, 0.08 * s, 0.08 * s);
-    float rc = sc.reach;
-    float3 dL = normalize(float3(-sin(sc.armL) * (1.0 - rc) - 0.15 * rc, -cos(sc.armL), mix(0.3, sin(sc.armL), rc)));
-    float3 dR = normalize(float3( sin(sc.armR) * (1.0 - rc) + 0.15 * rc, -cos(sc.armR), mix(0.3, sin(sc.armR), rc)));
-    float3 hL = shL + dL * 0.84 * s, hR = shR + dR * 0.84 * s;
-    float arms = min(sdCap(p, shL, hL, 0.095 * s), sdCap(p, shR, hR, 0.095 * s));
-    arms = smin(arms, min(length(p - hL), length(p - hR)) - 0.145 * s, 0.05 * s);
-    body = smin(body, arms, 0.06 * s);
+    // Arms long enough to wave over its head, a mitten on each (positions
+    // are per frame, in sc). Skipped where they cannot change the result.
+    float3 mL = 0.5 * (sc.shL + sc.handL), mR = 0.5 * (sc.shR + sc.handR);
+    if (min(length(p - mL), length(p - mR)) - 0.63 * s < body + 0.06 * s) {
+        float arms = min(sdCap(p, sc.shL, sc.handL, 0.095 * s), sdCap(p, sc.shR, sc.handR, 0.095 * s));
+        arms = smin(arms, min(length(p - sc.handL), length(p - sc.handR)) - 0.145 * s, 0.05 * s);
+        body = smin(body, arms, 0.06 * s);
+    }
     float3 res = float3(body, M_BODY, 0.0);
 
     // Eyes: an upper lid (a tilted plane; outer corners down reads sad or
     // worried), and on a happy face they bend into closed ^^ arches.
-    float hp = abs(sc.happy);   // < 0: sleeping, closed the other way up
-    float eyeH = mix((0.12 * sc.eye + 0.02) * s, 0.032 * s, hp);
-    float3 er = float3((0.085 + 0.012 * hp) * s, eyeH, 0.07 * s);
     float3 eo = float3(0.34 * hz * s, 0.1 * s * sc.sq, 0.83 * hz * s);
-    float3 eL = p - (bc + float3(-eo.x, eo.y, eo.z));
-    float3 eR = p - (bc + eo);
-    float arch = 6.5 / s * sc.happy;
-    eL.y += arch * eL.x * eL.x - 0.025 * s * sc.happy;
-    eR.y += arch * eR.x * eR.x - 0.025 * s * sc.happy;
-    float lt = sc.lidTilt, h0 = eyeH * (1.0 - 2.0 * sc.lid), lk = rsqrt(1.0 + lt * lt);
-    float eyes = min(max(sdEll(eL, er), (eL.y - h0 - lt * eL.x) * lk),
-                     max(sdEll(eR, er), (eR.y - h0 + lt * eR.x) * lk));
-    res = opU(res, float3(eyes * (1.0 - 0.35 * hp), M_EYE, 0.0));
+    float3 ec = p - (bc + float3(0.0, eo.y, eo.z));
+    if (length(ec) - (eo.x + 0.12 * s) < res.x) {
+        float hp = abs(sc.happy);   // < 0: sleeping, closed the other way up
+        float3 er = float3((0.085 + 0.012 * hp) * s, sc.eyeH, 0.07 * s);
+        float3 eL = ec + float3(eo.x, 0.0, 0.0);
+        float3 eR = ec - float3(eo.x, 0.0, 0.0);
+        eL.y += sc.arch * eL.x * eL.x - 0.025 * s * sc.happy;
+        eR.y += sc.arch * eR.x * eR.x - 0.025 * s * sc.happy;
+        float lt = sc.lidTilt;
+        float eyes = min(max(sdEll(eL, er), (eL.y - sc.lidH - lt * eL.x) * sc.lidK),
+                         max(sdEll(eR, er), (eR.y - sc.lidH + lt * eR.x) * sc.lidK));
+        res = opU(res, float3(eyes * (1.0 - 0.35 * hp), M_EYE, 0.0));
+    }
 
     // Sprout: longer with each stage; on a bad week it wilts forward and one
     // leaf hangs.
-    float3 top = bc + float3(0.0, 0.92 * sc.sq * s, 0.0);
-    float len = (0.2 + 0.08 * float(sc.stage)) * s;
-    float3 sdir = normalize(float3(0.0, 1.0 - 0.75 * sc.droop, 0.1 + 1.3 * sc.droop));
-    float3 tip = top + sdir * len;
-    res = opU(res, float3(sdCap(p, top - float3(0.0, 0.06 * s, 0.0), tip, 0.035 * s), M_LEAF, 0.0));
+    float3 tip = sc.sTip, sdir = sc.sDir;
     float ls = (0.95 + 0.2 * float(sc.stage)) * s;
-    float3 a = p - tip; a.xy = rotate(a.xy, -(0.5 + 0.8 * sc.droop)); a.x += 0.18 * ls;
-    float3 b = p - tip; b.x = -b.x; b.xy = rotate(b.xy, -(0.5 + 1.9 * sc.droop)); b.x += 0.18 * ls;
+    if (length(p - tip) - (0.62 * ls + 0.45 * s) > res.x) return res;
+    float3 top = bc + float3(0.0, 0.92 * sc.sq * s, 0.0);
+    res = opU(res, float3(sdCap(p, top - float3(0.0, 0.06 * s, 0.0), tip, 0.035 * s), M_LEAF, 0.0));
+    float3 a = p - tip; a.xy = float2(sc.leafCS.x * a.x + sc.leafCS.y * a.y, -sc.leafCS.y * a.x + sc.leafCS.x * a.y); a.x += 0.18 * ls;
+    float3 b = p - tip; b.x = -b.x; b.xy = float2(sc.leafCS.z * b.x + sc.leafCS.w * b.y, -sc.leafCS.w * b.x + sc.leafCS.z * b.y); b.x += 0.18 * ls;
     float leaves = min(sdEll(a, float3(0.19, 0.035, 0.1) * ls), sdEll(b, float3(0.19, 0.035, 0.1) * ls));
     res = opU(res, float3(leaves, M_LEAF, 0.0));
     if (sc.stage >= 3) {
@@ -649,12 +650,12 @@ static Pose makePose(int act, float t, float r, float s, float az, float2 right,
 // feeling, not always; later ones by plain weight.
 static int pickActivity(float chapter, float seed, constant CritterState& S) {
     float w[10] = { S.w0.x, S.w0.y, S.w0.z, S.w0.w, S.w1.x, S.w1.y, S.w1.z, S.w1.w, S.w2.x, S.w2.y };
-    float pw = chapter < 0.5 ? 2.0 : 1.0;
+    bool sq = chapter < 0.5;
     float total = 0.0;
-    for (int i = 0; i < 10; i++) total += pow(max(w[i], 0.0), pw);
+    for (int i = 0; i < 10; i++) { w[i] = max(w[i], 0.0); if (sq) w[i] *= w[i]; total += w[i]; }
     float r = hash11(chapter * 12.9898 + seed * 78.233) * total;
     for (int i = 0; i < 10; i++) {
-        r -= pow(max(w[i], 0.0), pw);
+        r -= w[i];
         if (r <= 0.0) return i;
     }
     return 0;
@@ -885,6 +886,24 @@ fragment half4 lerpMain(float4 pos [[position]],
     sc.bags = clamp(0.9 * max(1.0 - 1.6 * S.energy, 0.0) + 0.6 * sag, 0.0, 1.0);
     sc.cs0 = cos(float3(sc.yaw, sc.lean, sc.roll));
     sc.cs1 = sin(float3(sc.yaw, sc.lean, sc.roll));
+    {   // per-frame critter geometry for sdCritter
+        float s = sc.s, hz = rsqrt(sc.sq);
+        float3 bc = float3(0.0, 0.95 * s * sc.sq, 0.0);
+        sc.shL = bc + float3(-0.74 * hz * s, 0.08 * s, 0.08 * s);
+        sc.shR = bc + float3( 0.74 * hz * s, 0.08 * s, 0.08 * s);
+        float rc = sc.reach;
+        float2 aL = float2(sin(sc.armL), cos(sc.armL)), aR = float2(sin(sc.armR), cos(sc.armR));
+        sc.handL = sc.shL + normalize(float3(-aL.x * (1.0 - rc) - 0.15 * rc, -aL.y, mix(0.3, aL.x, rc))) * 0.84 * s;
+        sc.handR = sc.shR + normalize(float3( aR.x * (1.0 - rc) + 0.15 * rc, -aR.y, mix(0.3, aR.x, rc))) * 0.84 * s;
+        sc.sDir = normalize(float3(0.0, 1.0 - 0.75 * sc.droop, 0.1 + 1.3 * sc.droop));
+        sc.sTip = bc + float3(0.0, 0.92 * sc.sq * s, 0.0) + sc.sDir * (0.2 + 0.08 * float(sc.stage)) * s;
+        float la = 0.5 + 0.8 * sc.droop, lb = 0.5 + 1.9 * sc.droop;
+        sc.leafCS = float4(cos(la), sin(la), cos(lb), sin(lb));
+        sc.eyeH = mix((0.12 * sc.eye + 0.02) * s, 0.032 * s, abs(sc.happy));
+        sc.lidH = sc.eyeH * (1.0 - 2.0 * sc.lid);
+        sc.lidK = rsqrt(1.0 + sc.lidTilt * sc.lidTilt);
+        sc.arch = 6.5 / s * sc.happy;
+    }
 
     float sick = (act == ACT_SICK ? k : 0.0) + (prevAct == ACT_SICK ? 1.0 - k : 0.0);
     float storm = (act == ACT_PACE ? k : 0.0) + (prevAct == ACT_PACE ? 1.0 - k : 0.0);
@@ -1269,8 +1288,12 @@ fragment half4 lerpMain(float4 pos [[position]],
 
     // ---- floating things: Zzz, hearts, sparkles, rain, butterfly, fireflies
     float3 head = unbendP(sc.cpos + float3(0.0, 2.1 * sc.s, 0.0), sc);
+    // How far this pixel is from the critter's head, in world units at its
+    // depth: every overlay but the butterfly is skipped beyond its reach.
+    float3 hj = project(head, cam);
+    float nearW = length(uv - hj.xy) * hj.z / cam.focal;
     float zzz = (act == ACT_SLEEP ? k : 0.0) + (prevAct == ACT_SLEEP ? 1.0 - k : 0.0);
-    if (zzz > 0.01) {
+    if (zzz > 0.01 && nearW < 1.0) {
         for (int i = 0; i < 3; i++) {
             float ph = fract(time * 0.22 + float(i) / 3.0);
             float3 wp = head + cam.rt * (0.15 + 0.35 * ph) + float3(0.0, 0.0 + 0.5 * ph, 0.0);
@@ -1285,7 +1308,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     float love = ((act == ACT_WAVE || act == ACT_STRETCH) ? k : 0.0)
                + ((prevAct == ACT_WAVE || prevAct == ACT_STRETCH) ? 1.0 - k : 0.0);
     love = max(love, dtake * smoothstep(1.6, 2.2, time));
-    if (love > 0.01) {
+    if (love > 0.01 && nearW < 0.9) {
         for (int i = 0; i < 2; i++) {
             float ph = fract(time * 0.3 + float(i) * 0.5);
             float3 wp = head + cam.rt * (0.35 * sin(float(i) * 2.0 + 1.0) - 0.15) + float3(0.0, 0.0 + 0.45 * ph, 0.0);
@@ -1299,7 +1322,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     }
     float glee = (((act == ACT_HOP || act == ACT_CHASE) ? k : 0.0)
                + ((prevAct == ACT_HOP || prevAct == ACT_CHASE) ? 1.0 - k : 0.0)) * smoothstep(0.55, 0.8, S.joy);
-    if (glee > 0.01) {
+    if (glee > 0.01 && nearW < 1.7 * sc.s + 0.15) {
         for (int i = 0; i < 5; i++) {
             float ph = fract(time * 0.45 + float(i) * 0.2 + hash11(float(i)) * 0.3);
             float a0 = float(i) * 1.257 + floor(time * 0.45 + float(i) * 0.2) * 2.1;
@@ -1311,7 +1334,7 @@ fragment half4 lerpMain(float4 pos [[position]],
             col = mix(col, float3(1.0, 0.97, 0.75), star * glee);
         }
     }
-    if (sick > 0.01) {
+    if (sick > 0.01 && nearW < 2.2 * sc.s + 0.9) {
         float3 cp = project(unbendP(sc.cloudPos, sc), cam);
         float3 fp = project(unbendP(sc.cpos, sc), cam);
         float w = 0.35 * sc.cloud * cam.focal / cp.z;
@@ -1327,7 +1350,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     // Lightning: a short chunky zigzag from the cloud's underside, off to
     // one side, stopping above its head.
     float flash = storm * step(0.9, fract(time * 0.37)) * step(0.4, fract(time * 9.0));
-    if (flash > 0.01) {
+    if (flash > 0.01 && nearW < 1.2) {
         float3 top = project(unbendP(sc.cloudPos + float3(0.0, -0.06 * sc.cloud, 0.0), sc)
                              + cam.rt * 0.22 * sc.cloud, cam);
         float bh = 0.42 * sc.cloud * cam.focal / top.z;          // bolt height on screen
@@ -1342,14 +1365,14 @@ fragment half4 lerpMain(float4 pos [[position]],
         }
         col = mix(col, float3(0.25, 0.22, 0.4), flash * smoothstep(0.045, 0.025, bolt));
         col = mix(col, float3(1.0, 0.95, 0.6), flash * smoothstep(0.01, -0.01, bolt));
-        col += 0.05 * flash;
     }
+    col += 0.05 * flash;
     // Frazzled: a tangled scribble ball just above and beside its head,
     // redrawn a few times a second.
     float stress = clamp((0.4 - S.calm) / 0.3, 0.0, 1.0);
     float zzzOff = 1.0 - min(zzz, 1.0);
     float frazzle = max(storm, stress * 0.8) * zzzOff * (1.0 - dtake) * step(0.5, float(sc.stage));
-    if (frazzle > 0.01) {
+    if (frazzle > 0.01 && nearW < 0.9) {
         float3 pj = project(unbendP(sc.cpos + float3(0.0, 2.05 * sc.s, 0.0), sc) - cam.rt * 0.75 * sc.s, cam);
         float size = 0.1 * cam.focal / pj.z;
         float2 b = (uv - pj.xy) / size;
@@ -1368,7 +1391,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     }
     // A sweat drop when it is stressed or poorly, sliding down by its head.
     float sweat = max(max(storm, sick), stress) * zzzOff * (1.0 - dtake) * step(0.5, float(sc.stage));
-    if (sweat > 0.01) {
+    if (sweat > 0.01 && nearW < 0.9) {
         float ph = fract(time * 0.45);
         float3 pj = project(unbendP(sc.cpos + float3(0.0, (1.7 - 0.35 * ph) * sc.s, 0.0), sc) + cam.rt * 1.05 * sc.s, cam);
         float size = 0.12 * cam.focal / pj.z;
@@ -1381,7 +1404,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     }
     // "!" — it has noticed you.
     float bang = dtake * smoothstep(0.5, 0.6, time) * (1.0 - smoothstep(1.9, 2.3, time));
-    if (bang > 0.01) {
+    if (bang > 0.01 && nearW < 0.9) {
         float3 pj = project(head + float3(0.0, 0.12, 0.0) + cam.rt * 0.45 * sc.s, cam);
         float pop = smoothstep(0.5, 0.62, time) * (1.0 + 0.4 * exp(-max(time - 0.62, 0.0) * 8.0));
         float size = 0.24 * pop * cam.focal / pj.z;
@@ -1391,23 +1414,31 @@ fragment half4 lerpMain(float4 pos [[position]],
         col = mix(col, float3(0.3, 0.16, 0.1), bang * smoothstep(0.11, 0.07, d));
         col = mix(col, float3(1.0, 0.84, 0.25), bang * smoothstep(0.035, 0.0, d));
     }
-    // The butterfly: big, saturated and outlined so it stands out from the
+    // The butterfly: saturated and outlined so it stands out from the
     // falling petals, with a dotted trail. Its phase runs on, so a chase
     // that follows a chase does not jump.
     float flutter = (act == ACT_CHASE ? k : 0.0) + (prevAct == ACT_CHASE ? 1.0 - k : 0.0);
+    float3 fly0 = float3(0.0);
+    if (flutter > 0.01) {
+        float a = tl * 0.55;
+        fly0 = unbendP(float3(cos(a) * 1.45, 0.0, sin(a) * 1.45), sc);
+        // just above its head, out ahead of it
+        fly0.y = groundH(fly0.xz, sc.ident) - sc.bend * dot(fly0.xz - sc.focus, fly0.xz - sc.focus) + 0.55 + 1.3 * sc.s;
+        float3 pj = project(fly0, cam);
+        if (length(uv - pj.xy) * pj.z / cam.focal > 0.85) flutter = 0.0;   // trail spans ~0.7
+    }
     if (flutter > 0.01) {
         float3 pal[4] = { float3(0.35, 0.68, 1.0), float3(1.0, 0.88, 0.3), float3(1.0, 0.5, 0.42), float3(0.7, 0.55, 1.0) };
         float3 wc = pal[int(fract(S.identity * 5.3) * 4.0) % 4];
         for (int j = 6; j >= 0; j--) {
+            if (j == 1) continue;
             float tj = time - float(j) * 0.14;
             float a = (tl - float(j) * 0.14) * 0.55;
             float3 fly = unbendP(float3(cos(a) * 1.45, 0.0, sin(a) * 1.45), sc);
-            fly.y = groundH(fly.xz, sc.ident) - sc.bend * dot(fly.xz - sc.focus, fly.xz - sc.focus)
-                  + 0.55 + 1.3 * sc.s + 0.15 * sin(tj * 3.1);   // just above its head, out ahead
+            fly.y = fly0.y + 0.15 * sin(tj * 3.1);   // the ground under the trail: near enough
             float3 pj = project(fly, cam);
             float vis = step(pj.z, depth + 0.2) * flutter;
             if (j > 0) {
-                if (j == 1) continue;
                 float dot0 = length(uv - pj.xy) - 0.007 * cam.focal / pj.z;
                 col = mix(col, float3(1.0), vis * 0.55 * (1.0 - float(j) / 7.0) * smoothstep(0.004, 0.0, dot0));
                 continue;
