@@ -28,8 +28,17 @@ enum PlayerStyle {
 
 /// A borderless button with a pill or circle behind it. Shared hover and
 /// press handling for everything in the strip.
+///
+/// Every visual change is made here, the moment the mouse does something, and
+/// before the action runs. A click flips the *cell's* state, not through
+/// `NSButton.state`'s setter, so a `didSet` on `state` alone never saw it: the
+/// HDR pill stayed blue until the pointer left it. And the cell's own
+/// highlight is not this view's `isHighlighted` either, so pressing showed
+/// nothing at all.
 class PlayerPill: NSButton {
     fileprivate var hovered = false { didSet { if hovered != oldValue { restyle() } } }
+    /// Held down, from mouse-down until the tracking loop returns.
+    fileprivate var pressed = false { didSet { if pressed != oldValue { restyle() } } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -54,11 +63,24 @@ class PlayerPill: NSButton {
     override func mouseEntered(with event: NSEvent) { hovered = true }
     override func mouseExited(with event: NSEvent) { hovered = false }
 
-    override var isHighlighted: Bool { didSet { restyle() } }
     override var state: NSControl.StateValue { didSet { restyle() } }
 
+    override func mouseDown(with event: NSEvent) {
+        pressed = true
+        super.mouseDown(with: event)      // tracks until mouse-up; sends the action
+        pressed = false
+    }
+
+    /// The new state is on screen before the action does any work — a frame
+    /// redrawn while paused, say — so the click answers at once.
+    override func sendAction(_ action: Selector?, to target: Any?) -> Bool {
+        restyle()
+        displayIfNeeded()
+        return super.sendAction(action, to: target)
+    }
+
     func restyle() {
-        layer?.backgroundColor = (isHighlighted ? PlayerStyle.fillPressed
+        layer?.backgroundColor = (pressed ? PlayerStyle.fillPressed
             : hovered ? PlayerStyle.fillHover : PlayerStyle.fill).cgColor
     }
 }
@@ -118,8 +140,8 @@ final class PlayerToggle: PlayerPill {
     override func restyle() {
         let on = state == .on
         layer?.backgroundColor = (on
-            ? InspectorStyle.accent.withAlphaComponent(isHighlighted ? 0.34 : hovered ? 0.28 : 0.22)
-            : isHighlighted ? PlayerStyle.fillPressed : hovered ? PlayerStyle.fillHover : PlayerStyle.fill).cgColor
+            ? InspectorStyle.accent.withAlphaComponent(pressed ? 0.34 : hovered ? 0.28 : 0.22)
+            : pressed ? PlayerStyle.fillPressed : hovered ? PlayerStyle.fillHover : PlayerStyle.fill).cgColor
         attributedTitle = NSAttributedString(string: word, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
             .foregroundColor: on ? InspectorStyle.accent : InspectorStyle.heading])
@@ -178,6 +200,7 @@ final class PlayerSegments: NSView {
     @objc private func picked(_ sender: Segment) {
         guard sender.tag != selectedIndex else { return }
         select(sender.tag)
+        displayIfNeeded()       // the choice shows before a paused frame is redrawn
         if let action { NSApp.sendAction(action, to: target, from: self) }
     }
 

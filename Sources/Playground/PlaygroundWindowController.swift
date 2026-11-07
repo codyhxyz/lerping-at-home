@@ -1514,15 +1514,20 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         preview.toggle(on: screen)
     }
 
+    /// The icon changes first, so the button answers before a heavy shader
+    /// has drawn its paused frame.
     @objc func togglePlayPause(_ sender: Any?) {
-        if isPaused {
-            metalView.start()
-        } else {
+        let pausing = !isPaused
+        playButton.setSymbol(pausing ? "play.fill" : "pause.fill",
+                             accessibility: pausing ? "Play" : "Pause")
+        playButton.displayIfNeeded()
+        if pausing {
             metalView.stop()
             metalView.renderOnce()
+        } else {
+            metalView.start()
         }
-        playButton.setSymbol(isPaused ? "play.fill" : "pause.fill",
-                             accessibility: isPaused ? "Play" : "Pause")
+        refreshReadout()
     }
 
     @objc private func edrChanged() {
