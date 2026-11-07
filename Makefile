@@ -220,7 +220,7 @@ define STAGE_DMG
 endef
 
 .PHONY: splats all preview playground playground-build saver saver-build midi-deps \
-        verify-rotation \
+        verify-rotation pulse uninstall-pulse \
         install install-example install-playground uninstall-playground package dmg release clean \
         FORCE
 
@@ -325,7 +325,54 @@ $(SPLAT_STAMP): Sources/Splats/captures.json scripts/splat-convert.py
 
 # `saver` means the saver the machine will actually run. Use `saver-build` only
 # when a staging bundle is explicitly wanted.
-saver: install
+saver: install pulse
+
+# LerpPulse: the LaunchAgent that keeps the `critter` look's ledger — once a
+# minute, is anyone at the keyboard and what kind of app is in front, folded
+# into per-day totals (Sources/LerpCore/CritterLedger.swift). Part of `saver`
+# because the critter has nothing to live on without it. It needs no privacy
+# permission and writes one file:
+#   ~/Library/Application Support/Lerping/Critter/ledger.json
+PULSE_SRC   := Sources/LerpCore/CritterLedger.swift $(wildcard Sources/Pulse/*.swift)
+PULSE_LABEL := com.hergenroeder.lerping.pulse
+PULSE_DIR   := $(HOME)/Library/Application Support/Lerping/Pulse
+PULSE_BIN   := $(PULSE_DIR)/LerpPulse
+PULSE_PLIST := $(HOME)/Library/LaunchAgents/$(PULSE_LABEL).plist
+
+$(BUILD)/LerpPulse: $(PULSE_SRC)
+	@mkdir -p $(BUILD)
+	swiftc -O -parse-as-library -target $(TARGET) -o $@ $(PULSE_SRC) -framework AppKit -framework IOKit
+
+pulse: $(BUILD)/LerpPulse
+	@mkdir -p "$(PULSE_DIR)" "$(HOME)/Library/LaunchAgents"
+	@launchctl bootout gui/$$(id -u)/$(PULSE_LABEL) 2>/dev/null || true
+	cp $(BUILD)/LerpPulse "$(PULSE_BIN)"
+	codesign --force -s - --identifier $(PULSE_LABEL) "$(PULSE_BIN)"
+	@printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+		'<plist version="1.0"><dict>' \
+		'<key>Label</key><string>$(PULSE_LABEL)</string>' \
+		'<key>ProgramArguments</key><array><string>$(PULSE_BIN)</string></array>' \
+		'<key>RunAtLoad</key><true/>' \
+		'<key>KeepAlive</key><true/>' \
+		'<key>ProcessType</key><string>Background</string>' \
+		'<key>LimitLoadToSessionType</key><string>Aqua</string>' \
+		'</dict></plist>' > "$(PULSE_PLIST)"
+	@plutil -lint -s "$(PULSE_PLIST)"
+	@# bootout returns before the old job is gone; bootstrap until it takes.
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		launchctl bootstrap gui/$$(id -u) "$(PULSE_PLIST)" 2>/dev/null && break; sleep 0.5; done
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		launchctl print gui/$$(id -u)/$(PULSE_LABEL) 2>/dev/null | grep -q 'state = running' && break; sleep 0.5; done
+	@launchctl print gui/$$(id -u)/$(PULSE_LABEL) | grep -q 'state = running' \
+		|| { echo "pulse: $(PULSE_LABEL) is not running"; exit 1; }
+	@codesign --verify --strict "$(PULSE_BIN)"
+	@sleep 1; "$(PULSE_BIN)" --report
+
+# Stops the sampler. The ledger stays, so the critter is where you left it.
+uninstall-pulse:
+	@launchctl bootout gui/$$(id -u)/$(PULSE_LABEL) 2>/dev/null || true
+	rm -f "$(PULSE_PLIST)" "$(PULSE_BIN)"
 
 saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/Info.plist LICENSE NOTICE.txt splats
 	@mkdir -p $(SAVER_DIR)/Contents/MacOS $(SAVER_DIR)/Contents/Resources/Shaders $(SAVER_DIR)/Contents/Resources/Splats

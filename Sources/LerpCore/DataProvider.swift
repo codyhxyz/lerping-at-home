@@ -74,6 +74,7 @@ public enum LerpDataProviders {
     public typealias Factory = (MTLDevice) -> LerpDataProvider
 
     nonisolated(unsafe) private static var factories: [String: Factory] = [
+        "critter": { CritterData(device: $0) },
         "heatmap": { HeatmapData(device: $0) },
         "ink-fluid": { InkFluidData(device: $0) },
         "life": { LifeData(device: $0) },

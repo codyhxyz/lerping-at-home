@@ -611,6 +611,7 @@ Sources/LerpCore/     shared engine, no ScreenSaver dependency
   Snapshot.swift       offscreen render to PNG (HEIC for gallery stills)
 Sources/Shaders/     built-in shaders, shipped as bundle Resources
 Sources/Saver/       ScreenSaverView shim + Info.plist
+Sources/Pulse/       LerpPulse, the LaunchAgent that keeps the critter's ledger
 Sources/Preview/     LerpPreview dev app / snapshot CLI
 Sources/Playground/  LerpPlayground editor + live render, hot reload
   Info.plist           the .app's identity: bundle id, name, icon
@@ -666,6 +667,44 @@ the snapshot renderer should have to link a framework they never use.
 ```sh
 log show --last 5m --info --style compact --predicate 'subsystem == "com.hergenroeder.lerping"'
 ```
+
+## The critter
+
+`critter` is a look that is alive: a small sprout creature on a toy island that
+grows, or wilts, with how this Mac gets used. It hatches from an egg, grows from
+baby to child to grown (a flower on its sprout) by a day's worth of good days at
+a time, and keeps a record on the island — a flower in the meadow for each good
+day of the last two weeks, a new tree every few days of its life. The sky is the
+real time of day and the trees the real season.
+
+What it is doing when the screensaver comes up is its strongest feeling at that
+moment: asleep at 3 am or after an eleven-hour day, pacing under a storm cloud
+after an hour of app-hopping, stretching when the screensaver started right
+after a long run with no break, under a rain cloud after a bad week, waving
+after days away, building a sandcastle on a day spent making things, hopping and
+chasing butterflies when things are good. Later 36-second chapters are drawn by
+weight, so it does not repeat itself.
+
+**Where the data comes from.** The saver only runs while nobody is using the
+Mac, inside a sandbox that cannot write anywhere shared, so it cannot watch how
+the Mac is used. `make saver` also installs **LerpPulse** (`Sources/Pulse/`), a
+LaunchAgent (`com.hergenroeder.lerping.pulse`) that once a minute asks how long
+since the last input, whether the screen is locked and what kind of app is in
+front. It needs no privacy permission. It keeps per-day totals in
+`~/Library/Application Support/Lerping/Critter/ledger.json`: active minutes,
+minutes after midnight, the longest run without a 5-minute break, breaks taken,
+app switches, and minutes per *kind* of app (make / chat / browse / play /
+other). App names never reach the file. `CritterLedger.swift` holds the scoring.
+
+- `"$HOME/Library/Application Support/Lerping/Pulse/LerpPulse" --report` prints
+  the critter's current vitals.
+- The look's `mood` parameter shows canned states (thriving, burnt out, night
+  owl, scattered, about to hatch, finally a break); `clock` sets the hour and
+  `act` pins an activity, for the playground.
+- `LerpPreview` always renders a fixed fixture creature, so snapshots and
+  gallery stills stay reproducible; `LERP_CRITTER_LIVE=1` (and
+  `LERP_CRITTER_LEDGER=path`) make it read a ledger instead.
+- `make uninstall-pulse` stops the sampler and keeps the ledger.
 
 ## What the sandbox allows
 
