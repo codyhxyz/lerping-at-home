@@ -24,6 +24,7 @@
 // lerp-param: parallax   float 0 2 = 1  "Head parallax"
 // lerp-param: yaw        float -180 180 = 0  "Turn"
 // lerp-param: pitch      float -30 30 = 0  "Tilt"
+// lerp-param: magnify    float -0.5 1 = 0 "Zoom"
 // lerp-param: caption    int 0 4 = 3  "Caption (1 frosted, 2 glass, 3 diffuse, 4 label)"
 // lerp-param: zenith     color         = (0.72, 0.77, 0.8) "Backdrop (top)"
 // lerp-param: horizon    color         = (0.15, 0.12, 0.08) "Backdrop (horizon)"
