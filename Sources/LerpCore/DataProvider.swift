@@ -68,24 +68,47 @@ public extension LerpDataProvider {
                        params: LerpParameterValues?) {}
 }
 
+/// Whether a frame may show what only this host, at this moment, can see.
+///
+/// `.live` is the look as it plays: the critter drawn from this Mac's ledger at
+/// this hour, a splat's caption coming up as the look comes in. `.still` is the
+/// look as a picture of itself — a pure function of (shader, parameters, time,
+/// seed) and nothing else — which is what a gallery still is, and therefore
+/// what the gallery's hover preview has to be too: it is the still set moving,
+/// and a still drawn from inputs the preview does not share is a still the
+/// preview cannot continue.
+///
+/// That mismatch is the bug this exists to end. The playground drew the
+/// critter's still from the live ledger and clock, cached it under a key that
+/// knew nothing about either, and kept it; pointing at the card then played a
+/// different creature in a different sky. Bumping the recipe version cleared it
+/// each time, until the hour moved on. With one mode passed to both the still
+/// and the preview, they cannot read different inputs.
+public enum LerpRenderMode: Sendable {
+    case live
+    case still
+}
+
 /// Name → provider registry. Built-ins are registered here; a host can add more
-/// before creating a `ShaderLibrary`.
+/// before creating a `ShaderLibrary`. A factory is told the library's
+/// `LerpRenderMode`; one that reads nothing beyond `(uniforms, params)` — every
+/// provider but the critter — ignores it.
 public enum LerpDataProviders {
-    public typealias Factory = (MTLDevice) -> LerpDataProvider
+    public typealias Factory = (MTLDevice, LerpRenderMode) -> LerpDataProvider
 
     nonisolated(unsafe) private static var factories: [String: Factory] = [
-        "critter": { CritterData(device: $0) },
-        "heatmap": { HeatmapData(device: $0) },
-        "ink-fluid": { InkFluidData(device: $0) },
-        "life": { LifeData(device: $0) },
-        "maze": { MazeData(device: $0) },
-        "neural-field": { NeuralFieldData(device: $0) },
-        "physarum": { PhysarumData(device: $0) },
-        "pipes": { PipesData(device: $0) },
-        "polytope-4d": { Polytope4DData(device: $0) },
-        "reaction-diffusion": { ReactionDiffusionData(device: $0) },
-        "sandpile": { SandpileData(device: $0) },
-        "string-art": { StringArtData(device: $0) },
+        "critter": { CritterData(device: $0, mode: $1) },
+        "heatmap": { d, _ in HeatmapData(device: d) },
+        "ink-fluid": { d, _ in InkFluidData(device: d) },
+        "life": { d, _ in LifeData(device: d) },
+        "maze": { d, _ in MazeData(device: d) },
+        "neural-field": { d, _ in NeuralFieldData(device: d) },
+        "physarum": { d, _ in PhysarumData(device: d) },
+        "pipes": { d, _ in PipesData(device: d) },
+        "polytope-4d": { d, _ in Polytope4DData(device: d) },
+        "reaction-diffusion": { d, _ in ReactionDiffusionData(device: d) },
+        "sandpile": { d, _ in SandpileData(device: d) },
+        "string-art": { d, _ in StringArtData(device: d) },
     ]
     private static let lock = NSLock()
 
@@ -94,11 +117,12 @@ public enum LerpDataProviders {
         factories[name] = factory
     }
 
-    public static func make(named name: String, device: MTLDevice) -> LerpDataProvider? {
+    public static func make(named name: String, device: MTLDevice,
+                            mode: LerpRenderMode = .live) -> LerpDataProvider? {
         lock.lock()
         let factory = factories[name]
         lock.unlock()
-        if let factory { return factory(device) }
+        if let factory { return factory(device, mode) }
         // `splat:<move>:<capture>[:look]` — one provider class, parameterised by name.
         if name.hasPrefix("splat:") { return SplatData(device: device, spec: name) }
         return nil

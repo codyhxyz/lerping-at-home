@@ -49,6 +49,9 @@ public final class RotationThumbnails {
     /// without anyone having to find and delete it.
     /// v2: stills are tagged Display P3, matching the live layer, not sRGB.
     /// v3: no captions; a splat's size is capped in proportion to the frame.
+    /// v4: drawn in `LerpRenderMode.still`, so the critter is its fixture and
+    ///     not whatever ledger and hour were live when the playground first
+    ///     drew it — the still its hover preview could never continue.
     public struct Recipe {
         public var width = 240
         public var height = 360
@@ -56,7 +59,7 @@ public final class RotationThumbnails {
         public var time: Float = 6
         /// Fixed, so a tile is the same picture on every launch.
         public var seed: Float = 0.37
-        public var version = 3
+        public var version = 4
 
         public init() {}
 
@@ -446,7 +449,10 @@ public final class RotationThumbnails {
         let workers = min(4, max(1, ProcessInfo.processInfo.activeProcessorCount - 1))
         DispatchQueue.concurrentPerform(iterations: min(workers, order.count)) { slot in
             guard let renderer = LerpRenderer() else { return }
-            let library = ShaderLibrary(device: renderer.device, extraSearchURLs: searchURLs)
+            // `.still`, as `RotationPreviewPlayer`'s view is: the still and the
+            // preview that continues it must read exactly the same inputs.
+            let library = ShaderLibrary(device: renderer.device, extraSearchURLs: searchURLs,
+                                        mode: .still)
             var index = slot
             while index < order.count {
                 guard isCurrent(run) else { return }

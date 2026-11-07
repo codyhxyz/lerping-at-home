@@ -31,12 +31,14 @@ import Metal
 ///   produced and takes the fresh one if it lands within `adoptWindow` of the
 ///   session starting (in practice a few milliseconds, under the crossfade);
 ///   after that the snapshot is final.
-/// - A host with no bundle identifier — `LerpPreview`, which renders the
-///   snapshot suite and every gallery still — gets `CritterVitals.fixture`, so
-///   stills stay reproducible byte for byte. Only the saver and the playground
-///   see the live creature. `LERP_CRITTER_LIVE=1` overrides that for testing
-///   (a command-line host then waits for the first read, having no render
-///   thread to protect).
+/// - A `.still` library (`LerpRenderMode`) — every gallery still and the
+///   gallery's hover preview, in every host — and a host with no bundle
+///   identifier (`LerpPreview`, which renders the snapshot suite) get
+///   `CritterVitals.fixture`, so a still is reproducible byte for byte and the
+///   preview carries on from it. Only a `.live` view in the saver or the
+///   playground sees the live creature. `LERP_CRITTER_LIVE=1` overrides the
+///   bundle-identifier test, never `.still` (a command-line host then waits
+///   for the first read, having no render thread to protect).
 /// - The `mood` parameter swaps the ledger for a canned state, so the
 ///   playground can show every mood without anyone living through it.
 public final class CritterData: LerpDataProvider {
@@ -76,9 +78,9 @@ public final class CritterData: LerpDataProvider {
     private var packedKey: PackKey?
     private(set) var packed = State(a: .zero, b: .zero, c: .zero, d: .zero, w0: .zero, w1: .zero, w2: .zero)
 
-    public init(device: MTLDevice) {
+    public init(device: MTLDevice, mode: LerpRenderMode = .live) {
         let env = ProcessInfo.processInfo.environment["LERP_CRITTER_LIVE"]
-        live = env == "1" || (env == nil && Bundle.main.bundleIdentifier != nil)
+        live = mode == .live && (env == "1" || (env == nil && Bundle.main.bundleIdentifier != nil))
         loader = live ? Loader() : nil
         loader?.refresh()   // prefetch, so the first session rarely waits
     }

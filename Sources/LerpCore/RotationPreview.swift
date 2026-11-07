@@ -136,7 +136,10 @@ public final class RotationPreviewPlayer {
         if let view { return view }
         guard !madeView else { return nil }
         madeView = true
-        guard let made = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 120, height: 180))
+        // `.still`, as `RotationThumbnails`' renderers are — the fixture critter
+        // and no caption — so the first frame is the still it replaces.
+        guard let made = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 120, height: 180),
+                                       mode: .still)
         else { return nil }
         made.config = LerpMetalView.Config(shaderName: nil, renderScale: 1.0,
                                            shuffleInterval: .infinity)

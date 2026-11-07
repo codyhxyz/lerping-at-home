@@ -371,8 +371,12 @@ public final class ShaderLibrary: @unchecked Sendable {
     private var errors: [String: String] = [:]
     public var compileErrors: [String: String] { locked { errors } }
 
-    public init(device: MTLDevice, extraSearchURLs: [URL] = []) {
+    /// Handed to every data provider this library makes. See `LerpRenderMode`.
+    public let mode: LerpRenderMode
+
+    public init(device: MTLDevice, extraSearchURLs: [URL] = [], mode: LerpRenderMode = .live) {
         self.device = device
+        self.mode = mode
         self.compiler = LerpPipelineCompiler.shared(for: device)
         self.extraSearchURLs = extraSearchURLs
         LerpSplatAssets.addSourceRoots(extraSearchURLs)
@@ -495,7 +499,7 @@ public final class ShaderLibrary: @unchecked Sendable {
         guard let name = shader.dataProviderName else { return nil }
         let provider = locked { () -> LerpDataProvider? in
             if let cached = dataProviders[name] { return cached }
-            let made = LerpDataProviders.make(named: name, device: device)
+            let made = LerpDataProviders.make(named: name, device: device, mode: mode)
             dataProviders[name] = made
             return made
         }

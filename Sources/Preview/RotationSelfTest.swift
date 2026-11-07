@@ -34,6 +34,7 @@ enum RotationSelfTest {
         schedule(check)
         reserved(check)
         gallery(extraSearch, check)
+        stillMode(extraSearch, check)
         pins(extraSearch, check)
         if let dir = ProcessInfo.processInfo.environment["LERP_GALLERY_SNAPSHOT"] {
             snapshot(extraSearch, to: URL(fileURLWithPath: dir))
@@ -44,7 +45,8 @@ enum RotationSelfTest {
             PreviewMain.fail("rotation self-test: \(failures.count) check\(failures.count == 1 ? "" : "s") failed")
         }
         print("OK    rotation: shader switch keeps picks, shader/* round trip, per-shader airtime, "
-              + "no back-to-back repeats, * reserved, Library cards/search/floor")
+              + "no back-to-back repeats, * reserved, Library cards/search/floor, "
+              + "stills ignore host inputs")
     }
 
     // MARK: - Fixtures
@@ -252,6 +254,50 @@ enum RotationSelfTest {
         view.setFilter("Day")
         save("search.png")
         print("wrote \(dir.path)/library.png, search.png")
+    }
+
+    // MARK: - Still mode
+
+    /// A gallery still and the hover preview that continues it are both drawn
+    /// in `LerpRenderMode.still`; what that has to guarantee is that a host's
+    /// own inputs cannot reach the picture. So pretend to be a host that has
+    /// them — `LERP_CRITTER_LIVE=1` is what the saver and the playground get
+    /// from their bundle identifiers — and render the one look that reads them
+    /// three ways: `.still` must be the same bytes as with no live inputs at
+    /// all, and `.live` must not be, or this check could never have failed.
+    static func stillMode(_ extraSearch: [URL], _ check: (Bool, @autoclosure () -> String) -> Void) {
+        guard let renderer = LerpRenderer() else { return check(false, "still mode: no Metal device") }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lerp-still-mode-\(getpid())")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let recipe = RotationThumbnails.Recipe()
+        let previous = ProcessInfo.processInfo.environment["LERP_CRITTER_LIVE"]
+        defer {
+            if let previous { setenv("LERP_CRITTER_LIVE", previous, 1) } else { unsetenv("LERP_CRITTER_LIVE") }
+        }
+
+        func render(_ mode: LerpRenderMode, live: Bool, _ name: String) -> Data? {
+            if live { setenv("LERP_CRITTER_LIVE", "1", 1) } else { setenv("LERP_CRITTER_LIVE", "0", 1) }
+            let library = ShaderLibrary(device: renderer.device, extraSearchURLs: extraSearch, mode: mode)
+            guard let shader = library.shader(named: "critter") else { return nil }
+            let url = dir.appendingPathComponent(name + ".png")
+            let result = LerpSnapshot.render(shader: shader, library: library, renderer: renderer,
+                                             width: recipe.width, height: recipe.height,
+                                             time: recipe.time, seed: recipe.seed,
+                                             params: shader.defaultParameterValues(),
+                                             captions: false, to: url)
+            return result.error == nil ? try? Data(contentsOf: url) : nil
+        }
+
+        guard let fixture = render(.live, live: false, "fixture"),
+              let still = render(.still, live: true, "still"),
+              let live = render(.live, live: true, "live") else {
+            return check(false, "still mode: could not render critter")
+        }
+        check(still == fixture, "a .still critter in a host with live inputs is not the fixture: "
+              + "its gallery still and hover preview would show a creature the other does not")
+        check(live != fixture, "a .live critter with live inputs drew the fixture, so the still-mode check proves nothing")
     }
 
     // MARK: - Pins

@@ -352,10 +352,14 @@ public final class LerpMetalView: NSView {
     /// already at the display's cap.
     public var renderSize: CGSize { metalLayer.drawableSize }
 
-    public init?(frame: NSRect, extraSearchURLs: [URL] = []) {
+    /// `.still` for a view that continues a gallery still — no host-only
+    /// inputs and no caption, exactly as the still was drawn. See
+    /// `LerpRenderMode`.
+    public init?(frame: NSRect, extraSearchURLs: [URL] = [], mode: LerpRenderMode = .live) {
         guard let renderer = LerpRenderer() else { return nil }
         self.renderer = renderer
-        self.library = ShaderLibrary(device: renderer.device, extraSearchURLs: extraSearchURLs)
+        self.library = ShaderLibrary(device: renderer.device, extraSearchURLs: extraSearchURLs,
+                                     mode: mode)
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
@@ -1047,7 +1051,7 @@ public final class LerpMetalView: NSView {
     /// A second provider of this name, made on first need and kept per view.
     private func spareProvider(named name: String) -> LerpDataProvider? {
         if let spare = spareProviders[name] { return spare }
-        let made = LerpDataProviders.make(named: name, device: renderer.device)
+        let made = LerpDataProviders.make(named: name, device: renderer.device, mode: library.mode)
         spareProviders[name] = made
         return made
     }
@@ -1376,6 +1380,9 @@ public final class LerpMetalView: NSView {
 
     private func applyCaptionOpacity(at time: CFTimeInterval) {
         guard let splat = dataProvider as? SplatData else { return }
+        // A still is drawn without its caption (`RotationThumbnails`), so the
+        // view that continues one is too.
+        guard library.mode == .live else { splat.captionOpacity = 0; return }
         let now = CACurrentMediaTime()
         let dt = captionRevealStamp > 0 ? min(0.1, now - captionRevealStamp) : 0
         captionRevealStamp = now

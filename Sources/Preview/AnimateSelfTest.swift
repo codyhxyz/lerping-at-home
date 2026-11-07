@@ -256,7 +256,7 @@ enum AnimateSelfTest {
     }
 
     static func rendering(_ extraSearch: [URL], _ check: (Bool, @autoclosure () -> String) -> Void) {
-        LerpDataProviders.register("animate-selftest-probe") { _ in Probe() }
+        LerpDataProviders.register("animate-selftest-probe") { _, _ in Probe() }
         let shader = LerpShader(name: "animate-selftest", source: """
             // lerp-data: animate-selftest-probe
             // lerp-param: level float 0 1 = 0.5
