@@ -22,13 +22,17 @@
 // lerp-param: speed         float 0 8    = 0.55 "Speed"
 //
 // Upstream presets, scale mapped into this port's units and speed scaled to
-// this port's ambience (upstream × 0.367). Shine's tiny dots on black orbited
+// this port's ambience (upstream × 0.367), except Bubbles. Shine's tiny dots on black orbited
 // ~3 px/s at 878 px tall at 0.074, too slow to read as motion; it runs at
 // 0.15. Its dots cover ~1% of the frame, so a whole-frame change metric
 // cannot exceed ~1% however they move; >95% of the dots change every 2 s.
+// Bubbles ran at upstream's 0.147 and read as completely still on the lock
+// screen: its small cells (scale 9.2) make each orbit tiny, so it moved 0.16%
+// of the short side per second against the default's 1.1. At 0.6 the orbit
+// period (~10 s) matches the default's and the grey bubbles drift at ~0.7.
 // lerp-preset: Bubbles color1=#d0d2d5, color2=#d0d2d5, color3=#d0d2d5, color4=#d0d2d5
 // lerp-preset: Bubbles color5=#d0d2d5, colorBack=#989ca4, stepsPerColor=2
-// lerp-preset: Bubbles size=0.9, sizeRange=0.7, spreading=1, scale=9.2, speed=0.147
+// lerp-preset: Bubbles size=0.9, sizeRange=0.7, spreading=1, scale=9.2, speed=0.6
 // lerp-preset: Shine   color1=#ffffff, color2=#006aff, color3=#fff675, color4=#ffffff
 // lerp-preset: Shine   color5=#006aff, colorBack=#000000, stepsPerColor=4
 // lerp-preset: Shine   size=0.3, sizeRange=0.2, spreading=1, scale=2.24, speed=0.15
