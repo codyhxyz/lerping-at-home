@@ -341,12 +341,10 @@ converted .lsplat is an adaptation and is shipped under the same licence:
   "Wood & Golden - Sefer Torah" by nathanar (Nathan Arditti),
       https://superspl.at/scene/bd1449ce
 
-These two are published under the Creative Commons Attribution-NonCommercial
+This one is published under the Creative Commons Attribution-NonCommercial
 4.0 International license (https://creativecommons.org/licenses/by-nc/4.0/),
-and are shipped under it, for non-commercial use only:
+and is shipped under it, for non-commercial use only:
 
-  "Lake Maggiore, Autumn forest" by argenzio (Corridori Ruggero),
-      https://superspl.at/scene/cf199d86
   "Milano Subterranean Apartment" by argenzio (Corridori Ruggero),
       https://superspl.at/scene/15b6b784
 

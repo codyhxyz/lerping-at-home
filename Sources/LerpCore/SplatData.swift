@@ -738,6 +738,11 @@ final class LerpSplatAsset {
         let version = u32(4)
         guard version == 1 || version == 2 else { throw LerpSplatError.format("unknown .lsplat version \(version)") }
         let n = Int(u32(8))
+        // Flag bit 0: positions are exact f32. Without it (files from before)
+        // they are u16 across the bounds — which, over a whole scene, was
+        // coarser than the capture's own precision.
+        let floatPositions = u32(12) & 1 != 0
+        let posBytes = floatPositions ? 12 : 6
         let lo = SIMD3(f32(16), f32(20), f32(24)), hi = SIMD3(f32(28), f32(32), f32(36))
         let payloadSize = Int(u32(40))
         // Version 2 carries view-dependent colour; its header grows by
@@ -757,7 +762,7 @@ final class LerpSplatAsset {
         let start = 48 + extra
         guard data.count >= start + payloadSize else { throw LerpSplatError.format("truncated") }
         let planes = try (data.subdata(in: start..<(start + payloadSize)) as NSData).decompressed(using: .zlib) as Data
-        let expected = n * (6 + 4 + 3 + 4) + (shCoeffs > 0 ? n * 3 + paletteCount * shCoeffs * 3 : 0)
+        let expected = n * (posBytes + 4 + 3 + 4) + (shCoeffs > 0 ? n * 3 + paletteCount * shCoeffs * 3 : 0)
         guard planes.count == expected else {
             throw LerpSplatError.format("payload is \(planes.count) bytes, expected \(expected)")
         }
@@ -775,16 +780,19 @@ final class LerpSplatAsset {
 
         planes.withUnsafeBytes { raw in
             let b = raw.bindMemory(to: UInt8.self).baseAddress!
-            let qx = UnsafeRawPointer(b), qy = qx + 2 * n, qz = qy + 2 * n
-            let cr = b + 6 * n, cg = cr + n, cbl = cg + n, ca = cbl + n
+            let qx = UnsafeRawPointer(b), qy = qx + posBytes / 3 * n, qz = qy + posBytes / 3 * n
+            let cr = b + posBytes * n, cg = cr + n, cbl = cg + n, ca = cbl + n
             let sx = ca + n, sy = sx + n, sz = sy + n
             let rw = sz + n, rx = rw + n, ry = rx + n, rz = ry + n
             DispatchQueue.concurrentPerform(iterations: 8) { c in
                 for i in (n * c / 8)..<(n * (c + 1) / 8) {
-                    let p = SIMD3(Float(qx.loadUnaligned(fromByteOffset: 2 * i, as: UInt16.self)),
-                                  Float(qy.loadUnaligned(fromByteOffset: 2 * i, as: UInt16.self)),
-                                  Float(qz.loadUnaligned(fromByteOffset: 2 * i, as: UInt16.self)))
-                    let world = lo + p * span
+                    let world = floatPositions
+                        ? SIMD3(qx.loadUnaligned(fromByteOffset: 4 * i, as: Float.self),
+                                qy.loadUnaligned(fromByteOffset: 4 * i, as: Float.self),
+                                qz.loadUnaligned(fromByteOffset: 4 * i, as: Float.self))
+                        : lo + SIMD3(Float(qx.loadUnaligned(fromByteOffset: 2 * i, as: UInt16.self)),
+                                     Float(qy.loadUnaligned(fromByteOffset: 2 * i, as: UInt16.self)),
+                                     Float(qz.loadUnaligned(fromByteOffset: 2 * i, as: UInt16.self))) * span
                     let alpha = Float(ca[i]) / 255
                     pos[i] = SIMD4(world, alpha)
                     col[i] = SIMD4(cr[i], cg[i], cbl[i], ca[i])
@@ -811,7 +819,7 @@ final class LerpSplatAsset {
         labelBuf.label = "splat.shLabels"; paletteBuf.label = "splat.shPalette"; bookBuf.label = "splat.shCodebook"
         if shCoeffs > 0 {
             planes.withUnsafeBytes { raw in
-                let b = raw.bindMemory(to: UInt8.self).baseAddress! + 17 * n
+                let b = raw.bindMemory(to: UInt8.self).baseAddress! + (posBytes + 11) * n   // past position, colour, scale and rotation
                 let l0 = b, l1 = b + n, l2 = b + 2 * n
                 let labels = labelBuf.contents().bindMemory(to: UInt32.self, capacity: n)
                 for i in 0..<n {

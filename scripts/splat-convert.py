@@ -20,8 +20,9 @@ view-dependent colour.
     char[4]  "LSPL"
     u32      version (1, or 2 with view-dependent colour)
     u32      count
-    u32      flags (0)
-    f32[3]   bounds min      positions are quantized inside these bounds
+    u32      flags: bit 0 = positions are f32 (always set now; files without
+             it, from before, hold u16 positions quantized inside the bounds)
+    f32[3]   bounds min
     f32[3]   bounds max
     u32      payload bytes (compressed)
     u32      extra header bytes that follow (0 for version 1)
@@ -36,7 +37,11 @@ version 2's extra header:
 then a raw-DEFLATE payload (Apple's COMPRESSION_ZLIB) of planes, splat-major
 within each plane so neighbours compress together:
 
-    u16[count] x, y, z      0..65535 across the bounds
+    f32[count] x, y, z      exact (flag bit 0) — or u16 0..65535 across the
+                            bounds in files written before it. 16 bits across
+                            a whole scene's bounds was coarser than the
+                            source's own per-chunk precision: up to half a
+                            small splat's size on the large scenes.
     u8[count]  r, g, b, a   colour from SH band 0, opacity through the sigmoid
     u8[count]  sx, sy, sz   log scale, -10..2 over 0..255
     u8[count]  qw, qx, qy, qz  unit quaternion, -1..1 over 0..255
@@ -56,6 +61,7 @@ each view direction back with the stored rotation.
 import json
 import math
 import os
+import re
 import struct
 import sys
 import zlib
@@ -370,11 +376,6 @@ def apply_config(splats, cfg, frame=None):
             offset = offset - np.array([mid[0], 0, mid[1]])
         frame.update(m=m, center=center, k=k, shift=offset)
 
-    limit = int(cfg.get("max_splats", 50_000_000))
-    if len(pos) > limit:
-        importance = alpha * np.exp(log_scale.sum(1) / 3.0)
-        idx = np.argsort(-importance)[:limit]
-        pos, rgb, alpha, log_scale, quat, labels = pos[idx], rgb[idx], alpha[idx], log_scale[idx], quat[idx], labels[idx]
     if sh is None:
         return pos, rgb, alpha, log_scale, quat
     # The SH stay in the capture's own frame; the renderer turns each view
@@ -398,6 +399,9 @@ def morton_order(q):
     return np.argsort(code, kind="stable")
 
 
+FLAG_FLOAT_POSITIONS = 1
+
+
 def write_lsplat(path, splats):
     pos, rgb, alpha, log_scale, quat = splats[:5]
     sh = splats[5] if len(splats) > 5 else None
@@ -406,8 +410,8 @@ def write_lsplat(path, splats):
     hi = pos.max(0)
     span = np.maximum(hi - lo, 1e-6)
     qp = np.clip(np.round((pos - lo) / span * 65535), 0, 65535).astype(np.uint16)
-    order = morton_order(qp)
-    qp = qp[order]
+    order = morton_order(qp)          # the 16-bit grid only orders; positions stay exact
+    fp = pos[order].astype("<f4")
     col = np.clip(np.round(np.concatenate([rgb, alpha[:, None]], 1)[order] * 255), 0, 255).astype(np.uint8)
     sc = np.clip(np.round((log_scale[order] - LOG_MIN) / (LOG_MAX - LOG_MIN) * 255), 0, 255).astype(np.uint8)
     q = quat[order]
@@ -415,7 +419,7 @@ def write_lsplat(path, splats):
     q = np.where(q[:, :1] < 0, -q, q)
     qq = np.clip(np.round((q + 1) * 127.5), 0, 255).astype(np.uint8)
 
-    planes = b"".join([qp[:, i].astype("<u2").tobytes() for i in range(3)]
+    planes = b"".join([fp[:, i].tobytes() for i in range(3)]
                       + [col[:, i].tobytes() for i in range(4)]
                       + [sc[:, i].tobytes() for i in range(3)]
                       + [qq[:, i].tobytes() for i in range(4)])
@@ -444,7 +448,7 @@ def write_lsplat(path, splats):
         version = 2
     comp = zlib.compressobj(9, zlib.DEFLATED, -15)
     payload = comp.compress(planes) + comp.flush()
-    header = struct.pack("<4sIII3f3fII", b"LSPL", version, n, 0, *lo.astype(np.float32), *hi.astype(np.float32),
+    header = struct.pack("<4sIII3f3fII", b"LSPL", version, n, FLAG_FLOAT_POSITIONS, *lo.astype(np.float32), *hi.astype(np.float32),
                          len(payload), len(extra))
     header += extra
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -496,6 +500,24 @@ def inspect(path, prefix=None, cfg=None):
         render_views(prefix, splats, cfg.get("view_extent") if cfg else None)
 
 
+def check_full_quality(cid, cfg):
+    """Refuses a capture configured below the quality it was published at.
+
+    Two settings once thinned captures without anyone being told: a
+    `max_splats` cap that kept the largest splats (so the fine detail went
+    first), and sources pointing at a coarser level of a streamed
+    level-of-detail scene (`v1/<level>_<chunk>/meta.json` with level > 0).
+    Both now stop the build instead.
+    """
+    if "max_splats" in cfg:
+        raise SystemExit(f"{cid}: max_splats is not supported; every capture is used whole")
+    for url in cfg["sources"]:
+        m = re.search(r"/v1/(\d+)_\d+/meta\.json$", url)
+        if m and int(m.group(1)) != 0:
+            raise SystemExit(f"{cid}: {url} is level-of-detail level {m.group(1)}; "
+                             "use level 0, the full capture (see its lod-meta.json)")
+
+
 def fetch(cid, cfg, src_dir):
     """The capture's SOG chunks, downloaded once into src_dir/<id>/<n>/.
 
@@ -504,14 +526,29 @@ def fetch(cid, cfg, src_dir):
     such chunks, which read_sog merges.
     """
     import subprocess
+    check_full_quality(cid, cfg)
     metas = []
     for k, url in enumerate(cfg["sources"]):
         d = os.path.join(src_dir, cid, str(k))
         meta = os.path.join(d, "meta.json")
         done = os.path.join(d, ".complete")
+        source = os.path.join(d, ".source")
         metas.append(meta)
+        # The cache is kept per chunk index, so it has to know which URL it
+        # holds: changing a capture's sources (to a finer level, say) once
+        # reused the old chunks under the new list without a word, and
+        # merged two levels into one capture. A chunk cached before this was
+        # recorded is checked against the server's meta.json once.
         if os.path.exists(done):
-            continue
+            if os.path.exists(source) and open(source).read() == url:
+                continue
+            if not os.path.exists(source):
+                remote = subprocess.run(["curl", "-fsSL", "--retry", "3", url], capture_output=True, check=True).stdout
+                if open(meta, "rb").read() == remote:
+                    open(source, "w").write(url)
+                    continue
+            print(f"{cid}: chunk {k + 1} was cached from another source; fetching {url}")
+            os.remove(done)
         os.makedirs(d, exist_ok=True)
         base = url.rsplit("/", 1)[0]
         subprocess.run(["curl", "-fsSL", "--retry", "3", "-o", meta, url], check=True)
@@ -522,6 +559,7 @@ def fetch(cid, cfg, src_dir):
             args += ["-o", os.path.join(d, f), base + "/" + f]
         print(f"{cid}: chunk {k + 1}/{len(cfg['sources'])}, {len(files)} files")
         subprocess.run(args, check=True)
+        open(source, "w").write(url)
         open(done, "w").close()
     return metas
 

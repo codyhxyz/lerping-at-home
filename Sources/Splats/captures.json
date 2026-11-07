@@ -250,35 +250,7 @@
         1.6,
         -1.0
       ],
-      "scale": 0.25,
-      "max_splats": 4000000
-    },
-    "lake-maggiore": {
-      "title": "Lake Maggiore, Autumn forest",
-      "author": "argenzio (Corridori Ruggero)",
-      "page": "https://superspl.at/scene/cf199d86",
-      "license": "CC BY-NC 4.0",
-      "sources": [
-        "https://d28zzqy0iyovbz.cloudfront.net/cf199d86/v1/2_0/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/cf199d86/v1/2_1/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/cf199d86/v1/2_2/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/cf199d86/v1/2_3/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/cf199d86/v1/2_4/meta.json"
-      ],
-      "rotate": [
-        180,
-        0,
-        0
-      ],
-      "center": [
-        -0.62,
-        -0.19,
-        -1.49
-      ],
-      "scale": 0.2,
-      "crop": {
-        "sphere": 5.0
-      }
+      "scale": 0.25
     },
     "rose": {
       "title": "Rose Flower",
@@ -314,8 +286,7 @@
         0,
         0
       ],
-      "scale": 0.03,
-      "max_splats": 4500000
+      "scale": 0.03
     },
     "orchid-greenhouse": {
       "title": "Orchid Greenhouse",
@@ -323,11 +294,14 @@
       "page": "https://superspl.at/scene/2cf8a82c",
       "license": "none",
       "sources": [
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/1_0/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/1_1/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/1_2/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/1_3/meta.json",
-        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/1_4/meta.json"
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_2/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_3/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_4/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_5/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_6/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/0_7/meta.json"
       ],
       "rotate": [
         180,
@@ -576,8 +550,7 @@
             1.9
           ]
         ]
-      },
-      "max_splats": 4500000
+      }
     },
     "nuo-mask": {
       "title": "Nuo mask",
@@ -646,8 +619,7 @@
         4.5,
         -18.4
       ],
-      "scale": 0.003745,
-      "max_splats": 4500000
+      "scale": 0.003745
     },
     "graffiti-tunnel": {
       "title": "The Graffiti Tunnel, London, UK",
