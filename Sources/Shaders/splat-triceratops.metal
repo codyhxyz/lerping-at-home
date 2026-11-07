@@ -22,6 +22,8 @@
 // lerp-param: cycle      float 6 120   = 28    "Dissolve cycle (s)"
 // lerp-param: pool       float 0 1     = 0.4   "Light pool"
 // lerp-param: background color         = (0.03, 0.028, 0.026) "Background"
+// lerp-param: yaw        float -60 60 = 0 "Turn"
+// lerp-param: pitch      float -25 25 = 0 "Tilt"
 //
 // lerp-preset: "Fossil bloom"  deform=4, amount=0.03, cycle=26
 

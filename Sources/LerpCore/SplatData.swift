@@ -15,6 +15,12 @@ import simd
 ///     dolly   dolly zoom: the lens zooms while the camera backs off, so the
 ///             subject keeps its size and the background compresses
 ///
+/// A drag on the render (`LerpTurn`, for a look that declares `yaw`/`pitch`)
+/// swings the camera round the point it looks at, which is right wherever the
+/// subject is that point. A capture seen from inside — a square, a room — is
+/// mostly far beyond it, and would move against the hand; `:look` on the end
+/// (`splat:orbit:trogir-square:look`) turns that camera where it stands.
+///
 /// The engine draws one fullscreen fragment function, so the splats are drawn
 /// here, in `encodeCompute`, into a texture this provider owns; the look's
 /// fragment shader then reads it as `texture(1)` with the camera summary
@@ -30,6 +36,8 @@ public final class SplatData: LerpDataProvider {
 
     let move: Move
     let captureName: String
+    /// `:look`: a drag turns the camera where it stands, not round its target.
+    let turnsInPlace: Bool
     private let device: MTLDevice
     private var target: MTLTexture?
     private var view = LerpSplatViewInfo()
@@ -49,10 +57,12 @@ public final class SplatData: LerpDataProvider {
 
     public init?(device: MTLDevice, spec: String) {
         let parts = spec.split(separator: ":").map(String.init)
-        guard parts.count == 3, parts[0] == "splat", let move = Move(rawValue: parts[1]) else { return nil }
+        guard parts.count == 3 || (parts.count == 4 && parts[3] == "look"),
+              parts[0] == "splat", let move = Move(rawValue: parts[1]) else { return nil }
         self.device = device
         self.move = move
         self.captureName = parts[2]
+        self.turnsInPlace = parts.count == 4
         // Decode off the render thread as soon as the look is known, so the
         // first frame usually finds it ready.
         LerpSplatAssets.prefetch(captureName, device: device)
@@ -223,7 +233,7 @@ public final class SplatData: LerpDataProvider {
             let eye = SIMD3(sin(angle) * distance, height + bob, cos(angle) * distance)
             let focal = 0.5 * size.y / tan(fovy * 0.5)
             let clip = param(params, "clip", 0)
-            return Camera(view: Self.lookAt(eye: eye, target: target), focal: focal, fovy: fovy,
+            return Camera(view: turnedView(eye: eye, target: target, params: params), focal: focal, fovy: fovy,
                           near: clip > 0 ? max(0.02, simd_length(eye - target) - clip) : 0.02)
 
         case .dolly:
@@ -244,9 +254,26 @@ public final class SplatData: LerpDataProvider {
             let eye = target + dir * d + SIMD3(0, height * d / distance, 0)
             let focal = 0.5 * size.y / tan(half)
             let clip = param(params, "clip", 1.5)
-            return Camera(view: Self.lookAt(eye: eye, target: target), focal: focal, fovy: 2 * half,
+            return Camera(view: turnedView(eye: eye, target: target, params: params), focal: focal, fovy: 2 * half,
                           near: max(0.02, simd_length(eye - target) - clip))
         }
+    }
+
+    /// `lookAt`, after a drag has swung the eye round the target or, for a
+    /// `:look` capture, turned it where it stands (`LerpTurn`). The distance
+    /// to the target is unchanged, so the clip plane measured from it holds.
+    private func turnedView(eye: SIMD3<Float>, target: SIMD3<Float>, params: LerpParameterValues?) -> simd_float4x4 {
+        let yaw = param(params, LerpTurn.yawParameter, 0), pitch = param(params, LerpTurn.pitchParameter, 0)
+        guard yaw != 0 || pitch != 0 else { return Self.lookAt(eye: eye, target: target) }
+        let up = SIMD3<Float>(0, 1, 0)
+        var eye = eye, fwd = simd_normalize(target - eye)
+        var right = simd_normalize(simd_cross(fwd, up))
+        if turnsInPlace {
+            LerpTurn.look(yaw: yaw, pitch: pitch, up: up, right: &right, fwd: &fwd)
+        } else {
+            LerpTurn.orbit(yaw: yaw, pitch: pitch, pivot: target, up: up, eye: &eye, right: &right, fwd: &fwd)
+        }
+        return Self.lookAt(eye: eye, target: eye + fwd, up: simd_cross(right, fwd))
     }
 
     /// `LerpViewer.eye` as a rasteriser applies it: the eye steps by `e`

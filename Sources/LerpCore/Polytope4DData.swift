@@ -189,8 +189,17 @@ public final class Polytope4DData: LerpDataProvider {
         let maxR = 0.045 * short
         // Arcs are subdivided until flat to about a pixel and a half at 4K.
         let tol = max(0.6, short / 1400)
-        // A fixed 3D tilt so the first frame is not a face-on view.
-        let tilt = Self.tilt
+        // A fixed 3D tilt so the first frame is not a face-on view, then the
+        // drag's turn (`LerpTurn`): the camera stays put on +z and the figure
+        // turns the opposite way, which is the same picture.
+        var tilt = Self.tilt
+        let yaw = Self.scalar(params, LerpTurn.yawParameter, 0)
+        let pitch = Self.scalar(params, LerpTurn.pitchParameter, 0)
+        if yaw != 0 || pitch != 0 {
+            let q = LerpTurn.orbitRotation(yaw: yaw, pitch: pitch, up: SIMD3(0, 1, 0),
+                                           right: SIMD3(1, 0, 0), fwd: SIMD3(0, 0, -1))
+            tilt = simd_float3x3(q.inverse) * tilt
+        }
 
         @inline(__always) func project(_ v4: SIMD4<Float>) -> PP {
             var X: SIMD3<Float>

@@ -21,6 +21,8 @@
 // lerp-param: arc        float 0 360   = 360  "Arc swept (360 = full turn)"
 // lerp-param: paper      color         = (0.93, 0.90, 0.84) "Paper"
 // lerp-param: ink        color         = (0.10, 0.09, 0.12) "Ink"
+// lerp-param: yaw        float -180 180 = 0 "Turn"
+// lerp-param: pitch      float -30 30 = 0 "Tilt"
 //
 // lerp-preset: Halftone      filter=0, cell=9
 // lerp-preset: Dither        filter=1, cell=3

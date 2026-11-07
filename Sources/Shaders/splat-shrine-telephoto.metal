@@ -29,6 +29,8 @@
 // lerp-param: zenith     color         = (0.42, 0.58, 0.80) "Sky (top)"
 // lerp-param: horizon    color         = (0.80, 0.86, 0.92) "Sky (horizon)"
 // lerp-param: vignette   float 0 1     = 0.25  "Vignette"
+// lerp-param: yaw        float -30 30 = 0 "Turn"
+// lerp-param: pitch      float -15 15 = 0 "Tilt"
 //
 // lerp-preset: Drifting  drift=12, period=80
 

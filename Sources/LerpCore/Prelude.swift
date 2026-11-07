@@ -156,7 +156,7 @@ public enum LerpPrelude {
 
     public static func helpers(parameters: [LerpParam]) -> String {
         header + "\n\n" + uniformsStruct(parameters: parameters) + "\n\n" + functions
-            + "\n\n" + LerpViewer.metalSource
+            + "\n\n" + LerpViewer.metalSource + "\n\n" + LerpTurn.metalSource
     }
 
     /// The standard prelude: helpers plus the `#line 1` marker.

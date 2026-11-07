@@ -50,6 +50,8 @@
 // lerp-param: darkmatter float 0 0.6    = 0.3   "Dark matter"
 // lerp-param: distfading float 0.5 0.9  = 0.73  "Distance fading"
 // lerp-param: saturation float 0 1      = 0.85  "Saturation"
+// lerp-param: yaw        float -180 180 = 0 "Turn"
+// lerp-param: pitch      float -90 90   = 0 "Tilt"
 // lerp-param: useSeed    bool           = true  "Seeded view"
 //
 // lerp-preset: Upstream speed=0.01, useSeed=false, iterations=17, volsteps=20
@@ -60,6 +62,11 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float2 uv = frag / u.resolution - 0.5;
     uv.y *= u.resolution.y / u.resolution.x;
     float3 dir = float3(uv * u.zoom, 1.0);
+    if (u.yaw != 0.0 || u.pitch != 0.0) {         // drag to look round
+        float3 right = float3(1.0, 0.0, 0.0), fwd = float3(0.0, 0.0, 1.0);
+        lerpLook(u.yaw, u.pitch, float3(0.0, 1.0, 0.0), right, fwd);
+        dir = u.zoom * (uv.x * right + uv.y * cross(fwd, right)) + fwd;
+    }
     float seed = u.useSeed != 0 ? u.seed : 0.0;
     float time = u.time * u.speed + 0.25 + seed * 40.0;
 

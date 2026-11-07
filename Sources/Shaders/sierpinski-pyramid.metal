@@ -144,6 +144,8 @@
 // lerp-param: detail    float 0 1     = 0.5  "Detail"
 // lerp-param: speed     float 0 3     = 1.0  "Camera speed"
 // lerp-param: zoom      float 0 1     = 0.4  "Camera distance (orbit)"
+// lerp-param: yaw      float -180 180 = 0 "Turn"
+// lerp-param: pitch    float -90 90   = 0 "Tilt"
 // lerp-param: fly       bool          = true "Fly-through"
 // lerp-param: metal     float 0 1     = 1.0  "Metalness"
 // lerp-param: gloss     float 0 1     = 0.7  "Gloss"
@@ -1414,6 +1416,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         roF = G * P.xyz;
         fwdF = normalize(G * lk);
         rightF = normalize(cross(G * upP, fwdF));
+        lerpLook(u.yaw, u.pitch, G * upP, rightF, fwdF);   // drag to turn, where it flies
         upF = cross(fwdF, rightF);
         upRef = upF;
         sigma = P.w;
@@ -1428,6 +1431,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         float3 fwd = normalize(look - ro);
         float roll = 0.05 * sin(0.017 * ct + seed * 11.0);
         float3 right = normalize(cross(float3(sin(roll), cos(roll), 0.0), fwd));
+        lerpOrbit(u.yaw, u.pitch, look, float3(0.0, 1.0, 0.0), ro, right, fwd);   // drag to turn
         roF = W * ro;
         fwdF = W * fwd;
         rightF = W * right;

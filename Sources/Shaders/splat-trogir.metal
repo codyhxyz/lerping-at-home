@@ -8,7 +8,7 @@
 // https://superspl.at/scene/89f82474 — the 720k-splat level of its streamed
 // level-of-detail set. Converted by `make splats`.
 //
-// lerp-data: splat:orbit:trogir-square
+// lerp-data: splat:orbit:trogir-square:look
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"
 // lerp-param: period     float 10 300  = 90    "Seconds there and back"
@@ -23,6 +23,8 @@
 // lerp-param: zenith     color         = (0.06, 0.07, 0.13) "Sky (top)"
 // lerp-param: horizon    color         = (0.32, 0.24, 0.24) "Sky (horizon)"
 // lerp-param: vignette   float 0 1     = 0.3   "Vignette"
+// lerp-param: yaw        float -30 30 = 0 "Turn"
+// lerp-param: pitch      float -20 20 = 0 "Tilt"
 
 fragment half4 lerpMain(float4 pos [[position]],
                         constant LerpUniforms& u [[buffer(0)]],

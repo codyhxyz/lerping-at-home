@@ -65,6 +65,8 @@
 // lerp-param: stone   color          = (0.55, 0.50, 0.44) "Stone"
 // lerp-param: lamp    color          = (1.00, 0.80, 0.58) "Light"
 // lerp-param: haze    color          = (0.020, 0.026, 0.036) "Fog colour"
+// lerp-param: yaw      float -180 180 = 0 "Turn"
+// lerp-param: pitch    float -90 90   = 0 "Tilt"
 //
 // lerp-preset: "Outer Box"            form=1, scale=animate(1.75, 2.0, period=240)
 // lerp-preset: "Minus One and a Half" form=1, scale=animate(-1.62, -1.42, period=260), metal=0.65
@@ -317,6 +319,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     }
 
     float3 right = normalize(cross(upv, fwd));
+    // Drag to turn: round the box from outside; in the halls and over the
+    // slab the view turns where it is.
+    if (form == 1) lerpOrbit(u.yaw, u.pitch, float3(0.0), upv, ro, right, fwd);
+    else           lerpLook(u.yaw, u.pitch, upv, right, fwd);
     float3 up = cross(fwd, right);
     float3 rd = normalize(uv.x * right + uv.y * up + MB_FOCAL * fwd);
 

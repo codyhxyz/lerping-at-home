@@ -23,6 +23,8 @@
 // lerp-param: cycle      float 6 120   = 28    "Dissolve cycle (s)"
 // lerp-param: pool       float 0 1     = 0.5   "Light pool"
 // lerp-param: background color         = (0.035, 0.03, 0.03) "Background"
+// lerp-param: yaw        float -180 180 = 0 "Turn"
+// lerp-param: pitch      float -30 30 = 0 "Tilt"
 //
 // dnbt777's "you can just deform gaussian splats": the berry wrung about its
 // own axis and let go.

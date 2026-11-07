@@ -24,6 +24,8 @@
 // lerp-param: cycle      float 6 120   = 30    "Dissolve cycle (s)"
 // lerp-param: pool       float 0 1     = 0.35  "Light pool"
 // lerp-param: background color         = (0.025, 0.027, 0.035) "Background"
+// lerp-param: yaw        float -180 180 = 0 "Turn"
+// lerp-param: pitch      float -30 30 = 0 "Tilt"
 //
 // lerp-preset: Breathing  deform=2, amount=0.02, frequency=5
 // lerp-preset: Wrung      deform=3, amount=0.12

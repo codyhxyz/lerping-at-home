@@ -82,6 +82,8 @@
 // lerp-param: swing float 0 1   = 0.02 "Fold swing"
 // lerp-param: steps int 20 100  = 20   "March steps"
 // lerp-param: tint  color       = (0.86, 0.81, 0.72) "Tint"
+// lerp-param: yaw      float -180 180 = 0 "Turn"
+// lerp-param: pitch    float -90 90   = 0 "Tilt"
 //
 // lerp-preset: Upstream  speed=1.0, swing=1.0, steps=100, tint=(1.0, 1.0, 1.0)
 // lerp-preset: Moonstone tint=(0.58, 0.70, 0.86)
@@ -127,6 +129,11 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float2x2 tumble = float2x2(float2(c, -s), float2(s, c));
     float3 origin = float3(0.0, 0.0, -4.3);
     float3 dir = float3(uv, 1.0);
+    if (u.yaw != 0.0 || u.pitch != 0.0) {         // drag to turn, round the castle
+        float3 right = float3(1.0, 0.0, 0.0), fwd = float3(0.0, 0.0, 1.0);
+        lerpOrbit(u.yaw, u.pitch, float3(0.0), float3(0.0, 1.0, 0.0), origin, right, fwd);
+        dir = uv.x * right + uv.y * cross(fwd, right) + fwd;
+    }
     origin.zy = origin.zy * tumble;
     dir.zy = dir.zy * tumble;
 

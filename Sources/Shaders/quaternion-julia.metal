@@ -93,6 +93,8 @@
 // lerp-param: veins  float 0 1       = 0.6   "Veins"
 // lerp-param: hue    float 0 1       = 0.0   "Palette"
 // lerp-param: zoom   float 0.6 1.6   = 0.95  "Zoom"
+// lerp-param: yaw      float -180 180 = 0 "Turn"
+// lerp-param: pitch    float -90 90   = 0 "Tilt"
 // lerp-param: colorBack color        = (0.012, 0.014, 0.024) "Background"
 //
 // lerp-preset: Cubic        power=3, twist=0.5, cReal=-0.25, cImag=0.71, hue=0.5
@@ -496,6 +498,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     V.ro = dist * float3(cos(ce) * sin(ca), sin(ce), cos(ce) * cos(ca));
     V.fwd = normalize(-V.ro);
     V.right = normalize(cross(float3(0.0, 1.0, 0.0), V.fwd));
+    lerpOrbit(u.yaw, u.pitch, float3(0.0), float3(0.0, 1.0, 0.0), V.ro, V.right, V.fwd);   // drag to turn
     V.up = cross(V.fwd, V.right);
     V.rd = normalize(uv.x * V.right + uv.y * V.up + QJ_FOCAL * V.fwd);
     V.pix = 1.0 / (QJ_FOCAL * min(u.resolution.x, u.resolution.y));

@@ -23,6 +23,8 @@
 // lerp-param: glass      float 1 1.6   = 1.18  "Globe size"
 // lerp-param: snow       float 0 1     = 0.6   "Snow"
 // lerp-param: background color         = (0.03, 0.028, 0.035) "Background"
+// lerp-param: yaw        float -180 180 = 0 "Turn"
+// lerp-param: pitch      float -30 30 = 0 "Tilt"
 
 // One layer of flakes falling through the globe: a jittered grid in globe
 // space, wrapping vertically, each flake a soft disc.

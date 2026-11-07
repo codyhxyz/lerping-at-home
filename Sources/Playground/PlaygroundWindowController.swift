@@ -169,6 +169,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// launch for the same reason as system audio. Its gestures arrive as CCs
     /// through `receive`, exactly like a knob's.
     private var hands: HandControl?
+    /// Click-and-drag on the render, for looks that declare `yaw`/`pitch`.
+    private var dragToTurn: DragToTurn!
 
     private static let windowAutosave = "LerpPlaygroundWindow"
     /// Bumped when the inspector added a third pane: an autosaved two-subview
@@ -361,6 +363,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             FileHandle.standardError.write(Data("compile error in \(name):\n\(message)\n".utf8))
         }
         preview = FullScreenPreview(view: metalView)
+        dragToTurn = DragToTurn(view: metalView)
+        dragToTurn.canTurn = { [weak self] in
+            guard let self else { return false }
+            let axes = LerpTurn.axes(of: shownParameters)
+            return axes.yaw != nil || axes.pitch != nil
+        }
+        dragToTurn.onTurn = { [weak self] yaw, pitch in self?.turn(yaw: yaw, pitch: pitch) }
         preview.stage.setContentHuggingPriority(.init(1), for: .vertical)
         preview.onChange = { [weak self] in
             guard let self, isPaused else { return }
@@ -684,6 +693,19 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // up on it exactly as it does on a keystroke in the editor.
         updateChrome()
         if isPaused { metalView.renderOnce() }
+    }
+
+    /// A drag on the render, in degrees: moves the look's `yaw` and `pitch`
+    /// exactly as their sliders would. An axis the look does not declare is
+    /// simply not turned — a look with only `yaw` spins on a fixed horizon.
+    private func turn(yaw: Double, pitch: Double) {
+        let axes = LerpTurn.axes(of: shownParameters)
+        for (param, degrees) in [(axes.yaw, yaw), (axes.pitch, pitch)] {
+            guard let param, degrees != 0,
+                  let now = currentValue(of: param).scalarValue else { continue }
+            setParameter(param.name, .scalar(LerpTurn.turned(param, from: now, by: degrees)))
+        }
+        inspector.show(values: metalView.liveParameterValues)
     }
 
     /// The Parameters heading's Randomize, and Shader → Randomize Parameters:

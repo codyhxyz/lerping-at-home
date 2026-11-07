@@ -67,6 +67,8 @@
 // lerp-param: metal      float 0 1   = 0.65 "Metallic"
 // lerp-param: fog        float 0 1   = 0.4  "Fog"
 // lerp-param: parallax   float 0 2   = 1.0  "Head parallax"
+// lerp-param: yaw      float -180 180 = 0 "Turn"
+// lerp-param: pitch    float -90 90   = 0 "Tilt"
 //
 // lerp-preset: "Jerusalem Cube"   shape=1.0, palette=0.62, metal=0.55, fog=0.35
 // lerp-preset: "Folded Cube"      twist=animate(0.4, 0.8, period=200), shape=0, iterations=3
@@ -391,6 +393,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         upHint = tilt * float3(0.0, 1.0, 0.0);
     }
     float3 right = normalize(cross(upHint, fwd));
+    // Drag to turn: down the tunnel the view turns where it stands; outside,
+    // the camera swings round the sponge.
+    if (S.tiled) lerpLook(u.yaw, u.pitch, upHint, right, fwd);
+    else         lerpOrbit(u.yaw, u.pitch, float3(0.0), upHint, ro, right, fwd);
     float3 up = cross(fwd, right);
     // Head parallax: the screen is a window onto the sponge. Down the tunnel
     // the walls are a few tenths away, so the eye may only lean a little.

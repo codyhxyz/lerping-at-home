@@ -66,9 +66,9 @@ Grammar, one declaration per comment line, anywhere in the file:
 
 - **NAME** — a valid MSL identifier, unique in the file, and not one of the
   built-in fields: `resolution`, `time`, `seed`, `audioLevel`, `audioBass`,
-  `audioMid`, `audioTreble`, `viewer`. One name is special rather than
+  `audioMid`, `audioTreble`, `viewer`. Three names are special rather than
   reserved: `parallax` opts a look into head tracking (see "Head-tracked
-  shaders").
+  shaders"), and `yaw` and `pitch` into drag to turn (see "Drag to turn").
 - **TYPE** — `float`, `int`, `bool` or `color`.
 - **MIN MAX** — required for `float` and `int`, rejected for `bool` and
   `color`. The default has to fall inside the range.
@@ -317,6 +317,49 @@ divided by the distance the watcher sat at when tracking began, so it is about
 the tangent of the angle the head has moved through. **Shader › Recentre Head**
 makes wherever they are now the centre. See `Sources/LerpCore/LerpViewer.swift`
 and `Sources/Playground/HeadTracker.swift`.
+
+## Drag to turn
+
+In the playground, clicking and dragging on the render turns a 3D look: the
+scene moves with the pointer, like a globe under a hand. A look opts in by
+declaring the angles, in degrees, as ordinary parameters:
+
+```
+// lerp-param: yaw   float -180 180 = 0 "Turn"
+// lerp-param: pitch float -90  90  = 0 "Tilt"
+```
+
+The drag moves them exactly as their sliders do, so presets, Save, MIDI Learn,
+hands and `LerpPreview --param yaw=30` all work on them with nothing added. A
+range that spans 360° wraps; a narrower one is a hard stop, which is how a
+terrain keeps the camera out of its ground. A look may declare only one of
+the two. At 0 — the default, and wherever nobody has dragged — the camera is
+untouched, so the screensaver and the stills are unchanged.
+
+Then hand the angles to the prelude, between the camera's `right` and its
+`up`, passing the world-up hint `right` was crossed from:
+
+```
+float3 right = normalize(cross(upHint, fwd));
+lerpOrbit(u.yaw, u.pitch, float3(0.0), upHint, ro, right, fwd);   // an object: swing round a pivot
+// or
+lerpLook(u.yaw, u.pitch, upHint, right, fwd);                     // a place: turn where you stand
+float3 up = cross(fwd, right);
+float3 rd = normalize(uv.x * right + uv.y * up + focal * fwd);
+```
+
+Both turn the whole frame rigidly, so it never degenerates even upside down,
+and both work out which way the look's own `right` points, so `cross(fwd,
+up)` cameras need nothing different. Pick by what is under the pointer:
+`lerpOrbit` when it is near the pivot (a fractal, an object), `lerpLook` when
+it is far beyond the camera (a landscape, a corridor, the inside of a set).
+Choose wrongly and the scene moves against the hand. A splat look needs only
+the parameters (`SplatData` orbits its camera, or turns it in place with
+`:look`); a look whose camera is built in Swift uses `LerpTurn.orbit`,
+`LerpTurn.look` or, for a fixed camera and a turning object,
+`LerpTurn.orbitRotation` (`polytope-4d`). `mandelbulb`, `maze` and `mandelbox`
+(which uses both) are the worked examples. See `Sources/LerpCore/LerpTurn.swift`
+and `Sources/Playground/DragToTurn.swift`.
 
 ## Shaders that need CPU-computed data
 

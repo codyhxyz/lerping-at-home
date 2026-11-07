@@ -21,6 +21,8 @@
 //
 // lerp-param: size        int 4 40     = 12      "Maze size"
 // lerp-param: speed       float 0.25 4 = 1.3     "Walk speed (cells/s)"
+// lerp-param: yaw      float -180 180 = 0 "Turn"
+// lerp-param: pitch    float -60 60   = 0 "Tilt"
 // lerp-param: flips       bool         = true    "Flip polyhedra"
 // lerp-param: style       int 0 4      = 0       "Walls (0 = new each maze)"
 // lerp-param: colorFloor  color        = #6b625a "Floor"
@@ -529,6 +531,10 @@ fragment half4 lerpMain(float4 pos [[position]],
     float cr = cos(roll), sr = sin(roll);
     float3 right = right0 * cr + up0 * sr;
     float3 up = up0 * cr - right0 * sr;
+    if (u.yaw != 0.0 || u.pitch != 0.0) {          // drag to look round
+        lerpLook(u.yaw, u.pitch, up0, right, fwd);
+        up = cross(right, fwd);
+    }
 
     const float2 grid[4] = { float2(0.125, 0.375), float2(0.375, -0.125),
                              float2(-0.125, -0.375), float2(-0.375, 0.125) };

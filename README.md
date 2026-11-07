@@ -409,6 +409,21 @@ Twist. The axes bind like knobs: right-click a parameter, Learn…, then pinch a
 move or turn. They are relative CCs 102–105 on channel 16, so they share
 banks, ranges and saving with real knobs.
 
+**Drag to turn.** On a 3D look, click and drag on the render — in the pane or
+full screen — and the scene turns under the pointer like a globe under a hand:
+what you grab moves with you, and the pointer becomes a closed hand once the
+press has moved a few points (a click is still a click). Objects in space swing
+round their centre; fly-throughs, landscapes and the maze turn the view where
+the camera stands. It is not a separate control: the drag moves the look's
+**Turn** and **Tilt** parameters (`yaw`, `pitch`), so the sliders follow it,
+Save or **+** keeps a framing as a preset that the screensaver then plays, and
+a knob or a hand can be bound to it with Learn…. Turn wraps all the way round;
+Tilt stops where the look says it should — a splat capture only a little way,
+because a capture only holds up near where it was photographed. Looks that turn:
+the raymarched fractals (mandelbulb, mandelbox, menger-sponge, quaternion-julia,
+kleinian, sierpinski-pyramid, topologica, castle-to-castle), dusk-terrain,
+sea-and-moon, star-nest, maze, pipes, polytope-4d and every `splat-*` capture.
+
 The tracking is coding cube's MediaPipe hand control, run in a transparent web
 view over the render. The overlay follows The Poet Engineer's hand interfaces:
 the hand's skeleton in thin white line (never the camera picture), a dial round
@@ -558,7 +573,9 @@ its parameters and presets wherever the file goes.
   splats (3DGS): a strawberry, a triceratops skull, a carved owl, a grape, a
   bonsai, a shrine approach, a parish church and a town square. Each declares
   `// lerp-data: splat:<move>:<capture>`; `<move>` is `orbit` (a turntable, or
-  an eased arc) or `dolly` (a dolly zoom).
+  an eased arc) or `dolly` (a dolly zoom). A drag on the render swings the
+  camera round what it looks at; a capture seen from inside, like the town
+  square, adds `:look` so a drag turns the camera where it stands instead.
 - `SplatData.swift` draws them the way 3DGS viewers do: each splat's 3D
   covariance projected to a screen ellipse, a back-to-front counting sort on
   the CPU every frame, and premultiplied blending of instanced quads into a
