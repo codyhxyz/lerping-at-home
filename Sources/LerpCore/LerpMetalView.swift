@@ -7,10 +7,10 @@ import QuartzCore
 ///
 /// It draws at the panel's own refresh rate, as macOS's own screensavers and
 /// any other app do — there is no frame-rate setting, because the system
-/// offers none. Below that it gives way only to thermal pressure
-/// (`LerpPowerMonitor`) and to a look too heavy for the panel (`paceIfNeeded`);
-/// Low Power Mode's throttle is the system's, applied to the display link like
-/// every other app's. It pauses fully when the window is occluded or the view
+/// offers none. Below that it gives way only to a look too heavy for the panel
+/// (`paceIfNeeded`). Power and heat are macOS's to manage: its Low Power Mode
+/// throttle reaches this display link like every other app's, and a GPU it
+/// slows for heat shows up to the pacer as slower frames. It pauses fully when the window is occluded or the view
 /// hidden, can render at a reduced internal resolution, and freezes its clock
 /// while paused.
 public final class LerpMetalView: NSView {
@@ -352,14 +352,6 @@ public final class LerpMetalView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
-        // Core Animation's default of three drawables. It used to be two,
-        // measured as enough at 30–60 fps; at the panel's 120 a second frame
-        // in flight is the normal case, and two makes the CPU wait on the
-        // display.
-        NotificationCenter.default.addObserver(self,
-                                               selector: #selector(powerStateChanged),
-                                               name: LerpPowerMonitor.didChange,
-                                               object: LerpPowerMonitor.shared)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -1133,8 +1125,8 @@ public final class LerpMetalView: NSView {
         displayLink = nil
     }
 
-    /// The panel's refresh rate, clamped by `LerpPowerMonitor` and the pacer,
-    /// as a range the display link can pace against.
+    /// The panel's refresh rate, lowered by the pacer, as a range the display
+    /// link can pace against.
     ///
     /// `NSView.displayLink` rather than `CAMetalDisplayLink`, on purpose. Both
     /// are display-synced and take a `preferredFrameRateRange`, and this one
@@ -1156,14 +1148,11 @@ public final class LerpMetalView: NSView {
     }
 
     /// The panel's refresh rate: the most the display link can deliver, and
-    /// what it is asked for unless something below lowers it.
+    /// what it is asked for unless the pacer lowers it.
     private var panelFPS: Int { max(window?.screen?.maximumFramesPerSecond ?? 60, 1) }
 
-    /// The panel's rate under the thermal cap, before any pacing.
-    private var cappedFPS: Int { LerpPowerMonitor.shared.state.frameRate(for: panelFPS) }
-
     /// The rate the display link is asking for right now.
-    private var currentFPS: Int { min(cappedFPS, pacedFPS ?? cappedFPS) }
+    private var currentFPS: Int { min(panelFPS, pacedFPS ?? panelFPS) }
 
     /// Rates that divide the panel's refresh exactly, at or below `ceiling`,
     /// fastest first: on a 120 Hz panel 60, 40, 30, 24, 20, 15. Each frame then
@@ -1189,7 +1178,7 @@ public final class LerpMetalView: NSView {
         guard now - lastPaceCheck >= 1.0 else { return }
         lastPaceCheck = now
         guard fadingOut == nil, let p95 = renderer.gpuCost.recentP95() else { return }
-        let capped = cappedFPS
+        let capped = panelFPS
         let fps = currentFPS
         let rates = cleanRates(atMost: capped)
         var next: Int?
@@ -1205,11 +1194,6 @@ public final class LerpMetalView: NSView {
         renderer.gpuCost.restartRecent()
         applyFrameRate()
         Self.log.notice("pace: \(self.currentEntry?.key ?? "?", privacy: .public) p95=\(String(format: "%.2f", p95), privacy: .public)ms → \(next) fps")
-    }
-
-    /// Posted on the main queue by `LerpPowerMonitor`, which also logs it.
-    @objc private func powerStateChanged(_ note: Notification) {
-        applyFrameRate()
     }
 
     /// A new screen may refresh at a different rate; any pacing was measured

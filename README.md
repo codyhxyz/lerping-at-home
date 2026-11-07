@@ -698,10 +698,10 @@ the snapshot renderer should have to link a framework they never use.
 - Frame rate drops to 0 fps when the window is occluded — but only where AppKit actually
   reports occlusion. It does not for a `legacyScreenSaver` host at the desktop-wallpaper
   layer, which is why the saver has a second, independent check; see below.
-- No caps of our own for battery or Low Power Mode: macOS throttles Low Power Mode itself, for
-  every app, through the display link. Thermal pressure caps it at 15 fps (serious) or 10
-  (critical). The saver still holds back EDR on battery and in Low Power Mode; the playground
-  does not.
+- No frame-rate caps of our own for battery, Low Power Mode or heat: macOS manages those itself —
+  its Low Power Mode throttle reaches every app's display link, and a GPU it slows for heat
+  shows up to the pacer as slower frames. The saver holds back EDR on battery and in Low Power
+  Mode; the playground does not.
 - Internal render scale is selectable at 100%, 75%, or 50%; the compositor upscales.
 - The animation clock is frozen while paused, so time does not jump on resume.
 - "Still image" (default: after 30 minutes) stops rendering and holds the last frame.

@@ -60,8 +60,7 @@ public enum LerpEDR {
 
     /// Why EDR must not engage on `screen` right now, or nil if it may.
     ///
-    /// The one predicate every EDR decision goes through, kept small so the
-    /// frame-pacing work's power/thermal observation can fold into it:
+    /// The one predicate every EDR decision goes through:
     /// - a screen with no potential headroom gains nothing and pays the
     ///   16-bit bandwidth and the extra pass anyway;
     /// - on battery and in Low Power Mode the 8-bit path is the cheaper one,
@@ -70,7 +69,7 @@ public enum LerpEDR {
     @MainActor public static func blocker(on screen: NSScreen?) -> String? {
         if potentialHeadroom(of: screen) <= 1.0 { return "screen has no EDR headroom" }
         // One reader of the power state per process: LerpPowerMonitor, which
-        // also sets the frame-rate cap and logs every change.
+        // also logs every change.
         let power = LerpPowerMonitor.shared.state
         if power.throttledByLowPowerMode { return "Low Power Mode" }
         if power.throttledByBattery { return "on battery" }
