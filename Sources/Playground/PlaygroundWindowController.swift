@@ -1371,10 +1371,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                detail: "A preset is a set of control values, and this look has no "
                                    + "controls. Add a `// lerp-param:` line to the file to give it one.")
             }
-            let axes = LerpTurn.axes(of: compiled.parameters)
-            let how = axes.yaw != nil || axes.pitch != nil
-                ? "Move a slider in the inspector, or drag the render to turn it"
-                : "Move a slider in the inspector"
+            let has = { (name: String) in LerpTurn.parameter(name, in: compiled.parameters) != nil }
+            let turns = has(LerpTurn.yawParameter) || has(LerpTurn.pitchParameter)
+            let zooms = has(LerpTurn.magnifyParameter)
+            let how = "Move a slider in the inspector"
+                + (turns && zooms ? ", or drag the render to turn it and pinch or scroll to zoom"
+                   : turns ? ", or drag the render to turn it"
+                   : zooms ? ", or pinch or scroll on the render to zoom" : "")
             return .cannot(title: "Change a control first",
                            detail: "Every control is still at its default, so this preset would be "
                                + "identical to Defaults. \(how), then save again.")
