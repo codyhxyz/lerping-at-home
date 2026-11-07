@@ -1289,34 +1289,41 @@ static inline float spLod(float t, float lodK, float invLogS, float lodMin) {
 // fat, by an amount that changed with the step count as the camera moved. A
 // ray that spends the whole budget still within that old 7.5 px is grazing a
 // wall, not passing an edge, so it counts as a hit rather than a hole.
+
+// The SIMD group's shared crossing of open space (the first point above):
+// returns where this lane's own march starts, and counts the group's strides
+// in `i`, which spend the same step budget.
+static inline float spGroupSkip(float3 ro, float3 rd, float t, float tEnd, thread const SpFrac& F,
+                                float lodK, float invLogS, float lodMin, thread int& i) {
+    float3 rc = normalize(simd_sum(rd));
+    float cmin = simd_min(dot(rd, rc));
+    float cone = sqrt(max(1.0 - cmin * cmin, 0.0)) / max(cmin, 0.5) + SP_PIXEL;
+    uint rank = simd_prefix_exclusive_sum(1u);
+    uint cnt = simd_sum(1u);
+    float tq = simd_min(t), tq1 = simd_min(tEnd);
+    float stride = max(spDE(ro + rc * tq, F, spLod(tq, lodK, invLogS, lodMin)), 1e-4) * 0.3;
+    for (int q = 0; q < 16; q++) {
+        float ti = tq + stride * float(rank + 1);
+        float dc = spDE(ro + rc * ti, F, spLod(ti, lodK, invLogS, lodMin)) - cone * ti;
+        bool tight = dc < 3.0 * SP_PIXEL * ti;
+        bool gapOK = !tight && dc >= stride;
+        uint firstTight = simd_min(tight ? rank : cnt);
+        uint firstGap = simd_min(gapOK ? cnt : rank);
+        if (firstTight == 0) break;
+        uint m = min(firstTight - 1, firstGap);
+        float dM = simd_max(rank == m ? dc : -1e9);
+        tq += stride * float(m + 1);
+        i++;
+        if (firstTight < cnt || tq > tq1) break;
+        stride = dM * 0.3;
+    }
+    return max(t, tq);
+}
+
 static float spMarchFly(float3 ro, float3 rd, float t, float tEnd, thread const SpFrac& F,
                         float lodK, float invLogS, float lodMin, thread float& dHit) {
     int i = 0;
-    {
-        float3 rc = normalize(simd_sum(rd));
-        float cmin = simd_min(dot(rd, rc));
-        float cone = sqrt(max(1.0 - cmin * cmin, 0.0)) / max(cmin, 0.5) + SP_PIXEL;
-        uint rank = simd_prefix_exclusive_sum(1u);
-        uint cnt = simd_sum(1u);
-        float tq = simd_min(t), tq1 = simd_min(tEnd);
-        float stride = max(spDE(ro + rc * tq, F, spLod(tq, lodK, invLogS, lodMin)), 1e-4) * 0.3;
-        for (int q = 0; q < 16; q++) {
-            float ti = tq + stride * float(rank + 1);
-            float dc = spDE(ro + rc * ti, F, spLod(ti, lodK, invLogS, lodMin)) - cone * ti;
-            bool tight = dc < 3.0 * SP_PIXEL * ti;
-            bool gapOK = !tight && dc >= stride;
-            uint firstTight = simd_min(tight ? rank : cnt);
-            uint firstGap = simd_min(gapOK ? cnt : rank);
-            if (firstTight == 0) break;
-            uint m = min(firstTight - 1, firstGap);
-            float dM = simd_max(rank == m ? dc : -1e9);
-            tq += stride * float(m + 1);
-            i++;
-            if (firstTight < cnt || tq > tq1) break;
-            stride = dM * 0.3;
-        }
-        t = max(t, tq);
-    }
+    t = spGroupSkip(ro, rd, t, tEnd, F, lodK, invLogS, lodMin, i);
     float omega = 1.5, prevD = 0.0, stepLen = 0.0;
     float tLast = t, dLast = 1e9;
     for (; i < SP_FLY_STEPS; i++) {
@@ -1341,11 +1348,13 @@ static float spMarchFly(float3 ro, float3 rd, float t, float tEnd, thread const 
     return -1.0;
 }
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
-    float2 uv = lerpUV(pos, u.resolution);
-    float seed = u.seed;
+// --- lerpMain's stages: fractal, world frame, route, camera, march, shade.
 
-    // --- Fractal.
+// The fractal for this frame. Also hands back the detail `target` (for the
+// level of detail) and the range [angLo, angHi] the fold rotation swings
+// through (for choosing a route).
+static inline SpFrac spMakeFrac(constant LerpUniforms& u, float seed, float ct,
+                                thread float& target, thread float& angLo, thread float& angHi) {
     SpFrac F;
     F.form = clamp(u.form, 0, 3);
     F.scale = u.scale;
@@ -1354,17 +1363,17 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     F.off = c * (F.scale - 1.0);
     F.bound = length(c) * 1.02;
     // Depth: features down to the reference pixel at the closest framing.
-    float target = mix(150.0, 2500.0, u.detail * u.detail);
+    target = mix(150.0, 2500.0, u.detail * u.detail);
     F.iters = clamp(int(log(target) / log(F.scale) + 0.5), 3, 16);
 
     // Per-iteration rotation about a seeded axis near the scaling centre
     // (which keeps the copies overlapping, so the form stays solid), drifting
     // slowly with the camera clock.
-    float ct = u.time * u.speed;
     float tw = u.twist;
     F.twisted = tw > 0.001;
     F.rot = float3x3(1.0);
-    float angLo = 0.0, angHi = 0.0;
+    angLo = 0.0;
+    angHi = 0.0;
     if (F.twisted) {
         float3 ax = normalize(normalize(c) + 0.7 * (float3(hash11(seed * 13.1 + 0.7), hash11(seed * 7.9 + 2.3),
                                                           hash11(seed * 3.3 + 5.1)) - 0.5));
@@ -1374,218 +1383,320 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         angLo = tw * (0.55 - 0.35 * u.bloom) - 0.15 * u.bloom * tw;
         angHi = tw * (0.55 + 0.35 * u.bloom) + 0.15 * u.bloom * tw;
     }
+    return F;
+}
 
-    // World orientation: stand the solid on a face so it reads as a pyramid
-    // (tetrahedron) or a double pyramid (octahedron). World y maps to `fu`.
-    float3 fu = F.form == 0 ? float3(1.0, 1.0, 1.0) / SP_SQRT3
-              : (F.form == 1 ? float3(1.0, 0.0, 0.0) : SP_C5);
+// World orientation: stand the solid on a face so it reads as a pyramid
+// (tetrahedron) or a double pyramid (octahedron). World y maps to `fu`.
+// Returns W, world -> fractal: W * world.
+static inline float3x3 spWorldFrame(int form, thread float3& fu) {
+    fu = form == 0 ? float3(1.0, 1.0, 1.0) / SP_SQRT3
+       : (form == 1 ? float3(1.0, 0.0, 0.0) : SP_C5);
     float3 fx = normalize(cross(fu, abs(fu.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0)));
     float3 fz = cross(fx, fu);
-    float3x3 W = float3x3(fx, fu, fz);    // world -> fractal: W * world
+    return float3x3(fx, fu, fz);
+}
+
+// A route verified for this form, scale and range of fold rotation, or -1.
+static inline int spFindRoute(thread const SpFrac& F, float angLo, float angHi) {
+    for (int r = 0; r < SP_NROUTES; r++) {
+        if (SP_ROUTES[r].form == F.form && abs(F.scale - SP_ROUTES[r].scale) <= SP_ROUTES[r].scaleTol
+            && angLo >= SP_ROUTES[r].angLo && angHi <= SP_ROUTES[r].angHi) return r;
+    }
+    return -1;
+}
+
+// The camera, in the fractal's frame, with the lights it carries.
+struct SpCam {
+    float3 ro, rd;
+    float3 fwd, right, up;
+    float3 upRef;       // the lights' up: the camera's flying, the solid's in orbit
+    float3 key, rim;    // light directions
+    float  lens;
+    float  sigma;       // the neighbourhood's scale: clearance along a route
+};
+
+// Which of the form's symmetries about its vertical axis `fu` carries the
+// route, from the seed hash `h2`.
+static inline float3x3 spRouteSymmetry(thread const SpFrac& F, float3 fu, float h2) {
+    // (The tetrahedral fold is three mirrors, not a full chamber fold, so
+    // a twisted tetrahedron has no symmetry left: it flies as baked.)
+    bool asym = F.form == 0 && F.twisted;
+    int m = asym ? 1 : (F.form == 0 ? 3 : (F.form == 1 ? 4 : 5));
+    float3x3 G = spAxisRotation(fu, TWO_PI * floor(h2 * float(m)) / float(m));
+    if (fract(h2 * 7.0) > 0.5 && !asym) {
+        float3x3 M = F.form == 0 ? float3x3(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), float3(0.0, 0.0, 1.0))
+                   : (F.form == 1 ? float3x3(float3(1.0, 0.0, 0.0), float3(0.0, 1.0, 0.0), float3(0.0, 0.0, -1.0))
+                                  : float3x3(float3(-1.0, 0.0, 0.0), float3(0.0, 1.0, 0.0), float3(0.0, 0.0, 1.0)));
+        G = G * M;
+    }
+    return G;
+}
+
+// Flying a route. Seed: where on the loop, and which of the form's symmetries
+// about its vertical axis carries it. Always flown forwards: the view
+// directions were baked for that direction of travel.
+static inline SpCam spFlyCamera(constant LerpUniforms& u, int route, thread const SpFrac& F, float3 fu,
+                                float seed, float ct) {
+    float h0 = hash11(seed * 37.3 + 1.1), h2 = hash11(seed * 11.3 + 8.8);
+    float a = h0 * float(SP_ROUTES[route].count) + ct * SP_ROUTES[route].rate;
+    float3x3 G = spRouteSymmetry(F, fu, h2);
+    float3 lk, upP;
+    float4 P = spPath(route, a, lk, upP);
+    float3 fwdF = normalize(G * lk);
+    float3 rightF = normalize(cross(G * upP, fwdF));
+    SpCam C;
+    C.ro = G * P.xyz;
+    C.lens = lerpLook(u.yaw, u.pitch, u.magnify, G * upP, rightF, fwdF);   // drag to turn, pinch to zoom, where it flies
+    C.fwd = fwdF;
+    C.right = rightF;
+    C.up = cross(fwdF, rightF);
+    C.upRef = C.up;
+    C.sigma = P.w;
+    return C;
+}
+
+// A slow orbit; seed picks bearing, direction, tilt and rhythm.
+static inline SpCam spOrbitCamera(constant LerpUniforms& u, thread const SpFrac& F, float3x3 W, float3 fu,
+                                  float seed, float ct) {
+    float dir = hash11(seed * 5.7 + 0.3) < 0.5 ? -1.0 : 1.0;
+    float az = seed * 97.0 + dir * 0.045 * ct;
+    float el = 0.22 + 0.28 * sin(0.019 * ct + seed * 31.0);
+    float dist = F.bound * mix(1.8, 4.0, u.zoom) * (1.0 + 0.10 * sin(0.011 * ct + seed * 23.0));
+    float3 ro = dist * float3(cos(el) * sin(az), sin(el), cos(el) * cos(az));
+    float3 look = float3(0.0, F.form == 0 ? 0.2 * F.bound : 0.0, 0.0);
+    float3 fwd = normalize(look - ro);
+    float roll = 0.05 * sin(0.017 * ct + seed * 11.0);
+    float3 right = normalize(cross(float3(sin(roll), cos(roll), 0.0), fwd));
+    lerpOrbit(u.yaw, u.pitch, u.magnify, look, float3(0.0, 1.0, 0.0), ro, right, fwd);   // drag to turn, pinch to zoom
+    SpCam C;
+    C.ro = W * ro;
+    C.fwd = W * fwd;
+    C.right = W * right;
+    C.up = W * cross(fwd, right);
+    C.upRef = fu;
+    C.lens = 1.0;
+    C.sigma = F.bound;
+    return C;
+}
+
+// The camera, in the fractal's frame: along `route` if there is one, or else
+// the orbit. Lights are carried with the camera, so the lit side stays toward
+// the viewer.
+static inline SpCam spCamera(constant LerpUniforms& u, float2 uv, thread const SpFrac& F, float3x3 W, float3 fu,
+                             int route, float seed, float ct) {
+    SpCam C;
+    if (route >= 0) C = spFlyCamera(u, route, F, fu, seed, ct);
+    else            C = spOrbitCamera(u, F, W, fu, seed, ct);
+    C.rd = normalize(uv.x * C.right + uv.y * C.up + C.lens * SP_FOCAL * C.fwd);
+    C.key = normalize(-0.55 * C.right + 0.75 * C.upRef - 0.35 * C.fwd);
+    C.rim = normalize(0.6 * C.right + 0.25 * C.upRef + 0.9 * C.fwd);
+    return C;
+}
+
+// Level of detail. The orbit uses one depth; the flight adds a level each
+// time the distance shrinks by the fold scale, from the orbit's detail at
+// the orbit's distance, and never drops below the verified depth.
+struct SpLodRamp { float invLogS, lodK, lodMin; };
+
+static inline SpLodRamp spLodRamp(thread const SpFrac& F, float target, int route) {
+    bool fly = route >= 0;
+    SpLodRamp R;
+    R.invLogS = 1.0 / log(F.scale);
+    R.lodK = log(target * SP_LOD_REF * F.bound);
+    R.lodMin = fly ? SP_ROUTES[route].lodMin : SP_LOD_MIN;
+    if (fly) R.lodK += SP_ROUTES[route].lodBias / R.invLogS;
+    return R;
+}
+
+// The orbit's march: plain sphere tracing, which also keeps the closest
+// approach (as an angle) for the near-miss halo.
+static inline float spMarchOrbit(float3 ro, float3 rd, float t0, float t1, thread const SpFrac& F,
+                                 thread float& closest) {
+    float tHit = -1.0;
+    float t = t0;
+    for (int i = 0; i < SP_STEPS; i++) {
+        float d = spDE(ro + rd * t, F, float(F.iters));
+        closest = min(closest, d / t);
+        if (d < SP_PIXEL * t) { tHit = t; break; }
+        t += d;
+        if (t > t1) break;
+    }
+    return tHit;
+}
+
+// The march, in fractal space, inside the attractor's bounding sphere.
+// Returns the hit distance (< 0 for a miss); `tEnter` is where the ray enters
+// the sphere.
+static inline float spTrace(thread const SpCam& C, thread const SpFrac& F, thread const SpLodRamp& R, bool fly,
+                            thread float& tEnter, thread float& closest) {
+    float b = dot(C.ro, C.rd);
+    float cc = dot(C.ro, C.ro) - F.bound * F.bound;
+    float disc = b * b - cc;
+    float dHit = 0.0;
+    float tHit = -1.0;
+    if (disc > 0.0) {
+        float sq = sqrt(disc);
+        float t0 = max(-b - sq, 0.0), t1 = -b + sq;
+        tEnter = t0;
+        if (fly) {
+            tHit = spMarchFly(C.ro, C.rd, max(t0, 0.02 * C.sigma), min(t1, SP_FOG_END * C.sigma), F, R.lodK, R.invLogS, R.lodMin, dHit);
+        } else {
+            tHit = spMarchOrbit(C.ro, C.rd, t0, t1, F, closest);
+        }
+    }
+    return tHit;
+}
+
+// Occlusion at a hit: flying, one probe along the normal, deepened by the
+// crevice trap `crev`; in orbit, four probes.
+static inline float spHitOcclusion(float3 p, float3 n, float hs, float lodH, float crev, bool fly,
+                                   thread const SpFrac& F) {
+    float occ;
+    if (fly) {
+        float hA = 0.15 * hs;
+        occ = clamp(spDE(p + n * hA, F, max(lodH - 3.0, 3.0)) / hA, 0.0, 1.0);
+        occ = (0.35 + 0.65 * occ) * mix(0.75, 1.0, smoothstep(0.1, 0.8, crev));
+    } else {
+        occ = spOcclusion(p, n, hs, max(lodH - 2.0, 3.0), false, F);
+    }
+    if (fly) occ = mix(1.0, occ, 0.7);
+    return occ;
+}
+
+// Flying: a lamp riding just above the camera, so near walls read even where
+// the key light is shadowed.
+static inline float3 spFlyLamp(thread const SpCam& C, float3 p, float3 n, float3 v, float3 alb, float3 fr,
+                               float pw, float occ, float metal) {
+    float3 lv = C.ro + C.sigma * (0.4 * C.up - 0.25 * C.right) - p;
+    float lr = length(lv);
+    lv /= lr;
+    float att = 1.0 / (1.0 + lr * lr / (9.0 * C.sigma * C.sigma));
+    float3 hl = normalize(lv + v);
+    float3 lamp = float3(1.0, 0.9, 0.78) * 0.9 * att;
+    return lamp * (alb * (1.0 - metal) * max(dot(n, lv), 0.0)
+                   + fr * pow(max(dot(n, hl), 0.0), pw) * (pw + 2.0) / 8.0) * occ;
+}
+
+// The colour of the hit at `tHit`, fogged toward the background `col`.
+static float3 spShade(float tHit, float tEnter, float3 col, thread const SpCam& C, thread const SpFrac& F,
+                      thread const SpLook& L, thread const SpLodRamp& R, bool fly, constant LerpUniforms& u) {
+    float3 p = C.ro + C.rd * tHit;
+    float lodH = fly ? spLod(tHit, R.lodK, R.invLogS, R.lodMin) : float(F.iters);
+    float eN = max(0.25 * SP_PIXEL * tHit, 1e-6);
+    // Flying, lodH is fractional, and so are the depths derived from it
+    // below (normal, colour traps, occlusion): spDE and spTrap blend the
+    // two whole depths either side by the same fraction as the hit's own
+    // surface, so shading moves through a level as smoothly as the shape
+    // does. As whole depths they switched at the same camera distances
+    // as the surface but on solids 4-8x larger, and a band of the frame
+    // tens of pixels across changed its light and colour at once.
+    // The normal is prefiltered: two levels shallower than the
+    // hit, over a few of the drawable's pixels. Past the camera's own
+    // neighbourhood the flight sits at its verified floor depth, where
+    // the deepest solids and the gaps between them are 2-4 px, and a
+    // normal taken from them (it used to come free from the pixel quad's
+    // hit points) gave every pixel its own facet: the whole surface
+    // sparkled and crawled as the camera moved, about as frame-to-frame
+    // incoherent as noise. The silhouette still has every level; the
+    // light now reads the solids one could actually see. Costs four
+    // shallow DE evaluations: at 3840x2160 on an M5, Stone 18.4 -> 23.2 ms,
+    // Jade 15.0 -> 17.3, Defaults 14.4 -> 15.9. Frame-to-frame flicker at
+    // 20 fps drops 40-80% across the flying presets (Stone 0.165 -> 0.044
+    // mean |f(t-dt) - 2 f(t) + f(t+dt)|).
+    float px = max(1.0 / min(u.resolution.x, u.resolution.y), SP_PIXEL_5K);
+    float3 n = fly ? spNormal(p, 2.5 * px * tHit, F, max(lodH - 2.0, 3.0))
+                   : spNormal(p, eN, F, lodH);
+    float3 v = -C.rd;
+    float2 tr = spTrap(p, F, fly ? lodH - 3.0 : lodH);
+
+    // Material: colorA on the faces, colorB down in the crevices.
+    float crev = smoothstep(0.15, 0.9, tr.x);
+    float3 alb = mix(L.b, L.a, crev);
+    alb *= 0.85 + 0.15 * smoothstep(0.2, 1.2, tr.y);
+
+    float hs = fly ? min(F.bound, 0.5 * tHit) : F.bound;
+    float3 pb = p + n * (2.0 * SP_PIXEL * tHit);
+    float occ = spHitOcclusion(p, n, hs, lodH, tr.x, fly, F);
+    float ndl = max(dot(n, C.key), 0.0);
+    // No shadow rays in flight: the key rides over the camera's shoulder,
+    // where the shadows it casts fall mostly out of sight.
+    float sh = ndl <= 0.0 ? 0.0 : (fly ? 1.0 : spShadow(pb, C.key, hs, max(lodH - 3.0, 3.0), SP_SHADOW_STEPS, F));
+    float3 h = normalize(C.key + v);
+    float ndh = max(dot(n, h), 0.0);
+    float ndv = max(dot(n, v), 0.0);
+    float fres = pow(1.0 - ndv, 5.0);
+    float pw = exp2(mix(3.0, 10.0, u.gloss));
+    float3 f0 = mix(float3(0.04), alb, u.metal);
+    float3 fr = f0 + (1.0 - f0) * fres;
+
+    float3 keyCol = float3(1.0, 0.93, 0.82) * 2.6;
+    float3 sky = 0.14 + 3.0 * L.back;
+    float3 fillDir = normalize(-C.key + 0.3 * C.upRef);
+    float3 diff = alb * (1.0 - u.metal) * (keyCol * ndl * sh
+                + sky * (0.6 + 0.4 * dot(n, C.upRef)) * occ
+                + float3(0.20, 0.22, 0.26) * max(dot(n, fillDir), 0.0) * occ
+                + 0.5 * L.rim * max(dot(n, C.rim), 0.0) * occ);
+    float3 lin = diff + keyCol * fr * pow(ndh, pw) * (pw + 2.0) / 8.0 * sh;
+
+    // Reflection of the studio, blurred toward the surround along the
+    // normal as gloss drops, and occluded in crevices.
+    float3 rf = reflect(-v, n);
+    float3 env = spEnv(rf, C.upRef, C.key, C.rim, L, true);
+    if (!fly) env = mix(spEnv(n, C.upRef, C.key, C.rim, L, true), env, u.gloss);
+    lin += env * fr * occ * mix(0.4, 1.0, u.metal);
+
+    // Rim: a coloured back light catching silhouettes.
+    float rimT = pow(1.0 - ndv, 3.0) * smoothstep(-0.2, 0.6, dot(n, C.rim));
+    lin += L.rim * 1.2 * rimT * occ * (fly ? 0.3 : 1.0);   // flying, slits seen edge-on would glow
+
+    if (fly) {
+        lin += spFlyLamp(C, p, n, v, alb, fr, pw, occ, u.metal);
+        // Fog in units of the neighbourhood, so every depth of the descent
+        // fades the same way.
+        col = mix(lin, col, 1.0 - exp(-tHit / (SP_FOG_END / 3.0 * C.sigma)));
+    } else {
+        // Depth fog through the solid toward the background.
+        float depth = clamp((tHit - tEnter) / (2.0 * F.bound), 0.0, 1.0);
+        col = mix(lin, col, 0.65 * depth * depth);
+    }
+    return col;
+}
+
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+    float2 uv = lerpUV(pos, u.resolution);
+    float seed = u.seed;
+    float ct = u.time * u.speed;
+
+    // --- Fractal, and its orientation in the world.
+    float target, angLo, angHi;
+    SpFrac F = spMakeFrac(u, seed, ct, target, angLo, angHi);
+    float3 fu;
+    float3x3 W = spWorldFrame(F.form, fu);
 
     // --- Camera, in the fractal's frame. A route verified for this form,
     // scale and range of fold rotation, or else the orbit.
     int route = -1;
-    if (u.fly != 0) {
-        for (int r = 0; r < SP_NROUTES; r++) {
-            if (SP_ROUTES[r].form == F.form && abs(F.scale - SP_ROUTES[r].scale) <= SP_ROUTES[r].scaleTol
-                && angLo >= SP_ROUTES[r].angLo && angHi <= SP_ROUTES[r].angHi) { route = r; break; }
-        }
-    }
+    if (u.fly != 0) route = spFindRoute(F, angLo, angHi);
     bool fly = route >= 0;
-    float3 roF, fwdF, rightF, upF, upRef;
-    float lens = 1.0;
-    float sigma = F.bound;    // the neighbourhood's scale: clearance along a route
-    if (fly) {
-        // Seed: where on the loop, and which of the form's symmetries about
-        // its vertical axis carries it. Always flown forwards: the view
-        // directions were baked for that direction of travel.
-        float h0 = hash11(seed * 37.3 + 1.1), h2 = hash11(seed * 11.3 + 8.8);
-        float a = h0 * float(SP_ROUTES[route].count) + ct * SP_ROUTES[route].rate;
-        // (The tetrahedral fold is three mirrors, not a full chamber fold, so
-        // a twisted tetrahedron has no symmetry left: it flies as baked.)
-        bool asym = F.form == 0 && F.twisted;
-        int m = asym ? 1 : (F.form == 0 ? 3 : (F.form == 1 ? 4 : 5));
-        float3x3 G = spAxisRotation(fu, TWO_PI * floor(h2 * float(m)) / float(m));
-        if (fract(h2 * 7.0) > 0.5 && !asym) {
-            float3x3 M = F.form == 0 ? float3x3(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), float3(0.0, 0.0, 1.0))
-                       : (F.form == 1 ? float3x3(float3(1.0, 0.0, 0.0), float3(0.0, 1.0, 0.0), float3(0.0, 0.0, -1.0))
-                                      : float3x3(float3(-1.0, 0.0, 0.0), float3(0.0, 1.0, 0.0), float3(0.0, 0.0, 1.0)));
-            G = G * M;
-        }
-        float3 lk, upP;
-        float4 P = spPath(route, a, lk, upP);
-        roF = G * P.xyz;
-        fwdF = normalize(G * lk);
-        rightF = normalize(cross(G * upP, fwdF));
-        lens = lerpLook(u.yaw, u.pitch, u.magnify, G * upP, rightF, fwdF);   // drag to turn, pinch to zoom, where it flies
-        upF = cross(fwdF, rightF);
-        upRef = upF;
-        sigma = P.w;
-    } else {
-        // A slow orbit; seed picks bearing, direction, tilt and rhythm.
-        float dir = hash11(seed * 5.7 + 0.3) < 0.5 ? -1.0 : 1.0;
-        float az = seed * 97.0 + dir * 0.045 * ct;
-        float el = 0.22 + 0.28 * sin(0.019 * ct + seed * 31.0);
-        float dist = F.bound * mix(1.8, 4.0, u.zoom) * (1.0 + 0.10 * sin(0.011 * ct + seed * 23.0));
-        float3 ro = dist * float3(cos(el) * sin(az), sin(el), cos(el) * cos(az));
-        float3 look = float3(0.0, F.form == 0 ? 0.2 * F.bound : 0.0, 0.0);
-        float3 fwd = normalize(look - ro);
-        float roll = 0.05 * sin(0.017 * ct + seed * 11.0);
-        float3 right = normalize(cross(float3(sin(roll), cos(roll), 0.0), fwd));
-        lerpOrbit(u.yaw, u.pitch, u.magnify, look, float3(0.0, 1.0, 0.0), ro, right, fwd);   // drag to turn, pinch to zoom
-        roF = W * ro;
-        fwdF = W * fwd;
-        rightF = W * right;
-        upF = W * cross(fwd, right);
-        upRef = fu;
-    }
-    float3 rdF = normalize(uv.x * rightF + uv.y * upF + lens * SP_FOCAL * fwdF);
-
-    // Lights carried with the camera, so the lit side stays toward the viewer.
-    float3 key = normalize(-0.55 * rightF + 0.75 * upRef - 0.35 * fwdF);
-    float3 rim = normalize(0.6 * rightF + 0.25 * upRef + 0.9 * fwdF);
+    SpCam C = spCamera(u, uv, F, W, fu, route, seed, ct);
 
     SpLook L;
     L.a = pow(u.colorA.rgb, 2.2);
     L.b = pow(u.colorB.rgb, 2.2);
     L.rim = pow(u.colorRim.rgb, 2.2);
     L.back = pow(u.colorBack.rgb, 2.2);
-    float3 bg = spEnv(rdF, upRef, key, rim, L, false);
+    float3 bg = spEnv(C.rd, C.upRef, C.key, C.rim, L, false);
     float3 col = bg;
 
-    // Level of detail. The orbit uses one depth; the flight adds a level each
-    // time the distance shrinks by the fold scale, from the orbit's detail at
-    // the orbit's distance, and never drops below the verified depth.
-    float invLogS = 1.0 / log(F.scale);
-    float lodK = log(target * SP_LOD_REF * F.bound);
-    float lodMin = fly ? SP_ROUTES[route].lodMin : SP_LOD_MIN;
-    if (fly) lodK += SP_ROUTES[route].lodBias / invLogS;
-
     // --- March, in fractal space.
-    float b = dot(roF, rdF);
-    float cc = dot(roF, roF) - F.bound * F.bound;
-    float disc = b * b - cc;
+    SpLodRamp R = spLodRamp(F, target, route);
     float closest = 1e9;
-    float dHit = 0.0;
-    float tHit = -1.0;
     float tEnter = 0.0;
-    if (disc > 0.0) {
-        float sq = sqrt(disc);
-        float t0 = max(-b - sq, 0.0), t1 = -b + sq;
-        tEnter = t0;
-        if (fly) {
-            tHit = spMarchFly(roF, rdF, max(t0, 0.02 * sigma), min(t1, SP_FOG_END * sigma), F, lodK, invLogS, lodMin, dHit);
-        } else {
-            float t = t0;
-            for (int i = 0; i < SP_STEPS; i++) {
-                float d = spDE(roF + rdF * t, F, float(F.iters));
-                closest = min(closest, d / t);
-                if (d < SP_PIXEL * t) { tHit = t; break; }
-                t += d;
-                if (t > t1) break;
-            }
-        }
-    }
+    float tHit = spTrace(C, F, R, fly, tEnter, closest);
 
     if (tHit > 0.0) {
-        float3 p = roF + rdF * tHit;
-        float lodH = fly ? spLod(tHit, lodK, invLogS, lodMin) : float(F.iters);
-        float eN = max(0.25 * SP_PIXEL * tHit, 1e-6);
-        // Flying, lodH is fractional, and so are the depths derived from it
-        // below (normal, colour traps, occlusion): spDE and spTrap blend the
-        // two whole depths either side by the same fraction as the hit's own
-        // surface, so shading moves through a level as smoothly as the shape
-        // does. As whole depths they switched at the same camera distances
-        // as the surface but on solids 4-8x larger, and a band of the frame
-        // tens of pixels across changed its light and colour at once.
-        // The normal is prefiltered: two levels shallower than the
-        // hit, over a few of the drawable's pixels. Past the camera's own
-        // neighbourhood the flight sits at its verified floor depth, where
-        // the deepest solids and the gaps between them are 2-4 px, and a
-        // normal taken from them (it used to come free from the pixel quad's
-        // hit points) gave every pixel its own facet: the whole surface
-        // sparkled and crawled as the camera moved, about as frame-to-frame
-        // incoherent as noise. The silhouette still has every level; the
-        // light now reads the solids one could actually see. Costs four
-        // shallow DE evaluations: at 3840x2160 on an M5, Stone 18.4 -> 23.2 ms,
-        // Jade 15.0 -> 17.3, Defaults 14.4 -> 15.9. Frame-to-frame flicker at
-        // 20 fps drops 40-80% across the flying presets (Stone 0.165 -> 0.044
-        // mean |f(t-dt) - 2 f(t) + f(t+dt)|).
-        float px = max(1.0 / min(u.resolution.x, u.resolution.y), SP_PIXEL_5K);
-        float3 n = fly ? spNormal(p, 2.5 * px * tHit, F, max(lodH - 2.0, 3.0))
-                       : spNormal(p, eN, F, lodH);
-        float3 v = -rdF;
-        float2 tr = spTrap(p, F, fly ? lodH - 3.0 : lodH);
-
-        // Material: colorA on the faces, colorB down in the crevices.
-        float crev = smoothstep(0.15, 0.9, tr.x);
-        float3 alb = mix(L.b, L.a, crev);
-        alb *= 0.85 + 0.15 * smoothstep(0.2, 1.2, tr.y);
-
-        float hs = fly ? min(F.bound, 0.5 * tHit) : F.bound;
-        float3 pb = p + n * (2.0 * SP_PIXEL * tHit);
-        float occ;
-        if (fly) {
-            // One probe along the normal, deepened by the crevice trap.
-            float hA = 0.15 * hs;
-            occ = clamp(spDE(p + n * hA, F, max(lodH - 3.0, 3.0)) / hA, 0.0, 1.0);
-            occ = (0.35 + 0.65 * occ) * mix(0.75, 1.0, smoothstep(0.1, 0.8, tr.x));
-        } else {
-            occ = spOcclusion(p, n, hs, max(lodH - 2.0, 3.0), false, F);
-        }
-        if (fly) occ = mix(1.0, occ, 0.7);
-        float ndl = max(dot(n, key), 0.0);
-        // No shadow rays in flight: the key rides over the camera's shoulder,
-        // where the shadows it casts fall mostly out of sight.
-        float sh = ndl <= 0.0 ? 0.0 : (fly ? 1.0 : spShadow(pb, key, hs, max(lodH - 3.0, 3.0), SP_SHADOW_STEPS, F));
-        float3 h = normalize(key + v);
-        float ndh = max(dot(n, h), 0.0);
-        float ndv = max(dot(n, v), 0.0);
-        float fres = pow(1.0 - ndv, 5.0);
-        float pw = exp2(mix(3.0, 10.0, u.gloss));
-        float3 f0 = mix(float3(0.04), alb, u.metal);
-        float3 fr = f0 + (1.0 - f0) * fres;
-
-        float3 keyCol = float3(1.0, 0.93, 0.82) * 2.6;
-        float3 sky = 0.14 + 3.0 * L.back;
-        float3 fillDir = normalize(-key + 0.3 * upRef);
-        float3 diff = alb * (1.0 - u.metal) * (keyCol * ndl * sh
-                    + sky * (0.6 + 0.4 * dot(n, upRef)) * occ
-                    + float3(0.20, 0.22, 0.26) * max(dot(n, fillDir), 0.0) * occ
-                    + 0.5 * L.rim * max(dot(n, rim), 0.0) * occ);
-        float3 lin = diff + keyCol * fr * pow(ndh, pw) * (pw + 2.0) / 8.0 * sh;
-
-        // Reflection of the studio, blurred toward the surround along the
-        // normal as gloss drops, and occluded in crevices.
-        float3 rf = reflect(-v, n);
-        float3 env = spEnv(rf, upRef, key, rim, L, true);
-        if (!fly) env = mix(spEnv(n, upRef, key, rim, L, true), env, u.gloss);
-        lin += env * fr * occ * mix(0.4, 1.0, u.metal);
-
-        // Rim: a coloured back light catching silhouettes.
-        float rimT = pow(1.0 - ndv, 3.0) * smoothstep(-0.2, 0.6, dot(n, rim));
-        lin += L.rim * 1.2 * rimT * occ * (fly ? 0.3 : 1.0);   // flying, slits seen edge-on would glow
-
-        if (fly) {
-            // A lamp riding just above the camera, so near walls read even
-            // where the key light is shadowed.
-            float3 lv = roF + sigma * (0.4 * upF - 0.25 * rightF) - p;
-            float lr = length(lv);
-            lv /= lr;
-            float att = 1.0 / (1.0 + lr * lr / (9.0 * sigma * sigma));
-            float3 hl = normalize(lv + v);
-            float3 lamp = float3(1.0, 0.9, 0.78) * 0.9 * att;
-            lin += lamp * (alb * (1.0 - u.metal) * max(dot(n, lv), 0.0)
-                           + fr * pow(max(dot(n, hl), 0.0), pw) * (pw + 2.0) / 8.0) * occ;
-            // Fog in units of the neighbourhood, so every depth of the descent
-            // fades the same way.
-            col = mix(lin, col, 1.0 - exp(-tHit / (SP_FOG_END / 3.0 * sigma)));
-        } else {
-            // Depth fog through the solid toward the background.
-            float depth = clamp((tHit - tEnter) / (2.0 * F.bound), 0.0, 1.0);
-            col = mix(lin, col, 0.65 * depth * depth);
-        }
+        col = spShade(tHit, tEnter, col, C, F, L, R, fly, u);
     } else if (closest < 1e8) {
         // A thin halo of the rim light along near misses.
         if (!fly) col += L.rim * 0.08 * exp(-closest * 160.0);

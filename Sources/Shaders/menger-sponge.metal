@@ -144,16 +144,15 @@ static inline float3 mgFace(float3 g, float3 q, float3 sg) {
 // and those spheres overlap, so siblings cannot serve as bounds and the axes
 // no longer line up with the ray. That mode is a plain kaleidoscopic IFS —
 // rotate, fold, descend — in the unweighted max-norm, damped by MG_TWIST_DAMP.
-static MgSample mgMap(float3 p, thread const MgShape& S, float lod, float3 iw) {
-    MgSample r;
-    r.id = 0.0;
-    r.n = float3(0.0, 0.0, 1.0);
-    if (S.twisted) iw = float3(1.0);
-    if (S.tiled) p = glmod3(p + 1.0, 2.0) - 1.0;   // lattice of sponges, period 2
+//
+// mgMap is split into stages below — the whole sponge's bound, one fold
+// level, the ranking of a level's four children, and the leaf — all inlined
+// back into the one loop, so the GPU sees the same code as before the split.
 
-    // The whole sponge's bound: for a lone sponge, the early exit far from it;
-    // for a twisted lattice, the cell wall that keeps each sponge in its cell.
-    // An untwisted lattice cell is filled edge to edge and needs neither.
+// The whole sponge's bound: for a lone sponge, the early exit far from it;
+// for a twisted lattice, the cell wall that keeps each sponge in its cell.
+// An untwisted lattice cell is filled edge to edge and needs neither (-1).
+static inline float mgTopBound(float3 p, thread const MgShape& S, float3 iw) {
     float top = -1.0;
     if (S.twisted && !S.tiled) {
         top = length(p) - MG_SQRT3;
@@ -161,74 +160,139 @@ static MgSample mgMap(float3 p, thread const MgShape& S, float lod, float3 iw) {
         float3 g = (abs(p) - 1.0) * iw;
         top = max(g.x, max(g.y, g.z));
     }
-    if (!S.tiled && top > 0.6) { r.d = top; return r; }
+    return top;
+}
 
-    float d = 1e9;
-    float3 dn = float3(0.0, 0.0, 1.0);
-    float3 sg = float3(1.0);       // untwisted: each axis's flip back to world
-    float3x3 J = float3x3(1.0);    // twisted: the folds' rotations and flips
-    float scale = 1.0;
-    float id = 0.0;
-    for (int i = 0; i < S.iters; i++) {
-        if (S.twisted) p = S.rot * p;
-        float3 s = select(float3(1.0), float3(-1.0), p < 0.0);
-        if (S.twisted) {
-            J = S.rot * J;
-            J = float3x3(J[0] * s, J[1] * s, J[2] * s);   // diag(s) · J
-        }
-        sg *= s;
-        p = abs(p);
-        // Per-axis gaps to the four children: g1 for the corner cube on every
-        // axis; g2 and g0 for an edge cube on an axis where it sits at c2 and
-        // on the axis it straddles.
-        float3 g1 = (abs(p - S.c1) - S.k1) * iw;
-        float3 g2 = (abs(p - S.c2) - S.k2) * iw;
-        float3 g0 = (p - S.k2) * iw;
-        float dX = max(g0.x, max(g2.y, g2.z));
-        float dY = max(g2.x, max(g0.y, g2.z));
-        float dZ = max(g2.x, max(g2.y, g0.z));
-        float dC = max(g1.x, max(g1.y, g1.z));
-        // Nearest (descended into) and second nearest (bounds the rest).
-        bool xy = dX < dY, zc = dZ < dC;
-        float a = xy ? dX : dY, A = xy ? dY : dX;
-        float b = zc ? dZ : dC, B = zc ? dC : dZ;
-        bool ab = a < b;
-        int pick = ab ? (xy ? 0 : 1) : (zc ? 2 : 3);
-        float dMin = ab ? a : b;
-        float dSec = ab ? min(A, b) : min(a, B);
-        int sec = ab ? (A < b ? (xy ? 1 : 0) : (zc ? 2 : 3))
-                     : (a < B ? (xy ? 0 : 1) : (zc ? 3 : 2));
-        if (!S.twisted && dSec * scale < d) {
-            d = dSec * scale;
-            float3 cs = sec == 3 ? float3(S.c1) : float3(sec == 0 ? 0.0 : S.c2, sec == 1 ? 0.0 : S.c2, sec == 2 ? 0.0 : S.c2);
-            float3 gs = sec == 3 ? g1 : float3(sec == 0 ? g0.x : g2.x, sec == 1 ? g0.y : g2.y, sec == 2 ? g0.z : g2.z);
-            dn = mgFace(gs, p - cs, sg);
-        }
-        bool corner = pick == 3;
-        float3 c = corner ? float3(S.c1) : float3(pick == 0 ? 0.0 : S.c2, pick == 1 ? 0.0 : S.c2, pick == 2 ? 0.0 : S.c2);
-        float k = corner ? S.k1 : S.k2;
-        p = (p - c) * (corner ? S.ik1 : S.ik2);
-        if (i < 2) id = id * 2.618 + (corner ? 0.31 : 0.77);
-        // Deeper levels only carve holes the size of this child: if the point
-        // is already well outside it (by 0.8 of its half-size), or the child
-        // is under a pixel, stop here.
-        bool done = dMin > 0.8 * k || scale * k < lod;
-        scale *= k;
-        if (done) break;
+// What mgMap carries down the levels.
+struct MgFold {
+    float3   p;       // the point, in the current child's frame
+    float    d;       // best bound so far
+    float3   dn;      // normal of the face `d` was measured to
+    float3   sg;      // untwisted: each axis's flip back to world
+    float3x3 J;       // twisted: the folds' rotations and flips
+    float    scale;   // the current child's size in world units
+    float    id;
+};
+
+// One level's four children ranked by distance: which one the point descends
+// into, which one bounds the rest, and their distances.
+struct MgRank {
+    int   pick, sec;
+    float dMin, dSec;
+};
+
+// The second nearest of the four, given the two pairwise winners (a of X/Y,
+// b of Z/corner) and losers (A, B).
+static inline int mgSecond(bool ab, bool xy, bool zc, float a, float A, float b, float B) {
+    return ab ? (A < b ? (xy ? 1 : 0) : (zc ? 2 : 3))
+              : (a < B ? (xy ? 0 : 1) : (zc ? 3 : 2));
+}
+
+// Per-axis gaps to the four children: g1 for the corner cube on every axis;
+// g2 and g0 for an edge cube on an axis where it sits at c2 and on the axis
+// it straddles. Child 0..2 is the edge cube straddling x..z, 3 the corner.
+static inline MgRank mgRankChildren(float3 g0, float3 g1, float3 g2) {
+    float dX = max(g0.x, max(g2.y, g2.z));
+    float dY = max(g2.x, max(g0.y, g2.z));
+    float dZ = max(g2.x, max(g2.y, g0.z));
+    float dC = max(g1.x, max(g1.y, g1.z));
+    // Nearest (descended into) and second nearest (bounds the rest).
+    bool xy = dX < dY, zc = dZ < dC;
+    float a = xy ? dX : dY, A = xy ? dY : dX;
+    float b = zc ? dZ : dC, B = zc ? dC : dZ;
+    bool ab = a < b;
+    MgRank k;
+    k.pick = ab ? (xy ? 0 : 1) : (zc ? 2 : 3);
+    k.dMin = ab ? a : b;
+    k.dSec = ab ? min(A, b) : min(a, B);
+    k.sec = mgSecond(ab, xy, zc, a, A, b, B);
+    return k;
+}
+
+// Centre of child `which` (see mgRankChildren for the numbering).
+static inline float3 mgChildCentre(int which, thread const MgShape& S) {
+    return which == 3 ? float3(S.c1) : float3(which == 0 ? 0.0 : S.c2, which == 1 ? 0.0 : S.c2, which == 2 ? 0.0 : S.c2);
+}
+
+// Per-axis gaps to child `which`.
+static inline float3 mgChildGaps(int which, float3 g0, float3 g1, float3 g2) {
+    return which == 3 ? g1 : float3(which == 0 ? g0.x : g2.x, which == 1 ? g0.y : g2.y, which == 2 ? g0.z : g2.z);
+}
+
+// One level: rotate (twisted) and fold, let the second nearest child bound
+// the rest, and descend into the nearest. Returns true when deeper levels
+// cannot matter.
+static inline bool mgFoldLevel(thread MgFold& F, thread const MgShape& S, float3 iw, float lod, int i) {
+    if (S.twisted) F.p = S.rot * F.p;
+    float3 s = select(float3(1.0), float3(-1.0), F.p < 0.0);
+    if (S.twisted) {
+        F.J = S.rot * F.J;
+        F.J = float3x3(F.J[0] * s, F.J[1] * s, F.J[2] * s);   // diag(s) · J
     }
-    // The deepest child reached is solid.
-    float3 gl = (abs(p) - 1.0) * iw;
-    float dl = max(gl.x, max(gl.y, gl.z)) * scale;    if (dl < d) {
-        d = dl;
+    F.sg *= s;
+    F.p = abs(F.p);
+    float3 g1 = (abs(F.p - S.c1) - S.k1) * iw;
+    float3 g2 = (abs(F.p - S.c2) - S.k2) * iw;
+    float3 g0 = (F.p - S.k2) * iw;
+    MgRank r = mgRankChildren(g0, g1, g2);
+    if (!S.twisted && r.dSec * F.scale < F.d) {
+        F.d = r.dSec * F.scale;
+        float3 cs = mgChildCentre(r.sec, S);
+        float3 gs = mgChildGaps(r.sec, g0, g1, g2);
+        F.dn = mgFace(gs, F.p - cs, F.sg);
+    }
+    bool corner = r.pick == 3;
+    float3 c = mgChildCentre(r.pick, S);
+    float k = corner ? S.k1 : S.k2;
+    F.p = (F.p - c) * (corner ? S.ik1 : S.ik2);
+    if (i < 2) F.id = F.id * 2.618 + (corner ? 0.31 : 0.77);
+    // Deeper levels only carve holes the size of this child: if the point
+    // is already well outside it (by 0.8 of its half-size), or the child
+    // is under a pixel, stop here.
+    bool done = r.dMin > 0.8 * k || F.scale * k < lod;
+    F.scale *= k;
+    return done;
+}
+
+// The deepest child reached is solid.
+static inline void mgLeaf(thread MgFold& F, thread const MgShape& S, float3 iw) {
+    float3 gl = (abs(F.p) - 1.0) * iw;
+    float dl = max(gl.x, max(gl.y, gl.z)) * F.scale;
+    if (dl < F.d) {
+        F.d = dl;
         // Twisted, the leaf is a box in its own rotated frame; its face normal
         // goes back to world space through the transpose of the folds' Jacobian.
-        dn = S.twisted ? normalize(transpose(J) * mgFace(gl, p, float3(1.0))) : mgFace(gl, p, sg);
+        F.dn = S.twisted ? normalize(transpose(F.J) * mgFace(gl, F.p, float3(1.0))) : mgFace(gl, F.p, F.sg);
     }
-    if (S.twisted) d *= MG_TWIST_DAMP;
-    if (S.tiled && S.twisted) d = max(d, top);
-    r.d = d;
-    r.id = fract(id);
-    r.n = dn;
+}
+
+static MgSample mgMap(float3 p, thread const MgShape& S, float lod, float3 iw) {
+    MgSample r;
+    r.id = 0.0;
+    r.n = float3(0.0, 0.0, 1.0);
+    if (S.twisted) iw = float3(1.0);
+    if (S.tiled) p = glmod3(p + 1.0, 2.0) - 1.0;   // lattice of sponges, period 2
+
+    float top = mgTopBound(p, S, iw);
+    if (!S.tiled && top > 0.6) { r.d = top; return r; }
+
+    MgFold F;
+    F.p = p;
+    F.d = 1e9;
+    F.dn = float3(0.0, 0.0, 1.0);
+    F.sg = float3(1.0);
+    F.J = float3x3(1.0);
+    F.scale = 1.0;
+    F.id = 0.0;
+    for (int i = 0; i < S.iters; i++) {
+        if (mgFoldLevel(F, S, iw, lod, i)) break;
+    }
+    mgLeaf(F, S, iw);
+    if (S.twisted) F.d *= MG_TWIST_DAMP;
+    if (S.tiled && S.twisted) F.d = max(F.d, top);
+    r.d = F.d;
+    r.id = fract(F.id);
+    r.n = F.dn;
     return r;
 }
 
@@ -342,16 +406,11 @@ static float3 mgEnvironment(float3 r, float rough, thread const MgLook& L) {
     return c;
 }
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
-    float2 uv = lerpUV(pos, u.resolution);
-    float tm = u.time * u.speed;
+// --- lerpMain's stages: shape, camera, look, trace, shade, fog.
 
-    // --- Seeded constants.
-    float s0 = hash11(u.seed * 91.7 + 1.3);
-    float s1 = hash11(u.seed * 53.1 + 7.9);
-    float s2 = hash11(u.seed * 17.3 + 4.1);
-
-    // --- Fractal shape.
+// The fractal's shape this frame: child sizes from `shape`, and the fold's
+// seeded rotation from `twist`.
+static inline MgShape mgMakeShape(constant LerpUniforms& u, float tm, float s0, float s1, float s2) {
     MgShape S;
     float m = smoothstep(0.0, 1.0, u.shape);
     S.k1 = mix(1.0 / 3.0, 0.41421356, m);
@@ -366,33 +425,49 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 twAxis = normalize(float3(s0 - 0.5, 1.0, s1 - 0.5) + float3(0.3, 0.0, 0.2));
     float twAng = u.twist * (0.42 + 0.18 * sin(0.031 * tm + 6.2831 * s2));
     S.rot = mgRotation(twAxis, twAng);
+    return S;
+}
 
-    // --- Camera.
+struct MgCam {
+    float3 ro, rd;          // the eye (after head parallax) and this pixel's ray
+    float3 right, up, fwd;
+    float  px;              // one pixel, as an angle
+};
+
+// Down the central tunnel of a lattice of sponges, through a cross-shaped
+// hall every 2 units, swaying gently and rolling slowly.
+static inline void mgTunnelPath(float tm, float s0, float s1, float s2, float k1,
+                                thread float3& ro, thread float3& fwd, thread float3& upHint) {
+    float z = 0.16 * tm + s0 * 2.0;
+    float a = 0.05 * tm + s1 * 6.2831;
+    float sway = 0.18 * (1.0 - k1 * 1.5);           // keep clear of the tunnel wall
+    ro = float3(sway * sin(1.3 * a), sway * 0.8 * sin(0.9 * a + 1.7), glmod(z, 2.0));
+    float3 look = float3(0.25 * sin(0.7 * a + 0.4), 0.18 * sin(0.53 * a + 2.3), 1.0);
+    fwd = normalize(look);
+    float roll = 0.6 * sin(0.21 * a + s2 * 6.2831);
+    upHint = float3(sin(roll), cos(roll), 0.0);
+}
+
+// A slow orbit on a tilted plane that swoops in and out.
+static inline void mgOrbitPath(float tm, float s0, float s1, float s2, bool twisted,
+                               thread float3& ro, thread float3& fwd, thread float3& upHint) {
+    float a = 0.045 * tm + s0 * 6.2831;
+    float r = (3.05 + 0.65 * sin(0.37 * a + s1 * 6.2831)) * (twisted ? 1.3 : 1.0);   // a twisted cluster reaches radius sqrt(3)
+    float h = 1.15 * sin(0.29 * a + s2 * 6.2831);
+    float3 orb = float3(r * cos(a), h, r * sin(a));
+    float3x3 tilt = mgRotation(float3(1.0, 0.0, 0.3), (s1 - 0.5) * 0.9);
+    ro = tilt * orb;
+    float3 target = 0.25 * float3(sin(0.21 * a), sin(0.17 * a + 1.0), cos(0.19 * a));
+    fwd = normalize(target - ro);
+    upHint = tilt * float3(0.0, 1.0, 0.0);
+}
+
+static inline MgCam mgCamera(constant LerpUniforms& u, float2 uv, float tm, float s0, float s1, float s2,
+                             thread const MgShape& S) {
     const float focal = 1.75;
     float3 ro, fwd, upHint;
-    if (S.tiled) {
-        // Down the central tunnel of a lattice of sponges, through a cross-
-        // shaped hall every 2 units, swaying gently and rolling slowly.
-        float z = 0.16 * tm + s0 * 2.0;
-        float a = 0.05 * tm + s1 * 6.2831;
-        float sway = 0.18 * (1.0 - S.k1 * 1.5);           // keep clear of the tunnel wall
-        ro = float3(sway * sin(1.3 * a), sway * 0.8 * sin(0.9 * a + 1.7), glmod(z, 2.0));
-        float3 look = float3(0.25 * sin(0.7 * a + 0.4), 0.18 * sin(0.53 * a + 2.3), 1.0);
-        fwd = normalize(look);
-        float roll = 0.6 * sin(0.21 * a + s2 * 6.2831);
-        upHint = float3(sin(roll), cos(roll), 0.0);
-    } else {
-        // A slow orbit on a tilted plane that swoops in and out.
-        float a = 0.045 * tm + s0 * 6.2831;
-        float r = (3.05 + 0.65 * sin(0.37 * a + s1 * 6.2831)) * (S.twisted ? 1.3 : 1.0);   // a twisted cluster reaches radius sqrt(3)
-        float h = 1.15 * sin(0.29 * a + s2 * 6.2831);
-        float3 orb = float3(r * cos(a), h, r * sin(a));
-        float3x3 tilt = mgRotation(float3(1.0, 0.0, 0.3), (s1 - 0.5) * 0.9);
-        ro = tilt * orb;
-        float3 target = 0.25 * float3(sin(0.21 * a), sin(0.17 * a + 1.0), cos(0.19 * a));
-        fwd = normalize(target - ro);
-        upHint = tilt * float3(0.0, 1.0, 0.0);
-    }
+    if (S.tiled) mgTunnelPath(tm, s0, s1, s2, S.k1, ro, fwd, upHint);
+    else         mgOrbitPath(tm, s0, s1, s2, S.twisted, ro, fwd, upHint);
     float3 right = normalize(cross(upHint, fwd));
     // Drag to turn: down the tunnel the view turns where it stands; outside,
     // the camera swings round the sponge.
@@ -403,119 +478,183 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // Head parallax: the screen is a window onto the sponge. Down the tunnel
     // the walls are a few tenths away, so the eye may only lean a little.
     float3 rd = lerpViewerRay(u, u.parallax * (S.tiled ? 0.1 : 1.0), uv, lens * focal, right, up, fwd, ro);
-    float px = 2.0 / (lens * focal * min(u.resolution.x, u.resolution.y));   // one pixel, as an angle
+    MgCam C;
+    C.ro = ro;
+    C.rd = rd;
+    C.right = right;
+    C.up = up;
+    C.fwd = fwd;
+    C.px = 2.0 / (lens * focal * min(u.resolution.x, u.resolution.y));   // one pixel, as an angle
+    return C;
+}
 
-    // --- Colours and lights. The key light rides with the camera (upper
-    // right, a little behind the viewer) so the faces in view are always lit
-    // and the holes fall into shadow; a weak complementary fill comes from
-    // the left.
+// Colours and lights. The key light rides with the camera (upper right, a
+// little behind the viewer) so the faces in view are always lit and the holes
+// fall into shadow; a weak complementary fill comes from the left.
+static inline MgLook mgMakeLook(float palette, bool tunnel, thread const MgCam& C) {
     MgLook L;
-    L.sel = u.palette;
-    L.tunnel = S.tiled;
-    L.bgLow  = mgPal(0.05, u.palette) * 0.045;
-    L.bgHigh = mgPal(0.55, u.palette) * 0.10;
-    L.keyDir = normalize(0.62 * right + 0.62 * up - 0.48 * fwd);
-    L.fillDir = normalize(-0.85 * right - 0.15 * up + 0.1 * fwd);
-    L.keyCol = mgPal(0.10, u.palette) * 1.6 + 0.35;
-    L.fillCol = mgPal(0.62, u.palette) * 0.35;
-    L.up = up; L.fwd = fwd;
-    float3 sky = mgBackdrop(rd, L);
+    L.sel = palette;
+    L.tunnel = tunnel;
+    L.bgLow  = mgPal(0.05, palette) * 0.045;
+    L.bgHigh = mgPal(0.55, palette) * 0.10;
+    L.keyDir = normalize(0.62 * C.right + 0.62 * C.up - 0.48 * C.fwd);
+    L.fillDir = normalize(-0.85 * C.right - 0.15 * C.up + 0.1 * C.fwd);
+    L.keyCol = mgPal(0.10, palette) * 1.6 + 0.35;
+    L.fillCol = mgPal(0.62, palette) * 0.35;
+    L.up = C.up; L.fwd = C.fwd;
+    return L;
+}
 
-    // --- Trace.
+// Outside, the ray is first clipped to the sponge's (padded) bounding cube, so
+// sky pixels never march. Returns (t, leaf id), t < 0 for a miss.
+static inline float2 mgTrace(thread const MgCam& C, thread const MgShape& S) {
     float t0 = 0.0, tmax = MG_FAR_TUNNEL;
     bool live = true;
     if (!S.tiled) {
-        float2 sl = mgSlab(ro, rd, S.twisted ? 0.74 : 0.01);
+        float2 sl = mgSlab(C.ro, C.rd, S.twisted ? 0.74 : 0.01);
         t0 = max(sl.x, 0.0);
         tmax = sl.y;
         live = sl.x < sl.y && sl.y > 0.0;
     }
-    float2 hit = mgMarch(ro, rd, t0, live ? tmax : -1.0, px, S);
+    float2 hit = mgMarch(C.ro, C.rd, t0, live ? tmax : -1.0, C.px, S);
     if (!live) hit.x = -1.0;
+    return hit;
+}
 
-    float3 col = sky;
-    if (hit.x > 0.0) {
-        float t = hit.x;
-        float3 p = ro + rd * t;
-        float lod = px * t;
-        int zero = min(int(u.seed), 0);
-        float3 n = mgNormal(p, rd, S, lod);
-        n = dot(n, rd) > 0.0 ? -n : n;   // a face the ray hit faces the ray
-
-        // Ambient occlusion from two probes along the normal: cheap, and
-        // enough to darken every hole by its depth.
-        float occ = 0.0;
-        for (int i = zero; i < 2; i++) {
-            float h = i == 0 ? 0.02 : 0.08;
-            occ += (h - mgMap(p + n * h, S, lod, float3(1.0)).d) * (i == 0 ? 1.0 : 0.5);
-        }
-        float ao = clamp(1.0 - 8.0 * occ, 0.0, 1.0);
-        ao = 0.12 + 0.88 * ao * ao;
-
-        // Material: palette metal, each leaf cube nudged in hue and roughness.
-        float metal = u.metal;
-        float3 base = mgPal(0.16 + 0.05 * hit.y, u.palette);
-        float rough = mix(0.32, 0.5, fract(hit.y * 3.7));
-        float3 f0 = mix(float3(0.04), base, metal);
-        float3 alb = base * (1.0 - metal);
-        float3 v = -rd;
-        float nv = max(dot(n, v), 1e-3);
-
-        // Key light: directional outside (with a soft shadow), the camera's
-        // lamp in the tunnel (whose shadows the camera can't see).
-        float3 l = L.keyDir;
-        float3 lc = L.keyCol;
-        float sh = 1.0;
-        if (S.tiled) {
-            float3 lv = ro + 0.10 * up + 0.12 * right - p;
-            float ld = length(lv);
-            l = lv / ld;
-            lc = L.keyCol * 2.4 / (1.0 + 7.0 * ld * ld);
-        } else if (dot(n, l) > 0.0) {
-            sh = mgShadow(p + n * 2.0 * lod, l, 2.0, 3.0 * lod, S);
-        }
-        float dif = max(dot(n, l), 0.0) * sh;
-        float3 hv = normalize(l + v);
-        float shin = 2.0 / max(pow(rough, 4.0), 1e-4) - 2.0;
-        float3 fres = f0 + (1.0 - f0) * pow(1.0 - max(dot(hv, v), 0.0), 5.0);
-        float3 spec = lc * fres * dif * pow(max(dot(n, hv), 0.0), shin) * (shin + 8.0) / 25.0;
-        float3 diff = lc * dif * alb;
-
-        // Fill and ambient, then a reflection of the studio backdrop that
-        // gives each face orientation its own tone.
-        float envAtt = 1.0;
-        if (!S.tiled) {
-            diff += L.fillCol * max(dot(n, L.fillDir), 0.0) * alb * ao;
-        } else {
-            // In a tunnel, what a wall reflects is more wall, lit by the same
-            // lamps, so reflections fade with depth like the lamps do.
-            envAtt = 1.0 / (1.0 + 0.8 * t * t);
-            // A second, complementary light a little way down the tunnel, so
-            // walls ahead and walls alongside take different colours.
-            float3 bv = ro + 2.6 * fwd - p;
-            float bd = length(bv);
-            float3 bl = bv / bd;
-            float3 bc = mgPal(0.12 + 0.5, u.palette) * 1.2 / (1.0 + 1.5 * bd * bd);
-            float bdif = max(dot(n, bl), 0.0);
-            float3 bh = normalize(bl + v);
-            diff += bc * bdif * (alb + 0.25 * metal * base) * ao;
-            spec += bc * fres * bdif * pow(max(dot(n, bh), 0.0), shin) * (shin + 8.0) / 25.0;
-        }
-        diff += (S.tiled ? L.bgHigh * 0.5 : L.bgHigh * 2.0 + 0.02) * (0.6 + 0.4 * dot(n, up)) * alb * ao;
-        float3 r = reflect(rd, n);
-        float3 env = mgEnvironment(r, rough, L);
-        float3 fenv = f0 + (1.0 - f0) * pow(1.0 - nv, 5.0) * (1.0 - rough);
-        spec += env * fenv * ao * mix(1.0, sh, 0.5) * envAtt;
-
-        col = diff + spec * mix(0.6, 1.0, ao);
-
-        // Depth fog toward the backdrop.
-        float fogK = mix(0.01, S.tiled ? 0.11 : 0.05, u.fog);
-        float fogT = 1.0 - exp(-fogK * t * t);
-        if (S.tiled) fogT = max(fogT, smoothstep(0.7 * MG_FAR_TUNNEL, MG_FAR_TUNNEL, t));
-        else fogT = 1.0 - exp(-fogK * max(t - 1.5, 0.0) * 6.0);
-        col = mix(col, sky, clamp(fogT, 0.0, 1.0));
+// Ambient occlusion from two probes along the normal: cheap, and enough to
+// darken every hole by its depth.
+static inline float mgOcclusion(float3 p, float3 n, float lod, int zero, thread const MgShape& S) {
+    float occ = 0.0;
+    for (int i = zero; i < 2; i++) {
+        float h = i == 0 ? 0.02 : 0.08;
+        occ += (h - mgMap(p + n * h, S, lod, float3(1.0)).d) * (i == 0 ? 1.0 : 0.5);
     }
+    float ao = clamp(1.0 - 8.0 * occ, 0.0, 1.0);
+    return 0.12 + 0.88 * ao * ao;
+}
+
+// Material: palette metal, each leaf cube nudged in hue and roughness.
+struct MgMat {
+    float3 base, f0, alb;
+    float  metal, rough, shin;
+};
+
+static inline MgMat mgMaterial(float id, float metal, float palette) {
+    MgMat M;
+    M.metal = metal;
+    M.base = mgPal(0.16 + 0.05 * id, palette);
+    M.rough = mix(0.32, 0.5, fract(id * 3.7));
+    M.f0 = mix(float3(0.04), M.base, metal);
+    M.alb = M.base * (1.0 - metal);
+    M.shin = 2.0 / max(pow(M.rough, 4.0), 1e-4) - 2.0;
+    return M;
+}
+
+// Key light: directional outside (with a soft shadow), the camera's lamp in
+// the tunnel (whose shadows the camera can't see). Sets the light's direction
+// `l` and colour `lc`; returns its shadow.
+static inline float mgKeyLight(thread const MgCam& C, thread const MgLook& L, thread const MgShape& S,
+                               float3 p, float3 n, float lod, thread float3& l, thread float3& lc) {
+    l = L.keyDir;
+    lc = L.keyCol;
+    float sh = 1.0;
+    if (S.tiled) {
+        float3 lv = C.ro + 0.10 * C.up + 0.12 * C.right - p;
+        float ld = length(lv);
+        l = lv / ld;
+        lc = L.keyCol * 2.4 / (1.0 + 7.0 * ld * ld);
+    } else if (dot(n, l) > 0.0) {
+        sh = mgShadow(p + n * 2.0 * lod, l, 2.0, 3.0 * lod, S);
+    }
+    return sh;
+}
+
+// A second, complementary light a little way down the tunnel, so walls ahead
+// and walls alongside take different colours.
+static inline void mgTunnelBounce(thread const MgCam& C, thread const MgMat& M, float palette,
+                                  float3 p, float3 n, float3 v, float3 fres, float ao,
+                                  thread float3& diff, thread float3& spec) {
+    float3 bv = C.ro + 2.6 * C.fwd - p;
+    float bd = length(bv);
+    float3 bl = bv / bd;
+    float3 bc = mgPal(0.12 + 0.5, palette) * 1.2 / (1.0 + 1.5 * bd * bd);
+    float bdif = max(dot(n, bl), 0.0);
+    float3 bh = normalize(bl + v);
+    diff += bc * bdif * (M.alb + 0.25 * M.metal * M.base) * ao;
+    spec += bc * fres * bdif * pow(max(dot(n, bh), 0.0), M.shin) * (M.shin + 8.0) / 25.0;
+}
+
+// Depth fog toward the backdrop.
+static inline float3 mgFog(float3 col, float3 sky, float t, bool tiled, float fog) {
+    float fogK = mix(0.01, tiled ? 0.11 : 0.05, fog);
+    float fogT = 1.0 - exp(-fogK * t * t);
+    if (tiled) fogT = max(fogT, smoothstep(0.7 * MG_FAR_TUNNEL, MG_FAR_TUNNEL, t));
+    else fogT = 1.0 - exp(-fogK * max(t - 1.5, 0.0) * 6.0);
+    return mix(col, sky, clamp(fogT, 0.0, 1.0));
+}
+
+// The colour of a hit at (t, leaf id) = `hit`, fogged toward `sky`.
+static float3 mgShade(float2 hit, thread const MgCam& C, thread const MgLook& L, thread const MgShape& S,
+                      constant LerpUniforms& u, float3 sky) {
+    float t = hit.x;
+    float3 rd = C.rd;
+    float3 p = C.ro + rd * t;
+    float lod = C.px * t;
+    int zero = min(int(u.seed), 0);
+    float3 n = mgNormal(p, rd, S, lod);
+    n = dot(n, rd) > 0.0 ? -n : n;   // a face the ray hit faces the ray
+
+    float ao = mgOcclusion(p, n, lod, zero, S);
+    MgMat M = mgMaterial(hit.y, u.metal, u.palette);
+    float3 v = -rd;
+    float nv = max(dot(n, v), 1e-3);
+
+    float3 l, lc;
+    float sh = mgKeyLight(C, L, S, p, n, lod, l, lc);
+    float dif = max(dot(n, l), 0.0) * sh;
+    float3 hv = normalize(l + v);
+    float3 fres = M.f0 + (1.0 - M.f0) * pow(1.0 - max(dot(hv, v), 0.0), 5.0);
+    float3 spec = lc * fres * dif * pow(max(dot(n, hv), 0.0), M.shin) * (M.shin + 8.0) / 25.0;
+    float3 diff = lc * dif * M.alb;
+
+    // Fill and ambient, then a reflection of the studio backdrop that
+    // gives each face orientation its own tone.
+    float envAtt = 1.0;
+    if (!S.tiled) {
+        diff += L.fillCol * max(dot(n, L.fillDir), 0.0) * M.alb * ao;
+    } else {
+        // In a tunnel, what a wall reflects is more wall, lit by the same
+        // lamps, so reflections fade with depth like the lamps do.
+        envAtt = 1.0 / (1.0 + 0.8 * t * t);
+        mgTunnelBounce(C, M, u.palette, p, n, v, fres, ao, diff, spec);
+    }
+    diff += (S.tiled ? L.bgHigh * 0.5 : L.bgHigh * 2.0 + 0.02) * (0.6 + 0.4 * dot(n, C.up)) * M.alb * ao;
+    float3 r = reflect(rd, n);
+    float3 env = mgEnvironment(r, M.rough, L);
+    float3 fenv = M.f0 + (1.0 - M.f0) * pow(1.0 - nv, 5.0) * (1.0 - M.rough);
+    spec += env * fenv * ao * mix(1.0, sh, 0.5) * envAtt;
+
+    float3 col = diff + spec * mix(0.6, 1.0, ao);
+    return mgFog(col, sky, t, S.tiled, u.fog);
+}
+
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+    float2 uv = lerpUV(pos, u.resolution);
+    float tm = u.time * u.speed;
+
+    // --- Seeded constants.
+    float s0 = hash11(u.seed * 91.7 + 1.3);
+    float s1 = hash11(u.seed * 53.1 + 7.9);
+    float s2 = hash11(u.seed * 17.3 + 4.1);
+
+    MgShape S = mgMakeShape(u, tm, s0, s1, s2);
+    MgCam C = mgCamera(u, uv, tm, s0, s1, s2, S);
+    MgLook L = mgMakeLook(u.palette, S.tiled, C);
+    float3 sky = mgBackdrop(C.rd, L);
+
+    float2 hit = mgTrace(C, S);
+    float3 col = sky;
+    if (hit.x > 0.0) col = mgShade(hit, C, L, S, u, sky);
 
     // Tonemap and back to display space.
     col = 1.0 - exp(-1.1 * col);

@@ -280,6 +280,197 @@ static inline float3 klPal(float t, float3 d) {
 }
 
 // ---------------------------------------------------------------------------
+// lerpMain's stages. Each takes what it reads and returns what it makes; the
+// expressions are the ones lerpMain always ran, in the same order.
+
+// Where a mode's route puts the camera: position, heading and world up.
+struct KlCamera { float3 ro, fwd, wup; };
+
+static inline KlCamera klPseudoCamera(float tt, float r0, float r2) {
+    KlCamera c;
+    c.wup = float3(0.0, 1.0, 0.0);
+    float period = 4.0 * KL_PK_C.x;
+    float d = glmod(tt * 0.06, period * 8.0);
+    float ph = TWO_PI * d / (period * 8.0);
+    c.ro = float3(d, -KL_PK_C.z + 0.12 * sin(3.0 * ph), -0.95 + 0.2 * sin(2.0 * ph + 1.0));
+    c.fwd = normalize(float3(1.0, 0.3 * sin(2.0 * ph + r0 * 6.0), 0.35 * sin(ph + r2 * 6.0)));
+    return c;
+}
+
+static inline KlCamera klMaskitCamera(float tt, float r0) {
+    KlCamera c;
+    c.wup = float3(0.0, 1.0, 0.0);
+    float d = glmod(tt * 0.05, 16.0);
+    float ph = TWO_PI * d / 16.0;
+    // Klein coordinates (x, y, h) -> world (x, h, y).
+    c.ro = float3(d, 0.45 + 0.15 * sin(2.0 * ph), -0.75 + 0.1 * sin(3.0 * ph));
+    c.fwd = normalize(float3(1.0, -0.15 + 0.1 * sin(ph), 0.9 + 0.3 * sin(2.0 * ph + r0 * 6.0)));
+    return c;
+}
+
+static inline KlCamera klZoomCamera(float tt, float r0, float r1, float rho) {
+    KlCamera c;
+    // Distance to the centre shrinks by KL_ZOOM per unit of tau while the
+    // camera turns with the shells, so tau and tau + 1 are the same image.
+    float tau = fract(tt * 0.025);
+    c.ro = float3(0.0, 0.0, exp2((0.5 - tau) * log2(KL_ZOOM)));
+    // The look-around is built in a frame that turns with tau, so that
+    // after one loop it has turned exactly one shell's twist.
+    float wob = tt * 0.05;
+    float turn = tau * rho;
+    float3 f0 = normalize(float3(0.25 * sin(wob + r0 * 6.0), 0.25 * sin(1.3 * wob + r1 * 6.0), -1.0));
+    float roll = 0.2 * sin(0.7 * wob);
+    c.fwd = float3(rotate(f0.xy, turn), f0.z);
+    c.wup = float3(rotate(float2(sin(roll), cos(roll)), turn), 0.0);
+    return c;
+}
+
+static inline KlCamera klApolloCamera(float tt, float r0, float r1, float r2) {
+    KlCamera c;
+    c.wup = float3(0.0, 1.0, 0.0);
+    float d = glmod(tt * 0.04, 16.0);
+    float ph = TWO_PI * d / 16.0;
+    c.ro = float3(d, 1.0 + 0.08 * sin(2.0 * ph + r0 * 6.0), 1.0 + 0.08 * sin(3.0 * ph));
+    c.fwd = normalize(float3(1.0, 0.45 * sin(ph + r2 * 6.0), 0.55 * sin(2.0 * ph + r1 * 6.0)));
+    return c;
+}
+
+static inline KlCamera klCamera(KlScene S, float tt, float r0, float r1, float r2) {
+    if (S.mode == 1) return klPseudoCamera(tt, r0, r2);
+    if (S.mode == 2) return klMaskitCamera(tt, r0);
+    if (S.mode == 3) return klZoomCamera(tt, r0, r1, S.rho);
+    return klApolloCamera(tt, r0, r1, r2);
+}
+
+// What the march found: where it stopped, whether that is a surface, and the
+// trap, surface distance and step count there.
+struct KlMarch { float t; float trap; float dHit; int steps; bool hit; };
+
+static inline KlMarch klMarch(float3 ro, float3 rd, KlScene S, float pix, float eps0, float tmax) {
+    KlMarch m;
+    m.t = 0.0;
+    m.trap = 1.0; m.dHit = 0.0;
+    m.steps = 0;
+    m.hit = false;
+    bool ended = false;
+    // The last sample taken where the march stood (not an overshoot it
+    // stepped back from), for a ray that runs out of steps.
+    float tLast = 0.0;
+    KlSample last; last.d = 1e9; last.trap = 1.0; last.surf = 1e9;
+    // Over-relaxed sphere tracing (Keinert et al. 2014, "Enhanced Sphere
+    // Tracing"): step omega * d, and if the new unbounding sphere does not
+    // overlap the last one, step back and continue unrelaxed.
+    float omega = S.mode <= 1 ? KL_OMEGA : 1.0, prevD = 0.0, stepLen = 0.0;
+    for (int i = 0; i < KL_STEPS; i++) {
+        float eps = eps0 + KL_EPS * pix * m.t;
+        KlSample sm = klMap(ro + rd * m.t, S);
+        m.steps = i;
+        bool fail = omega > 1.0 && (sm.d + prevD) < stepLen;
+        if (fail) {
+            m.t -= stepLen;
+            stepLen = 0.0;
+            omega = 1.0;
+            continue;
+        }
+        if (sm.trap < 0.0) { ended = true; break; }
+        if (sm.surf < eps) { m.hit = true; m.trap = sm.trap; m.dHit = sm.surf; break; }
+        tLast = m.t;
+        last = sm;
+        stepLen = max(sm.d, 0.5 * eps) * omega;
+        prevD = sm.d;
+        m.t += stepLen;
+        if (m.t > tmax) { ended = true; break; }
+    }
+    // Out of steps still skimming a surface: shade it there rather than
+    // letting it fall through to fog, which is what made the far field's
+    // edge shift from frame to frame.
+    if (!m.hit && !ended && last.surf < eps0 + KL_CREEP * pix * tLast) {
+        m.hit = true;
+        m.t = tLast;
+        m.trap = last.trap;
+        m.dHit = last.surf;
+    }
+    return m;
+}
+
+// Normal, shared across the 2x2 quad: each lane evaluates one tap of the
+// tetrahedral gradient at its own hit point, and the quad sums them. On a
+// smooth surface the four hit points share a gradient, so this is the
+// usual four-tap estimate for a quarter of the cost. Lanes that missed
+// borrow a hit neighbour's point; a quad with no hit skips it. Everything
+// here runs on all four lanes, as quad operations require.
+static inline float3 klQuadNormal(float3 pHit, float3 rd, KlMarch m, KlScene S, float pix, float eps0) {
+    float3 n = -rd;
+    ushort rank = quad_prefix_exclusive_sum(ushort(1));
+    ushort firstHit = quad_min(m.hit ? rank : ushort(4));
+    float3 pBase = m.hit ? pHit : quad_shuffle(pHit, firstHit);
+    float dBase = m.hit ? m.dHit : quad_shuffle(m.dHit, firstHit);
+    float tBase = m.hit ? m.t : quad_shuffle(m.t, firstHit);
+    float eN = quad_max(max(eps0, 0.5 * pix * tBase));
+    if (firstHit < 4) {
+        float3 k = float3((rank == 0 || rank == 3) ? 1.0 : -1.0,
+                          (rank >= 2) ? 1.0 : -1.0,
+                          (rank == 1 || rank == 3) ? 1.0 : -1.0);
+        float tap = klMap(pBase + k * eN, S).surf - dBase;
+        float3 g = quad_sum(k * tap);
+        n = (dot(g, g) > 0.0) ? normalize(g) : -rd;
+    }
+    return n;
+}
+
+// Bone: ivory on the open faces, umber in the folds, with faint
+// marble banding from the trap. Iridescent: a thin-film palette on
+// the viewing angle, over a near-black base. `film` is the palette, which
+// the highlights reuse.
+static inline float3 klAlbedo(float tr, float ndv, constant LerpUniforms& u, thread float3& film) {
+    float vein = 0.5 + 0.5 * sin(18.0 * tr + 4.0 * sqrt(tr));
+    float3 bone = mix(float3(0.20, 0.15, 0.11), float3(0.82, 0.74, 0.60), smoothstep(0.0, 0.9, sqrt(tr)));
+    bone *= 0.85 + 0.15 * vein;
+    film = klPal(1.4 * (1.0 - ndv) + 0.7 * tr + u.hue, float3(0.0, 0.18, 0.36));
+    film = mix(float3(dot(film, float3(0.333))), film, 0.7);
+    float3 irid = 0.04 + 0.55 * film * film;
+    return mix(bone, irid, u.material);
+}
+
+// The lit, fogged colour of a hit at p. Everything is dark-leaning: a single
+// warm key from above the camera, a cool fill, and fog that swallows the
+// distance.
+static inline float3 klShadeHit(float3 p, float3 n, float3 rd, float3 right, float3 up, float3 fwd,
+                                float trap, float sk, float tn, float3 tint, float3 fogCol,
+                                KlScene S, constant LerpUniforms& u) {
+    float ndv = clamp(dot(n, -rd), 0.0, 1.0);
+    float tr = clamp(trap, 0.0, 1.0);
+
+    // Occlusion: the orbit trap (points that passed near an inversion
+    // centre sit deep inside the packing), the step count, and in the two
+    // sparse modes one probe along the normal. The dense packings skip
+    // the probe: the trap already carries their occlusion. The probe has
+    // a fixed size in the scene (in the zoom, a fixed fraction of the
+    // shell it lands on, which keeps the dive self-similar): one that grew
+    // with distance shaded far crevices darker than the same crevices
+    // close up. These sizes match the old probe at a typical hit.
+    float probe = 1.0;
+    if (S.mode >= 2) {
+        float h = S.mode == 3 ? 0.14 * length(p) : 0.13;
+        probe = clamp(klMap(p + n * h, S).surf / h, 0.0, 1.0);
+    }
+    float occ = probe * mix(0.45, 1.0, sqrt(tr)) * (1.0 - 0.6 * sk);
+
+    float3 film;
+    float3 alb = klAlbedo(tr, ndv, u, film);
+
+    float3 L = normalize(up * 0.8 + right * 0.35 + fwd * 0.25);
+    float dif = clamp(dot(n, L) * 0.8 + 0.2, 0.0, 1.0);
+    float spec = pow(clamp(dot(reflect(rd, n), L), 0.0, 1.0), 24.0);
+    float rim = pow(1.0 - ndv, 4.0);
+    float3 lin = float3(1.0, 0.88, 0.72) * dif * 1.1
+               + tint * (0.20 + 0.15 * dot(n, up)) ;
+    float3 col = alb * lin * occ;
+    col += (0.10 + 0.45 * u.material) * spec * occ * mix(float3(1.0, 0.9, 0.8), film, u.material);
+    col += 0.25 * rim * occ * mix(tint, film, u.material);
+    float fogK = mix(0.06, 0.5, u.fog);
+    return mix(col, fogCol, 1.0 - exp(-fogK * tn));
+}
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
     float2 uv = lerpUV(pos, u.resolution);
@@ -302,39 +493,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     float tt = u.time * u.speed + u.seed * 400.0;
 
-    float3 ro, fwd;
-    float3 wup = float3(0.0, 1.0, 0.0);
-    if (S.mode == 1) {
-        float period = 4.0 * KL_PK_C.x;
-        float d = glmod(tt * 0.06, period * 8.0);
-        float ph = TWO_PI * d / (period * 8.0);
-        ro = float3(d, -KL_PK_C.z + 0.12 * sin(3.0 * ph), -0.95 + 0.2 * sin(2.0 * ph + 1.0));
-        fwd = normalize(float3(1.0, 0.3 * sin(2.0 * ph + r0 * 6.0), 0.35 * sin(ph + r2 * 6.0)));
-    } else if (S.mode == 2) {
-        float d = glmod(tt * 0.05, 16.0);
-        float ph = TWO_PI * d / 16.0;
-        // Klein coordinates (x, y, h) -> world (x, h, y).
-        ro = float3(d, 0.45 + 0.15 * sin(2.0 * ph), -0.75 + 0.1 * sin(3.0 * ph));
-        fwd = normalize(float3(1.0, -0.15 + 0.1 * sin(ph), 0.9 + 0.3 * sin(2.0 * ph + r0 * 6.0)));
-    } else if (S.mode == 3) {
-        // Distance to the centre shrinks by KL_ZOOM per unit of tau while the
-        // camera turns with the shells, so tau and tau + 1 are the same image.
-        float tau = fract(tt * 0.025);
-        ro = float3(0.0, 0.0, exp2((0.5 - tau) * log2(KL_ZOOM)));
-        // The look-around is built in a frame that turns with tau, so that
-        // after one loop it has turned exactly one shell's twist.
-        float wob = tt * 0.05;
-        float turn = tau * S.rho;
-        float3 f0 = normalize(float3(0.25 * sin(wob + r0 * 6.0), 0.25 * sin(1.3 * wob + r1 * 6.0), -1.0));
-        float roll = 0.2 * sin(0.7 * wob);
-        fwd = float3(rotate(f0.xy, turn), f0.z);
-        wup = float3(rotate(float2(sin(roll), cos(roll)), turn), 0.0);
-    } else {
-        float d = glmod(tt * 0.04, 16.0);
-        float ph = TWO_PI * d / 16.0;
-        ro = float3(d, 1.0 + 0.08 * sin(2.0 * ph + r0 * 6.0), 1.0 + 0.08 * sin(3.0 * ph));
-        fwd = normalize(float3(1.0, 0.45 * sin(ph + r2 * 6.0), 0.55 * sin(2.0 * ph + r1 * 6.0)));
-    }
+    KlCamera cam = klCamera(S, tt, r0, r1, r2);
+    float3 ro = cam.ro, fwd = cam.fwd, wup = cam.wup;
     float3 right = normalize(cross(wup, fwd));
     // Drag to turn, pinch to zoom: every route flies inside the limit set, so
     // the view turns and the lens lengthens where the camera is.
@@ -348,73 +508,13 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // Ray march.
     float tmax = 12.0 * camScale;
     float eps0 = 0.0005 * camScale;
-    float t = 0.0;
-    float trap = 1.0, dHit = 0.0;
-    int steps = 0;
-    bool hit = false, ended = false;
-    // The last sample taken where the march stood (not an overshoot it
-    // stepped back from), for a ray that runs out of steps.
-    float tLast = 0.0;
-    KlSample last; last.d = 1e9; last.trap = 1.0; last.surf = 1e9;
-    // Over-relaxed sphere tracing (Keinert et al. 2014, "Enhanced Sphere
-    // Tracing"): step omega * d, and if the new unbounding sphere does not
-    // overlap the last one, step back and continue unrelaxed.
-    float omega = S.mode <= 1 ? KL_OMEGA : 1.0, prevD = 0.0, stepLen = 0.0;
-    for (int i = 0; i < KL_STEPS; i++) {
-        float eps = eps0 + KL_EPS * pix * t;
-        KlSample sm = klMap(ro + rd * t, S);
-        steps = i;
-        bool fail = omega > 1.0 && (sm.d + prevD) < stepLen;
-        if (fail) {
-            t -= stepLen;
-            stepLen = 0.0;
-            omega = 1.0;
-            continue;
-        }
-        if (sm.trap < 0.0) { ended = true; break; }
-        if (sm.surf < eps) { hit = true; trap = sm.trap; dHit = sm.surf; break; }
-        tLast = t;
-        last = sm;
-        stepLen = max(sm.d, 0.5 * eps) * omega;
-        prevD = sm.d;
-        t += stepLen;
-        if (t > tmax) { ended = true; break; }
-    }
-    // Out of steps still skimming a surface: shade it there rather than
-    // letting it fall through to fog, which is what made the far field's
-    // edge shift from frame to frame.
-    if (!hit && !ended && last.surf < eps0 + KL_CREEP * pix * tLast) {
-        hit = true;
-        t = tLast;
-        trap = last.trap;
-        dHit = last.surf;
-    }
+    KlMarch m = klMarch(ro, rd, S, pix, eps0, tmax);
+    float t = m.t;
 
-    // Normal, shared across the 2x2 quad: each lane evaluates one tap of the
-    // tetrahedral gradient at its own hit point, and the quad sums them. On a
-    // smooth surface the four hit points share a gradient, so this is the
-    // usual four-tap estimate for a quarter of the cost. Lanes that missed
-    // borrow a hit neighbour's point; a quad with no hit skips it. Everything
-    // here runs on all four lanes, as quad operations require.
-    float3 n = -rd;
-    ushort rank = quad_prefix_exclusive_sum(ushort(1));
-    ushort firstHit = quad_min(hit ? rank : ushort(4));
     float3 pHit = ro + rd * t;
-    float3 pBase = hit ? pHit : quad_shuffle(pHit, firstHit);
-    float dBase = hit ? dHit : quad_shuffle(dHit, firstHit);
-    float tBase = hit ? t : quad_shuffle(t, firstHit);
-    float eN = quad_max(max(eps0, 0.5 * pix * tBase));
-    if (firstHit < 4) {
-        float3 k = float3((rank == 0 || rank == 3) ? 1.0 : -1.0,
-                          (rank >= 2) ? 1.0 : -1.0,
-                          (rank == 1 || rank == 3) ? 1.0 : -1.0);
-        float tap = klMap(pBase + k * eN, S).surf - dBase;
-        float3 g = quad_sum(k * tap);
-        n = (dot(g, g) > 0.0) ? normalize(g) : -rd;
-    }
+    float3 n = klQuadNormal(pHit, rd, m, S, pix, eps0);
 
-    // --- Shade. Everything is dark-leaning: a single warm key from above the
-    // camera, a cool fill, and fog that swallows the distance.
+    // --- Shade.
     float3 tint = klPal(u.hue + 0.58, float3(0.0, 0.12, 0.25));      // fog / fill hue
     float3 fogCol = 0.010 * tint + float3(0.002, 0.0025, 0.004);
     float3 col = fogCol;
@@ -422,50 +522,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // deeper shell sits further in the haze.
     float tn = (S.mode == 3) ? 1.6 * log2(camScale / max(length(ro + rd * t), 1e-6 * camScale))
                              : t / camScale;
-    float sk = min(float(steps) / KL_SHADE_STEPS, 1.0);   // march effort, for occlusion and glow
-    if (hit) {
-        float3 p = pHit;
-        float ndv = clamp(dot(n, -rd), 0.0, 1.0);
-        float tr = clamp(trap, 0.0, 1.0);
-
-        // Occlusion: the orbit trap (points that passed near an inversion
-        // centre sit deep inside the packing), the step count, and in the two
-        // sparse modes one probe along the normal. The dense packings skip
-        // the probe: the trap already carries their occlusion. The probe has
-        // a fixed size in the scene (in the zoom, a fixed fraction of the
-        // shell it lands on, which keeps the dive self-similar): one that grew
-        // with distance shaded far crevices darker than the same crevices
-        // close up. These sizes match the old probe at a typical hit.
-        float probe = 1.0;
-        if (S.mode >= 2) {
-            float h = S.mode == 3 ? 0.14 * length(p) : 0.13;
-            probe = clamp(klMap(p + n * h, S).surf / h, 0.0, 1.0);
-        }
-        float occ = probe * mix(0.45, 1.0, sqrt(tr)) * (1.0 - 0.6 * sk);
-
-        // Bone: ivory on the open faces, umber in the folds, with faint
-        // marble banding from the trap. Iridescent: a thin-film palette on
-        // the viewing angle, over a near-black base.
-        float vein = 0.5 + 0.5 * sin(18.0 * tr + 4.0 * sqrt(tr));
-        float3 bone = mix(float3(0.20, 0.15, 0.11), float3(0.82, 0.74, 0.60), smoothstep(0.0, 0.9, sqrt(tr)));
-        bone *= 0.85 + 0.15 * vein;
-        float3 film = klPal(1.4 * (1.0 - ndv) + 0.7 * tr + u.hue, float3(0.0, 0.18, 0.36));
-        film = mix(float3(dot(film, float3(0.333))), film, 0.7);
-        float3 irid = 0.04 + 0.55 * film * film;
-        float3 alb = mix(bone, irid, u.material);
-
-        float3 L = normalize(up * 0.8 + right * 0.35 + fwd * 0.25);
-        float dif = clamp(dot(n, L) * 0.8 + 0.2, 0.0, 1.0);
-        float spec = pow(clamp(dot(reflect(rd, n), L), 0.0, 1.0), 24.0);
-        float rim = pow(1.0 - ndv, 4.0);
-        float3 lin = float3(1.0, 0.88, 0.72) * dif * 1.1
-                   + tint * (0.20 + 0.15 * dot(n, up)) ;
-        col = alb * lin * occ;
-        col += (0.10 + 0.45 * u.material) * spec * occ * mix(float3(1.0, 0.9, 0.8), film, u.material);
-        col += 0.25 * rim * occ * mix(tint, film, u.material);
-        float fogK = mix(0.06, 0.5, u.fog);
-        col = mix(col, fogCol, 1.0 - exp(-fogK * tn));
-    }
+    float sk = min(float(m.steps) / KL_SHADE_STEPS, 1.0);   // march effort, for occlusion and glow
+    if (m.hit) col = klShadeHit(pHit, n, rd, right, up, fwd, m.trap, sk, tn, tint, fogCol, S, u);
     // Glow: light the march itself, strongest where rays skimmed the surface.
     col += u.glow * 0.10 * sk * sk * klPal(u.hue + 0.55, float3(0.0, 0.15, 0.3));
 

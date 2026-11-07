@@ -607,65 +607,110 @@ public enum LerpParamParser {
     /// Scans the whole file (not just the header) for parameter and preset
     /// directives. Anything that is not a `// lerp-…:` comment is ignored, so
     /// this is safe to run over arbitrary Metal source.
+    ///
+    /// Two passes. The first reads each directive line on its own
+    /// (`DirectiveScan`); the second checks what refers to something else —
+    /// animations and presets against the declared parameters — once all of
+    /// them have been seen, so declaration order in the file doesn't matter.
     public static func parse(source: String) -> Output {
-        var out = Output()
+        var scan = DirectiveScan()
+        for (index, raw) in source.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            scan.read(raw, line: index + 1)
+        }
+
+        var out = Output(parameters: scan.parameters, errors: scan.errors)
+        attachAnimations(scan.animateLines, to: &out)
+        for name in scan.presetOrder {
+            out.presets.append(checkPreset(name, settings: scan.presetValues[name] ?? [:],
+                                           line: scan.presetLine[name] ?? 0,
+                                           against: out.parameters, errors: &out.errors))
+        }
+        out.errors.sort { $0.line < $1.line }
+        return out
+    }
+
+    /// A `// lerp-animate:` line, read but not yet checked against the
+    /// parameter it names.
+    private struct AnimateLine {
+        let line: Int
+        let text: String
+        let name: String
+        let spec: AnimateSpec
+    }
+
+    /// The first pass of `parse`: every directive line read on its own, in
+    /// file order. Parameters are complete here; presets and animations are
+    /// only collected, because they may name a parameter declared below them.
+    private struct DirectiveScan {
+        var parameters: [LerpParam] = []
+        var errors: [LerpParamError] = []
         var presetOrder: [String] = []
         var presetValues: [String: [String: PresetSetting]] = [:]
         var presetLine: [String: Int] = [:]
-        var animateLines: [(line: Int, text: String, name: String, spec: AnimateSpec)] = []
+        var animateLines: [AnimateLine] = []
 
-        for (index, raw) in source.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            let line = index + 1
+        typealias Reader = (inout DirectiveScan, String, Int) throws -> Void
 
-            if let text = directiveBody(raw, paramDirective) {
+        /// Which reader each directive goes to. A line is offered to them in
+        /// this order and the first directive it carries wins.
+        static let readers: [(directive: String, read: Reader)] = [
+            (paramDirective, { try $0.declareParam($1, line: $2) }),
+            (presetDirective, { try $0.mergePreset($1, line: $2) }),
+            (animateDirective, { try $0.collectAnimate($1, line: $2) }),
+        ]
+
+        mutating func read(_ raw: Substring, line: Int) {
+            for reader in Self.readers {
+                guard let text = directiveBody(raw, reader.directive) else { continue }
                 do {
-                    let param = try parseParam(text, line: line)
-                    if LerpParamLayout.builtInFields.contains(param.name) {
-                        throw fail(line, text, "`\(param.name)` is a built-in uniform field and cannot be a parameter name")
-                    }
-                    if out.parameters.contains(where: { $0.name == param.name }) {
-                        throw fail(line, text, "duplicate parameter name `\(param.name)`")
-                    }
-                    out.parameters.append(param)
+                    try reader.read(&self, text, line)
                 } catch let error as LerpParamError {
-                    out.errors.append(error)
+                    errors.append(error)
                 } catch {
-                    out.errors.append(LerpParamError(line: line, message: "\(error)", text: text))
+                    errors.append(LerpParamError(line: line, message: "\(error)", text: text))
                 }
-            } else if let text = directiveBody(raw, presetDirective) {
-                do {
-                    let (name, values) = try parsePreset(text, line: line)
-                    // Reserved for `shader/*` — see `LerpRotationEntry.wholeShaderPreset`.
-                    if name == LerpRotationEntry.wholeShaderPreset {
-                        throw fail(line, text, "`\(name)` is reserved: in the rotation it means every look of the shader")
-                    }
-                    if presetValues[name] == nil {
-                        presetOrder.append(name)
-                        presetLine[name] = line
-                    }
-                    presetValues[name, default: [:]].merge(values) { _, new in new }
-                } catch let error as LerpParamError {
-                    out.errors.append(error)
-                } catch {
-                    out.errors.append(LerpParamError(line: line, message: "\(error)", text: text))
-                }
-            } else if let text = directiveBody(raw, animateDirective) {
-                do {
-                    let (name, spec) = try parseAnimateLine(text, line: line)
-                    animateLines.append((line, text, name, spec))
-                } catch let error as LerpParamError {
-                    out.errors.append(error)
-                } catch {
-                    out.errors.append(LerpParamError(line: line, message: "\(error)", text: text))
-                }
+                return
             }
         }
 
-        // Animations are attached once every parameter has been seen, so a
-        // `// lerp-animate:` may sit above or below the `// lerp-param:` it
-        // names.
+        mutating func declareParam(_ text: String, line: Int) throws {
+            let param = try parseParam(text, line: line)
+            if LerpParamLayout.builtInFields.contains(param.name) {
+                throw fail(line, text, "`\(param.name)` is a built-in uniform field and cannot be a parameter name")
+            }
+            if parameters.contains(where: { $0.name == param.name }) {
+                throw fail(line, text, "duplicate parameter name `\(param.name)`")
+            }
+            parameters.append(param)
+        }
+
+        /// Repeating a preset's name on a later line merges into the same
+        /// preset, which keeps the line and position of its first appearance.
+        mutating func mergePreset(_ text: String, line: Int) throws {
+            let (name, values) = try parsePreset(text, line: line)
+            // Reserved for `shader/*` — see `LerpRotationEntry.wholeShaderPreset`.
+            if name == LerpRotationEntry.wholeShaderPreset {
+                throw fail(line, text, "`\(name)` is reserved: in the rotation it means every look of the shader")
+            }
+            if presetValues[name] == nil {
+                presetOrder.append(name)
+                presetLine[name] = line
+            }
+            presetValues[name, default: [:]].merge(values) { _, new in new }
+        }
+
+        mutating func collectAnimate(_ text: String, line: Int) throws {
+            let (name, spec) = try parseAnimateLine(text, line: line)
+            animateLines.append(AnimateLine(line: line, text: text, name: name, spec: spec))
+        }
+    }
+
+    /// Animations are attached once every parameter has been seen, so a
+    /// `// lerp-animate:` may sit above or below the `// lerp-param:` it
+    /// names.
+    private static func attachAnimations(_ lines: [AnimateLine], to out: inout Output) {
         var animated: Set<String> = []
-        for entry in animateLines {
+        for entry in lines {
             guard let index = out.parameters.firstIndex(where: { $0.name == entry.name }) else {
                 out.errors.append(fail(entry.line, entry.text,
                     "`\(entry.name)` is not a declared parameter — `// lerp-animate:` names a `// lerp-param:` in this file"))
@@ -684,47 +729,61 @@ public enum LerpParamParser {
                 out.errors.append(fail(entry.line, entry.text, "\(error)"))
             }
         }
+    }
 
-        // Presets are validated against the declared parameters once all of
-        // both have been seen, so declaration order in the file doesn't matter.
-        for name in presetOrder {
-            let settings = presetValues[name] ?? [:]
-            let line = presetLine[name] ?? 0
-            var checked: [String: LerpParamValue] = [:]
-            var animations: [String: LerpParamAnimation] = [:]
-            for (key, setting) in settings {
-                guard let param = out.parameters.first(where: { $0.name == key }) else {
-                    out.errors.append(LerpParamError(line: line,
+    /// One preset, all of its lines merged, checked against the declared
+    /// parameters. A setting that does not fit is reported and left out; the
+    /// rest of the preset still stands.
+    private static func checkPreset(_ name: String, settings: [String: PresetSetting], line: Int,
+                                    against parameters: [LerpParam],
+                                    errors: inout [LerpParamError]) -> LerpPreset {
+        var checked: [String: LerpParamValue] = [:]
+        var animations: [String: LerpParamAnimation] = [:]
+        for (key, setting) in settings {
+            do throws(LerpParamError) {
+                guard let param = parameters.first(where: { $0.name == key }) else {
+                    throw LerpParamError(line: line,
                         message: "preset `\(name)` sets `\(key)`, which is not a declared parameter",
-                        text: key + "=" + setting.literal))
-                    continue
+                        text: key + "=" + setting.literal)
                 }
                 switch setting {
                 case .value(let value):
-                    let typeMatches = param.type.isColor ? (value.colorValue != nil) : (value.scalarValue != nil)
-                    guard typeMatches else {
-                        out.errors.append(LerpParamError(line: line,
-                            message: "preset `\(name)` gives `\(key)` a value of the wrong type for a \(param.type.rawValue) parameter",
-                            text: key + "=" + value.literal))
-                        continue
-                    }
-                    checked[key] = param.clamp(value)
+                    checked[key] = try checkPresetValue(value, for: param, preset: name, line: line)
                 case .animate(let spec):
-                    do {
-                        animations[key] = try resolveAnimation(spec, for: param, fallback: param.animation)
-                    } catch let problem as AnimateProblem {
-                        out.errors.append(LerpParamError(line: line,
-                            message: "preset `\(name)`: \(problem.text)", text: key + "=" + spec.literal))
-                    } catch {
-                        out.errors.append(LerpParamError(line: line, message: "\(error)",
-                                                         text: key + "=" + spec.literal))
-                    }
+                    animations[key] = try checkPresetAnimation(spec, for: param, preset: name, line: line)
                 }
+            } catch {
+                errors.append(error)
             }
-            out.presets.append(LerpPreset(name: name, values: checked, animations: animations, line: line))
         }
-        out.errors.sort { $0.line < $1.line }
-        return out
+        return LerpPreset(name: name, values: checked, animations: animations, line: line)
+    }
+
+    /// A preset's `key=value`, clamped into the parameter's range once its
+    /// type is known to match.
+    private static func checkPresetValue(_ value: LerpParamValue, for param: LerpParam, preset: String,
+                                         line: Int) throws(LerpParamError) -> LerpParamValue {
+        let typeMatches = param.type.isColor ? (value.colorValue != nil) : (value.scalarValue != nil)
+        guard typeMatches else {
+            throw LerpParamError(line: line,
+                message: "preset `\(preset)` gives `\(param.name)` a value of the wrong type for a \(param.type.rawValue) parameter",
+                text: param.name + "=" + value.literal)
+        }
+        return param.clamp(value)
+    }
+
+    /// A preset's `key=animate(…)`, with the gaps filled from the file's
+    /// `// lerp-animate:` for that parameter.
+    private static func checkPresetAnimation(_ spec: AnimateSpec, for param: LerpParam, preset: String,
+                                             line: Int) throws(LerpParamError) -> LerpParamAnimation {
+        let text = param.name + "=" + spec.literal
+        do {
+            return try resolveAnimation(spec, for: param, fallback: param.animation)
+        } catch let problem as AnimateProblem {
+            throw LerpParamError(line: line, message: "preset `\(preset)`: \(problem.text)", text: text)
+        } catch {
+            throw LerpParamError(line: line, message: "\(error)", text: text)
+        }
     }
 
     // MARK: Animation
@@ -814,6 +873,14 @@ public enum LerpParamParser {
                 + "`// lerp-animate:` for it to borrow them from; write `animate(LOW, HIGH)`")
         }
         let period = spec.period ?? fallback?.period ?? LerpParamAnimation.defaultPeriod
+        try checkBounds(low, high, for: param)
+        return LerpParamAnimation(low: low, high: high, period: period)
+    }
+
+    /// The two ends of a drift: of the parameter's kind, apart, and inside
+    /// what it can hold — its declared range, or 0…1 per colour component.
+    private static func checkBounds(_ low: LerpParamValue, _ high: LerpParamValue,
+                                    for param: LerpParam) throws {
         switch (param.type, low, high) {
         case (.float, .scalar(let a), .scalar(let b)):
             guard a != b else {
@@ -835,7 +902,6 @@ public enum LerpParamParser {
             throw AnimateProblem(text: "`\(param.name)` is a \(param.type.rawValue) parameter, so its bounds must be "
                 + (param.type == .color ? "colours" : "numbers"))
         }
-        return LerpParamAnimation(low: low, high: high, period: period)
     }
 
     static func fail(_ line: Int, _ text: String, _ message: String) -> LerpParamError {
@@ -858,28 +924,55 @@ public enum LerpParamParser {
     }
 
     /// `NAME TYPE [MIN MAX] = DEFAULT ["Label"]`
+    ///
+    /// Read left to right, each step refusing what it cannot read: the label,
+    /// the split at `=`, the name and type, the range the type asks for, and
+    /// last the default, which is checked against both.
     static func parseParam(_ text: String, line: Int) throws -> LerpParam {
-        // Peel the optional trailing quoted label first so it can contain
-        // anything, including `=` and digits.
-        var head = text
-        var label: String?
+        let (head, label) = try peelLabel(text, line: line)
+        let decl = try splitDeclaration(head, line: line, text: text)
+        let (name, type) = try parseNameAndType(decl.words, line: line, text: text)
+        let range = try parseRange(decl.words, name: name, type: type, line: line, text: text)
+        let value = try parseDefault(decl.defaultText, type: type, range: range, line: line, text: text)
+        return LerpParam(name: name, type: type, min: range.min, max: range.max,
+                         defaultValue: value, label: label ?? humanize(name), line: line)
+    }
+
+    /// A declaration's slider bounds; 0…1 for the types that have none.
+    private typealias ParamRange = (min: Double, max: Double)
+
+    private static let paramSyntax = "(syntax: NAME TYPE [MIN MAX] = DEFAULT \"Label\")"
+
+    /// Peels the optional trailing quoted label off first, so it can contain
+    /// anything, including `=` and digits.
+    private static func peelLabel(_ text: String, line: Int) throws -> (head: String, label: String?) {
         if let open = text.firstIndex(of: "\""), let close = text.lastIndex(of: "\""), open < close {
-            label = String(text[text.index(after: open)..<close])
-            head = String(text[text.startIndex..<open])
-        } else if text.contains("\"") {
+            return (String(text[text.startIndex..<open]), String(text[text.index(after: open)..<close]))
+        }
+        if text.contains("\"") {
             throw fail(line, text, "unterminated label — labels are wrapped in double quotes")
         }
+        return (text, nil)
+    }
 
+    /// The words of `NAME TYPE [MIN MAX]` and the text of `DEFAULT`, from
+    /// either side of the `=`.
+    private static func splitDeclaration(_ head: String, line: Int,
+                                         text: String) throws -> (words: [String], defaultText: String) {
         guard let equals = head.firstIndex(of: "=") else {
-            throw fail(line, text, "missing `= DEFAULT` (syntax: NAME TYPE [MIN MAX] = DEFAULT \"Label\")")
+            throw fail(line, text, "missing `= DEFAULT` \(paramSyntax)")
         }
         let declText = String(head[head.startIndex..<equals]).trimmingCharacters(in: .whitespaces)
         let defaultText = String(head[head.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
-        let decl = declText.split(whereSeparator: \.isWhitespace).map(String.init)
-
-        guard decl.count >= 2 else {
-            throw fail(line, text, "expected at least NAME and TYPE before `=` (syntax: NAME TYPE [MIN MAX] = DEFAULT \"Label\")")
+        let words = declText.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard words.count >= 2 else {
+            throw fail(line, text, "expected at least NAME and TYPE before `=` \(paramSyntax)")
         }
+        return (words, defaultText)
+    }
+
+    private static func parseNameAndType(_ decl: [String], line: Int,
+                                         text: String) throws -> (String, LerpParamType) {
         let name = decl[0]
         guard isIdentifier(name) else {
             throw fail(line, text, "`\(name)` is not a valid parameter name (letters, digits and `_`, not starting with a digit)")
@@ -887,8 +980,12 @@ public enum LerpParamParser {
         guard let type = LerpParamType(rawValue: decl[1].lowercased()) else {
             throw fail(line, text, "unknown type `\(decl[1])` — expected one of \(LerpParamType.allCases.map(\.rawValue).joined(separator: ", "))")
         }
+        return (name, type)
+    }
 
-        var min = 0.0, max = 1.0
+    /// `float` and `int` must give MIN and MAX; `bool` and `color` must not.
+    private static func parseRange(_ decl: [String], name: String, type: LerpParamType,
+                                   line: Int, text: String) throws -> ParamRange {
         switch type {
         case .float, .int:
             guard decl.count == 4 else {
@@ -900,43 +997,44 @@ public enum LerpParamParser {
             guard parsedMin <= parsedMax else {
                 throw fail(line, text, "MIN (\(parsedMin)) is greater than MAX (\(parsedMax))")
             }
-            min = parsedMin; max = parsedMax
+            return (parsedMin, parsedMax)
         case .bool, .color:
             guard decl.count == 2 else {
                 throw fail(line, text, "a \(type.rawValue) parameter takes no MIN/MAX: `\(name) \(type.rawValue) = <default>`")
             }
+            return (0, 1)
         }
+    }
 
+    private static func parseDefault(_ defaultText: String, type: LerpParamType, range: ParamRange,
+                                     line: Int, text: String) throws -> LerpParamValue {
         guard !defaultText.isEmpty else { throw fail(line, text, "missing default value after `=`") }
-        let value: LerpParamValue
         switch type {
         case .color:
-            value = try parseColor(defaultText, line: line, text: text)
+            return try parseColor(defaultText, line: line, text: text)
         case .bool:
             guard let flag = boolean(defaultText) else {
                 throw fail(line, text, "a bool default must be `true` or `false`, got `\(defaultText)`")
             }
-            value = .scalar(flag)
-        case .int:
-            guard let number = Double(defaultText), number == number.rounded() else {
-                throw fail(line, text, "an int default must be a whole number, got `\(defaultText)`")
-            }
-            guard number >= min, number <= max else {
-                throw fail(line, text, "default \(defaultText) is outside the declared range \(min)…\(max)")
-            }
-            value = .scalar(number)
-        case .float:
-            guard let number = Double(defaultText) else {
-                throw fail(line, text, "a float default must be a number, got `\(defaultText)`")
-            }
-            guard number >= min, number <= max else {
-                throw fail(line, text, "default \(defaultText) is outside the declared range \(min)…\(max)")
-            }
-            value = .scalar(number)
+            return .scalar(flag)
+        case .int, .float:
+            return .scalar(try parseNumericDefault(defaultText, type: type, range: range, line: line, text: text))
         }
+    }
 
-        return LerpParam(name: name, type: type, min: min, max: max,
-                         defaultValue: value, label: label ?? humanize(name), line: line)
+    /// An `int` default must be whole; either kind must sit inside the
+    /// declared range.
+    private static func parseNumericDefault(_ defaultText: String, type: LerpParamType, range: ParamRange,
+                                            line: Int, text: String) throws -> Double {
+        guard let number = Double(defaultText), type == .float || number == number.rounded() else {
+            throw fail(line, text, type == .int
+                ? "an int default must be a whole number, got `\(defaultText)`"
+                : "a float default must be a number, got `\(defaultText)`")
+        }
+        guard number >= range.min, number <= range.max else {
+            throw fail(line, text, "default \(defaultText) is outside the declared range \(range.min)…\(range.max)")
+        }
+        return number
     }
 
     /// `NAME key=value, key=value` — NAME may be `"quoted with spaces"`.
@@ -1005,23 +1103,31 @@ public enum LerpParamParser {
     /// The float form exists so a palette that was hardcoded as float literals
     /// can become a parameter without any rounding through 8-bit hex.
     static func parseColor(_ text: String, line: Int, text full: String) throws -> LerpParamValue {
-        if text.hasPrefix("(") {
-            guard text.hasSuffix(")") else { throw fail(line, full, "colour `\(text)` is missing its closing `)`") }
-            let inner = String(text.dropFirst().dropLast())
-            let parts = splitTopLevel(inner, on: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            guard parts.count == 3 || parts.count == 4 else {
-                throw fail(line, full, "colour `\(text)` needs 3 or 4 components")
-            }
-            let numbers = parts.compactMap(Double.init)
-            guard numbers.count == parts.count else {
-                throw fail(line, full, "colour `\(text)` has a non-numeric component")
-            }
-            return .color(SIMD4<Float>(Float(numbers[0]), Float(numbers[1]), Float(numbers[2]),
-                                       Float(numbers.count == 4 ? numbers[3] : 1.0)))
-        }
+        if text.hasPrefix("(") { return try parseFloatColor(text, line: line, text: full) }
         guard text.hasPrefix("#") else {
             throw fail(line, full, "colour `\(text)` must be `#RGB`, `#RRGGBB`, `#RRGGBBAA` or `(r, g, b[, a])`")
         }
+        return try parseHexColor(text, line: line, text: full)
+    }
+
+    /// `(r, g, b[, a])`, components as written — not clamped here.
+    private static func parseFloatColor(_ text: String, line: Int, text full: String) throws -> LerpParamValue {
+        guard text.hasSuffix(")") else { throw fail(line, full, "colour `\(text)` is missing its closing `)`") }
+        let inner = String(text.dropFirst().dropLast())
+        let parts = splitTopLevel(inner, on: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 3 || parts.count == 4 else {
+            throw fail(line, full, "colour `\(text)` needs 3 or 4 components")
+        }
+        let numbers = parts.compactMap(Double.init)
+        guard numbers.count == parts.count else {
+            throw fail(line, full, "colour `\(text)` has a non-numeric component")
+        }
+        return .color(SIMD4<Float>(Float(numbers[0]), Float(numbers[1]), Float(numbers[2]),
+                                   Float(numbers.count == 4 ? numbers[3] : 1.0)))
+    }
+
+    /// `#RGB`, `#RRGGBB` or `#RRGGBBAA`; `text` starts with `#`.
+    private static func parseHexColor(_ text: String, line: Int, text full: String) throws -> LerpParamValue {
         var hex = String(text.dropFirst())
         if hex.count == 3 { hex = hex.map { "\($0)\($0)" }.joined() }
         guard hex.count == 6 || hex.count == 8, hex.allSatisfy(\.isHexDigit) else {

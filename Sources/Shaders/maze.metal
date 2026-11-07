@@ -371,37 +371,181 @@ static inline float3 mzLinear(float4 c) { return pow(max(c.rgb, 0.0), 2.2); }
 
 // ---------------------------------------------------------------------------
 
+// --- mzScene's stages. Each takes what it reads and returns what it makes;
+// the expressions are the ones mzScene always ran, in the same order.
+
+// Primary hit: wall, floor or ceiling. Returns t; `n2` and `wall` describe it.
+static inline float mzPrimary(float3 ro, float3 rd, device const uint* verts, uint2 cells,
+                              thread float2& n2, thread bool& wall) {
+    float tPlane = rd.y < -1e-5 ? -ro.y / rd.y
+                 : (rd.y > 1e-5 ? (MZ_WALL_H - ro.y) / rd.y : 1e9);
+    n2 = float2(0.0);
+    float tWall = mzTrace(ro.xz, rd.xz, tPlane, verts, cells, n2);
+    wall = tWall < tPlane;
+    return wall ? tWall : tPlane;
+}
+
+// Polyhedra and the goal gem, nearer than `t`. Returns the solid hit (8 = the
+// gem, -1 = none) and pulls `t` and `sN` in to it.
+static inline int mzSolids(float3 ro, float3 rd, float3 gemC, float now,
+                           constant LerpMazeFrame& F, thread float& t, thread float3& sN) {
+    int solid = -1;
+    float gemSpin = now * 0.7;
+    float th; float3 nn;
+    if (mzSolid(ro, rd, gemC, MZ_GEM_R, gemSpin, 1, t, th, nn)) { t = th; sN = nn; solid = 8; }
+    for (uint i = 0; i < min(F.dim.z, 8u); ++i) {
+        float4 o = F.objects[i];
+        if (o.z <= 0.0) continue;
+        float3 c = float3(o.x, MZ_EYE, o.y);
+        if (mzSolid(ro, rd, c, MZ_OBJ_R * o.z, now * 1.1 + o.w, 0, t, th, nn)) {
+            t = th; sN = nn; solid = int(i);
+        }
+    }
+    return solid;
+}
+
+static inline float3 mzShadeSolid(int solid, float3 n, float3 rd, float3 goalCol, float pulse,
+                                  float3 lightCol, constant LerpUniforms& u) {
+    float3 L = -rd;
+    float3 R = reflect(rd, n);
+    if (solid == 8) {
+        // The goal: a faceted gem with a slow glow.
+        float facet = pow(max(dot(n, L), 0.0), 2.0);
+        return goalCol * (0.45 + 0.75 * facet) * (0.7 + 0.3 * pulse);
+    }
+    // Polyhedra: polished silver.
+    float3 env = mix(mzLinear(u.colorFloor), mzLinear(u.colorCeil) * 1.3, R.y * 0.5 + 0.5);
+    float diff = max(dot(n, L), 0.0);
+    return float3(0.62, 0.66, 0.72) * (0.45 * diff * lightCol + env * 0.4)
+        + pow(max(dot(R, L), 0.0), 60.0) * lightCol * 0.6;
+}
+
+// Which wall a hit is on: the one from grid vertex `vtx` along +x or +z.
+struct MzWallRef {
+    bool   alongX;   // face normal ±z: bricks run along x
+    float  uu;       // world coordinate along the wall
+    float  face;     // 1..4, one per face orientation
+    float  lineC;    // the grid line the wall sits on
+    float  ei;       // the vertex the wall leaves from, along the wall
+    float  lu;       // 0..1 from that vertex to the next
+    int2   vtx;
+};
+
+static inline MzWallRef mzWallRef(float3 P, float3 n) {
+    MzWallRef w;
+    w.alongX = abs(n.z) > 0.5;
+    w.uu = w.alongX ? P.x : P.z;
+    w.face = w.alongX ? (n.z > 0.0 ? 1.0 : 2.0) : (n.x > 0.0 ? 3.0 : 4.0);
+    float along = w.alongX ? P.x : P.z;
+    w.lineC = w.alongX ? round(P.z) : round(P.x);
+    w.ei = floor(along);
+    w.lu = along - w.ei;
+    w.vtx = w.alongX ? int2(int(w.ei), int(w.lineC)) : int2(int(w.lineC), int(w.ei));
+    return w;
+}
+
+// A feature wall's albedo into `alb`, if this wall is one; `done` says whether
+// it covered this point.
+static inline void mzFeature(MzWallRef w, float y, float fw, MzStyle st,
+                             constant LerpMazeFrame& F, device const uint* verts, uint2 cells,
+                             thread float3& alb, thread bool& done) {
+    done = false;
+    bool feature = (mzRecord(verts, w.vtx, cells) & (w.alongX ? 16u : 32u)) != 0u;
+    if (feature) {
+        float pick = hash21(float2(w.vtx) * 1.731 + (w.alongX ? 0.37 : 0.71) + F.goal.z * 17.0);
+        if (pick < 0.5) alb = mzTiles(w.lu, y, fw, pick * 2.0, done);
+        else            alb = mzArch(w.lu, y, w.face, fw, st, done);
+    }
+}
+
+// Where this face stops near here: at a wall end or outside corner (vertex ±
+// MZ_HALF_T where an arm is missing), or an inside corner (where a wall leaves
+// on the face's own side).
+static inline void mzFaceExtent(MzWallRef w, float3 n, device const uint* verts, uint2 cells,
+                                thread float& lo, thread float& hi) {
+    uint plusA = w.alongX ? 1u : 4u, minusA = w.alongX ? 2u : 8u;
+    uint own = w.alongX ? (n.z > 0.0 ? 4u : 8u) : (n.x > 0.0 ? 1u : 2u);
+    lo = -1e9; hi = 1e9;
+    for (int k = 0; k < 2; ++k) {
+        float vk = w.ei + float(k);
+        int2 vv = w.alongX ? int2(int(vk), int(w.lineC)) : int2(int(w.lineC), int(vk));
+        uint r = mzRecord(verts, vv, cells);
+        float eL, eR;
+        if (r & own) { eL = vk + MZ_HALF_T; eR = vk - MZ_HALF_T; }
+        else {
+            eL = (r & minusA) ? -1e9 : vk - MZ_HALF_T;
+            eR = (r & plusA)  ?  1e9 : vk + MZ_HALF_T;
+        }
+        if (eL <= w.uu + 1e-3) lo = max(lo, eL);
+        if (eR >= w.uu - 1e-3) hi = min(hi, eR);
+    }
+}
+
+// A wall hit's normal, albedo and occlusion.
+static inline void mzWallSurface(float3 P, float3 rd, float2 n2, float t, float pxAngle,
+                                 constant LerpUniforms& u, constant LerpMazeFrame& F,
+                                 device const uint* verts, uint2 cells,
+                                 thread float3& n, thread float3& alb, thread float& ao) {
+    n = float3(n2.x, 0.0, n2.y);
+    float cosi = max(abs(dot(rd, n)), 0.06);
+    float fw = t * pxAngle / cosi;
+    MzWallRef w = mzWallRef(P, n);
+    MzStyle st = mzStyleOf(u.style > 0 ? uint(u.style - 1) : F.dim.w);
+
+    bool done;
+    mzFeature(w, P.y, fw, st, F, verts, cells, alb, done);
+    if (!done) {
+        float lo, hi;
+        mzFaceExtent(w, n, verts, cells, lo, hi);
+        float phase = (n.z < -0.5 || n.x > 0.5) ? 1.0 : 0.0;
+        alb = mzMasonry(w.uu, P.y, w.face, fw, st, lo, hi, phase);
+    }
+
+    // A little shading where walls meet the floor, the ceiling and each other.
+    float aoV = min(P.y, MZ_WALL_H - P.y);
+    float aoC = mzWallDist(P.xz + n2 * 0.2, verts, cells);
+    ao = mix(0.8, 1.0, saturate(aoV / 0.2)) * mix(0.75, 1.0, saturate(aoC / 0.2));
+}
+
+// A floor or ceiling hit's normal, albedo and occlusion.
+static inline void mzPlaneSurface(float3 P, float3 rd, float t, float pxAngle,
+                                  constant LerpUniforms& u, device const uint* verts, uint2 cells,
+                                  thread float3& n, thread float3& alb, thread float& ao) {
+    bool isFloor = rd.y < 0.0;
+    n = float3(0.0, isFloor ? 1.0 : -1.0, 0.0);
+    float fw = t * pxAngle / max(abs(rd.y), 0.06);
+    if (isFloor) {
+        alb = mzFlagstones(P.xz, fw, mzLinear(u.colorFloor));
+    } else {
+        alb = mzBoards(P.xz, fw, mzLinear(u.colorCeil));
+    }
+    float d = mzWallDist(P.xz, verts, cells);
+    ao = mix(0.75, 1.0, saturate(d / 0.2));
+}
+
+// A soft halo round the goal.
+static inline void mzGoalHalo(thread float3& col, float3 ro, float3 rd, float t, float3 gemC,
+                              float3 goalCol, float pulse) {
+    float tc = dot(gemC - ro, rd);
+    if (tc > 0.0 && tc < t + MZ_GEM_R) {
+        float d = length(ro + rd * tc - gemC);
+        col += goalCol * pulse * 0.0012 / (d * d + 0.01);
+    }
+}
+
 static inline float3 mzScene(float3 ro, float3 rd, float3 right, float3 up, float3 fwd,
                              float pxAngle, constant LerpUniforms& u,
                              constant LerpMazeFrame& F, device const uint* verts) {
     uint2 cells = F.dim.xy;
     float now = u.time;
 
-    // --- Primary hit: wall, floor or ceiling.
-    float tPlane = rd.y < -1e-5 ? -ro.y / rd.y
-                 : (rd.y > 1e-5 ? (MZ_WALL_H - ro.y) / rd.y : 1e9);
-    float2 n2 = float2(0.0);
-    float tWall = mzTrace(ro.xz, rd.xz, tPlane, verts, cells, n2);
-    bool wall = tWall < tPlane;
-    float t = wall ? tWall : tPlane;
+    float2 n2;
+    bool wall;
+    float t = mzPrimary(ro, rd, verts, cells, n2, wall);
 
-    // --- Polyhedra and the goal gem.
-    int solid = -1;
     float3 sN = float3(0.0);
     float3 gemC = float3(F.goal.x, MZ_EYE, F.goal.y);
-    float gemSpin = now * 0.7;
-    {
-        float th; float3 nn;
-        if (mzSolid(ro, rd, gemC, MZ_GEM_R, gemSpin, 1, t, th, nn)) { t = th; sN = nn; solid = 8; }
-        for (uint i = 0; i < min(F.dim.z, 8u); ++i) {
-            float4 o = F.objects[i];
-            if (o.z <= 0.0) continue;
-            float3 c = float3(o.x, MZ_EYE, o.y);
-            if (mzSolid(ro, rd, c, MZ_OBJ_R * o.z, now * 1.1 + o.w, 0, t, th, nn)) {
-                t = th; sN = nn; solid = int(i);
-            }
-        }
-    }
+    int solid = mzSolids(ro, rd, gemC, now, F, t, sN);
 
     float3 P = ro + rd * t;
     float3 goalCol = mzLinear(u.colorGoal);
@@ -413,90 +557,15 @@ static inline float3 mzScene(float3 ro, float3 rd, float3 right, float3 up, floa
     float3 lightCol = float3(1.0, 0.97, 0.92) * 1.25 * u.light;
 
     if (solid >= 0) {
-        float3 n = sN;
-        float3 L = -rd;
-        float3 R = reflect(rd, n);
-        if (solid == 8) {
-            // The goal: a faceted gem with a slow glow.
-            float facet = pow(max(dot(n, L), 0.0), 2.0);
-            col = goalCol * (0.45 + 0.75 * facet) * (0.7 + 0.3 * pulse);
-        } else {
-            // Polyhedra: polished silver.
-            float3 env = mix(mzLinear(u.colorFloor), mzLinear(u.colorCeil) * 1.3, R.y * 0.5 + 0.5);
-            float diff = max(dot(n, L), 0.0);
-            col = float3(0.62, 0.66, 0.72) * (0.45 * diff * lightCol + env * 0.4)
-                + pow(max(dot(R, L), 0.0), 60.0) * lightCol * 0.6;
-        }
+        col = mzShadeSolid(solid, sN, rd, goalCol, pulse, lightCol, u);
     } else if (t > 1e8) {
         col = float3(0.0);   // never seen: the outer wall is closed
     } else {
         float3 n;
         float3 alb;
         float ao;
-        float fw;
-        if (wall) {
-            n = float3(n2.x, 0.0, n2.y);
-            float cosi = max(abs(dot(rd, n)), 0.06);
-            fw = t * pxAngle / cosi;
-            bool alongX = abs(n.z) > 0.5;          // face normal ±z: bricks run along x
-            float uu = alongX ? P.x : P.z;
-            float face = alongX ? (n.z > 0.0 ? 1.0 : 2.0) : (n.x > 0.0 ? 3.0 : 4.0);
-            MzStyle st = mzStyleOf(u.style > 0 ? uint(u.style - 1) : F.dim.w);
-
-            // Which wall this is: the one from grid vertex `vtx` along +x or +z.
-            float along = alongX ? P.x : P.z;
-            float lineC = alongX ? round(P.z) : round(P.x);
-            float ei = floor(along);
-            float lu = along - ei;
-            int2 vtx = alongX ? int2(int(ei), int(lineC)) : int2(int(lineC), int(ei));
-            bool feature = (mzRecord(verts, vtx, cells) & (alongX ? 16u : 32u)) != 0u;
-
-            bool done = false;
-            if (feature) {
-                float pick = hash21(float2(vtx) * 1.731 + (alongX ? 0.37 : 0.71) + F.goal.z * 17.0);
-                if (pick < 0.5) alb = mzTiles(lu, P.y, fw, pick * 2.0, done);
-                else            alb = mzArch(lu, P.y, face, fw, st, done);
-            }
-            if (!done) {
-                // Where this face stops near here: at a wall end or outside
-                // corner (vertex ± MZ_HALF_T where an arm is missing), or an
-                // inside corner (where a wall leaves on the face's own side).
-                uint plusA = alongX ? 1u : 4u, minusA = alongX ? 2u : 8u;
-                uint own = alongX ? (n.z > 0.0 ? 4u : 8u) : (n.x > 0.0 ? 1u : 2u);
-                float lo = -1e9, hi = 1e9;
-                for (int k = 0; k < 2; ++k) {
-                    float vk = ei + float(k);
-                    int2 vv = alongX ? int2(int(vk), int(lineC)) : int2(int(lineC), int(vk));
-                    uint r = mzRecord(verts, vv, cells);
-                    float eL, eR;
-                    if (r & own) { eL = vk + MZ_HALF_T; eR = vk - MZ_HALF_T; }
-                    else {
-                        eL = (r & minusA) ? -1e9 : vk - MZ_HALF_T;
-                        eR = (r & plusA)  ?  1e9 : vk + MZ_HALF_T;
-                    }
-                    if (eL <= uu + 1e-3) lo = max(lo, eL);
-                    if (eR >= uu - 1e-3) hi = min(hi, eR);
-                }
-                float phase = (n.z < -0.5 || n.x > 0.5) ? 1.0 : 0.0;
-                alb = mzMasonry(uu, P.y, face, fw, st, lo, hi, phase);
-            }
-
-            // A little shading where walls meet the floor, the ceiling and each other.
-            float aoV = min(P.y, MZ_WALL_H - P.y);
-            float aoC = mzWallDist(P.xz + n2 * 0.2, verts, cells);
-            ao = mix(0.8, 1.0, saturate(aoV / 0.2)) * mix(0.75, 1.0, saturate(aoC / 0.2));
-        } else {
-            bool isFloor = rd.y < 0.0;
-            n = float3(0.0, isFloor ? 1.0 : -1.0, 0.0);
-            fw = t * pxAngle / max(abs(rd.y), 0.06);
-            if (isFloor) {
-                alb = mzFlagstones(P.xz, fw, mzLinear(u.colorFloor));
-            } else {
-                alb = mzBoards(P.xz, fw, mzLinear(u.colorCeil));
-            }
-            float d = mzWallDist(P.xz, verts, cells);
-            ao = mix(0.75, 1.0, saturate(d / 0.2));
-        }
+        if (wall) mzWallSurface(P, rd, n2, t, pxAngle, u, F, verts, cells, n, alb, ao);
+        else      mzPlaneSurface(P, rd, t, pxAngle, u, verts, cells, n, alb, ao);
 
         float diff = max(dot(n, -rd), 0.0);
         col = alb * lightCol * (0.4 + 0.6 * diff) * ao;
@@ -504,15 +573,7 @@ static inline float3 mzScene(float3 ro, float3 rd, float3 right, float3 up, floa
         col *= 1.0 / (1.0 + 0.045 * t * t);
     }
 
-    // A soft halo round the goal.
-    {
-        float tc = dot(gemC - ro, rd);
-        if (tc > 0.0 && tc < t + MZ_GEM_R) {
-            float d = length(ro + rd * tc - gemC);
-            col += goalCol * pulse * 0.0012 / (d * d + 0.01);
-        }
-    }
-
+    mzGoalHalo(col, ro, rd, t, gemC, goalCol, pulse);
     return col;
 }
 

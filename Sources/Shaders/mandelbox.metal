@@ -228,6 +228,225 @@ static float3 mbRoute(int r, float a) {
 
 static inline float mbHash(float a, float b) { return hash21(float2(a * 17.31 + 3.7, b * 9.13 + 1.3)); }
 
+// --- lerpMain's stages. Each takes what it reads and returns what it makes;
+// the expressions are the ones lerpMain always ran, in the same order.
+
+// Where a form puts the camera: position, heading, world up, how far the fog
+// has closed over a re-roll, and the scene's length unit for fog and occlusion.
+struct MbCamera {
+    float3 ro, fwd, upv;
+    float  mist;
+    float  sceneUnit;
+};
+
+// --- Halls: a baked route through the scale-3 interior.
+static inline MbCamera mbHallsCamera(constant LerpUniforms& u, float T, float breath,
+                                     thread MbScene& S) {
+    MbCamera c;
+    S.s = MB_HALLS_SCALE + MB_HALLS_BREATHE * u.breathe * breath;
+    S.E = mbExtent(S.s);
+    const float LA = 4.0;                        // look-ahead, control points
+    float span = float(MB_ROUTE_N) - 3.0 - LA;   // usable control-point span
+    float v = 0.035 / 0.2 * u.speed;             // control points per second
+    float g = T * v + (0.1 + 0.6 * u.seed) * span;
+    float seg = floor(g / span);
+    float a = g - seg * span;
+    c.mist = 1.0 - smoothstep(0.0, 1.0, min(a, span - a));
+    float h1 = mbHash(seg, u.seed), h2 = mbHash(seg + 0.5, u.seed + 0.25);
+    int sym = int(h1 * 47.999);
+    int r = int(h2 * 1.999);
+    bool rev = fract(h2 * 7.0) > 0.5;
+    float3 sg = float3((sym / 6) & 1 ? -1.0 : 1.0, (sym / 12) & 1 ? -1.0 : 1.0, (sym / 24) & 1 ? -1.0 : 1.0);
+    int pm = sym % 6;
+    float a0 = rev ? float(MB_ROUTE_N) - 2.0 - a : 1.0 + a;
+    float dir = rev ? -1.0 : 1.0;
+    c.ro = sg * mbPerm(mbRoute(r, a0), pm);
+    float3 ah = sg * mbPerm(0.5 * (mbRoute(r, a0 + dir * 1.5) + mbRoute(r, a0 + dir * 3.5)), pm);
+    c.fwd = normalize(ah - c.ro);
+    c.upv = sg * mbPerm(float3(0.0, 1.0, 0.0), pm);  // the routes were flown level in y
+    c.sceneUnit = 1.0;
+    S.lodBias = 0.5;                             // the fading fold is 0.4-1.2 px
+    S.nMax = 12.0;                               // the iteration count the routes were verified at
+    return c;
+}
+
+// --- Box: glide around the outside of the bounding cube, 1.65–2.45
+// half-widths out (cube norm), looking a little ahead of the centre.
+static inline MbCamera mbBoxCamera(constant LerpUniforms& u, float T, float breath,
+                                   thread MbScene& S) {
+    MbCamera c;
+    c.mist = 0.0;
+    float s = u.scale;
+    s = s < 0.0 ? min(s, -1.25) : max(s, 1.25);
+    S.s = s * (1.0 + 0.06 * u.breathe * breath);
+    S.E = mbExtent(S.s);
+    float w = 0.010 * u.speed;
+    float ph = u.seed * 6.2831;
+    float phi = ph + w * T;
+    float th = 0.38 * sin(0.63 * w * T + 2.0 * ph) + 0.12;
+    float3 dv = float3(cos(phi) * cos(th), sin(th), sin(phi) * cos(th));
+    float k = 2.05 + 0.4 * sin(1.37 * w * T + 3.0 * ph);
+    c.ro = dv / max(abs(dv.x), max(abs(dv.y), abs(dv.z))) * S.E * k;
+    float phi2 = phi + 0.45 + 0.25 * sin(0.9 * w * T + ph);
+    float3 tgt = float3(cos(phi2), 0.3 * sin(th), sin(phi2)) * S.E * 0.45;
+    c.fwd = normalize(tgt - c.ro);
+    c.upv = float3(0.0, 1.0, 0.0);
+    c.sceneUnit = S.E / 4.0;
+    S.lodBias = 2.5;                             // faces need their fine folds even far away
+    S.nMax = 15.0;
+    return c;
+}
+
+// --- Slab: low flight over an endless cut through tiled boxes; a new
+// heading every 300 s, behind fog.
+static inline MbCamera mbSlabCamera(constant LerpUniforms& u, float T, float breath,
+                                    thread MbScene& S) {
+    MbCamera c;
+    float s = u.scale;
+    s = s < 0.0 ? min(s, -1.25) : max(s, 1.25);
+    S.s = s * (1.0 + 0.06 * u.breathe * breath);
+    S.E = mbExtent(S.s);
+    S.cut = 0.35 * S.E;
+    const float SEG = 300.0;
+    float seg = floor(T / SEG);
+    float lt = T - seg * SEG;
+    float m0 = 1.0 - smoothstep(0.0, 5.0, SEG - lt);
+    float m1 = seg >= 1.0 ? 1.0 - smoothstep(0.0, 5.0, lt) : 0.0;
+    c.mist = max(m0, m1);
+    float h1 = mbHash(seg, u.seed);
+    float psi = h1 * 6.2831;
+    float x = 0.012 * S.E * u.speed * lt;
+    float2 hd = float2(cos(psi), sin(psi));
+    float2 sd = float2(-hd.y, hd.x);
+    float wph = x / S.E * 1.3 + h1 * 20.0;
+    float2 xz = hd * x + sd * (0.18 * S.E * sin(wph)) + float2(h1, fract(h1 * 13.0)) * 2.0 * S.E;
+    float hgt = S.cut + S.E * (0.14 + 0.05 * sin(0.02 * lt + h1 * 9.0));
+    c.ro = float3(xz.x, hgt, xz.y);
+    float2 fd = normalize(hd + sd * (0.18 * 1.3 * cos(wph)));
+    c.fwd = normalize(float3(fd.x, -0.5, fd.y));
+    c.upv = float3(0.0, 1.0, 0.0);
+    c.sceneUnit = S.E / 4.0;
+    S.lodBias = 0.0;                             // 0.7-2 px; most of the frame is far
+    S.nMax = 11.0;
+    return c;
+}
+
+// Outside the box, fog starts where the ray enters the bounding cube; a ray
+// that misses it is never marched.
+static inline float mbBoxEntry(float3 ro, float3 rd, float E, thread bool& boxMiss) {
+    // Fast-math has no infinities: keep the direction off zero.
+    float3 rs = select(rd, float3(1e-6), abs(rd) < 1e-6);
+    float3 inv = 1.0 / rs;
+    float3 t0 = (-E - ro) * inv, t1 = (E - ro) * inv;
+    float tn = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
+    float tf = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
+    boxMiss = tn > tf || tf < 0.0;
+    return boxMiss ? 0.0 : max(tn, 0.0);
+}
+
+// --- Shared phase. The lanes of a SIMD group look along nearly the
+// same ray, so they cross empty space together: each lane tests a
+// different one of the next strides along the group's centre ray,
+// and the group advances past every sample whose own clearance (less
+// the cone that covers all lanes) vouches for the gap after it.
+// Control flow depends only on SIMD-reduced values, so the group
+// stays in lockstep. Returns where the group got to; `i` counts its steps.
+static inline float mbSharedMarch(float3 ro, float3 rd, MbScene S, float px, float tmax,
+                                  thread int& i) {
+    float3 rc = normalize(simd_sum(rd));
+    float cmin = simd_min(dot(rd, rc));
+    float cone = sqrt(max(1.0 - cmin * cmin, 0.0)) / max(cmin, 0.5) + px;
+    uint rank = simd_prefix_exclusive_sum(1u);
+    uint cnt = simd_sum(1u);
+    float tq = 0.0;
+    float stride = max(mbD(ro, S, S.nMax), 1e-4) * MB_SHARED_FRAC;
+    for (int q = 0; q < MB_SHARED_ITERS; q++) {
+        float ti = tq + stride * float(rank + 1);
+        float dc = mbD(ro + rc * ti, S, mbLod(ti, S, px)) - cone * ti;
+        bool tight = dc < 3.0 * px * ti;
+        bool gapOK = !tight && dc >= stride;
+        uint firstTight = simd_min(tight ? rank : cnt);
+        uint firstGap = simd_min(gapOK ? cnt : rank);
+        if (firstTight == 0) break;
+        uint m = min(firstTight - 1, firstGap);
+        float dM = simd_max(rank == m ? dc : -1e9);
+        tq += stride * float(m + 1);
+        i++;
+        if (firstTight < cnt || tq > tmax) break;
+        stride = dM * MB_SHARED_FRAC;
+    }
+    return tq;
+}
+
+// --- Each lane on its own ray, over-relaxed with fallback, from `t` on and
+// continuing `i`'s step count. Returns whether it hit.
+static inline bool mbLaneMarch(float3 ro, float3 rd, MbScene S, float px, float tFog0, float fogK,
+                               float tmax, thread float& t, thread int& i,
+                               thread float& trapHit, thread float& dHit) {
+    bool hit = false;
+    float omega = MB_OMEGA, prevD = 0.0, stepLen = 0.0;
+    for (; i < MB_STEPS; i++) {
+        float lod = mbLod(t, S, px);
+        float d = mbScene(ro + rd * t, S, lod, trapHit);
+        dHit = d;
+        float eps = 2.0 * px * t * min(1.0 + 2.0 * max(t - tFog0, 0.0) * fogK, MB_FOG_EPS);
+        bool fail = omega > 1.0 && (d + prevD) < stepLen;
+        if (fail) {
+            stepLen -= omega * stepLen;
+            omega = 1.0;
+        } else {
+            if (d < eps) { hit = true; break; }
+            stepLen = d * omega;
+        }
+        prevD = d;
+        t += stepLen;
+        if (t > tmax) break;
+    }
+    if (i == MB_STEPS) hit = true;   // still creeping along a surface: shade it
+    return hit;
+}
+
+// The lit, fogged colour of a hit at t.
+static inline float3 mbShade(float3 ro, float3 rd, float3 right, float3 up, float t, float dHit,
+                             float trapHit, MbScene S, MbCamera cam, float px, float tFog0,
+                             float fogK, float3 keyDir, float3 fogCol, constant LerpUniforms& u) {
+    float3 p = ro + rd * t;
+    float e = max(2.0 * px * t, 1e-5);
+    float lod = mbLod(t, S, px);
+    float3 n = normalize(float3(mbD(p + float3(e, 0.0, 0.0), S, lod), mbD(p + float3(0.0, e, 0.0), S, lod),
+                                mbD(p + float3(0.0, 0.0, e), S, lod)) - dHit);
+    // Occlusion: one probe along the normal, times the orbit trap (folds
+    // that came close to the origin sit deep in the structure).
+    float h = 0.06 * cam.sceneUnit;
+    float aoP = clamp(mbD(p + n * h, S, max(lod - 2.0, float(MB_LOD_MIN))) / h, 0.0, 1.0);
+    float tr = clamp(sqrt(trapHit), 0.0, 1.0);
+    float ao = (0.2 + 0.8 * aoP) * mix(0.7, 1.0, tr);
+
+    float3 alb = u.stone.rgb * mix(0.8, 1.05, tr);
+    alb = mix(alb, alb * float3(0.82, 0.9, 1.08), smoothstep(0.35, 0.05, tr));
+
+    float3 L, lc;
+    if (S.form == 0) {
+        float3 dl = ro + 0.08 * (up + right) - p;
+        float r = length(dl);
+        L = dl / r;
+        lc = u.lamp.rgb * 1.6 / (1.0 + r * r * 1.2);
+    } else {
+        L = keyDir;
+        lc = u.lamp.rgb * 1.1;
+    }
+    float ndl = max(dot(n, L), 0.0);
+    float ndh = max(dot(n, normalize(L - rd)), 0.0);
+    float fres = pow(1.0 - max(dot(n, -rd), 0.0), 5.0);
+    float3 f0 = mix(float3(0.04), alb * 1.3, u.metal);
+    float3 F = f0 + (1.0 - f0) * fres;
+    float gloss = mix(24.0, 90.0, u.metal);
+    float3 spec = F * pow(ndh, gloss) * (gloss + 8.0) / 25.0;
+    float3 amb = u.haze.rgb * 9.0 * (0.6 + 0.4 * dot(n, up)) + F * fogCol * 4.0 * u.metal;
+    float3 c = alb * (1.0 - 0.75 * u.metal) * (lc * ndl + amb) * ao + spec * lc * ndl * ao;
+    return mix(c, fogCol, 1.0 - exp(-max(t - tFog0, 0.0) * fogK));
+}
+
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
     float2 uv = lerpUV(pos, u.resolution);
     float T = u.time;
@@ -237,87 +456,11 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     S.form = form;
     S.cut = 0.0;
     float breath = sin(0.045 * T + u.seed * 40.0);
-    float3 ro, fwd, upv;
-    float mist = 0.0;
-    float sceneUnit;
-
-    if (form == 0) {
-        // --- Halls: a baked route through the scale-3 interior.
-        S.s = MB_HALLS_SCALE + MB_HALLS_BREATHE * u.breathe * breath;
-        S.E = mbExtent(S.s);
-        const float LA = 4.0;                        // look-ahead, control points
-        float span = float(MB_ROUTE_N) - 3.0 - LA;   // usable control-point span
-        float v = 0.035 / 0.2 * u.speed;             // control points per second
-        float g = T * v + (0.1 + 0.6 * u.seed) * span;
-        float seg = floor(g / span);
-        float a = g - seg * span;
-        mist = 1.0 - smoothstep(0.0, 1.0, min(a, span - a));
-        float h1 = mbHash(seg, u.seed), h2 = mbHash(seg + 0.5, u.seed + 0.25);
-        int sym = int(h1 * 47.999);
-        int r = int(h2 * 1.999);
-        bool rev = fract(h2 * 7.0) > 0.5;
-        float3 sg = float3((sym / 6) & 1 ? -1.0 : 1.0, (sym / 12) & 1 ? -1.0 : 1.0, (sym / 24) & 1 ? -1.0 : 1.0);
-        int pm = sym % 6;
-        float a0 = rev ? float(MB_ROUTE_N) - 2.0 - a : 1.0 + a;
-        float dir = rev ? -1.0 : 1.0;
-        ro = sg * mbPerm(mbRoute(r, a0), pm);
-        float3 ah = sg * mbPerm(0.5 * (mbRoute(r, a0 + dir * 1.5) + mbRoute(r, a0 + dir * 3.5)), pm);
-        fwd = normalize(ah - ro);
-        upv = sg * mbPerm(float3(0.0, 1.0, 0.0), pm);  // the routes were flown level in y
-        sceneUnit = 1.0;
-        S.lodBias = 0.5;                             // the fading fold is 0.4-1.2 px
-        S.nMax = 12.0;                               // the iteration count the routes were verified at
-    } else if (form == 1) {
-        // --- Box: glide around the outside of the bounding cube, 1.65–2.45
-        // half-widths out (cube norm), looking a little ahead of the centre.
-        float s = u.scale;
-        s = s < 0.0 ? min(s, -1.25) : max(s, 1.25);
-        S.s = s * (1.0 + 0.06 * u.breathe * breath);
-        S.E = mbExtent(S.s);
-        float w = 0.010 * u.speed;
-        float ph = u.seed * 6.2831;
-        float phi = ph + w * T;
-        float th = 0.38 * sin(0.63 * w * T + 2.0 * ph) + 0.12;
-        float3 dv = float3(cos(phi) * cos(th), sin(th), sin(phi) * cos(th));
-        float k = 2.05 + 0.4 * sin(1.37 * w * T + 3.0 * ph);
-        ro = dv / max(abs(dv.x), max(abs(dv.y), abs(dv.z))) * S.E * k;
-        float phi2 = phi + 0.45 + 0.25 * sin(0.9 * w * T + ph);
-        float3 tgt = float3(cos(phi2), 0.3 * sin(th), sin(phi2)) * S.E * 0.45;
-        fwd = normalize(tgt - ro);
-        upv = float3(0.0, 1.0, 0.0);
-        sceneUnit = S.E / 4.0;
-        S.lodBias = 2.5;                             // faces need their fine folds even far away
-        S.nMax = 15.0;
-    } else {
-        // --- Slab: low flight over an endless cut through tiled boxes; a new
-        // heading every 300 s, behind fog.
-        float s = u.scale;
-        s = s < 0.0 ? min(s, -1.25) : max(s, 1.25);
-        S.s = s * (1.0 + 0.06 * u.breathe * breath);
-        S.E = mbExtent(S.s);
-        S.cut = 0.35 * S.E;
-        const float SEG = 300.0;
-        float seg = floor(T / SEG);
-        float lt = T - seg * SEG;
-        float m0 = 1.0 - smoothstep(0.0, 5.0, SEG - lt);
-        float m1 = seg >= 1.0 ? 1.0 - smoothstep(0.0, 5.0, lt) : 0.0;
-        mist = max(m0, m1);
-        float h1 = mbHash(seg, u.seed);
-        float psi = h1 * 6.2831;
-        float x = 0.012 * S.E * u.speed * lt;
-        float2 hd = float2(cos(psi), sin(psi));
-        float2 sd = float2(-hd.y, hd.x);
-        float wph = x / S.E * 1.3 + h1 * 20.0;
-        float2 xz = hd * x + sd * (0.18 * S.E * sin(wph)) + float2(h1, fract(h1 * 13.0)) * 2.0 * S.E;
-        float hgt = S.cut + S.E * (0.14 + 0.05 * sin(0.02 * lt + h1 * 9.0));
-        ro = float3(xz.x, hgt, xz.y);
-        float2 fd = normalize(hd + sd * (0.18 * 1.3 * cos(wph)));
-        fwd = normalize(float3(fd.x, -0.5, fd.y));
-        upv = float3(0.0, 1.0, 0.0);
-        sceneUnit = S.E / 4.0;
-        S.lodBias = 0.0;                             // 0.7-2 px; most of the frame is far
-        S.nMax = 11.0;
-    }
+    MbCamera cam;
+    if (form == 0)      cam = mbHallsCamera(u, T, breath, S);
+    else if (form == 1) cam = mbBoxCamera(u, T, breath, S);
+    else                cam = mbSlabCamera(u, T, breath, S);
+    float3 ro = cam.ro, fwd = cam.fwd, upv = cam.upv;
 
     float3 right = normalize(cross(upv, fwd));
     // Drag to turn: round the box from outside; in the halls and over the
@@ -333,21 +476,12 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // the same on-screen size of hole at every distance; the fog may widen it
     // by at most MB_FOG_EPS, so it cannot keep sealing bigger ones further out.
     float px = 2.0 / (lens * MB_FOCAL * 1500.0);
-    float fogK = mix(0.12, 0.9, u.fog) / sceneUnit;
+    float fogK = mix(0.12, 0.9, u.fog) / cam.sceneUnit;
 
     // Fog starts at the bounding cube outside the box, at the eye elsewhere.
     float tFog0 = 0.0;
     bool boxMiss = false;
-    if (form == 1) {
-        // Fast-math has no infinities: keep the direction off zero.
-        float3 rs = select(rd, float3(1e-6), abs(rd) < 1e-6);
-        float3 inv = 1.0 / rs;
-        float3 t0 = (-S.E - ro) * inv, t1 = (S.E - ro) * inv;
-        float tn = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
-        float tf = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
-        boxMiss = tn > tf || tf < 0.0;
-        tFog0 = boxMiss ? 0.0 : max(tn, 0.0);
-    }
+    if (form == 1) tFog0 = mbBoxEntry(ro, rd, S.E, boxMiss);
     float tmax = tFog0 + 3.5 / fogK;                 // fog is ~97% by here
 
     float t = 0.0;
@@ -355,57 +489,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     bool hit = false;
     float trapHit = 1.0, dHit = 0.0;
     if (!boxMiss) {
-        // --- Shared phase. The lanes of a SIMD group look along nearly the
-        // same ray, so they cross empty space together: each lane tests a
-        // different one of the next strides along the group's centre ray,
-        // and the group advances past every sample whose own clearance (less
-        // the cone that covers all lanes) vouches for the gap after it.
-        // Control flow depends only on SIMD-reduced values, so the group
-        // stays in lockstep.
-        float3 rc = normalize(simd_sum(rd));
-        float cmin = simd_min(dot(rd, rc));
-        float cone = sqrt(max(1.0 - cmin * cmin, 0.0)) / max(cmin, 0.5) + px;
-        uint rank = simd_prefix_exclusive_sum(1u);
-        uint cnt = simd_sum(1u);
-        float tq = 0.0;
-        float stride = max(mbD(ro, S, S.nMax), 1e-4) * MB_SHARED_FRAC;
-        for (int q = 0; q < MB_SHARED_ITERS; q++) {
-            float ti = tq + stride * float(rank + 1);
-            float dc = mbD(ro + rc * ti, S, mbLod(ti, S, px)) - cone * ti;
-            bool tight = dc < 3.0 * px * ti;
-            bool gapOK = !tight && dc >= stride;
-            uint firstTight = simd_min(tight ? rank : cnt);
-            uint firstGap = simd_min(gapOK ? cnt : rank);
-            if (firstTight == 0) break;
-            uint m = min(firstTight - 1, firstGap);
-            float dM = simd_max(rank == m ? dc : -1e9);
-            tq += stride * float(m + 1);
-            i++;
-            if (firstTight < cnt || tq > tmax) break;
-            stride = dM * MB_SHARED_FRAC;
-        }
-        t = tq;
-
-        // --- Each lane on its own ray, over-relaxed with fallback.
-        float omega = MB_OMEGA, prevD = 0.0, stepLen = 0.0;
-        for (; i < MB_STEPS; i++) {
-            float lod = mbLod(t, S, px);
-            float d = mbScene(ro + rd * t, S, lod, trapHit);
-            dHit = d;
-            float eps = 2.0 * px * t * min(1.0 + 2.0 * max(t - tFog0, 0.0) * fogK, MB_FOG_EPS);
-            bool fail = omega > 1.0 && (d + prevD) < stepLen;
-            if (fail) {
-                stepLen -= omega * stepLen;
-                omega = 1.0;
-            } else {
-                if (d < eps) { hit = true; break; }
-                stepLen = d * omega;
-            }
-            prevD = d;
-            t += stepLen;
-            if (t > tmax) break;
-        }
-        if (i == MB_STEPS) hit = true;   // still creeping along a surface: shade it
+        t = mbSharedMarch(ro, rd, S, px, tmax, i);
+        hit = mbLaneMarch(ro, rd, S, px, tFog0, fogK, tmax, t, i, trapHit, dHit);
     }
 
     // Light: a lantern just above the eye in the halls; outside, a key light
@@ -416,44 +501,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     if (form != 0) fogCol += u.lamp.rgb * 0.06 * pow(max(dot(rd, keyDir), 0.0), 6.0);
 
     float3 col = fogCol;
-    if (hit) {
-        float3 p = ro + rd * t;
-        float e = max(2.0 * px * t, 1e-5);
-        float lod = mbLod(t, S, px);
-        float3 n = normalize(float3(mbD(p + float3(e, 0.0, 0.0), S, lod), mbD(p + float3(0.0, e, 0.0), S, lod),
-                                    mbD(p + float3(0.0, 0.0, e), S, lod)) - dHit);
-        // Occlusion: one probe along the normal, times the orbit trap (folds
-        // that came close to the origin sit deep in the structure).
-        float h = 0.06 * sceneUnit;
-        float aoP = clamp(mbD(p + n * h, S, max(lod - 2.0, float(MB_LOD_MIN))) / h, 0.0, 1.0);
-        float tr = clamp(sqrt(trapHit), 0.0, 1.0);
-        float ao = (0.2 + 0.8 * aoP) * mix(0.7, 1.0, tr);
-
-        float3 alb = u.stone.rgb * mix(0.8, 1.05, tr);
-        alb = mix(alb, alb * float3(0.82, 0.9, 1.08), smoothstep(0.35, 0.05, tr));
-
-        float3 L, lc;
-        if (form == 0) {
-            float3 dl = ro + 0.08 * (up + right) - p;
-            float r = length(dl);
-            L = dl / r;
-            lc = u.lamp.rgb * 1.6 / (1.0 + r * r * 1.2);
-        } else {
-            L = keyDir;
-            lc = u.lamp.rgb * 1.1;
-        }
-        float ndl = max(dot(n, L), 0.0);
-        float ndh = max(dot(n, normalize(L - rd)), 0.0);
-        float fres = pow(1.0 - max(dot(n, -rd), 0.0), 5.0);
-        float3 f0 = mix(float3(0.04), alb * 1.3, u.metal);
-        float3 F = f0 + (1.0 - f0) * fres;
-        float gloss = mix(24.0, 90.0, u.metal);
-        float3 spec = F * pow(ndh, gloss) * (gloss + 8.0) / 25.0;
-        float3 amb = u.haze.rgb * 9.0 * (0.6 + 0.4 * dot(n, up)) + F * fogCol * 4.0 * u.metal;
-        float3 c = alb * (1.0 - 0.75 * u.metal) * (lc * ndl + amb) * ao + spec * lc * ndl * ao;
-        col = mix(c, fogCol, 1.0 - exp(-max(t - tFog0, 0.0) * fogK));
-    }
-    col = mix(col, u.haze.rgb, mist);
+    if (hit) col = mbShade(ro, rd, right, up, t, dHit, trapHit, S, cam, px, tFog0, fogK, keyDir, fogCol, u);
+    col = mix(col, u.haze.rgb, cam.mist);
 
     col = 1.0 - exp(-1.2 * col);
     col = sqrt(max(col, 0.0));
