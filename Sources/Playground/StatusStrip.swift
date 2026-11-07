@@ -92,8 +92,7 @@ final class StatusStrip: NSView {
         compile = state
         pill.state(state)
         pill.toolTip = switch state {
-        case .failed: "The render keeps running the last version that compiled. Click to jump to the first error (⌘E)."
-        case .compiled: "The editor's text is what is on screen."
+        case .failed: "Jump to the first error (⌘E)"
         default: nil
         }
     }
@@ -185,7 +184,7 @@ private final class CompilePill: NSButton {
             clickable = false
         case .failed(let count):
             (dot, tint) = (EditorTheme.error, EditorTheme.error)
-            words = "\(count) error\(count == 1 ? "" : "s") · last good version still running"
+            words = "\(count) error\(count == 1 ? "" : "s")"
             fill = EditorTheme.error.withAlphaComponent(0.13)
             clickable = true
         case .problem(let text):

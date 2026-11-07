@@ -8,7 +8,7 @@ import AppKit
 /// readout text (fps, pixel size, EDR headroom), a stock popup reading
 /// "Full", a blue checkbox and a borderless icon — five controls in four
 /// visual languages. These replace them with a round play button, a frame
-/// rate, a resolution pill that opens a menu, an HDR pill and a round
+/// rate, a resolution button that opens a menu, an HDR pill and a round
 /// full-screen button.
 enum PlayerStyle {
     static let height: CGFloat = 26
@@ -139,27 +139,27 @@ final class PlayerToggle: PlayerPill {
     }
 }
 
-/// One choice out of a few, as one pill: "Resolution  High ⌄". Clicking it
-/// opens a menu of the choices with the current one checked, the way a popup
-/// button does, and sends the action only when the choice changes.
-///
-/// It replaced a Low / Med / High segmented track. That put three words on the
-/// bar all the time for a decision made once in a while, and its own caption
-/// beside it made a fourth.
+/// One choice out of a few, as a round icon button that opens a menu of the
+/// choices with the current one checked. At the usual choice it is only the
+/// icon; any other choice is spelled out beside it ("Low"), because that is
+/// the one time the setting is worth seeing.
 final class PlayerChoice: PlayerPill {
     private(set) var selectedIndex = 0
-    private let caption: String
+    private let symbol: String
     private let titles: [String]
+    /// The choice that needs no label.
+    private let usual: Int
     weak var choiceTarget: AnyObject?
     var choiceAction: Selector?
 
-    init(_ caption: String, choices titles: [String]) {
-        self.caption = caption
+    init(symbol: String, accessibility: String, choices titles: [String], usual: Int) {
+        self.symbol = symbol
         self.titles = titles
+        self.usual = usual
         super.init(frame: .zero)
         setAccessibilityRole(.popUpButton)
-        setAccessibilityLabel(caption)
-        restyle()
+        setAccessibilityLabel(accessibility)
+        select(usual)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -171,19 +171,16 @@ final class PlayerChoice: PlayerPill {
         restyle()
     }
 
-    private var label: NSAttributedString {
-        let text = NSMutableAttributedString(string: caption.uppercased() + "  ", attributes: [
-            .font: NSFont.systemFont(ofSize: 9.5, weight: .semibold), .kern: 0.8,
-            .foregroundColor: InspectorStyle.heading,
-            .baselineOffset: 0.5])
-        text.append(NSAttributedString(string: titles[selectedIndex], attributes: [
+    private var label: NSAttributedString? {
+        guard selectedIndex != usual else { return nil }
+        return NSAttributedString(string: titles[selectedIndex], attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: hovered ? EditorTheme.text : EditorTheme.text.withAlphaComponent(0.88)]))
-        return text
+            .foregroundColor: hovered ? EditorTheme.text : EditorTheme.text.withAlphaComponent(0.88)])
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: (label.size().width + 14 + 22).rounded(), height: PlayerStyle.height)
+        guard let label else { return NSSize(width: PlayerStyle.height, height: PlayerStyle.height) }
+        return NSSize(width: (label.size().width + 34).rounded(), height: PlayerStyle.height)
     }
 
     override func restyle() {
@@ -193,18 +190,18 @@ final class PlayerChoice: PlayerPill {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let text = label
-        let size = text.size()
-        text.draw(at: NSPoint(x: 13, y: (bounds.height - size.height) / 2))
-        let color = hovered ? EditorTheme.text : InspectorStyle.heading
-        let configuration = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+        let color = hovered ? EditorTheme.text : EditorTheme.text.withAlphaComponent(0.85)
+        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
             .applying(.init(paletteColors: [color]))
-        if let chevron = NSImage(systemSymbolName: "chevron.up.chevron.down", accessibilityDescription: nil)?
-            .withSymbolConfiguration(configuration) {
-            chevron.draw(in: NSRect(x: bounds.maxX - 13 - chevron.size.width,
-                                    y: (bounds.height - chevron.size.height) / 2,
-                                    width: chevron.size.width, height: chevron.size.height),
-                        from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        guard let icon = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration) else { return }
+        let iconX = label == nil ? (bounds.width - icon.size.width) / 2 : 9
+        icon.draw(in: NSRect(x: iconX, y: (bounds.height - icon.size.height) / 2,
+                             width: icon.size.width, height: icon.size.height),
+                  from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        if let label {
+            let size = label.size()
+            label.draw(at: NSPoint(x: iconX + icon.size.width + 5, y: (bounds.height - size.height) / 2))
         }
     }
 

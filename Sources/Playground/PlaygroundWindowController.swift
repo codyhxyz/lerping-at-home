@@ -110,11 +110,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// see `StatusStrip`.
     private let statusStrip = StatusStrip()
     private let fpsLabel = NSTextField(labelWithString: "— fps")
-    /// Playback resolution: one pill reading "Resolution  High" that opens a
-    /// menu of Low / Med / High. It is one decision, so the bar shows the
-    /// answer rather than all three choices.
-    private let resolutionControl = PlayerChoice("Resolution",
-                                                 choices: PlaygroundWindowController.renderScales.map(\.title))
+    /// Playback resolution: a round button that opens Low / Med / High. Only
+    /// the icon at High; a lowered resolution says so beside it.
+    private let resolutionControl = PlayerChoice(
+        symbol: "slider.horizontal.below.rectangle", accessibility: "Resolution",
+        choices: PlaygroundWindowController.renderScales.map(\.title),
+        usual: PlaygroundWindowController.renderScales.firstIndex { $0.scale == 1 } ?? 0)
     /// Matches the saver: on by default, at the saver's own peak, and engaged
     /// only where `LerpEDR.blocker` allows, so what you tune here is what the
     /// screensaver will show. A toggle and nothing more — there was a peak
@@ -333,8 +334,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
         resolutionControl.choiceTarget = self
         resolutionControl.choiceAction = #selector(resolutionChanged)
-        resolutionControl.select(Self.renderScales.firstIndex { $0.scale == 1 } ?? 0)
-        resolutionControl.toolTip = "Lower resolution draws fewer pixels for a smoother frame rate"
+        resolutionControl.toolTip = "Resolution"
 
         edrToggle.state = .on
         edrToggle.toolTip = "Brighter highlights on an HDR screen, as the screensaver shows them"
@@ -1720,19 +1720,17 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func refreshInputs() {
         var live: [InputChips.Input: (label: String, tip: String)] = [:]
         if audioTap != nil {
-            live[.audio] = ("Audio", "Listening to system audio (u.audioLevel and friends). Click to stop.")
+            live[.audio] = ("Audio", "System audio — click to stop")
         }
         if let headTracker {
-            live[.head] = ("Head", "Tracking your head with \(headTracker.cameraName) (u.viewer). "
-                + "Click to stop; Shader › Recentre Head makes where you are straight on.")
+            live[.head] = ("Head", "Head tracking with \(headTracker.cameraName) — click to stop")
         }
         if hands != nil {
-            live[.hands] = ("Hands", "Hand control is on: pinch and move to turn a bound control. Click to stop.")
+            live[.hands] = ("Hands", "Hand control — click to stop")
         }
         if midi.isAvailable, !midi.sources.isEmpty {
             live[.midi] = (activeMapping?.name ?? "MIDI",
-                           "\(midi.summary)\(activeMapping.map { " · bank “\($0.name)”" } ?? ""). "
-                               + "Click for MIDI banks.")
+                           "\(midi.summary) — click for MIDI banks")
         }
         inputChips.audioLevels = metalView.audioLevels
         inputChips.show(live)
