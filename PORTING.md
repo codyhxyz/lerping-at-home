@@ -461,6 +461,13 @@ in `LerpDataProviders`, and give the shader a matching `// lerp-data:` line.
   overload instead; it defaults to the two-argument form, so providers that
   ignore parameters need no change.
 
+**Pictures.** `// lerp-data: image:<name>` (`ImageData.swift`) binds a photo
+at `texture(1)` — decoded into Display P3, so returning
+the sample unchanged shows the photo's own pixels — and its 16-bit nearness map
+`<name>.depth.png` at `texture(2)`, with `lerpImageSampler` to read them.
+`depth-window` is the worked example; `make depth-window` makes the pair from
+any photo.
+
 A shader with no `// lerp-data:` line gets no provider, is bound exactly as it
 always was, and needs no changes.
 

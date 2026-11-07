@@ -399,6 +399,7 @@ public final class ShaderLibrary: @unchecked Sendable {
         self.compiler = LerpPipelineCompiler.shared(for: device)
         self.extraSearchURLs = extraSearchURLs
         LerpSplatAssets.addSourceRoots(extraSearchURLs)
+        LerpImageAssets.addSourceRoots(extraSearchURLs)
     }
 
     /// Which compiler new pipelines go through: `mtl4` or `classic`.
