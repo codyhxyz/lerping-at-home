@@ -233,9 +233,21 @@ public final class SplatData: LerpDataProvider {
         var near: Float = 0.02
     }
 
+    /// The look's `// lerp-camera:` numbers. Set by
+    /// `ShaderLibrary.dataProvider(for:)` with the caption, from whichever
+    /// thread installs the look, so it is behind a lock.
+    var camera: [String: Float] {
+        get { cameraLock.withLock { cameraStore } }
+        set { cameraLock.withLock { cameraStore = newValue } }
+    }
+    private let cameraLock = NSLock()
+    private var cameraStore: [String: Float] = [:]
+
+    /// A slider's value if the look has one by this name, else its
+    /// `// lerp-camera:` number, else `fallback`.
     private func param(_ p: LerpParameterValues?, _ name: String, _ fallback: Float) -> Float {
-        guard let v = p?[name]?.scalarValue else { return fallback }
-        return Float(v)
+        if let v = p?[name]?.scalarValue { return Float(v) }
+        return camera[name] ?? fallback
     }
 
     private func camera(uniforms: LerpUniforms, params: LerpParameterValues?, size: SIMD2<Float>) -> Camera {

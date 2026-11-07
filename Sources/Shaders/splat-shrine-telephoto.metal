@@ -15,17 +15,9 @@
 //
 // lerp-category: Splats
 // lerp-data: splat:dolly:saka-shrine
+// lerp-camera: period=60 angle=130 distance=3 height=0.15 lookHeight=0.4 clip=1.2 wideFov=75 longFov=10 framing=1.5
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"
-// lerp-param: period     float 10 300  = 60    "Seconds wide-long-wide"
-// lerp-param: angle      float -360 360 = 130  "Direction"
-// lerp-param: wideFov    float 20 110  = 75    "Wide field of view"
-// lerp-param: longFov    float 2 40    = 10    "Long field of view"
-// lerp-param: framing    float 0.3 4   = 1.5   "Framing (subject radii)"
-// lerp-param: distance   float 0.5 10  = 3     "Reference distance"
-// lerp-param: height     float -2 4    = 0.15  "Camera height (at reference distance)"
-// lerp-param: lookHeight float -1 2    = 0.4   "Look-at height"
-// lerp-param: clip       float 0 10    = 1.2   "Clip in front of subject"
 // lerp-param: drift      float 0 40    = 0     "Sideways drift (degrees)"
 // lerp-param: zenith     color         = (0.42, 0.58, 0.80) "Sky (top)"
 // lerp-param: horizon    color         = (0.80, 0.86, 0.92) "Sky (horizon)"
@@ -34,7 +26,7 @@
 // lerp-param: pitch      float -15 15 = 0 "Tilt"
 // lerp-param: magnify    float 0 0.5 = 0 "Zoom"   (back, it sees past the capture)
 //
-// lerp-preset: Drifting  drift=12, period=80
+// lerp-preset: Drifting  drift=12, speed=0.75
 
 fragment half4 lerpMain(float4 pos [[position]],
                         constant LerpUniforms& u [[buffer(0)]],

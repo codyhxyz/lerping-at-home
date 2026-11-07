@@ -600,6 +600,14 @@ its parameters and presets wherever the file goes.
   an eased arc) or `dolly` (a dolly zoom). A drag on the render swings the
   camera round what it looks at; a capture seen from inside, like the town
   square, adds `:look` so a drag turns the camera where it stands instead.
+- How the camera is set up for its capture is one line, not sliders:
+
+      // lerp-camera: period=120 angle=150 arc=150 distance=4.3 height=2 fov=40
+
+  (`period` is seconds a turn, or there and back for an `arc` under 360;
+  also `lookHeight`, `clip`, `bob`, and the dolly's `wideFov`, `longFov`,
+  `framing`). The sliders a splat look shows are Speed, Turn, Tilt, Zoom and
+  its own styling; Speed 1 plays the `period` as written.
 - `SplatData.swift` draws them the way 3DGS viewers do: each splat's 3D
   covariance projected to a screen ellipse, a back-to-front counting sort on
   the CPU every frame, and premultiplied blending of instanced quads into a
@@ -653,7 +661,8 @@ its parameters and presets wherever the file goes.
   viewer streams them, and `make package` leaves them and their looks out.
 - A capture only holds together near where its photos were taken. Cameras
   that leave that region (the dolly backing away, the town square's arc) set
-  `clip`, which drops every splat nearer than the subject minus `clip`.
+  `clip` in `// lerp-camera:`, which drops every splat nearer than the subject
+  minus `clip`.
 
 ### GLSL → Metal mapping
 

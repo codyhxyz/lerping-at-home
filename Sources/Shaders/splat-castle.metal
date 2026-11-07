@@ -7,20 +7,13 @@
 //
 // lerp-category: Splats
 // lerp-data: splat:orbit:castle
+// lerp-camera: period=120 angle=150 arc=150 distance=4.3 height=2 lookHeight=0 fov=40 clip=0
 //
 // lerp-caption-title: Castle at sunset
 // lerp-caption: Leeds Castle, Kent, on its lake, from a drone
 // lerp-caption-credit: Ethan · CC BY 4.0
 //
 // lerp-param: speed      float 0 3 = 1  "Speed"
-// lerp-param: period     float 10 300 = 120  "Seconds there and back"
-// lerp-param: angle      float -360 360 = 150  "Centre of the arc"
-// lerp-param: arc        float 0 360 = 150  "Arc swept (360 = full turn)"
-// lerp-param: distance   float 0.5 10 = 4.3  "Distance"
-// lerp-param: height     float -2 4 = 2  "Camera height"
-// lerp-param: lookHeight float -1 2 = 0  "Look-at height"
-// lerp-param: fov        float 10 90 = 40  "Field of view"
-// lerp-param: clip       float 0 10 = 0  "Clip in front of subject (0 off)"
 // lerp-param: parallax   float 0 2 = 1  "Head parallax"
 // lerp-param: yaw        float -180 180 = 0  "Turn"
 // lerp-param: pitch      float -30 30 = 0  "Tilt"

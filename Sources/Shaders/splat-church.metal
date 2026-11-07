@@ -9,16 +9,9 @@
 //
 // lerp-category: Splats
 // lerp-data: splat:orbit:shenley-church
+// lerp-camera: period=120 angle=0 arc=360 distance=3.4 height=1.1 lookHeight=0.15 fov=42 clip=0
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"
-// lerp-param: period     float 10 300  = 120   "Seconds a turn"
-// lerp-param: angle      float -360 360 = 0    "Start angle"
-// lerp-param: arc        float 0 360   = 360   "Arc swept (360 = full turn)"
-// lerp-param: distance   float 0.5 10  = 3.4   "Distance"
-// lerp-param: height     float -2 4    = 1.1   "Camera height"
-// lerp-param: lookHeight float -1 2    = 0.15  "Look-at height"
-// lerp-param: fov        float 10 90   = 42    "Field of view"
-// lerp-param: clip       float 0 10    = 0     "Clip in front of subject (0 off)"
 // lerp-param: deform     int 0 4       = 0     "Deform (1 ripple, 2 wall, 3 twist, 4 dissolve)"
 // lerp-param: amount     float 0 1     = 0.02  "Deform amount"
 // lerp-param: frequency  float 0 20    = 5     "Deform frequency"

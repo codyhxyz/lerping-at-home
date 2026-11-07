@@ -13,14 +13,9 @@
 //
 // lerp-category: Splats
 // lerp-data: splat:orbit:bonsai
+// lerp-camera: period=90 distance=6.6 height=0.9 lookHeight=-0.15 fov=30 clip=0
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"
-// lerp-param: period     float 20 300  = 90    "Seconds a turn"
-// lerp-param: distance   float 2 10    = 6.6   "Distance"
-// lerp-param: height     float -2 3    = 0.9   "Camera height"
-// lerp-param: lookHeight float -1 1    = -0.15 "Look at height"
-// lerp-param: fov        float 10 60   = 30    "Field of view"
-// lerp-param: clip       float 0 10    = 0     "Clip in front of subject (0 off)"
 // lerp-param: glass      float 1 1.6   = 1.18  "Globe size"
 // lerp-param: snow       float 0 1     = 0.6   "Snow"
 // lerp-param: background color         = (0.03, 0.028, 0.035) "Background"

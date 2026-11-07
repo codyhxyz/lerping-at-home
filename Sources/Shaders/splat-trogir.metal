@@ -10,17 +10,9 @@
 //
 // lerp-category: Splats
 // lerp-data: splat:orbit:trogir-square:look
+// lerp-camera: period=90 angle=-25 arc=60 distance=1.5 height=0.3 lookHeight=0.9 fov=62 clip=1.3 bob=0.05
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"
-// lerp-param: period     float 10 300  = 90    "Seconds there and back"
-// lerp-param: angle      float -360 360 = -25  "Centre of the arc"
-// lerp-param: arc        float 0 360   = 60    "Arc swept (360 = full turn)"
-// lerp-param: distance   float 0.5 10  = 1.5   "Distance"
-// lerp-param: height     float -2 4    = 0.3   "Camera height"
-// lerp-param: lookHeight float -1 2    = 0.9   "Look-at height"
-// lerp-param: fov        float 10 90   = 62    "Field of view"
-// lerp-param: clip       float 0 10    = 1.3   "Clip in front of subject (0 off)"
-// lerp-param: bob        float 0 1     = 0.05  "Rise and fall"
 // lerp-param: zenith     color         = (0.06, 0.07, 0.13) "Sky (top)"
 // lerp-param: horizon    color         = (0.32, 0.24, 0.24) "Sky (horizon)"
 // lerp-param: vignette   float 0 1     = 0.3   "Vignette"

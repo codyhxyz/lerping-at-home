@@ -9,17 +9,11 @@
 //
 // lerp-category: Splats
 // lerp-data: splat:orbit:grape
+// lerp-camera: period=80 angle=0 arc=360 distance=4.4 height=1.0 lookHeight=0 fov=30
 //
 // lerp-param: filter     int 0 2       = 0     "Filter (0 halftone, 1 dither, 2 fluted glass)"
 // lerp-param: cell       float 3 40    = 9     "Cell size"
 // lerp-param: speed      float 0 3     = 1     "Speed"
-// lerp-param: period     float 10 240  = 80    "Seconds a turn"
-// lerp-param: distance   float 1 8     = 4.4   "Distance"
-// lerp-param: height     float -2 3    = 1.0   "Camera height"
-// lerp-param: lookHeight float -1 1    = 0     "Look at height"
-// lerp-param: fov        float 10 80   = 30    "Field of view"
-// lerp-param: angle      float -360 360 = 0   "Start angle"
-// lerp-param: arc        float 0 360   = 360  "Arc swept (360 = full turn)"
 // lerp-param: paper      color         = (0.93, 0.90, 0.84) "Paper"
 // lerp-param: ink        color         = (0.10, 0.09, 0.12) "Ink"
 // lerp-param: yaw        float -180 180 = 0 "Turn"

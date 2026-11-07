@@ -7,16 +7,9 @@
 //
 // lerp-category: Splats
 // lerp-data: splat:orbit:triceratops
+// lerp-camera: period=110 angle=90 arc=200 distance=4.8 height=0.7 lookHeight=0 fov=32 clip=0
 //
 // lerp-param: speed      float 0 3     = 1     "Speed"
-// lerp-param: period     float 10 300  = 110  "Seconds there and back"
-// lerp-param: angle      float -360 360 = 90  "Start angle"
-// lerp-param: arc        float 0 360   = 200  "Arc swept (360 = full turn)"
-// lerp-param: distance   float 0.5 10  = 4.8  "Distance"
-// lerp-param: height     float -2 4    = 0.7  "Camera height"
-// lerp-param: lookHeight float -1 2    = 0  "Look-at height"
-// lerp-param: fov        float 10 90   = 32   "Field of view"
-// lerp-param: clip       float 0 10    = 0     "Clip in front of subject (0 off)"
 // lerp-param: deform     int 0 4       = 0     "Deform (1 ripple, 2 wall, 3 twist, 4 dissolve)"
 // lerp-param: amount     float 0 1     = 0.08  "Deform amount"
 // lerp-param: frequency  float 0 20    = 6     "Deform frequency"

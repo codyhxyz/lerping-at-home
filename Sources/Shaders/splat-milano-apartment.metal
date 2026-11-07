@@ -7,21 +7,13 @@
 //
 // lerp-category: Splats
 // lerp-data: splat:orbit:milano-apartment:look
+// lerp-camera: period=80 angle=0 arc=44 distance=1.7 height=1.35 lookHeight=0.8 fov=65 clip=0 bob=0.02
 //
 // lerp-caption-title: Milano Subterranean Apartment
 // lerp-caption: From 1,480 frames of 360° video
 // lerp-caption-credit: Corridori Ruggero · CC BY-NC 4.0
 //
 // lerp-param: speed      float 0 3 = 1  "Speed"
-// lerp-param: period     float 10 300 = 80  "Seconds there and back"
-// lerp-param: angle      float -360 360 = 0  "Centre of the arc"
-// lerp-param: arc        float 0 360 = 44  "Arc swept (360 = full turn)"
-// lerp-param: distance   float 0.05 10 = 1.7  "Distance"
-// lerp-param: height     float -2 4 = 1.35  "Camera height"
-// lerp-param: lookHeight float -1 2 = 0.8  "Look-at height"
-// lerp-param: fov        float 10 90 = 65  "Field of view"
-// lerp-param: clip       float 0 10 = 0  "Clip in front of subject (0 off)"
-// lerp-param: bob        float 0 1 = 0.02  "Rise and fall"
 // lerp-param: parallax   float 0 2 = 1  "Head parallax"
 // lerp-param: yaw        float -180 180 = 0  "Turn"
 // lerp-param: pitch      float -30 30 = 0  "Tilt"

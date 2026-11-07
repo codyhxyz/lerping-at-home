@@ -7,20 +7,13 @@
 //
 // lerp-category: Splats
 // lerp-data: splat:orbit:rose
+// lerp-camera: period=70 angle=0 arc=360 distance=5.6 height=1.2 lookHeight=0.05 fov=30 clip=0
 //
 // lerp-caption-title: Rose
 // lerp-caption: A blooming pink rose, from 132 viewpoints of 70 focus-stacked frames
 // lerp-caption-credit: Dany Bittel
 //
 // lerp-param: speed      float 0 3 = 1  "Speed"
-// lerp-param: period     float 10 300 = 70  "Seconds a turn"
-// lerp-param: angle      float -360 360 = 0  "Start angle"
-// lerp-param: arc        float 0 360 = 360  "Arc swept (360 = full turn)"
-// lerp-param: distance   float 0.5 10 = 5.6  "Distance"
-// lerp-param: height     float -2 4 = 1.2  "Camera height"
-// lerp-param: lookHeight float -1 2 = 0.05  "Look-at height"
-// lerp-param: fov        float 10 90 = 30  "Field of view"
-// lerp-param: clip       float 0 10 = 0  "Clip in front of subject (0 off)"
 // lerp-param: parallax   float 0 2 = 1  "Head parallax"
 // lerp-param: yaw        float -180 180 = 0  "Turn"
 // lerp-param: pitch      float -30 30 = 0  "Tilt"

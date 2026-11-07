@@ -127,6 +127,25 @@ public struct LerpShader: Sendable {
         return lines
     }
 
+    /// How a splat look's camera is set up for its capture — numbers the look
+    /// is tuned to, not things to turn while watching it:
+    ///
+    ///     // lerp-camera: period=120 angle=150 arc=150 distance=4.3 height=2 fov=40
+    ///
+    /// `SplatData` reads a name here when the look has no `// lerp-param:` of
+    /// it. Empty for every other shader.
+    public var cameraSettings: [String: Float] {
+        var settings: [String: Float] = [:]
+        for raw in source.split(separator: "\n", omittingEmptySubsequences: false).prefix(80) {
+            guard let body = LerpParamParser.directiveBody(raw, "lerp-camera:") else { continue }
+            for pair in body.split(whereSeparator: { $0 == " " || $0 == "," }) {
+                let kv = pair.split(separator: "=", maxSplits: 1)
+                if kv.count == 2, let v = Float(kv[1]) { settings[String(kv[0])] = v }
+            }
+        }
+        return settings
+    }
+
     /// Whether this machine can run the shader, from an optional comment among
     /// its first lines:
     ///
@@ -506,6 +525,7 @@ public final class ShaderLibrary: @unchecked Sendable {
         // The caption belongs to the shader file, not the capture, so it is
         // handed over every time a look using this provider is installed.
         (provider as? SplatData)?.caption = shader.captionLines
+        (provider as? SplatData)?.camera = shader.cameraSettings
         guard let provider else {
             try fail(shader, 2, "shader '\(shader.name)' declares `// lerp-data: \(name)` but no such data provider is registered (known: \(LerpDataProviders.registeredNames.joined(separator: ", ")))")
         }
