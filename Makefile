@@ -11,7 +11,7 @@ PREVIEW    := $(wildcard Sources/Preview/*.swift)
 PLAYGROUND := $(wildcard Sources/Playground/*.swift)
 SHADERS    := $(wildcard Sources/Shaders/*.metal)
 FRAMEWORKS := -framework AppKit -framework Metal -framework QuartzCore \
-              -framework CoreGraphics -framework ImageIO
+              -framework CoreGraphics -framework ImageIO -framework SceneKit
 # The playground alone also links ScreenSaver, for one class: the rotation
 # gallery writes the screensaver's ByHost domain through ScreenSaverDefaults.
 # The sandboxed saver reads that same file directly when Apple's host redirects
