@@ -82,9 +82,19 @@ public final class SplatData: LerpDataProvider {
     private var counts: [UInt32] = []
     static let sortChunks = max(4, min(16, ProcessInfo.processInfo.activeProcessorCount))
 
+    /// Splats drawn per render pass. Apple GPUs bin every triangle of a pass
+    /// into screen tiles before shading any of them; millions of quads in one
+    /// pass overflow that binning and the pass slows superlinearly. A 4.5M
+    /// splat capture went from ~44 ms to ~25 ms a frame (M5) split this way;
+    /// 64K was the fastest of 16K–500K.
+    static let splatsPerPass = 64_000
+
     /// Most pixels the splat pass draws, whatever the drawable. Splats are
-    /// soft, so a 5K screen drawn at ~2.7K and filtered up is indistinguishable
-    /// and costs a third of the fill.
+    /// soft, so a 5K screen drawn at ~2.7K and filtered up is indistinguishable.
+    /// It is the fill that this saves, so it matters where splats are large on
+    /// screen — a room seen from inside (milano-apartment 28 → 16 ms on a
+    /// 3456×2234 panel) — and hardly where they are many and small
+    /// (tiny-planet 25 → 23 ms), whose cost is the splat count.
     static let maxPixels: Float = 3_800_000
 
     public init?(device: MTLDevice, spec: String) {
@@ -186,19 +196,26 @@ public final class SplatData: LerpDataProvider {
                                     threadsPerThreadgroup: MTLSize(width: width * 4, height: 1, depth: 1))
             compute.endEncoding()
         }
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
-        encoder.label = "splat \(captureName)"
-        if let order = visible.buffer, visible.count > 0 {
-            encoder.setRenderPipelineState(pipelines.render)
-            encoder.setVertexBytes(&u, length: MemoryLayout<LerpSplatUniforms>.stride, index: 0)
-            encoder.setVertexBuffer(order, offset: 0, index: 1)
-            encoder.setVertexBuffer(asset.positions, offset: 0, index: 2)
-            encoder.setVertexBuffer(asset.covariances, offset: 0, index: 3)
-            encoder.setVertexBuffer(shaded, offset: 0, index: 4)
-            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
-                                   instanceCount: visible.count)
-        }
-        encoder.endEncoding()
+        let total = visible.buffer != nil ? visible.count : 0
+        var first = 0
+        repeat {
+            let n = min(Self.splatsPerPass, total - first)
+            pass.colorAttachments[0].loadAction = first == 0 ? .clear : .load
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+            encoder.label = "splat \(captureName)"
+            if n > 0, let order = visible.buffer {
+                encoder.setRenderPipelineState(pipelines.render)
+                encoder.setVertexBytes(&u, length: MemoryLayout<LerpSplatUniforms>.stride, index: 0)
+                encoder.setVertexBuffer(order, offset: 0, index: 1)
+                encoder.setVertexBuffer(asset.positions, offset: 0, index: 2)
+                encoder.setVertexBuffer(asset.covariances, offset: 0, index: 3)
+                encoder.setVertexBuffer(shaded, offset: 0, index: 4)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                       instanceCount: n, baseInstance: first)
+            }
+            encoder.endEncoding()
+            first += max(n, 1)
+        } while first < total
         if target.mipmapLevelCount > 1, let blit = commandBuffer.makeBlitCommandEncoder() {
             blit.label = "splat mipmaps \(captureName)"
             blit.generateMipmaps(for: target)
@@ -1161,7 +1178,9 @@ enum LerpSplatPipeline {
                 c += b[j] * float3(book[e[3u * j]], book[e[3u * j + 1u]], book[e[3u * j + 2u]]);
             }
         }
-        shaded[i] = half4(half3(max(c, 0.0)), half(base.a * fade));
+        // A splat too faint to reach 1/255 anywhere draws nothing.
+        float alpha = base.a * fade;
+        shaded[i] = alpha * 255.0 > 1.0 ? half4(half3(max(c, 0.0)), half(alpha)) : half4(0.0h);
     }
 
     vertex SplatOut splatVertex(uint vid [[vertex_id]], uint iid [[instance_id]],
@@ -1175,6 +1194,8 @@ enum LerpSplatPipeline {
         o.uv = float2(0.0);
         o.color = half4(0.0h);
         uint i = order[iid];
+        half4 color = shaded[i];
+        if (color.a == 0.0h) return o;
         float fade;
         float3 p = splatDeform(posOp[i].xyz, i, U.deform, fade);
         float4 v = U.view * float4(p, 1.0);
@@ -1199,16 +1220,24 @@ enum LerpSplatPipeline {
         float l1 = mid + rad, l2 = max(mid - rad, 0.1);
         float2 axis = abs(b) > 1e-7 ? normalize(float2(b, l1 - a))
                                     : (a >= d ? float2(1.0, 0.0) : float2(0.0, 1.0));
-        float cap = 2048.0 * U.viewport.y / 1080.0;
-        float2 major = min(sqrt(2.0 * l1), cap) * axis;
-        float2 minor = min(sqrt(2.0 * l2), cap) * float2(axis.y, -axis.x);
+        // A splat's quad spans at most the frame's short side (and 1024 px), the
+        // whole ellipse scaled down together, as SuperSplat's viewer draws it:
+        // a splat at the lens stays a soft patch, not a sheet over the frame.
+        float reach0 = 2.0 * sqrt(2.0 * l1);
+        float fit = min(1.0, min(1024.0, min(U.viewport.x, U.viewport.y)) / reach0);
+        float2 major = sqrt(2.0 * l1) * fit * axis;
+        float2 minor = sqrt(2.0 * l2) * fit * float2(axis.y, -axis.x);
 
-        float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0) * 2.0;
+        // The quad reaches only as far as the splat is still above 1/255
+        // (exp(-r²)·a ≥ 1/255, never past r = 2, where the fragment stops), so
+        // a faint splat costs a fraction of the pixels and draws the same.
+        float reach = sqrt(clamp(log(255.0 * float(color.a)), 0.0, 4.0));
+        float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0) * reach;
         float2 centre = float2(fx * v.x / z, fy * v.y / z) + U.principal;
         float2 px = centre + corner.x * major + corner.y * minor;
         o.position = float4(px / (0.5 * U.viewport), 0.0, 1.0);
         o.uv = corner;
-        o.color = shaded[i];
+        o.color = color;
         (void)fade;
         return o;
     }
