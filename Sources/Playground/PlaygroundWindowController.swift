@@ -97,18 +97,24 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// it, and for what the dropdown did better and had to be kept.
     /// The selector's button and its ‹ › — see `LookSwitcher`.
     private let switcher = LookSwitcher()
-    private let saveButton = NSButton(), revertButton = NSButton()
+    private lazy var saveButton = PlayerTextButton("Save", prominent: true,
+                                                   target: self, action: #selector(saveShader))
+    private lazy var revertButton = PlayerTextButton("Revert", prominent: false,
+                                                     target: self, action: #selector(revertShader))
     private lazy var playButton = PlayerIconButton(symbol: "pause.fill", accessibility: "Pause",
                                                    target: self, action: #selector(togglePlayPause))
-    private let status = NSButton()
-    private let console = NSTextView()
-    private let consoleScroll = NSScrollView()
-    private var consoleHeight: NSLayoutConstraint!
+    /// What is feeding the render besides the parameters: audio, head, hands,
+    /// MIDI. One pill each on the player bar, only while it is live.
+    private let inputChips = InputChips()
+    /// Whether the buffer compiles, the passing notes, and the error rows —
+    /// see `StatusStrip`.
+    private let statusStrip = StatusStrip()
     private let fpsLabel = NSTextField(labelWithString: "— fps")
-    /// Playback resolution: Low / Med / High under a "Resolution" caption, so
-    /// it says what it is choosing rather than showing a bare "Full".
-    private let resolutionControl = PlayerSegments(PlaygroundWindowController.renderScales.map(\.title),
-                                                   accessibility: "Resolution")
+    /// Playback resolution: one pill reading "Resolution  High" that opens a
+    /// menu of Low / Med / High. It is one decision, so the bar shows the
+    /// answer rather than all three choices.
+    private let resolutionControl = PlayerChoice("Resolution",
+                                                 choices: PlaygroundWindowController.renderScales.map(\.title))
     /// Matches the saver: on by default, at the saver's own peak, and engaged
     /// only where `LerpEDR.blocker` allows, so what you tune here is what the
     /// screensaver will show. A toggle and nothing more — there was a peak
@@ -212,7 +218,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if let entry = openingEntry(among: shaders), let shader = shaders.named(entry.shader) {
             open(shader, preset: entry.preset)
         } else {
-            setStatus("No shaders found. Use New… to create one.", tint: EditorTheme.error)
+            statusStrip.show(.problem("No shaders found. Use New… to create one."))
         }
         startTimers()
         NotificationCenter.default.addObserver(self, selector: #selector(rotationChangedElsewhere(_:)),
@@ -286,41 +292,24 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // looks*, so it is the first card in the picker's grid — where you are
         // already looking when you want one that does not exist yet. File → New
         // Shader… (⌘N) is unchanged.
-        Chrome.configure(saveButton, title: "Save", target: self, action: #selector(saveShader))
         saveButton.toolTip = "Save (⌘S)"
-        Chrome.configure(revertButton, title: "Revert", target: self, action: #selector(revertShader))
         revertButton.toolTip = "Discard changes"
 
-        status.isBordered = false
-        status.target = self
-        status.action = #selector(jumpToFirstError)
-        status.cell?.lineBreakMode = .byTruncatingTail
-        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        setStatus("Ready", tint: EditorTheme.dim)
-
-        console.isEditable = false
-        console.drawsBackground = true
-        console.backgroundColor = NSColor(srgbRed: 0.145, green: 0.078, blue: 0.086, alpha: 1)
-        console.textColor = NSColor(srgbRed: 1.0, green: 0.706, blue: 0.694, alpha: 1)
-        console.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        console.textContainerInset = NSSize(width: 8, height: 6)
-        consoleScroll.documentView = console
-        consoleScroll.hasVerticalScroller = true
-        consoleScroll.drawsBackground = true
-        consoleScroll.backgroundColor = console.backgroundColor
-        consoleScroll.borderType = .noBorder
-        consoleHeight = consoleScroll.heightAnchor.constraint(equalToConstant: 0)
-        consoleHeight.isActive = true
+        statusStrip.onJump = { [weak self] line in self?.editor.scrollToLine(line) }
 
         editor.onEdit = { [weak self] in self?.scheduleCompile() }
         editor.setContentHuggingPriority(.init(1), for: .vertical)
 
-        return Chrome.pane([Chrome.bar([switcher,
+        let pane = Chrome.pane([Chrome.bar([switcher,
                                         saveButton, revertButton,
                                         Chrome.flexible()]),
                             editor,
-                            Chrome.bar([status, Chrome.flexible()], height: 22),
-                            consoleScroll])
+                            statusStrip.errors,
+                            statusStrip.bar])
+        // Joining and leaving the stack as it shows and hides loses the
+        // stack's own width constraint, so the list is pinned to the pane.
+        statusStrip.errors.widthAnchor.constraint(equalTo: pane.widthAnchor).isActive = true
+        return pane
     }
 
     /// The picture, then one strip under it: play / pause and the frame rate on
@@ -341,11 +330,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         fpsLabel.lineBreakMode = .byTruncatingTail
         fpsLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
-        resolutionControl.target = self
-        resolutionControl.action = #selector(resolutionChanged)
+        resolutionControl.choiceTarget = self
+        resolutionControl.choiceAction = #selector(resolutionChanged)
         resolutionControl.select(Self.renderScales.firstIndex { $0.scale == 1 } ?? 0)
         resolutionControl.toolTip = "Lower resolution draws fewer pixels for a smoother frame rate"
-        let resolutionCaption = PlayerStyle.caption("Resolution")
 
         edrToggle.state = .on
         edrToggle.toolTip = "Brighter highlights on an HDR screen, as the screensaver shows them"
@@ -374,12 +362,14 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         fullScreen.toolTip = "Full screen (⌃⌘F)"
         playButton.toolTip = "Play / Pause (⌘\\)"
 
+        inputChips.onClick = { [weak self] input, chip in self?.inputChipClicked(input, chip) }
+
         // Play / Pause is the only control over time. There used to be a
         // one-minute scrubber, a typed clock, minute-paging arrows and a
         // "0:00–1:00" label; nobody needs to seek a screensaver.
         return Chrome.pane([preview.stage,
-                            playerBar([playButton, gap(4), fpsLabel, Chrome.flexible(),
-                                       resolutionCaption, resolutionControl, gap(6),
+                            playerBar([playButton, gap(4), fpsLabel, gap(4), inputChips, Chrome.flexible(),
+                                       resolutionControl, gap(2),
                                        edrToggle, fullScreen])])
     }
 
@@ -443,8 +433,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // The preset's own still when there is one, else the shader's cover:
         // the selector only renders covers until its cards are opened up.
         let cover = [current].rotationEntries().first
-        switcher.show(look, still: still(for: currentEntry, source: current.source)
-                          ?? cover.flatMap { still(for: $0, source: current.source) })
+        let picture = still(for: currentEntry, source: current.source)
+            ?? cover.flatMap { still(for: $0, source: current.source) }
+        switcher.show(look, still: picture)
+        preview?.describe(name: look.name, preset: look.preset, still: picture)
 
         for (button, offset) in [(switcher.previous, -1), (switcher.next, 1)] {
             let name = names.count > 1
@@ -607,35 +599,24 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             compileState = .ok(milliseconds: ms)
             firstErrorLine = nil
             editor.setErrorLines([])
-            setConsole("")
-            setStatus(String(format: "✓  compiled in %.0f ms", ms),
-                      tint: NSColor(srgbRed: 0.42, green: 0.84, blue: 0.55, alpha: 1))
+            statusStrip.showDiagnostics([], raw: "")
+            statusStrip.show(.compiled(milliseconds: ms))
         } catch {
             let (items, raw) = ShaderDiagnostics.parse(error)
             compileState = .failed(items)
             let lines = items.filter(\.isError).map(\.line)
             firstErrorLine = lines.min()
             editor.setErrorLines(Set(lines))
-            setConsole(ShaderDiagnostics.summary(items: items, raw: raw))
-            let count = max(lines.count, 1)
-            setStatus("✗  \(count) error\(count == 1 ? "" : "s") — last good shader still running"
-                        + (firstErrorLine != nil ? "  (click to jump)" : ""),
-                      tint: EditorTheme.error)
+            statusStrip.showDiagnostics(items, raw: raw)
+            statusStrip.show(.failed(errors: max(lines.count, 1)))
         }
         if isPaused { metalView.renderOnce() }
     }
 
-    /// Shows the diagnostics console, or collapses it when `text` is empty.
-    private func setConsole(_ text: String) {
-        console.string = text
-        consoleHeight.constant = text.isEmpty ? 0 : 132
-    }
-
-    private func setStatus(_ text: String, tint: NSColor) {
-        status.attributedTitle = NSAttributedString(
-            string: text,
-            attributes: [.foregroundColor: tint,
-                         .font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: .medium)])
+    /// A passing message beside the compile pill. It fades on its own unless
+    /// `sticky`, and never replaces whether the shader compiles.
+    private func setStatus(_ text: String, _ tone: StatusStrip.Tone = .info, sticky: Bool = false) {
+        statusStrip.note(text, tone: tone, sticky: sticky)
     }
 
     // MARK: - Parameters
@@ -735,7 +716,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
         guard moved > 0 else {
             NSSound.beep()
-            return setStatus("Every parameter is drifting", tint: EditorTheme.dim)
+            return setStatus("Every parameter is drifting")
         }
         inspector.show(values: metalView.liveParameterValues)
         updateChrome()
@@ -854,12 +835,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         do {
             try MIDIMappingStore.save(preset)
         } catch {
-            setStatus("Could not save mapping: \(error.localizedDescription)", tint: EditorTheme.error)
+            setStatus("Could not save mapping: \(error.localizedDescription)", .error)
         }
         refreshMappingUI()
     }
 
     func receive(_ message: MIDIController.Message) {
+        inputChips.pulse(message.learnChannel != nil && hands != nil ? .hands : .midi)
         if let target = learnTarget {
             learnTarget = nil
             var preset = activeMapping
@@ -873,7 +855,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                       cc: message.cc, mode: message.learnMode, component: component)
             preset.bind(binding)
             commit(preset)
-            setStatus("Learned \(binding.shortLabel) → \(target.param)", tint: EditorTheme.text)
+            setStatus("Learned \(binding.shortLabel) → \(target.param)", .success)
             return
         }
         guard let routed = router.route(channel: message.channel, cc: message.cc, value: message.value),
@@ -884,8 +866,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             if message.sourceID == HandControl.sourceID,
                activeMapping?.bindings.contains(where: { HandControl.Axis(channel: $0.channel, cc: $0.cc) != nil }) != true {
                 setStatus("\(HandControl.Axis(channel: message.channel, cc: message.cc)?.label ?? "Hand") "
-                          + "is not bound here — right-click a parameter, Learn…, then pinch and move",
-                          tint: EditorTheme.dim)
+                          + "is not bound here — right-click a parameter, Learn…, then pinch and move")
             }
             return
         }
@@ -974,7 +955,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                 ? "Learn cancelled"
                 : "Learning \(name)\(component.map { " \($0.label)" } ?? "")"
                     + (hands == nil ? " — move a knob" : " — move a knob, or pinch and move a hand"),
-                      tint: EditorTheme.text)
+                      sticky: learnTarget != nil)
         case .clear:
             guard var preset = activeMapping else { return }
             preset.unbind(name, component: component)
@@ -987,7 +968,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             guard var preset = activeMapping,
                   let binding = preset.binding(for: name, component: component) else { return }
             guard let updated = binding.withMode(mode) else {
-                setStatus("14-bit needs CC 0–31, not \(binding.shortLabel)", tint: EditorTheme.error)
+                setStatus("14-bit needs CC 0–31, not \(binding.shortLabel)", .error)
                 return
             }
             preset.bind(updated)
@@ -999,7 +980,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             preset.bind(scoped)
             commit(preset)
             setStatus(String(format: "%@ → %@ over %.2f–%.2f", binding.shortLabel, name,
-                             scoped.range.lowerBound, scoped.range.upperBound), tint: EditorTheme.dim)
+                             scoped.range.lowerBound, scoped.range.upperBound))
         }
     }
 
@@ -1161,7 +1142,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
               let next = ShaderLibrary.step(in: names, after: activeMapping?.name, offset: 1)
         else { return NSSound.beep() }
         select(mapping: next)
-        setStatus("MIDI mapping: \(next)", tint: EditorTheme.dim)
+        setStatus("MIDI mapping: \(next)")
     }
 
     @objc func newMapping(_ sender: Any?) { mappingCommand(.new) }
@@ -1208,8 +1189,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             return writeBuffer()
         case .cannot:
             guard writeBuffer() else { return false }
-            guard !compileFailed else { return true }   // the console is already saying it
-            setStatus("✓  saved", tint: EditorTheme.dim)
+            guard !compileFailed else { return true }   // the error list is already saying it
+            setStatus("Saved", .success)
             return true
         }
     }
@@ -1345,7 +1326,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             return .cannot(title: "\(current.name).metal does not compile",
                            detail: "What is on screen is the last version that did, so its values are "
                                + "not a description of what the editor now says. Fix the errors "
-                               + "in the console first — ⌘E jumps to the first one.")
+                               + "in the error list first — ⌘E jumps to the first one.")
         }
         guard let compiled, compiled.name == current.name, compiled.source == editor.text,
               let values = metalView.parameterValues else { return .unavailable }
@@ -1402,7 +1383,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // re-read and recompiled, and this puts the freshly declared defaults
         // on screen — so a write that did not take cannot look like one that did.
         applyPreset(nil)
-        setStatus("✓  saved", tint: EditorTheme.text)
+        setStatus("Saved", .success)
         return true
     }
 
@@ -1434,7 +1415,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // recompiled the freshly written source before `applyPreset` reads the
         // updated preset, so a failed write cannot be reported as success.
         inspector.choosePreset(name)
-        setStatus("✓  saved “\(name)”", tint: EditorTheme.text)
+        setStatus("Saved “\(name)”", .success)
         return true
     }
 
@@ -1582,14 +1563,14 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func toggleSystemAudio(_ sender: Any?) {
         guard #available(macOS 14.2, *) else {
-            return setStatus("System audio needs macOS 14.2 or later", tint: EditorTheme.error)
+            return setStatus("System audio needs macOS 14.2 or later", .error)
         }
         if audioTap != nil { return stopSystemAudio(nil) }
         let tap = SystemAudioTap()
         do {
             try tap.start()
         } catch {
-            return setStatus("System audio unavailable: \(error)", tint: EditorTheme.error)
+            return setStatus("System audio unavailable: \(error)", .error)
         }
         tap.onRestart = { [weak self] error in
             if let error { self?.stopSystemAudio("System audio stopped: \(error)") }
@@ -1597,10 +1578,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         audioTap = tap
         let levels = tap.levels
         metalView.audioLevels = { levels.current }
+        refreshInputs()
         // A denied or not-yet-answered prompt is not an error here: the tap
         // runs and hands back silence, so the uniforms simply stay at 0.
-        setStatus("Listening to system audio (u.audioLevel / audioBass / audioMid / audioTreble)",
-                  tint: EditorTheme.dim)
+        setStatus("Listening to system audio (u.audioLevel / audioBass / audioMid / audioTreble)")
     }
 
     private func stopSystemAudio(_ reason: String?) {
@@ -1614,7 +1595,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// polling it: redraw a paused frame without it, and say so.
     private func liveInputStopped(_ input: String, reason: String?) {
         if isPaused { metalView.renderOnce() }
-        setStatus(reason ?? "\(input) off", tint: reason == nil ? EditorTheme.dim : EditorTheme.error)
+        refreshInputs()
+        setStatus(reason ?? "\(input) off", reason == nil ? .info : .error)
     }
 
     /// The shared start of a camera input: ask once, and say where the switch
@@ -1624,7 +1606,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         HeadTracker.requestAccess { [weak self] granted in
             guard granted else {
                 self?.setStatus("Camera access is off for LerpPlayground: System Settings › "
-                                + "Privacy & Security › Camera", tint: EditorTheme.error)
+                                + "Privacy & Security › Camera", .error)
                 return
             }
             start()
@@ -1641,22 +1623,22 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             do {
                 try tracker.start()
             } catch {
-                return self.setStatus("Head tracking unavailable: \(error)", tint: EditorTheme.error)
+                return self.setStatus("Head tracking unavailable: \(error)", .error)
             }
             self.headTracker = tracker
             let viewer = tracker.viewer
             self.metalView.viewer = { viewer.current }
+            self.refreshInputs()
             let ignored = LerpViewer.isUsed(by: self.metalView.parameterValues) ? ""
                 : ". This look ignores it; looks with a `\(LerpViewer.gainParameter)` parameter respond"
-            self.setStatus("Tracking your head with \(tracker.cameraName) (u.viewer)\(ignored)",
-                           tint: EditorTheme.dim)
+            self.setStatus("Tracking your head with \(tracker.cameraName) (u.viewer)\(ignored)")
         }
     }
 
     @objc func recenterHead(_ sender: Any?) {
         guard let headTracker else { return }
         headTracker.recenter()
-        setStatus("Head recentred: where you are now is straight on", tint: EditorTheme.dim)
+        setStatus("Head recentred: where you are now is straight on")
     }
 
     private func stopHeadTracking(_ reason: String?) {
@@ -1689,10 +1671,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             }
             try control.start(over: metalView)
             hands = control
+            refreshInputs()
         } catch {
-            return setStatus("Hand control unavailable: \(error)", tint: EditorTheme.error)
+            return setStatus("Hand control unavailable: \(error)", .error)
         }
-        setStatus("Hand control on: hold up an open hand, then pinch to grab", tint: EditorTheme.dim)
+        setStatus("Hand control on: hold up an open hand, then pinch to grab")
     }
 
     /// What `axis` drives in the active mapping, for the label beside the hand:
@@ -1719,6 +1702,46 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         hands?.stop()
         hands = nil
         liveInputStopped("Hand control", reason: reason)
+    }
+
+    // MARK: - Live inputs
+
+    /// The chips on the player bar, from what is actually running. Called on
+    /// every change, and by the readout timer for what changes on its own
+    /// (a MIDI device plugged in, a bank chosen from the menu).
+    private func refreshInputs() {
+        var live: [InputChips.Input: (label: String, tip: String)] = [:]
+        if audioTap != nil {
+            live[.audio] = ("Audio", "Listening to system audio (u.audioLevel and friends). Click to stop.")
+        }
+        if let headTracker {
+            live[.head] = ("Head", "Tracking your head with \(headTracker.cameraName) (u.viewer). "
+                + "Click to stop; Shader › Recentre Head makes where you are straight on.")
+        }
+        if hands != nil {
+            live[.hands] = ("Hands", "Hand control is on: pinch and move to turn a bound control. Click to stop.")
+        }
+        if midi.isAvailable, !midi.sources.isEmpty {
+            live[.midi] = (activeMapping?.name ?? "MIDI",
+                           "\(midi.summary)\(activeMapping.map { " · bank “\($0.name)”" } ?? ""). "
+                               + "Click for MIDI banks.")
+        }
+        inputChips.audioLevels = metalView.audioLevels
+        inputChips.show(live)
+    }
+
+    private func inputChipClicked(_ input: InputChips.Input, _ chip: NSView) {
+        switch input {
+        case .audio: stopSystemAudio(nil)
+        case .head: stopHeadTracking(nil)
+        case .hands: stopHandControl(nil)
+        case .midi:
+            // The same menu as Shader › MIDI, so banks are chosen in one place.
+            guard let menu = NSApp.mainMenu?.items.lazy.compactMap(\.submenu)
+                .compactMap({ $0.items.first { $0.identifier == MainMenu.midiMenuID } })
+                .first?.submenu else { return }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: chip.bounds.height + 4), in: chip)
+        }
     }
 
     // MARK: - Chrome and polling
@@ -1763,6 +1786,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         timers.append(.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self else { return }
             refreshReadout()
+            refreshInputs()
         })
 
         // Animated parameters' controls follow the drift. A no-op unless

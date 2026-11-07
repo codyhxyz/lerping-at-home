@@ -8,22 +8,13 @@ import AppKit
 /// readout text (fps, pixel size, EDR headroom), a stock popup reading
 /// "Full", a blue checkbox and a borderless icon — five controls in four
 /// visual languages. These replace them with a round play button, a frame
-/// rate, a labelled Low / Med / High switch, an HDR pill and a round
+/// rate, a resolution pill that opens a menu, an HDR pill and a round
 /// full-screen button.
 enum PlayerStyle {
     static let height: CGFloat = 26
     static let fill = NSColor(white: 1, alpha: 0.07)
     static let fillHover = NSColor(white: 1, alpha: 0.12)
     static let fillPressed = NSColor(white: 1, alpha: 0.18)
-    static let selected = NSColor(white: 1, alpha: 0.16)
-
-    /// A small tracked caps caption, the inspector's section-heading look.
-    static func caption(_ text: String) -> NSTextField {
-        NSTextField(labelWithAttributedString: NSAttributedString(
-            string: text.uppercased(),
-            attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-                         .kern: 0.9, .foregroundColor: InspectorStyle.heading]))
-    }
 }
 
 /// A borderless button with a pill or circle behind it. Shared hover and
@@ -36,9 +27,9 @@ enum PlayerStyle {
 /// highlight is not this view's `isHighlighted` either, so pressing showed
 /// nothing at all.
 class PlayerPill: NSButton {
-    fileprivate var hovered = false { didSet { if hovered != oldValue { restyle() } } }
+    fileprivate(set) var hovered = false { didSet { if hovered != oldValue { restyle() } } }
     /// Held down, from mouse-down until the tracking loop returns.
-    fileprivate var pressed = false { didSet { if pressed != oldValue { restyle() } } }
+    fileprivate(set) var pressed = false { didSet { if pressed != oldValue { restyle() } } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -148,103 +139,153 @@ final class PlayerToggle: PlayerPill {
     }
 }
 
-/// A row of mutually exclusive choices in one pill track, the chosen one
-/// lifted out on its own inner pill. Sends its action when the choice changes.
-final class PlayerSegments: NSView {
+/// One choice out of a few, as one pill: "Resolution  High ⌄". Clicking it
+/// opens a menu of the choices with the current one checked, the way a popup
+/// button does, and sends the action only when the choice changes.
+///
+/// It replaced a Low / Med / High segmented track. That put three words on the
+/// bar all the time for a decision made once in a while, and its own caption
+/// beside it made a fourth.
+final class PlayerChoice: PlayerPill {
     private(set) var selectedIndex = 0
-    weak var target: AnyObject?
-    var action: Selector?
-    private var segments: [Segment] = []
+    private let caption: String
+    private let titles: [String]
+    weak var choiceTarget: AnyObject?
+    var choiceAction: Selector?
 
-    init(_ titles: [String], accessibility: String) {
+    init(_ caption: String, choices titles: [String]) {
+        self.caption = caption
+        self.titles = titles
         super.init(frame: .zero)
-        wantsLayer = true
-        layer?.backgroundColor = PlayerStyle.fill.cgColor
-        layer?.cornerRadius = PlayerStyle.height / 2
-        setAccessibilityElement(true)
-        setAccessibilityRole(.radioGroup)
-        setAccessibilityLabel(accessibility)
-
-        let stack = NSStackView()
-        stack.orientation = .horizontal
-        stack.spacing = 0
-        stack.edgeInsets = NSEdgeInsets(top: 2, left: 2, bottom: 2, right: 2)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            heightAnchor.constraint(equalToConstant: PlayerStyle.height),
-        ])
-        for (index, title) in titles.enumerated() {
-            let segment = Segment(title)
-            segment.target = self
-            segment.action = #selector(picked(_:))
-            segment.tag = index
-            stack.addArrangedSubview(segment)
-            segments.append(segment)
-        }
-        setContentHuggingPriority(.required, for: .horizontal)
-        select(0)
+        setAccessibilityRole(.popUpButton)
+        setAccessibilityLabel(caption)
+        restyle()
     }
 
     required init?(coder: NSCoder) { nil }
 
     func select(_ index: Int) {
-        selectedIndex = max(0, min(index, segments.count - 1))
-        for segment in segments { segment.isChosen = segment.tag == selectedIndex }
+        selectedIndex = max(0, min(index, titles.count - 1))
+        setAccessibilityValue(titles[selectedIndex])
+        invalidateIntrinsicContentSize()
+        restyle()
     }
 
-    @objc private func picked(_ sender: Segment) {
+    private var label: NSAttributedString {
+        let text = NSMutableAttributedString(string: caption.uppercased() + "  ", attributes: [
+            .font: NSFont.systemFont(ofSize: 9.5, weight: .semibold), .kern: 0.8,
+            .foregroundColor: InspectorStyle.heading,
+            .baselineOffset: 0.5])
+        text.append(NSAttributedString(string: titles[selectedIndex], attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: hovered ? EditorTheme.text : EditorTheme.text.withAlphaComponent(0.88)]))
+        return text
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: (label.size().width + 14 + 22).rounded(), height: PlayerStyle.height)
+    }
+
+    override func restyle() {
+        super.restyle()
+        title = ""
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let text = label
+        let size = text.size()
+        text.draw(at: NSPoint(x: 13, y: (bounds.height - size.height) / 2))
+        let color = hovered ? EditorTheme.text : InspectorStyle.heading
+        let configuration = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+            .applying(.init(paletteColors: [color]))
+        if let chevron = NSImage(systemSymbolName: "chevron.up.chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration) {
+            chevron.draw(in: NSRect(x: bounds.maxX - 13 - chevron.size.width,
+                                    y: (bounds.height - chevron.size.height) / 2,
+                                    width: chevron.size.width, height: chevron.size.height),
+                        from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        pressed = true
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.font = .systemFont(ofSize: 12)
+        for (index, title) in titles.enumerated() {
+            let item = NSMenuItem(title: title, action: #selector(picked(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            item.state = index == selectedIndex ? .on : .off
+            menu.addItem(item)
+        }
+        // Like a popup button: the chosen item opens over the pill.
+        menu.popUp(positioning: menu.item(at: selectedIndex),
+                   at: NSPoint(x: 6, y: bounds.height - 4), in: self)
+        pressed = false
+        hovered = bounds.contains(convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil))
+    }
+
+    @objc private func picked(_ sender: NSMenuItem) {
         guard sender.tag != selectedIndex else { return }
         select(sender.tag)
         displayIfNeeded()       // the choice shows before a paused frame is redrawn
-        if let action { NSApp.sendAction(action, to: target, from: self) }
+        if let choiceAction { NSApp.sendAction(choiceAction, to: choiceTarget, from: self) }
+    }
+}
+
+/// A word in a pill: Save and Revert on the editor's bar. Shown only when
+/// there is something to save, so Save is drawn as the thing to do — accent
+/// filled, with the same dot the switcher uses for unsaved edits — and Revert
+/// as the quiet way out beside it.
+final class PlayerTextButton: PlayerPill {
+    private let word: String
+    private let prominent: Bool
+
+    init(_ word: String, prominent: Bool, target: AnyObject?, action: Selector) {
+        self.word = word
+        self.prominent = prominent
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        setAccessibilityLabel(word)
+        restyle()
     }
 
-    private final class Segment: NSButton {
-        private let word: String
-        private var hovered = false { didSet { if hovered != oldValue { restyle() } } }
-        var isChosen = false { didSet { restyle() } }
+    required init?(coder: NSCoder) { nil }
 
-        init(_ word: String) {
-            self.word = word
-            super.init(frame: .zero)
-            isBordered = false
-            bezelStyle = .regularSquare
-            wantsLayer = true
-            layer?.cornerRadius = (PlayerStyle.height - 4) / 2
-            focusRingType = .none
-            setAccessibilityRole(.radioButton)
-            restyle()
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: (label.size().width + (prominent ? 34 : 26)).rounded(), height: PlayerStyle.height)
+    }
+
+    private var label: NSAttributedString {
+        NSAttributedString(string: word, attributes: [
+            .font: NSFont.systemFont(ofSize: 11.5, weight: .semibold),
+            .foregroundColor: prominent ? NSColor.white
+                : hovered ? EditorTheme.text : EditorTheme.text.withAlphaComponent(0.75)])
+    }
+
+    override func restyle() {
+        title = ""
+        if prominent {
+            let alpha: CGFloat = !isEnabled ? 0.35 : pressed ? 0.75 : hovered ? 1 : 0.88
+            layer?.backgroundColor = InspectorStyle.accent.withAlphaComponent(alpha).cgColor
+        } else {
+            super.restyle()
         }
+        needsDisplay = true
+    }
 
-        required init?(coder: NSCoder) { nil }
-
-        override var intrinsicContentSize: NSSize {
-            NSSize(width: max(40, (attributedTitle.size().width + 20).rounded()),
-                   height: PlayerStyle.height - 4)
+    override func draw(_ dirtyRect: NSRect) {
+        let text = label
+        let size = text.size()
+        var x = (bounds.width - size.width) / 2
+        if prominent {
+            x += 4
+            NSColor.white.withAlphaComponent(0.9).setFill()
+            NSBezierPath(ovalIn: NSRect(x: x - 10, y: bounds.midY - 2.5, width: 5, height: 5)).fill()
         }
-
-        override func updateTrackingAreas() {
-            super.updateTrackingAreas()
-            trackingAreas.forEach(removeTrackingArea)
-            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow,
-                                                                   .inVisibleRect], owner: self))
-        }
-
-        override func mouseEntered(with event: NSEvent) { hovered = true }
-        override func mouseExited(with event: NSEvent) { hovered = false }
-
-        override func accessibilityValue() -> Any? { isChosen ? 1 : 0 }
-
-        private func restyle() {
-            layer?.backgroundColor = isChosen ? PlayerStyle.selected.cgColor : nil
-            attributedTitle = NSAttributedString(string: word, attributes: [
-                .font: NSFont.systemFont(ofSize: 11, weight: isChosen ? .semibold : .medium),
-                .foregroundColor: isChosen || hovered ? EditorTheme.text : InspectorStyle.heading])
-        }
+        text.draw(at: NSPoint(x: x, y: (bounds.height - size.height) / 2))
     }
 }

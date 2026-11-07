@@ -286,7 +286,7 @@ make playground
 - Uses the same LerpCore compile path as the screensaver.
 - Editing recompiles 300 ms after the last keystroke and swaps the pipeline in place.
 - On a compile error the last successful pipeline keeps rendering; the view does not blank and the process does not exit.
-- Compile errors are listed in a console below the editor as `line:column`; the offending lines are highlighted, and `⌘E` (or clicking the status bar) jumps to the first one.
+- Under the editor, a pill says whether the buffer compiles: green with the compile time, or red with the error count while the last good version keeps running. Compile errors open as rows above it, one per diagnostic with its line number; clicking a row jumps to that line, and `⌘E` (or clicking the red pill) jumps to the first. Other messages — a Learned CC, a save, an input switched on — appear beside the pill and fade, so they never hide the compile state.
 - Metal's reported line numbers match the shader file, because the prelude ends with `#line 1`.
 - Navigation is three controls, each with one job:
   - **The selector** — the toolbar button, `⌘O`, or **Shader → Open Shader…** —
@@ -372,7 +372,7 @@ make playground
     double quote or tab, and `Defaults` are still refused, because `Defaults` is what every
     shader's un-preset look is already called.
 - An externally modified open file reloads if there are no unsaved edits.
-- Under the render, one strip: a round play / pause button (the only control over time) and the frame rate on the left; on the right **Resolution** (Low / Med / High — a quarter, half or all of the pixels, to trade sharpness for frame rate on an expensive shader), an **HDR** pill at the saver's own peak, and full screen. They map onto `LerpUniforms` and `LerpMetalView.Config`.
+- Under the render, one strip: a round play / pause button (the only control over time) and the frame rate on the left; on the right a **Resolution** pill showing the current choice, which opens a menu of Low / Med / High (a quarter, half or all of the pixels, to trade sharpness for frame rate on an expensive shader), an **HDR** pill at the saver's own peak, and full screen. While system audio, head tracking, hands or a MIDI device is live, a violet chip for it sits beside the frame rate — audio with its levels, MIDI flashing on each message; click one to switch that input off (MIDI's opens its banks). Full screen shows the look's name and preset for a moment on entry and whenever the mouse moves. They map onto `LerpUniforms` and `LerpMetalView.Config`.
 - **Randomize** on the inspector's Parameters heading moves every held parameter to a random value in its declared range; drifting parameters keep drifting.
 - Editor is a plain `NSTextView` with soft tabs, auto-indent, undo, and find. No syntax highlighting and no line-number gutter.
 
