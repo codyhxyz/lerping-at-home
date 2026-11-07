@@ -2,7 +2,22 @@
 // https://github.com/paper-design/shaders
 // The original is a static line pattern. For screensaver duty this port
 // scrolls the band field and slowly morphs the wave between the upstream
-// zigzag / sine / irregular shapes, so it drifts instead of sitting still.
+// zigzag / sine / irregular shapes.
+//
+// Scrolling alone read as "completely still" on the lock screen: the pattern
+// slid as one rigid piece (`LerpPreview --motion` local change 0.01-0.21% of
+// the short side per second), which gives the eye nothing to compare against.
+// What keeps it moving now is the wave's own shape:
+// - its phase wanders by a modulation travelling along the wave, so crests
+//   bunch, spread and move at different speeds in different places;
+// - an envelope travelling the other way lifts and flattens the crests;
+// - a second, shorter wave train runs against the first and interferes;
+// - a long swell, in screen units, bends the bands, so a dense preset
+//   ("Groovy", scale 25, whose wave is tiny on screen) moves as much as a
+//   sparse one.
+// Height enters the wave's phase only weakly: |d offset / dy| stays well
+// under 1, so neighbouring bands stay parallel instead of folding into each
+// other where the wave is steep. Local change is now about 0.7-2%/s.
 //
 // Parameters mirror the upstream <Waves> props. `shape` keeps upstream's
 // meaning (0 zigzag, 1 sine, 2/3 irregular) but is the *centre* of this port's
@@ -34,8 +49,10 @@
 // lerp-preset: "Ride the wave" proportion=1, softness=0
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+    // Screen units: the short side spans 2, whatever the aspect.
+    float2 uv = lerpUV(pos, u.resolution);
     // ~= the original's v_patternUV * 4.
-    float2 shapeUV = lerpUV(pos, u.resolution) * u.scale;
+    float2 shapeUV = uv * u.scale;
 
     float t = u.speed * u.time + 60.0 * u.seed;
 
@@ -45,16 +62,36 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     shapeUV.x += 0.45 * sin(0.19 * t);
     float shapeMix = u.shape + 1.5 * sin(0.07 * t);
 
+    // Swell, in screen units so a dense preset moves as much on screen as a
+    // sparse one: two long, gentle waves crossing the bands, travelling at
+    // different speeds and directions. Their sum never pauses everywhere at
+    // once, so the bands keep bending against each other.
+    float swell = 0.040 * sin(dot(uv, float2(1.7, 0.6)) - 2.6 * t)
+                + 0.028 * sin(dot(uv, float2(-0.9, 1.5)) + 1.9 * t + 1.3);
+    shapeUV.y += swell * u.scale;
+
     float f = u.frequency;
-    float wave       = 0.5 * cos(shapeUV.x * f * TWO_PI);
-    float zigzag     = 2.0 * abs(fract(shapeUV.x * f) - 0.5);
-    float irregular  = sin(shapeUV.x * 0.25 * f * TWO_PI) * cos(shapeUV.x * f * TWO_PI);
-    float irregular2 = 0.75 * (sin(shapeUV.x * f * TWO_PI) +
-                               0.5 * cos(shapeUV.x * 0.5 * f * TWO_PI));
+    // The wave itself evolves. Its phase wanders, by a modulation that
+    // travels along the wave and varies with height, so crests bunch,
+    // spread and travel at different speeds in different places; an
+    // envelope travelling the other way lifts and flattens them.
+    float phase = shapeUV.x * f
+                + 0.22 * sin(TWO_PI * 0.27 * f * shapeUV.x + 0.35 * uv.y - 1.3 * t)
+                + 0.18 * sin(0.25 * uv.y - 0.6 * uv.x + 0.8 * t);
+    float envelope = 0.62 + 0.38 * sin(1.3 * uv.x - 0.8 * uv.y + 1.0 * t + 0.7);
+
+    float wave       = 0.5 * cos(phase * TWO_PI);
+    float zigzag     = 2.0 * abs(fract(phase) - 0.5);
+    float irregular  = sin(phase * 0.25 * TWO_PI) * cos(phase * TWO_PI);
+    float irregular2 = 0.75 * (sin(phase * TWO_PI) + 0.5 * cos(phase * 0.5 * TWO_PI));
 
     float offset = mix(zigzag, wave, smoothstep(0.0, 1.0, shapeMix));
     offset = mix(offset, irregular, smoothstep(1.0, 2.0, shapeMix));
     offset = mix(offset, irregular2, smoothstep(2.0, 3.0, shapeMix));
+    // A second, shorter wave train running against the first, so the two
+    // interfere and the profile keeps changing shape rather than sliding.
+    offset = offset * envelope
+           + 0.24 * sin(TWO_PI * 1.53 * f * shapeUV.x + 1.7 * t + 1.1 * uv.y);
     offset *= 2.0 * u.amplitude;
 
     float spacing = 0.001 + u.spacing;
