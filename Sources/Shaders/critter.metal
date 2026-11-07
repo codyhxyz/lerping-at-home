@@ -827,16 +827,77 @@ static inline float camFaceWeight(int act) {
     }
 }
 
-// ---------------------------------------------------------------- main
+// ---------------------------------------------------------------- stages
+//
+// lerpMain is these stages in order. Each is a plain function of what the
+// earlier ones produced; none keeps state between frames.
+//
+//   setupCritter    who it is today: stage, size, season, droop
+//   tellStory       what it is doing: this chapter's activity, the last one's,
+//                   the blend between them, the double-take
+//   poseCritter     the pose, and the per-frame geometry sdCritter reads
+//   placeProps      its storm or rain cloud, and its sandcastle
+//   setupCamera     close, swung toward its face, then drag to turn
+//   placeIsland     trees by age (sunk out of the camera's way) and rocks
+//   lightFromClock  sun or moon, night, golden hour
+//   rayMask         which objects this ray can reach, and where it first could
+//   marchScene      pass 1 over the land, the open sea, pass 2 through flowers
+//   shadeHit        normal, material, light, haze
+//   overlays        Zzz, hearts, sparkles, rain, lightning, scribble, sweat,
+//                   "!", butterfly, fireflies
+//   seasonInTheAir  falling petals, fluff, leaves or snow
+//   finish          vignette and dither
 
-fragment half4 lerpMain(float4 pos [[position]],
-                        constant LerpUniforms& u [[buffer(0)]],
-                        constant CritterState& S [[buffer(1)]]) {
-    float2 uv = lerpUV(pos, u.resolution);
-    float time = u.time;
-    float seed = u.seed;
+// What it is doing this frame, decided once per pixel from (time, seed).
+struct Story {
+    float  az;         // camera azimuth before it turns toward the face
+    float2 right;      // the camera's right on the ground at that azimuth
+    float  tl;         // time, offset per launch, that the poses run on
+    float  chapter;    // which 36-second chapter, and how far into it
+    float  inCh;
+    float  k;          // blend from the previous chapter's activity, 0…1
+    float  rr, rp;     // this chapter's and the last one's random number
+    int    act, prevAct;
+    float  dtake;      // the double-take at the start of a session, 1…0
+    float  sick, storm; // how much of each, blended across the chapter edge
+    float2 castle2;    // where the sandcastle stands
+};
 
-    // ---- who it is today
+struct Light {
+    float3 sunDir, moonDir, L, sunCol, skyAmb;
+    float  night, golden;
+};
+
+struct Hit {
+    float  t;
+    float3 hit;        // (distance, material, material detail)
+    bool   found;
+    bool   flowerHit;  // pass 2 met a flower in front of what pass 1 found
+};
+
+struct Surface {
+    float3 alb;
+    float  spec, shine, emit, rim;
+};
+
+// Everything the floating 2D layers need about this pixel and this moment.
+struct FX {
+    float2 uv;
+    Cam    cam;
+    float  depth;      // distance to what the ray hit (1e5 for sky)
+    float3 head;       // just above its head, world space
+    float  nearW;      // this pixel's distance from the head, world units at its depth
+    float  time, tl;
+    float  k;
+    int    act, prevAct;
+    float  dtake, sick, storm;
+    float  zzz;        // asleep, blended
+    float  stress;     // frazzled from a scattered hour
+    float  night;
+};
+
+// ---- setupCritter: who it is today
+static inline __attribute__((always_inline)) Scene setupCritter(constant CritterState& S, float time, float seed) {
     Scene sc;
     sc.time = time;
     sc.ident = S.identity;
@@ -853,27 +914,42 @@ fragment half4 lerpMain(float4 pos [[position]],
     sc.season = (m >= 3 && m <= 5) ? 0 : ((m >= 6 && m <= 8) ? 1 : ((m >= 9 && m <= 11) ? 2 : 3));
     sc.droop = clamp((0.6 - S.health) / 0.45, 0.0, 1.0);
     sc.bend = 0.011;
+    return sc;
+}
 
-    // ---- what it is doing
-    float az = TWO_PI * fract(seed * 7.31 + S.identity) + time * 0.02 * u.drift;
-    float2 right = float2(cos(az), -sin(az));
-    float tl = time + seed * 997.0;
-    float chapter = floor(time / CHAPTER);
-    float inCh = time - chapter * CHAPTER;
-    float2 castle2 = right * 0.5 + float2(sin(az), cos(az)) * 0.35;
-    int act = sc.stage == 0 ? ACT_IDLE : (u.act >= 0 ? u.act : pickActivity(chapter, seed, S));
-    int prevAct = (chapter < 0.5 || u.act >= 0) ? act : pickActivity(chapter - 1.0, seed, S);
-    float rr = hash11(chapter * 3.7 + seed * 17.0);
-    float rp = hash11((chapter - 1.0) * 3.7 + seed * 17.0);
-    Pose P = makePose(act, tl, rr, sc.s, az, right, castle2, S);
-    float k = chapter < 0.5 ? 1.0 : smoothstep(0.0, 2.5, inCh);
-    if (k < 1.0) P = blendPose(makePose(prevAct, tl, rp, sc.s, az, right, castle2, S), P, k);
-    if (act == ACT_IDLE || act == ACT_SIT || act == ACT_BUILD || act == ACT_PACE || act == ACT_SICK)
-        addBeat(P, tl, seed, act, k * k);
+// ---- tellStory: what it is doing
+static inline __attribute__((always_inline)) Story tellStory(thread const Scene& sc, constant CritterState& S, constant LerpUniforms& u) {
+    float time = u.time;
+    float seed = u.seed;
+    Story st;
+    st.az = TWO_PI * fract(seed * 7.31 + S.identity) + time * 0.02 * u.drift;
+    st.right = float2(cos(st.az), -sin(st.az));
+    st.tl = time + seed * 997.0;
+    st.chapter = floor(time / CHAPTER);
+    st.inCh = time - st.chapter * CHAPTER;
+    st.castle2 = st.right * 0.5 + float2(sin(st.az), cos(st.az)) * 0.35;
+    st.act = sc.stage == 0 ? ACT_IDLE : (u.act >= 0 ? u.act : pickActivity(st.chapter, seed, S));
+    st.prevAct = (st.chapter < 0.5 || u.act >= 0) ? st.act : pickActivity(st.chapter - 1.0, seed, S);
+    st.rr = hash11(st.chapter * 3.7 + seed * 17.0);
+    st.rp = hash11((st.chapter - 1.0) * 3.7 + seed * 17.0);
+    st.k = st.chapter < 0.5 ? 1.0 : smoothstep(0.0, 2.5, st.inCh);
     // It notices you when the screensaver comes up (unless it is asleep).
-    float dtake = (sc.stage > 0 && act != ACT_SLEEP && chapter < 0.5) ? 1.0 - smoothstep(3.4, 4.3, time) : 0.0;
-    if (dtake > 0.0) P = blendPose(P, doubleTake(P, time, az, sc.s), dtake);
-    if (sc.stage == 0) { P.pos = float3(0.0); P.yaw = az; }
+    st.dtake = (sc.stage > 0 && st.act != ACT_SLEEP && st.chapter < 0.5) ? 1.0 - smoothstep(3.4, 4.3, time) : 0.0;
+    st.sick = (st.act == ACT_SICK ? st.k : 0.0) + (st.prevAct == ACT_SICK ? 1.0 - st.k : 0.0);
+    st.storm = (st.act == ACT_PACE ? st.k : 0.0) + (st.prevAct == ACT_PACE ? 1.0 - st.k : 0.0);
+    return st;
+}
+
+// ---- poseCritter: the pose, then the per-frame geometry sdCritter reads
+static inline __attribute__((always_inline)) void poseCritter(thread Scene& sc, thread const Story& st, constant CritterState& S,
+                        float time, float seed) {
+    Pose P = makePose(st.act, st.tl, st.rr, sc.s, st.az, st.right, st.castle2, S);
+    if (st.k < 1.0) P = blendPose(makePose(st.prevAct, st.tl, st.rp, sc.s, st.az, st.right, st.castle2, S), P, st.k);
+    int act = st.act;
+    if (act == ACT_IDLE || act == ACT_SIT || act == ACT_BUILD || act == ACT_PACE || act == ACT_SICK)
+        addBeat(P, st.tl, seed, act, st.k * st.k);
+    if (st.dtake > 0.0) P = blendPose(P, doubleTake(P, time, st.az, sc.s), st.dtake);
+    if (sc.stage == 0) { P.pos = float3(0.0); P.yaw = st.az; }
     float2 cxz = P.pos.xz;
     sc.cpos = float3(cxz.x, groundH(cxz, sc.ident) + P.pos.y, cxz.y);
     // A bad week shows whatever the light: it sags, wider and lower, and has
@@ -886,49 +962,51 @@ fragment half4 lerpMain(float4 pos [[position]],
     sc.bags = clamp(0.9 * max(1.0 - 1.6 * S.energy, 0.0) + 0.6 * sag, 0.0, 1.0);
     sc.cs0 = cos(float3(sc.yaw, sc.lean, sc.roll));
     sc.cs1 = sin(float3(sc.yaw, sc.lean, sc.roll));
-    {   // per-frame critter geometry for sdCritter
-        float s = sc.s, hz = rsqrt(sc.sq);
-        float3 bc = float3(0.0, 0.95 * s * sc.sq, 0.0);
-        sc.shL = bc + float3(-0.74 * hz * s, 0.08 * s, 0.08 * s);
-        sc.shR = bc + float3( 0.74 * hz * s, 0.08 * s, 0.08 * s);
-        float rc = sc.reach;
-        float2 aL = float2(sin(sc.armL), cos(sc.armL)), aR = float2(sin(sc.armR), cos(sc.armR));
-        sc.handL = sc.shL + normalize(float3(-aL.x * (1.0 - rc) - 0.15 * rc, -aL.y, mix(0.3, aL.x, rc))) * 0.84 * s;
-        sc.handR = sc.shR + normalize(float3( aR.x * (1.0 - rc) + 0.15 * rc, -aR.y, mix(0.3, aR.x, rc))) * 0.84 * s;
-        sc.sDir = normalize(float3(0.0, 1.0 - 0.75 * sc.droop, 0.1 + 1.3 * sc.droop));
-        sc.sTip = bc + float3(0.0, 0.92 * sc.sq * s, 0.0) + sc.sDir * (0.2 + 0.08 * float(sc.stage)) * s;
-        float la = 0.5 + 0.8 * sc.droop, lb = 0.5 + 1.9 * sc.droop;
-        sc.leafCS = float4(cos(la), sin(la), cos(lb), sin(lb));
-        sc.eyeH = mix((0.12 * sc.eye + 0.02) * s, 0.032 * s, abs(sc.happy));
-        sc.lidH = sc.eyeH * (1.0 - 2.0 * sc.lid);
-        sc.lidK = rsqrt(1.0 + sc.lidTilt * sc.lidTilt);
-        sc.arch = 6.5 / s * sc.happy;
-    }
+    float s = sc.s, hz = rsqrt(sc.sq);
+    float3 bc = float3(0.0, 0.95 * s * sc.sq, 0.0);
+    sc.shL = bc + float3(-0.74 * hz * s, 0.08 * s, 0.08 * s);
+    sc.shR = bc + float3( 0.74 * hz * s, 0.08 * s, 0.08 * s);
+    float rc = sc.reach;
+    float2 aL = float2(sin(sc.armL), cos(sc.armL)), aR = float2(sin(sc.armR), cos(sc.armR));
+    sc.handL = sc.shL + normalize(float3(-aL.x * (1.0 - rc) - 0.15 * rc, -aL.y, mix(0.3, aL.x, rc))) * 0.84 * s;
+    sc.handR = sc.shR + normalize(float3( aR.x * (1.0 - rc) + 0.15 * rc, -aR.y, mix(0.3, aR.x, rc))) * 0.84 * s;
+    sc.sDir = normalize(float3(0.0, 1.0 - 0.75 * sc.droop, 0.1 + 1.3 * sc.droop));
+    sc.sTip = bc + float3(0.0, 0.92 * sc.sq * s, 0.0) + sc.sDir * (0.2 + 0.08 * float(sc.stage)) * s;
+    float la = 0.5 + 0.8 * sc.droop, lb = 0.5 + 1.9 * sc.droop;
+    sc.leafCS = float4(cos(la), sin(la), cos(lb), sin(lb));
+    sc.eyeH = mix((0.12 * sc.eye + 0.02) * s, 0.032 * s, abs(sc.happy));
+    sc.lidH = sc.eyeH * (1.0 - 2.0 * sc.lid);
+    sc.lidK = rsqrt(1.0 + sc.lidTilt * sc.lidTilt);
+    sc.arch = 6.5 / s * sc.happy;
+}
 
-    float sick = (act == ACT_SICK ? k : 0.0) + (prevAct == ACT_SICK ? 1.0 - k : 0.0);
-    float storm = (act == ACT_PACE ? k : 0.0) + (prevAct == ACT_PACE ? 1.0 - k : 0.0);
-    sc.cloud = max(sick, storm) * mix(0.8, 1.0, sc.s);
-    sc.cloudDark = storm;
+// ---- placeProps: its cloud and its sandcastle
+static inline __attribute__((always_inline)) void placeProps(thread Scene& sc, thread const Story& st, float time) {
+    sc.cloud = max(st.sick, st.storm) * mix(0.8, 1.0, sc.s);
+    sc.cloudDark = st.storm;
     sc.cloudPos = float3(sc.cpos.x, sc.cpos.y + 2.1 * sc.s + 0.53 + 0.04 * sin(time * 1.3), sc.cpos.z);
     // The castle starts as a mound, grows over the chapter and, when the
     // chapter ends, sinks back into the sand rather than vanishing.
-    sc.castle = (act == ACT_BUILD ? k * mix(0.3, 1.0, smoothstep(1.0, CHAPTER * 0.8, inCh)) : 0.0)
-              + (prevAct == ACT_BUILD ? 1.0 - k : 0.0);
-    sc.castlePos = float3(castle2.x, groundH(castle2, sc.ident), castle2.y);
+    sc.castle = (st.act == ACT_BUILD ? st.k * mix(0.3, 1.0, smoothstep(1.0, CHAPTER * 0.8, st.inCh)) : 0.0)
+              + (st.prevAct == ACT_BUILD ? 1.0 - st.k : 0.0);
+    sc.castlePos = float3(st.castle2.x, groundH(st.castle2, sc.ident), st.castle2.y);
+}
 
-    // ---- camera
-    // Close enough that the critter is the subject — about a third of the
-    // frame's height at any age, since the distance scales with its size —
-    // and swung part of the way round to the side it faces (yaw == az is
-    // face-on), so its face is usually what we see; see camFaceWeight.
+// ---- setupCamera
+// Close enough that the critter is the subject — about a third of the
+// frame's height at any age, since the distance scales with its size —
+// and swung part of the way round to the side it faces (yaw == az is
+// face-on), so its face is usually what we see; see camFaceWeight. Sets the
+// bend's focus to what the camera looks at.
+static inline __attribute__((always_inline)) Cam setupCamera(thread Scene& sc, thread const Story& st, constant LerpUniforms& u) {
     float fsz = sc.stage == 0 ? 0.42 : sc.s;
     float zoom = mix(1.0, fsz / 0.5, 0.75);
     // A cloud over its head comes into the frame with it.
     float3 target = float3(sc.cpos.x * 0.65, 0.15 + 1.1 * fsz + 0.35 * sc.cloud, sc.cpos.z * 0.65);
     sc.focus = target.xz;
     float dist = 3.6 * zoom, height = 1.85 * zoom;
-    float faceW = mix(camFaceWeight(prevAct), camFaceWeight(act), k);
-    float caz = az + faceW * sin(sc.yaw - az);   // sin: ≈ the angle when small, 0 at a half-turn, no wrap
+    float faceW = mix(camFaceWeight(st.prevAct), camFaceWeight(st.act), st.k);
+    float caz = st.az + faceW * sin(sc.yaw - st.az);   // sin: ≈ the angle when small, 0 at a half-turn, no wrap
     Cam cam;
     cam.ro = target + float3(sin(caz) * dist, height, cos(caz) * dist);
     cam.fw = normalize(target - cam.ro);
@@ -939,13 +1017,16 @@ fragment half4 lerpMain(float4 pos [[position]],
     lerpOrbit(u.yaw, u.pitch, u.magnify, target, float3(0.0, 1.0, 0.0), cam.ro, cam.rt, cam.fw);
     cam.up = cross(cam.rt, cam.fw);
     cam.focal = 2.7;
-    float3 rd = normalize(uv.x * cam.rt + uv.y * cam.up + cam.focal * cam.fw);
+    return cam;
+}
 
-    // ---- the island's record: trees by age, rocks by identity
+// ---- placeIsland: the island's record — trees by age, rocks by identity
+static inline __attribute__((always_inline)) void placeIsland(thread Scene& sc, constant CritterState& S, thread const Cam& cam) {
+    float2 target = sc.focus;
     sc.trees = int(clamp(2.0 + floor(S.ageDays / 3.0), 2.0, 8.0));
     // From what the camera looks at toward where it really is (drift, the
     // turn toward the face and a drag all included).
-    float2 camDir = normalize(cam.ro.xz - target.xz);
+    float2 camDir = normalize(cam.ro.xz - target);
     for (int i = 0; i < 8; i++) {
         float a = float(i) * 2.39996 + S.identity * 6.283;
         float r = 3.1 + hash11(float(i) * 7.13 + S.identity * 91.0) * 2.6;
@@ -955,7 +1036,7 @@ fragment half4 lerpMain(float4 pos [[position]],
         // Never let a tree stand between the camera and the critter, or
         // right in front of the lens: one that would sinks into the ground,
         // smoothly, as the camera comes round to it.
-        float sink = max(smoothstep(0.66, 0.8, dot(normalize(xz - target.xz), camDir)),
+        float sink = max(smoothstep(0.66, 0.8, dot(normalize(xz - target), camDir)),
                          smoothstep(2.4, 1.3, length(xz - cam.ro.xz)));
         sc.tree[i] = float4(xz.x, groundH(xz, sc.ident) - sink * 2.1 * size, xz.y,
                             sink > 0.995 ? 0.0 : size);
@@ -965,396 +1046,485 @@ fragment half4 lerpMain(float4 pos [[position]],
         float2 xz = float2(cos(a), sin(a)) * (ISLAND_R - 0.4 + 0.3 * float(i));
         sc.rock[i] = float4(xz.x, groundH(xz, sc.ident) + 0.05, xz.y, 0.28 + 0.1 * float(i));
     }
+}
 
-    // ---- light from the real clock
-    // S.hour is the wall-clock hour at time 0 of this session (CritterData
-    // holds the vitals for the session), so this is the real hour throughout.
-    float hour = S.hour + time / 3600.0;
+// ---- lightFromClock
+// S.hour is the wall-clock hour at time 0 of this session (CritterData holds
+// the vitals for the session), so `hour` is the real hour throughout.
+static inline __attribute__((always_inline)) Light lightFromClock(float hour) {
+    Light lt;
     float ha = (hour - 6.0) / 12.0 * PI;
     float sunUp = sin(ha);
-    float3 sunDir = normalize(float3(cos(ha) * 0.85, max(sunUp, -0.3) * 0.95 + 0.05, -0.45));
-    float3 moonDir = normalize(float3(-0.4, 0.75, -0.5));
-    float night = 1.0 - smoothstep(-0.12, 0.1, sunUp);
-    float golden = (1.0 - smoothstep(0.08, 0.42, sunUp)) * (1.0 - night);
-    float3 L = normalize(mix(sunDir, moonDir, night));
-    float3 sunCol = mix(mix(float3(1.12, 1.04, 0.92), float3(1.25, 0.8, 0.52), golden), float3(0.45, 0.56, 0.95) * 0.75, night);
-    float3 skyAmb = mix(mix(float3(0.55, 0.7, 0.95), float3(0.75, 0.6, 0.65), golden), float3(0.2, 0.27, 0.52), night);
+    lt.sunDir = normalize(float3(cos(ha) * 0.85, max(sunUp, -0.3) * 0.95 + 0.05, -0.45));
+    lt.moonDir = normalize(float3(-0.4, 0.75, -0.5));
+    lt.night = 1.0 - smoothstep(-0.12, 0.1, sunUp);
+    lt.golden = (1.0 - smoothstep(0.08, 0.42, sunUp)) * (1.0 - lt.night);
+    lt.L = normalize(mix(lt.sunDir, lt.moonDir, lt.night));
+    lt.sunCol = mix(mix(float3(1.12, 1.04, 0.92), float3(1.25, 0.8, 0.52), lt.golden), float3(0.45, 0.56, 0.95) * 0.75, lt.night);
+    lt.skyAmb = mix(mix(float3(0.55, 0.7, 0.95), float3(0.75, 0.6, 0.65), lt.golden), float3(0.2, 0.27, 0.52), lt.night);
+    return lt;
+}
 
-    // ---- which objects this ray can meet, and where it first could
+// ---- rayMask: which objects this ray can meet, and the nearest place it
+// first could (1e5 for none). Sets sc.mask.
+static inline __attribute__((always_inline)) float rayMask(thread Scene& sc, float3 ro, float3 rd) {
     sc.mask = 0u;
     float tObj = 1e5, e;
     for (int i = 0; i < 8; i++) {
         float4 T = sc.tree[i];
         if (i >= sc.trees || T.w <= 0.0) continue;
-        e = rayEntry(cam.ro, rd, T.xyz + float3(0.0, 1.0 * T.w, 0.0), 1.2 * T.w, sc);
+        e = rayEntry(ro, rd, T.xyz + float3(0.0, 1.0 * T.w, 0.0), 1.2 * T.w, sc);
         if (e >= 0.0) { sc.mask |= 1u << uint(i); tObj = min(tObj, e); }
     }
-    e = rayEntry(cam.ro, rd, sc.cpos + float3(0.0, 1.1 * sc.s, 0.0), 2.4 * sc.s + 0.25, sc);
+    e = rayEntry(ro, rd, sc.cpos + float3(0.0, 1.1 * sc.s, 0.0), 2.4 * sc.s + 0.25, sc);
     if (e >= 0.0) { sc.mask |= 256u; tObj = min(tObj, e); }
     for (int i = 0; i < 3; i++) {
-        e = rayEntry(cam.ro, rd, sc.rock[i].xyz, sc.rock[i].w + 0.25, sc);
+        e = rayEntry(ro, rd, sc.rock[i].xyz, sc.rock[i].w + 0.25, sc);
         if (e >= 0.0) { sc.mask |= 512u; tObj = min(tObj, e); }
     }
     if (sc.cloud > 0.01) {
-        e = rayEntry(cam.ro, rd, sc.cloudPos, 0.9 * sc.cloud + 0.3, sc);
+        e = rayEntry(ro, rd, sc.cloudPos, 0.9 * sc.cloud + 0.3, sc);
         if (e >= 0.0) { sc.mask |= 1024u; tObj = min(tObj, e); }
     }
     if (sc.castle > 0.001) {
-        e = rayEntry(cam.ro, rd, sc.castlePos + float3(0.0, 0.2, 0.0), 0.75, sc);
+        e = rayEntry(ro, rd, sc.castlePos + float3(0.0, 0.2, 0.0), 0.75, sc);
         if (e >= 0.0) { sc.mask |= 2048u; tObj = min(tObj, e); }
     }
+    return tObj;
+}
 
-    // ---- march
-    // Nothing can be met before the first object's bounding sphere or before
-    // the ray is down to the top of the land (0.185; the bend only lifts
-    // things), so start at the nearer of the two — or not at all.
-    float tLand = rd.y < 0.0 ? (cam.ro.y - 0.19) / -rd.y : 1e5;
-    float t = max(0.5, min(tLand, tObj));
-    // Past this cylinder there is only sea (rocks end at 7.7, the land is
-    // under the water by 7.9), which pass 1 meets analytically below.
-    const float seaR = ISLAND_R + 0.9;
-    float a2 = dot(rd.xz, rd.xz), bxz = dot(cam.ro.xz, rd.xz);
-    float tCyl = a2 > 1e-8 ? (-bxz + sqrt(max(bxz * bxz - a2 * (dot(cam.ro.xz, cam.ro.xz) - seaR * seaR), 0.0))) / a2 : 1e5;
-    float3 hit = float3(0.0);
-    bool found = false, open = t < 45.0;
-    // Pass 1 leaves the flowers out, so it can stride over open ground.
+// ---- marchScene, pass 1: everything but the flowers, so it can stride over
+// open ground. Returns whether the ray is still open (not yet known to be sky).
+static inline __attribute__((always_inline)) bool marchLand(thread Hit& h, thread const Scene& sc, float3 ro, float3 rd, float tCyl) {
+    bool open = h.t < 45.0;
     for (int i = 0; i < 96 && open; i++) {
-        if (t > tCyl) break;
-        float3 p = cam.ro + rd * t;
-        float4 h = mapScene(p, sc, true, false);
-        if (h.x < 0.0005 * t) { hit = h.xyz; found = true; break; }
-        float step = h.x * 0.85;
+        if (h.t > tCyl) break;
+        float3 p = ro + rd * h.t;
+        float4 m = mapScene(p, sc, true, false);
+        if (m.x < 0.0005 * h.t) { h.hit = m.xyz; h.found = true; break; }
+        float step = m.x * 0.85;
         // Over open ground the sphere step is the height above it, which
         // crawls on a grazing ray. If the ground is what is nearest, step by
         // the vertical gap over the ray's descent instead (slopes here stay
         // under 0.4).
-        if (h.y == M_GROUND || h.y == M_SEA) {
+        if (m.y == M_GROUND || m.y == M_SEA) {
             float2 dq = p.xz - sc.focus;
             float vy = rd.y + 2.0 * sc.bend * dot(dq, rd.xz);
-            float gap = h.x / 0.8;
+            float gap = m.x / 0.8;
             float along = 0.9 * gap / max(-vy + 0.4 * length(rd.xz), 0.05);
-            step = max(step, min(along, h.w * 0.85));
+            step = max(step, min(along, m.w * 0.85));
         }
-        t += step;
+        h.t += step;
         // Above everything and climbing (the bend only lifts it further): sky.
-        if (t > 45.0 || (p.y + sc.bend * dot(p.xz - sc.focus, p.xz - sc.focus) > 2.6 && rd.y > 0.0)) { open = false; break; }
+        if (h.t > 45.0 || (p.y + sc.bend * dot(p.xz - sc.focus, p.xz - sc.focus) > 2.6 && rd.y > 0.0)) { open = false; break; }
     }
-    // Out over the open sea: solve the bent surface,
-    // ro.y + t·rd.y + bend·|ro.xz − focus + t·rd.xz|² = SEA_Y, as a quadratic
-    // in t (no root, or both behind: the ray clears the horizon — sky).
-    if (!found && open && t > tCyl) {
-        float2 D = cam.ro.xz - sc.focus;
-        float A = sc.bend * a2;
-        float B = rd.y + 2.0 * sc.bend * dot(D, rd.xz);
-        float C = cam.ro.y + sc.bend * dot(D, D) - SEA_Y;
-        float disc = B * B - 4.0 * A * C;
-        if (B < 0.0 && disc >= 0.0) {
-            float qq = 0.5 * (-B + sqrt(disc));       // stable: no cancellation
-            float t1 = C / qq, t2 = qq / max(A, 1e-12);
-            // (Past 45 it was always sky, the haze's edge; keep it there.)
-            if (t2 >= t && t1 <= 45.0) { t = max(t1, t); hit = float3(0.0, M_SEA, 0.0); found = true; }
-        }
-    }
-    // Pass 2: if that landed on the meadow — or on anything standing within
-    // the flower layer, a trunk, a foot, a rock, which a flower may be in
-    // front of — back up to the top of the flower layer and come down again
-    // with only the ground and flowers in, as far as the first hit.
-    bool flowerHit = false;
-    if (found && hit.y != M_SEA) {
-        float3 p = cam.ro + rd * t;
-        float3 q = bendP(p, sc);
-        if (hit.y == M_GROUND || q.y - groundH(q.xz, sc.ident) < 0.42) {
-            float2 dq = p.xz - sc.focus;
-            float vy = rd.y + 2.0 * sc.bend * dot(dq, rd.xz);
-            float tg = t;
-            float tb = max(0.5, t - 0.34 / max(-vy, 0.05));
-            // Flowers grow between 1.22 and 5.75 from the middle; the
-            // segment's far point from it is an end, its near one about one.
-            float rb = length(cam.ro.xz + rd.xz * tb), rh = length(p.xz);
-            if (max(rb, rh) > 1.2 && min(rb, rh) < ISLAND_R - 1.2) {
-                for (int i = 0; i < 32; i++) {
-                    float3 h = mapMeadow(cam.ro + rd * tb, rd, sc);
-                    if (h.x < 0.0003 * tb) {
-                        if (h.y != M_GROUND) { hit = h.xyz; t = tb; flowerHit = true; }
-                        break;
-                    }
-                    tb += h.x * 0.9;
-                    if (tb > tg - 0.001) break;
-                }
-            }
-        }
-    }
+    return open;
+}
 
-    float3 col;
-    if (!found) {
-        col = skyColor(rd, sunDir, moonDir, night, golden, time);
-    } else {
-        float3 p = cam.ro + rd * t;
-        float3 q = bendP(p, sc);
-        float mat = hit.y;
-        float3 n;
-        if (mat == M_GROUND || mat == M_SEA) {
-            // Height field: the normal of q.y = groundH(q.xz) in world space.
-            float2 dq = p.xz - sc.focus;
-            float2 grad = 2.0 * sc.bend * dq;
-            if (mat == M_GROUND) {
-                const float e = 0.01;
-                float h0 = groundH(q.xz, sc.ident);
-                grad = float2(groundH(q.xz + float2(e, 0.0), sc.ident) - h0,
-                              groundH(q.xz + float2(0.0, e), sc.ident) - h0) / e - grad;
-                n = normalize(float3(-grad.x, 1.0, -grad.y));
-            } else {
-                n = normalize(float3(grad.x, 1.0, grad.y));
-            }
-        } else {
-            n = calcNormal(p, sc, flowerHit);
-        }
-        float3 alb = float3(0.5);
-        float spec = 0.0, shine = 16.0, emit = 0.0, rim = 0.0;
-        float gh = groundH(q.xz, sc.ident);
-        float season = float(sc.season);
+// Out over the open sea: solve the bent surface,
+// ro.y + t·rd.y + bend·|ro.xz − focus + t·rd.xz|² = SEA_Y, as a quadratic
+// in t (no root, or both behind: the ray clears the horizon — sky).
+static inline __attribute__((always_inline)) void meetOpenSea(thread Hit& h, thread const Scene& sc, float3 ro, float3 rd, float a2) {
+    float2 D = ro.xz - sc.focus;
+    float A = sc.bend * a2;
+    float B = rd.y + 2.0 * sc.bend * dot(D, rd.xz);
+    float C = ro.y + sc.bend * dot(D, D) - SEA_Y;
+    float disc = B * B - 4.0 * A * C;
+    if (B < 0.0 && disc >= 0.0) {
+        float qq = 0.5 * (-B + sqrt(disc));       // stable: no cancellation
+        float t1 = C / qq, t2 = qq / max(A, 1e-12);
+        // (Past 45 it was always sky, the haze's edge; keep it there.)
+        if (t2 >= h.t && t1 <= 45.0) { h.t = max(t1, h.t); h.hit = float3(0.0, M_SEA, 0.0); h.found = true; }
+    }
+}
 
-        float3 palette[5] = { float3(0.5, 0.85, 0.66), float3(1.0, 0.66, 0.52), float3(1.0, 0.84, 0.42),
-                              float3(0.74, 0.64, 0.96), float3(0.52, 0.74, 1.0) };
-        float3 bodyCol = palette[int(S.identity * 5.0) % 5];
-        bodyCol = mix(bodyCol, float3(0.64, 0.66, 0.58), (1.0 - S.health) * 0.65);
+// Pass 2: if pass 1 landed on the meadow — or on anything standing within
+// the flower layer, a trunk, a foot, a rock, which a flower may be in front
+// of — back up to the top of the flower layer and come down again with only
+// the ground and flowers in, as far as the first hit.
+static inline __attribute__((always_inline)) void marchFlowers(thread Hit& h, thread const Scene& sc, float3 ro, float3 rd) {
+    float3 p = ro + rd * h.t;
+    float3 q = bendP(p, sc);
+    if (!(h.hit.y == M_GROUND || q.y - groundH(q.xz, sc.ident) < 0.42)) return;
+    float2 dq = p.xz - sc.focus;
+    float vy = rd.y + 2.0 * sc.bend * dot(dq, rd.xz);
+    float tg = h.t;
+    float tb = max(0.5, h.t - 0.34 / max(-vy, 0.05));
+    // Flowers grow between 1.22 and 5.75 from the middle; the
+    // segment's far point from it is an end, its near one about one.
+    float rb = length(ro.xz + rd.xz * tb), rh = length(p.xz);
+    if (!(max(rb, rh) > 1.2 && min(rb, rh) < ISLAND_R - 1.2)) return;
+    for (int i = 0; i < 32; i++) {
+        float3 m = mapMeadow(ro + rd * tb, rd, sc);
+        if (m.x < 0.0003 * tb) {
+            if (m.y != M_GROUND) { h.hit = m.xyz; h.t = tb; h.flowerHit = true; }
+            break;
+        }
+        tb += m.x * 0.9;
+        if (tb > tg - 0.001) break;
+    }
+}
 
-        if (mat == M_GROUND) {
-            float3 lush = season == 3.0 ? float3(0.86, 0.9, 0.94)
-                        : (season == 2.0 ? float3(0.6, 0.74, 0.42) : float3(0.52, 0.78, 0.44));
-            float3 dry = float3(0.74, 0.68, 0.42);
-            float3 grass = mix(lush, dry, smoothstep(0.65, 0.2, S.health) * (season == 3.0 ? 0.2 : 1.0));
-            float dap = valueNoise(q.xz * 2.2 + 7.0);
-            grass *= 0.88 + 0.2 * dap;
-            float tri = step(0.82, hash21(floor(q.xz * 5.0))) * step(fract(q.z * 5.0), 1.0 - abs(fract(q.x * 5.0) - 0.5) * 2.0);
-            grass *= 1.0 - 0.1 * tri;
-            float3 sand = float3(0.97, 0.89, 0.7) * (0.95 + 0.08 * valueNoise(q.xz * 6.0));
-            float wet = smoothstep(SEA_Y + 0.08, SEA_Y, gh);
-            sand = mix(sand, sand * float3(0.82, 0.78, 0.7), wet);
-            alb = mix(grass, sand, smoothstep(0.0, -0.1, gh));
-            // a worn patch where the critter stands
-            alb = mix(alb, float3(0.78, 0.7, 0.52), (1.0 - smoothstep(0.35, 0.8, length(q.xz))) * 0.35 * (season == 3.0 ? 0.0 : 1.0));
-        } else if (mat == M_SEA) {
-            float depth = SEA_Y - gh;
-            alb = mix(float3(0.42, 0.9, 0.86), float3(0.18, 0.46, 0.78), smoothstep(0.0, 0.7, depth));
-            alb = mix(alb, alb * float3(0.35, 0.45, 0.7), night * 0.5);
-            float ang = atan2(q.z, q.x);
-            float foam = 1.0 - smoothstep(0.0, 0.05 + 0.025 * sin(tphase(time, 1.4) + ang * 9.0), depth);
-            float ripple = valueNoise(q.xz * 3.0 + float2(time * 0.25, time * 0.18));
-            alb += ripple * 0.06;
-            alb = mix(alb, float3(1.0), foam * 0.85);
-            spec = 0.9; shine = 80.0;
-            n = normalize(n + float3(0.05 * sin(q.x * 4.0 + tphase(time, 1.0)), 0.0,
-                                     0.05 * cos(q.z * 4.0 + tphase(time, 1.2))));
-        } else if (mat == M_BODY) {
-            float3 lp = critterLocal(q, sc);
-            float s = sc.s;
-            float hz = rsqrt(sc.sq);
-            float3 bc = float3(0.0, 0.95 * s * sc.sq, 0.0);
-            float3 rel = (lp - bc) / s;
-            // Its own colour, only a little greyed by a bad week (the sag,
-            // the wilt and the tired eyes say the rest, and survive the night).
-            alb = mix(palette[int(S.identity * 5.0) % 5], float3(0.64, 0.66, 0.58), (1.0 - S.health) * 0.3);
-            // lighter tummy
-            alb = mix(alb, mix(alb, float3(1.0, 0.98, 0.92), 0.55),
-                      smoothstep(0.35, 0.7, rel.z) * smoothstep(0.25, -0.3, rel.y) * smoothstep(0.22, 0.38, lp.y / s));
-            // blush
-            float2 ck = float2(abs(rel.x) - 0.56 * hz, rel.y + 0.1);
-            alb = mix(alb, float3(1.0, 0.55, 0.6), smoothstep(0.15, 0.06, length(ck)) * step(0.0, rel.z) * 0.8);
-            // shadows under the eyes when it is worn out
-            float2 ue = float2(abs(rel.x) - 0.34 * hz, rel.y - 0.1 * sc.sq);
-            float bag = smoothstep(0.22, 0.06, abs(length(ue / float2(0.12, 0.19)) - 1.0))
-                      * smoothstep(-0.07, -0.13, ue.y) * step(0.3, rel.z);
-            alb = mix(alb, alb * float3(0.55, 0.45, 0.68), bag * sc.bags * 0.85);
-            // mouth: a curve deep enough to read as a smile or a frown from
-            // across the room, or an open "o" (a "D" when it is happy)
-            float mx = rel.x, my = rel.y + 0.14 * sc.sq;
-            float amp = 5.4 * sc.mouth;
-            float cx = clamp(mx, -0.12, 0.12);
-            float slope = amp * 2.8 * cx;
-            float dm = length(float2(mx - cx, (my + amp * (0.01 - cx * cx * 1.4)) * rsqrt(1.0 + slope * slope)));
-            float line = smoothstep(0.03, 0.02, dm) * (1.0 - smoothstep(0.15, 0.4, sc.mouthO));
-            float2 orad = float2(0.04 + 0.04 * sc.mouthO, 0.02 + 0.07 * sc.mouthO);
-            float2 mo = float2(mx, my + 0.01) / orad;
-            float lip = mo.y - (1.0 - 0.75 * clamp(sc.mouth, 0.0, 1.0));   // flat top on a "D"
-            float open = smoothstep(1.0, 0.85, max(length(mo), 1.0 + lip)) * step(0.05, sc.mouthO);
-            alb = mix(alb, float3(0.28, 0.12, 0.12), max(line, open) * step(0.5, rel.z));
-            alb = mix(alb, float3(0.95, 0.45, 0.5), open * smoothstep(-0.25, -0.6, mo.y) * step(0.5, rel.z));
-            // feet a shade darker
-            alb *= mix(1.0, 0.85, smoothstep(0.3, 0.15, lp.y / s));
-            // a warm fill at night, so its colour survives the moonlight
-            alb *= mix(float3(1.0), float3(1.6, 1.35, 1.0), night);
-            emit = night * 0.035 * (0.4 + 0.6 * max(dot(n, -rd), 0.0));
-            spec = 0.18; shine = 20.0; rim = 0.55;
-        } else if (mat == M_EYE) {
-            float3 lp = critterLocal(q, sc);
-            float s = sc.s;
-            float hz = rsqrt(sc.sq);
-            float3 bc = float3(0.0, 0.95 * s * sc.sq, 0.0);
-            float3 e = lp - (bc + float3(sign(lp.x) * 0.34 * hz * s, 0.1 * s * sc.sq, 0.83 * hz * s));
-            alb = float3(0.04, 0.035, 0.06);
-            float glint = smoothstep(0.03 * s, 0.018 * s, length(e.xy - float2(0.025, 0.045) * s));
-            alb = mix(alb, float3(1.6), glint * step(0.3, sc.eye) * step(sc.lid, 0.4) * (1.0 - abs(sc.happy)));
-            spec = 1.0; shine = 60.0;
-        } else if (mat == M_LEAF) {
-            alb = mix(float3(0.42, 0.76, 0.3), float3(0.62, 0.55, 0.3), sc.droop * 0.8);
-            emit = night * 0.25 * S.health;
-        } else if (mat == M_TRUNK) {
-            alb = float3(0.55, 0.38, 0.25) * (0.85 + 0.15 * sin(q.y * 40.0 + q.x * 7.0));
-        } else if (mat == M_CANOPY) {
-            float h = hash11(hit.z * 4.1 + S.identity * 9.0);
-            float3 c;
-            if (season == 0.0) c = mix(float3(0.5, 0.78, 0.38), float3(1.0, 0.75, 0.82), step(0.5, h));
-            else if (season == 1.0) c = float3(0.3, 0.62, 0.3) * (0.9 + 0.2 * h);
-            else if (season == 2.0) c = h < 0.33 ? float3(1.0, 0.62, 0.24) : (h < 0.66 ? float3(0.96, 0.44, 0.26) : float3(1.0, 0.8, 0.32));
-            else c = float3(0.22, 0.45, 0.32);
-            c = mix(c, c * float3(0.85, 0.8, 0.6), (1.0 - S.health) * 0.5);
-            float bump = valueNoise(q.xz * 7.0 + q.y * 5.0);
-            c *= 0.85 + 0.25 * bump;
-            if (season == 3.0) c = mix(c, float3(0.97, 0.98, 1.0), smoothstep(0.45, 0.75, n.y));
-            alb = c;
-            rim = 0.25;
-        } else if (mat == M_PETAL) {
-            float h = hit.z;
-            float3 pal[6] = { float3(1.0, 0.98, 0.95), float3(1.0, 0.6, 0.72), float3(1.0, 0.86, 0.3),
-                              float3(0.95, 0.35, 0.35), float3(0.72, 0.58, 1.0), float3(1.0, 0.62, 0.3) };
-            alb = pal[int(fract(h * 7.31) * 6.0)];
-        } else if (mat == M_FCORE) {
-            alb = float3(1.0, 0.82, 0.25);
-        } else if (mat == M_EGG) {
-            float3 lp = critterLocal(q, sc);
-            lp.xy = rotate(lp.xy, sc.wobble);
-            alb = float3(0.99, 0.96, 0.88);
-            float spots = smoothstep(0.62, 0.66, valueNoise(lp.xy * 9.0 + lp.z * 7.0 + S.identity * 20.0));
-            alb = mix(alb, bodyCol * 0.9, spots);
-            float ang = atan2(lp.z, lp.x);
-            float zig = 0.43 + 0.035 * (2.0 * abs(fract(ang * 2.2) - 0.5) * 2.0 - 1.0);
-            float crack = step(abs(lp.y - zig), 0.008 + 0.006 * sc.hatch) * step(0.05, sc.hatch)
-                        * step(fract(ang / TWO_PI + 0.5), 0.25 + 0.75 * sc.hatch);
-            alb = mix(alb, float3(0.35, 0.28, 0.22), crack);
-            spec = 0.3; shine = 30.0; rim = 0.3;
-        } else if (mat == M_NEST) {
-            alb = float3(0.78, 0.62, 0.36) * (0.8 + 0.3 * valueNoise(q.xz * 40.0));
-        } else if (mat == M_ROCK) {
-            alb = float3(0.62, 0.62, 0.64) * (0.85 + 0.2 * valueNoise(q.xz * 8.0 + q.y * 6.0));
-        } else if (mat == M_FRUIT) {
-            alb = sc.season == 2 ? float3(1.0, 0.45, 0.15) : float3(0.95, 0.2, 0.2);
-            spec = 0.6; shine = 40.0;
-        } else if (mat == M_CLOUD) {
-            // slate, not black: lit on top, a shade darker underneath
-            // (a rain cloud a gloomier grey than a storm)
-            alb = mix(float3(0.44, 0.46, 0.53), float3(0.56, 0.59, 0.68), sc.cloudDark);
-            alb *= mix(0.8, 1.2, smoothstep(-0.3, 0.7, n.y));
-            float fl = sc.cloudDark * step(0.9, fract(time * 0.37)) * step(0.4, fract(time * 9.0));
-            alb = mix(alb, float3(0.8, 0.85, 0.95), fl);
-        } else if (mat == M_BLOSSOM) {
-            float hue = fract(S.identity * 3.7);
-            alb = mix(float3(1.0, 0.55, 0.7), float3(1.0, 0.85, 0.35), hue);
-            emit = night * 0.35;
-        } else if (mat == M_CASTLE) {
-            alb = float3(0.93, 0.83, 0.6) * (0.9 + 0.12 * valueNoise(q.xz * 30.0 + q.y * 20.0));
-        }
-        alb = srgb(alb);
+static inline __attribute__((always_inline)) Hit marchScene(thread const Scene& sc, float3 ro, float3 rd, float tObj) {
+    Hit h;
+    h.hit = float3(0.0);
+    h.found = false;
+    h.flowerHit = false;
+    // Nothing can be met before the first object's bounding sphere or before
+    // the ray is down to the top of the land (0.185; the bend only lifts
+    // things), so start at the nearer of the two — or not at all.
+    float tLand = rd.y < 0.0 ? (ro.y - 0.19) / -rd.y : 1e5;
+    h.t = max(0.5, min(tLand, tObj));
+    // Past this cylinder there is only sea (rocks end at 7.7, the land is
+    // under the water by 7.9), which is met analytically.
+    const float seaR = ISLAND_R + 0.9;
+    float a2 = dot(rd.xz, rd.xz), bxz = dot(ro.xz, rd.xz);
+    float tCyl = a2 > 1e-8 ? (-bxz + sqrt(max(bxz * bxz - a2 * (dot(ro.xz, ro.xz) - seaR * seaR), 0.0))) / a2 : 1e5;
+    bool open = marchLand(h, sc, ro, rd, tCyl);
+    if (!h.found && open && h.t > tCyl) meetOpenSea(h, sc, ro, rd, a2);
+    if (h.found && h.hit.y != M_SEA) marchFlowers(h, sc, ro, rd);
+    return h;
+}
 
-        float ndl = dot(n, L);
-        int self = mat == M_CANOPY || mat == M_TRUNK || mat == M_FRUIT ? int(hit.z)
-                 : (mat == M_BODY || mat == M_EYE || mat == M_LEAF || mat == M_EGG || mat == M_BLOSSOM ? 8 : -1);
-        if (flowerHit) self = -1;   // a flower stem, not the sprout
-        float sh = mat == M_SEA && t > 9.0 ? 1.0 : softShadow(q + n * 0.01, L, sc, self);
-        float2 cs = q.xz * 0.16 + float2(0.05, 0.022) * time;
-        float cloudShade = smoothstep(0.52, 0.72, valueNoise(cs) * 0.65 + valueNoise(cs * 2.3 + 5.0) * 0.35);
-        sh *= 1.0 - 0.42 * cloudShade * (1.0 - night);
-        float dif = smoothstep(-0.05, 0.3, ndl) * mix(0.25, 1.0, sh);
-        float ao = ambientOcc(q, n, sc, self);
-        float3 lin = srgb(sunCol) * dif * 1.05;
-        lin += srgb(skyAmb) * (0.55 + 0.45 * n.y) * 0.5 * ao;
-        lin += srgb(float3(0.5, 0.65, 0.35)) * (0.5 - 0.5 * n.y) * 0.18 * ao * (1.0 - 0.85 * night);
-        col = alb * lin;
-        float3 hv = normalize(L - rd);
-        col += srgb(sunCol) * spec * pow(max(dot(n, hv), 0.0), shine) * sh;
-        if (mat == M_SEA) {
-            float fres = pow(1.0 - max(dot(n, -rd), 0.0), 4.0);
-            col = mix(col, srgb(skyColor(reflect(rd, n), sunDir, moonDir, night, golden, time)), fres * 0.7);
-        }
-        col += srgb(skyAmb) * rim * pow(clamp(1.0 + dot(n, rd), 0.0, 1.0), 3.0) * ao;
-        col += emit * srgb(float3(1.0, 0.9, 0.55));
-        // Haze toward the horizon.
-        float fog = 1.0 - exp(-0.00035 * t * t);
-        float3 haze = mix(mix(float3(0.62, 0.82, 0.98), float3(1.0, 0.66, 0.46), golden), float3(0.09, 0.12, 0.26), night);
-        col = mix(col, srgb(haze), fog);
-        col = sqrt(max(col, 0.0));
-    }
-    float depth = found ? t : 1e5;
+// ---- shadeHit: normal
 
-    // ---- floating things: Zzz, hearts, sparkles, rain, butterfly, fireflies
-    float3 head = unbendP(sc.cpos + float3(0.0, 2.1 * sc.s, 0.0), sc);
-    // How far this pixel is from the critter's head, in world units at its
-    // depth: every overlay but the butterfly is skipped beyond its reach.
-    float3 hj = project(head, cam);
-    float nearW = length(uv - hj.xy) * hj.z / cam.focal;
-    float zzz = (act == ACT_SLEEP ? k : 0.0) + (prevAct == ACT_SLEEP ? 1.0 - k : 0.0);
-    if (zzz > 0.01 && nearW < 1.0) {
-        for (int i = 0; i < 3; i++) {
-            float ph = fract(time * 0.22 + float(i) / 3.0);
-            float3 wp = head + cam.rt * (0.15 + 0.35 * ph) + float3(0.0, 0.0 + 0.5 * ph, 0.0);
-            float3 pj = project(wp, cam);
-            float size = (0.07 + 0.08 * ph) * cam.focal / pj.z;
-            float d = sdZ((uv - pj.xy) / size) * size;
-            float a = sin(ph * PI) * zzz * step(pj.z, depth);
-            col = mix(col, float3(0.25, 0.3, 0.45), a * smoothstep(0.16 * size, 0.1 * size, d));
-            col = mix(col, float3(1.0), a * smoothstep(0.09 * size, 0.04 * size, d));
-        }
+static inline __attribute__((always_inline)) float3 surfaceNormal(thread const Scene& sc, float3 p, float3 q, float mat, bool flowerHit) {
+    if (mat != M_GROUND && mat != M_SEA) return calcNormal(p, sc, flowerHit);
+    // Height field: the normal of q.y = groundH(q.xz) in world space.
+    float2 dq = p.xz - sc.focus;
+    float2 grad = 2.0 * sc.bend * dq;
+    if (mat == M_SEA) return normalize(float3(grad.x, 1.0, grad.y));
+    const float e = 0.01;
+    float h0 = groundH(q.xz, sc.ident);
+    grad = float2(groundH(q.xz + float2(e, 0.0), sc.ident) - h0,
+                  groundH(q.xz + float2(0.0, e), sc.ident) - h0) / e - grad;
+    return normalize(float3(-grad.x, 1.0, -grad.y));
+}
+
+// ---- shadeHit: materials
+
+static inline __attribute__((always_inline)) Surface plainSurface(float3 alb) {
+    Surface m;
+    m.alb = alb;
+    m.spec = 0.0; m.shine = 16.0; m.emit = 0.0; m.rim = 0.0;
+    return m;
+}
+
+// The critter's own colour, chosen by its identity.
+static inline __attribute__((always_inline)) float3 critterColor(constant CritterState& S) {
+    float3 palette[5] = { float3(0.5, 0.85, 0.66), float3(1.0, 0.66, 0.52), float3(1.0, 0.84, 0.42),
+                          float3(0.74, 0.64, 0.96), float3(0.52, 0.74, 1.0) };
+    return palette[int(S.identity * 5.0) % 5];
+}
+
+static inline __attribute__((always_inline)) Surface groundSurface(thread const Scene& sc, constant CritterState& S, float3 q, float gh) {
+    float season = float(sc.season);
+    float3 lush = season == 3.0 ? float3(0.86, 0.9, 0.94)
+                : (season == 2.0 ? float3(0.6, 0.74, 0.42) : float3(0.52, 0.78, 0.44));
+    float3 dry = float3(0.74, 0.68, 0.42);
+    float3 grass = mix(lush, dry, smoothstep(0.65, 0.2, S.health) * (season == 3.0 ? 0.2 : 1.0));
+    float dap = valueNoise(q.xz * 2.2 + 7.0);
+    grass *= 0.88 + 0.2 * dap;
+    float tri = step(0.82, hash21(floor(q.xz * 5.0))) * step(fract(q.z * 5.0), 1.0 - abs(fract(q.x * 5.0) - 0.5) * 2.0);
+    grass *= 1.0 - 0.1 * tri;
+    float3 sand = float3(0.97, 0.89, 0.7) * (0.95 + 0.08 * valueNoise(q.xz * 6.0));
+    float wet = smoothstep(SEA_Y + 0.08, SEA_Y, gh);
+    sand = mix(sand, sand * float3(0.82, 0.78, 0.7), wet);
+    float3 alb = mix(grass, sand, smoothstep(0.0, -0.1, gh));
+    // a worn patch where the critter stands
+    alb = mix(alb, float3(0.78, 0.7, 0.52), (1.0 - smoothstep(0.35, 0.8, length(q.xz))) * 0.35 * (season == 3.0 ? 0.0 : 1.0));
+    return plainSurface(alb);
+}
+
+// The sea also ripples the normal.
+static inline __attribute__((always_inline)) Surface seaSurface(float3 q, float gh, float night, float time, thread float3& n) {
+    float depth = SEA_Y - gh;
+    float3 alb = mix(float3(0.42, 0.9, 0.86), float3(0.18, 0.46, 0.78), smoothstep(0.0, 0.7, depth));
+    alb = mix(alb, alb * float3(0.35, 0.45, 0.7), night * 0.5);
+    float ang = atan2(q.z, q.x);
+    float foam = 1.0 - smoothstep(0.0, 0.05 + 0.025 * sin(tphase(time, 1.4) + ang * 9.0), depth);
+    float ripple = valueNoise(q.xz * 3.0 + float2(time * 0.25, time * 0.18));
+    alb += ripple * 0.06;
+    alb = mix(alb, float3(1.0), foam * 0.85);
+    Surface m = plainSurface(alb);
+    m.spec = 0.9; m.shine = 80.0;
+    n = normalize(n + float3(0.05 * sin(q.x * 4.0 + tphase(time, 1.0)), 0.0,
+                             0.05 * cos(q.z * 4.0 + tphase(time, 1.2))));
+    return m;
+}
+
+static inline __attribute__((always_inline)) Surface bodySurface(thread const Scene& sc, constant CritterState& S, float3 q, float3 n,
+                           float3 rd, float night) {
+    float3 lp = critterLocal(q, sc);
+    float s = sc.s;
+    float hz = rsqrt(sc.sq);
+    float3 bc = float3(0.0, 0.95 * s * sc.sq, 0.0);
+    float3 rel = (lp - bc) / s;
+    // Its own colour, only a little greyed by a bad week (the sag,
+    // the wilt and the tired eyes say the rest, and survive the night).
+    float3 alb = mix(critterColor(S), float3(0.64, 0.66, 0.58), (1.0 - S.health) * 0.3);
+    // lighter tummy
+    alb = mix(alb, mix(alb, float3(1.0, 0.98, 0.92), 0.55),
+              smoothstep(0.35, 0.7, rel.z) * smoothstep(0.25, -0.3, rel.y) * smoothstep(0.22, 0.38, lp.y / s));
+    // blush
+    float2 ck = float2(abs(rel.x) - 0.56 * hz, rel.y + 0.1);
+    alb = mix(alb, float3(1.0, 0.55, 0.6), smoothstep(0.15, 0.06, length(ck)) * step(0.0, rel.z) * 0.8);
+    // shadows under the eyes when it is worn out
+    float2 ue = float2(abs(rel.x) - 0.34 * hz, rel.y - 0.1 * sc.sq);
+    float bag = smoothstep(0.22, 0.06, abs(length(ue / float2(0.12, 0.19)) - 1.0))
+              * smoothstep(-0.07, -0.13, ue.y) * step(0.3, rel.z);
+    alb = mix(alb, alb * float3(0.55, 0.45, 0.68), bag * sc.bags * 0.85);
+    // mouth: a curve deep enough to read as a smile or a frown from
+    // across the room, or an open "o" (a "D" when it is happy)
+    float mx = rel.x, my = rel.y + 0.14 * sc.sq;
+    float amp = 5.4 * sc.mouth;
+    float cx = clamp(mx, -0.12, 0.12);
+    float slope = amp * 2.8 * cx;
+    float dm = length(float2(mx - cx, (my + amp * (0.01 - cx * cx * 1.4)) * rsqrt(1.0 + slope * slope)));
+    float line = smoothstep(0.03, 0.02, dm) * (1.0 - smoothstep(0.15, 0.4, sc.mouthO));
+    float2 orad = float2(0.04 + 0.04 * sc.mouthO, 0.02 + 0.07 * sc.mouthO);
+    float2 mo = float2(mx, my + 0.01) / orad;
+    float lip = mo.y - (1.0 - 0.75 * clamp(sc.mouth, 0.0, 1.0));   // flat top on a "D"
+    float open = smoothstep(1.0, 0.85, max(length(mo), 1.0 + lip)) * step(0.05, sc.mouthO);
+    alb = mix(alb, float3(0.28, 0.12, 0.12), max(line, open) * step(0.5, rel.z));
+    alb = mix(alb, float3(0.95, 0.45, 0.5), open * smoothstep(-0.25, -0.6, mo.y) * step(0.5, rel.z));
+    // feet a shade darker
+    alb *= mix(1.0, 0.85, smoothstep(0.3, 0.15, lp.y / s));
+    // a warm fill at night, so its colour survives the moonlight
+    alb *= mix(float3(1.0), float3(1.6, 1.35, 1.0), night);
+    Surface m = plainSurface(alb);
+    m.emit = night * 0.035 * (0.4 + 0.6 * max(dot(n, -rd), 0.0));
+    m.spec = 0.18; m.shine = 20.0; m.rim = 0.55;
+    return m;
+}
+
+static inline __attribute__((always_inline)) Surface eyeSurface(thread const Scene& sc, float3 q) {
+    float3 lp = critterLocal(q, sc);
+    float s = sc.s;
+    float hz = rsqrt(sc.sq);
+    float3 bc = float3(0.0, 0.95 * s * sc.sq, 0.0);
+    float3 e = lp - (bc + float3(sign(lp.x) * 0.34 * hz * s, 0.1 * s * sc.sq, 0.83 * hz * s));
+    float3 alb = float3(0.04, 0.035, 0.06);
+    float glint = smoothstep(0.03 * s, 0.018 * s, length(e.xy - float2(0.025, 0.045) * s));
+    alb = mix(alb, float3(1.6), glint * step(0.3, sc.eye) * step(sc.lid, 0.4) * (1.0 - abs(sc.happy)));
+    Surface m = plainSurface(alb);
+    m.spec = 1.0; m.shine = 60.0;
+    return m;
+}
+
+static inline __attribute__((always_inline)) Surface canopySurface(thread const Scene& sc, constant CritterState& S, float3 q, float3 n, float treeId) {
+    float season = float(sc.season);
+    float h = hash11(treeId * 4.1 + S.identity * 9.0);
+    float3 c;
+    if (season == 0.0) c = mix(float3(0.5, 0.78, 0.38), float3(1.0, 0.75, 0.82), step(0.5, h));
+    else if (season == 1.0) c = float3(0.3, 0.62, 0.3) * (0.9 + 0.2 * h);
+    else if (season == 2.0) c = h < 0.33 ? float3(1.0, 0.62, 0.24) : (h < 0.66 ? float3(0.96, 0.44, 0.26) : float3(1.0, 0.8, 0.32));
+    else c = float3(0.22, 0.45, 0.32);
+    c = mix(c, c * float3(0.85, 0.8, 0.6), (1.0 - S.health) * 0.5);
+    float bump = valueNoise(q.xz * 7.0 + q.y * 5.0);
+    c *= 0.85 + 0.25 * bump;
+    if (season == 3.0) c = mix(c, float3(0.97, 0.98, 1.0), smoothstep(0.45, 0.75, n.y));
+    Surface m = plainSurface(c);
+    m.rim = 0.25;
+    return m;
+}
+
+static inline __attribute__((always_inline)) float3 petalColor(float h) {
+    float3 pal[6] = { float3(1.0, 0.98, 0.95), float3(1.0, 0.6, 0.72), float3(1.0, 0.86, 0.3),
+                      float3(0.95, 0.35, 0.35), float3(0.72, 0.58, 1.0), float3(1.0, 0.62, 0.3) };
+    return pal[int(fract(h * 7.31) * 6.0)];
+}
+
+static inline __attribute__((always_inline)) Surface eggSurface(thread const Scene& sc, constant CritterState& S, float3 q) {
+    float3 bodyCol = mix(critterColor(S), float3(0.64, 0.66, 0.58), (1.0 - S.health) * 0.65);
+    float3 lp = critterLocal(q, sc);
+    lp.xy = rotate(lp.xy, sc.wobble);
+    float3 alb = float3(0.99, 0.96, 0.88);
+    float spots = smoothstep(0.62, 0.66, valueNoise(lp.xy * 9.0 + lp.z * 7.0 + S.identity * 20.0));
+    alb = mix(alb, bodyCol * 0.9, spots);
+    float ang = atan2(lp.z, lp.x);
+    float zig = 0.43 + 0.035 * (2.0 * abs(fract(ang * 2.2) - 0.5) * 2.0 - 1.0);
+    float crack = step(abs(lp.y - zig), 0.008 + 0.006 * sc.hatch) * step(0.05, sc.hatch)
+                * step(fract(ang / TWO_PI + 0.5), 0.25 + 0.75 * sc.hatch);
+    alb = mix(alb, float3(0.35, 0.28, 0.22), crack);
+    Surface m = plainSurface(alb);
+    m.spec = 0.3; m.shine = 30.0; m.rim = 0.3;
+    return m;
+}
+
+// slate, not black: lit on top, a shade darker underneath (a rain cloud a
+// gloomier grey than a storm)
+static inline __attribute__((always_inline)) Surface cloudSurface(thread const Scene& sc, float3 n, float time) {
+    float3 alb = mix(float3(0.44, 0.46, 0.53), float3(0.56, 0.59, 0.68), sc.cloudDark);
+    alb *= mix(0.8, 1.2, smoothstep(-0.3, 0.7, n.y));
+    float fl = sc.cloudDark * step(0.9, fract(time * 0.37)) * step(0.4, fract(time * 9.0));
+    alb = mix(alb, float3(0.8, 0.85, 0.95), fl);
+    return plainSurface(alb);
+}
+
+// What the hit surface is made of. `n` is the sea's to ripple.
+static inline __attribute__((always_inline)) Surface materialAt(thread const Scene& sc, constant CritterState& S, float3 q, float3 rd,
+                          float3 hit, thread float3& n, float night, float time) {
+    float mat = hit.y;
+    float gh = groundH(q.xz, sc.ident);
+    if (mat == M_GROUND) return groundSurface(sc, S, q, gh);
+    if (mat == M_SEA)    return seaSurface(q, gh, night, time, n);
+    if (mat == M_BODY)   return bodySurface(sc, S, q, n, rd, night);
+    if (mat == M_EYE)    return eyeSurface(sc, q);
+    if (mat == M_CANOPY) return canopySurface(sc, S, q, n, hit.z);
+    if (mat == M_EGG)    return eggSurface(sc, S, q);
+    if (mat == M_CLOUD)  return cloudSurface(sc, n, time);
+    Surface m = plainSurface(float3(0.5));
+    if (mat == M_LEAF) {
+        m.alb = mix(float3(0.42, 0.76, 0.3), float3(0.62, 0.55, 0.3), sc.droop * 0.8);
+        m.emit = night * 0.25 * S.health;
+    } else if (mat == M_TRUNK) {
+        m.alb = float3(0.55, 0.38, 0.25) * (0.85 + 0.15 * sin(q.y * 40.0 + q.x * 7.0));
+    } else if (mat == M_PETAL) {
+        m.alb = petalColor(hit.z);
+    } else if (mat == M_FCORE) {
+        m.alb = float3(1.0, 0.82, 0.25);
+    } else if (mat == M_NEST) {
+        m.alb = float3(0.78, 0.62, 0.36) * (0.8 + 0.3 * valueNoise(q.xz * 40.0));
+    } else if (mat == M_ROCK) {
+        m.alb = float3(0.62, 0.62, 0.64) * (0.85 + 0.2 * valueNoise(q.xz * 8.0 + q.y * 6.0));
+    } else if (mat == M_FRUIT) {
+        m.alb = sc.season == 2 ? float3(1.0, 0.45, 0.15) : float3(0.95, 0.2, 0.2);
+        m.spec = 0.6; m.shine = 40.0;
+    } else if (mat == M_BLOSSOM) {
+        float hue = fract(S.identity * 3.7);
+        m.alb = mix(float3(1.0, 0.55, 0.7), float3(1.0, 0.85, 0.35), hue);
+        m.emit = night * 0.35;
+    } else if (mat == M_CASTLE) {
+        m.alb = float3(0.93, 0.83, 0.6) * (0.9 + 0.12 * valueNoise(q.xz * 30.0 + q.y * 20.0));
     }
-    float love = ((act == ACT_WAVE || act == ACT_STRETCH) ? k : 0.0)
-               + ((prevAct == ACT_WAVE || prevAct == ACT_STRETCH) ? 1.0 - k : 0.0);
-    love = max(love, dtake * smoothstep(1.6, 2.2, time));
-    if (love > 0.01 && nearW < 0.9) {
-        for (int i = 0; i < 2; i++) {
-            float ph = fract(time * 0.3 + float(i) * 0.5);
-            float3 wp = head + cam.rt * (0.35 * sin(float(i) * 2.0 + 1.0) - 0.15) + float3(0.0, 0.0 + 0.45 * ph, 0.0);
-            float3 pj = project(wp, cam);
-            float size = 0.12 * cam.focal / pj.z;
-            float d = sdHeart((uv - pj.xy) / size) * size;
-            float a = sin(ph * PI) * love;
-            col = mix(col, float3(1.0), a * smoothstep(0.1 * size, 0.04 * size, d));
-            col = mix(col, float3(1.0, 0.4, 0.5), a * smoothstep(0.02 * size, -0.03 * size, d));
-        }
+    return m;
+}
+
+// ---- shadeHit: light
+
+// Which shadow caster the surface belongs to (0…7 a tree, 8 the critter, -1
+// none), so it does not shadow itself.
+static inline __attribute__((always_inline)) int casterOf(float mat, float id, bool flowerHit) {
+    if (flowerHit) return -1;   // a flower stem, not the sprout
+    if (mat == M_CANOPY || mat == M_TRUNK || mat == M_FRUIT) return int(id);
+    if (mat == M_BODY || mat == M_EYE || mat == M_LEAF || mat == M_EGG || mat == M_BLOSSOM) return 8;
+    return -1;
+}
+
+static inline __attribute__((always_inline)) float3 lightSurface(thread const Scene& sc, Surface m, float3 q, float3 n, float3 rd, float t,
+                           float mat, int caster, thread const Light& lt, float time) {
+    float3 alb = srgb(m.alb);
+    float ndl = dot(n, lt.L);
+    float sh = mat == M_SEA && t > 9.0 ? 1.0 : softShadow(q + n * 0.01, lt.L, sc, caster);
+    float2 cs = q.xz * 0.16 + float2(0.05, 0.022) * time;
+    float cloudShade = smoothstep(0.52, 0.72, valueNoise(cs) * 0.65 + valueNoise(cs * 2.3 + 5.0) * 0.35);
+    sh *= 1.0 - 0.42 * cloudShade * (1.0 - lt.night);
+    float dif = smoothstep(-0.05, 0.3, ndl) * mix(0.25, 1.0, sh);
+    float ao = ambientOcc(q, n, sc, caster);
+    float3 lin = srgb(lt.sunCol) * dif * 1.05;
+    lin += srgb(lt.skyAmb) * (0.55 + 0.45 * n.y) * 0.5 * ao;
+    lin += srgb(float3(0.5, 0.65, 0.35)) * (0.5 - 0.5 * n.y) * 0.18 * ao * (1.0 - 0.85 * lt.night);
+    float3 col = alb * lin;
+    float3 hv = normalize(lt.L - rd);
+    col += srgb(lt.sunCol) * m.spec * pow(max(dot(n, hv), 0.0), m.shine) * sh;
+    if (mat == M_SEA) {
+        float fres = pow(1.0 - max(dot(n, -rd), 0.0), 4.0);
+        col = mix(col, srgb(skyColor(reflect(rd, n), lt.sunDir, lt.moonDir, lt.night, lt.golden, time)), fres * 0.7);
     }
-    float glee = (((act == ACT_HOP || act == ACT_CHASE) ? k : 0.0)
-               + ((prevAct == ACT_HOP || prevAct == ACT_CHASE) ? 1.0 - k : 0.0)) * smoothstep(0.55, 0.8, S.joy);
-    if (glee > 0.01 && nearW < 1.7 * sc.s + 0.15) {
-        for (int i = 0; i < 5; i++) {
-            float ph = fract(time * 0.45 + float(i) * 0.2 + hash11(float(i)) * 0.3);
-            float a0 = float(i) * 1.257 + floor(time * 0.45 + float(i) * 0.2) * 2.1;
-            float3 wp = unbendP(sc.cpos, sc) + float3(cos(a0) * 0.6 * sc.s * 2.0, (1.0 + 1.6 * ph) * sc.s, sin(a0) * 0.6 * sc.s * 2.0);
-            float3 pj = project(wp, cam);
-            float size = 0.09 * cam.focal / pj.z * sin(ph * PI);
-            float2 g2 = abs(uv - pj.xy) / max(size, 1e-4);
-            float star = smoothstep(1.0, 0.6, sqrt(g2.x) + sqrt(g2.y)) * step(pj.z, depth + 0.3);
-            col = mix(col, float3(1.0, 0.97, 0.75), star * glee);
-        }
+    col += srgb(lt.skyAmb) * m.rim * pow(clamp(1.0 + dot(n, rd), 0.0, 1.0), 3.0) * ao;
+    col += m.emit * srgb(float3(1.0, 0.9, 0.55));
+    // Haze toward the horizon.
+    float fog = 1.0 - exp(-0.00035 * t * t);
+    float3 haze = mix(mix(float3(0.62, 0.82, 0.98), float3(1.0, 0.66, 0.46), lt.golden), float3(0.09, 0.12, 0.26), lt.night);
+    col = mix(col, srgb(haze), fog);
+    return sqrt(max(col, 0.0));
+}
+
+static inline __attribute__((always_inline)) float3 shadeHit(thread const Scene& sc, constant CritterState& S, float3 ro, float3 rd,
+                       thread const Hit& h, thread const Light& lt, float time) {
+    if (!h.found) return skyColor(rd, lt.sunDir, lt.moonDir, lt.night, lt.golden, time);
+    float3 p = ro + rd * h.t;
+    float3 q = bendP(p, sc);
+    float mat = h.hit.y;
+    float3 n = surfaceNormal(sc, p, q, mat, h.flowerHit);
+    Surface m = materialAt(sc, S, q, rd, h.hit, n, lt.night, time);
+    return lightSurface(sc, m, q, n, rd, h.t, mat, casterOf(mat, h.hit.z, h.flowerHit), lt, time);
+}
+
+// ---- overlays: the floating 2D things, each drawn over `col`
+
+static inline __attribute__((always_inline)) void fxZzz(thread float3& col, thread const FX& fx) {
+    if (!(fx.zzz > 0.01 && fx.nearW < 1.0)) return;
+    for (int i = 0; i < 3; i++) {
+        float ph = fract(fx.time * 0.22 + float(i) / 3.0);
+        float3 wp = fx.head + fx.cam.rt * (0.15 + 0.35 * ph) + float3(0.0, 0.0 + 0.5 * ph, 0.0);
+        float3 pj = project(wp, fx.cam);
+        float size = (0.07 + 0.08 * ph) * fx.cam.focal / pj.z;
+        float d = sdZ((fx.uv - pj.xy) / size) * size;
+        float a = sin(ph * PI) * fx.zzz * step(pj.z, fx.depth);
+        col = mix(col, float3(0.25, 0.3, 0.45), a * smoothstep(0.16 * size, 0.1 * size, d));
+        col = mix(col, float3(1.0), a * smoothstep(0.09 * size, 0.04 * size, d));
     }
-    if (sick > 0.01 && nearW < 2.2 * sc.s + 0.9) {
-        float3 cp = project(unbendP(sc.cloudPos, sc), cam);
-        float3 fp = project(unbendP(sc.cpos, sc), cam);
-        float w = 0.35 * sc.cloud * cam.focal / cp.z;
-        float lane = 0.016 * cam.focal / cp.z * 4.0;
-        float colId = floor((uv.x - cp.x) / lane);
-        float hr = hash11(colId * 1.7 + 0.3);
-        float ph = fract(hr + time * (0.9 + 0.5 * hr));
-        float dropY = mix(cp.y - 0.05, fp.y, ph);
-        float inside = step(abs(uv.x - cp.x), w) * smoothstep(0.26, 0.1, abs(fract((uv.x - cp.x) / lane) - 0.5));
-        float streak = smoothstep(0.055, 0.0, abs(uv.y - dropY)) * inside * step(0.25, hr);
-        col = mix(col, float3(0.5, 0.68, 1.0), streak * 0.95 * sick);
+}
+
+static inline __attribute__((always_inline)) void fxHearts(thread float3& col, thread const FX& fx) {
+    float love = ((fx.act == ACT_WAVE || fx.act == ACT_STRETCH) ? fx.k : 0.0)
+               + ((fx.prevAct == ACT_WAVE || fx.prevAct == ACT_STRETCH) ? 1.0 - fx.k : 0.0);
+    love = max(love, fx.dtake * smoothstep(1.6, 2.2, fx.time));
+    if (!(love > 0.01 && fx.nearW < 0.9)) return;
+    for (int i = 0; i < 2; i++) {
+        float ph = fract(fx.time * 0.3 + float(i) * 0.5);
+        float3 wp = fx.head + fx.cam.rt * (0.35 * sin(float(i) * 2.0 + 1.0) - 0.15) + float3(0.0, 0.0 + 0.45 * ph, 0.0);
+        float3 pj = project(wp, fx.cam);
+        float size = 0.12 * fx.cam.focal / pj.z;
+        float d = sdHeart((fx.uv - pj.xy) / size) * size;
+        float a = sin(ph * PI) * love;
+        col = mix(col, float3(1.0), a * smoothstep(0.1 * size, 0.04 * size, d));
+        col = mix(col, float3(1.0, 0.4, 0.5), a * smoothstep(0.02 * size, -0.03 * size, d));
     }
-    // Lightning: a short chunky zigzag from the cloud's underside, off to
-    // one side, stopping above its head.
-    float flash = storm * step(0.9, fract(time * 0.37)) * step(0.4, fract(time * 9.0));
-    if (flash > 0.01 && nearW < 1.2) {
+}
+
+static inline __attribute__((always_inline)) void fxSparkles(thread float3& col, thread const FX& fx, thread const Scene& sc, constant CritterState& S) {
+    float glee = (((fx.act == ACT_HOP || fx.act == ACT_CHASE) ? fx.k : 0.0)
+               + ((fx.prevAct == ACT_HOP || fx.prevAct == ACT_CHASE) ? 1.0 - fx.k : 0.0)) * smoothstep(0.55, 0.8, S.joy);
+    if (!(glee > 0.01 && fx.nearW < 1.7 * sc.s + 0.15)) return;
+    for (int i = 0; i < 5; i++) {
+        float ph = fract(fx.time * 0.45 + float(i) * 0.2 + hash11(float(i)) * 0.3);
+        float a0 = float(i) * 1.257 + floor(fx.time * 0.45 + float(i) * 0.2) * 2.1;
+        float3 wp = unbendP(sc.cpos, sc) + float3(cos(a0) * 0.6 * sc.s * 2.0, (1.0 + 1.6 * ph) * sc.s, sin(a0) * 0.6 * sc.s * 2.0);
+        float3 pj = project(wp, fx.cam);
+        float size = 0.09 * fx.cam.focal / pj.z * sin(ph * PI);
+        float2 g2 = abs(fx.uv - pj.xy) / max(size, 1e-4);
+        float star = smoothstep(1.0, 0.6, sqrt(g2.x) + sqrt(g2.y)) * step(pj.z, fx.depth + 0.3);
+        col = mix(col, float3(1.0, 0.97, 0.75), star * glee);
+    }
+}
+
+static inline __attribute__((always_inline)) void fxRain(thread float3& col, thread const FX& fx, thread const Scene& sc) {
+    if (!(fx.sick > 0.01 && fx.nearW < 2.2 * sc.s + 0.9)) return;
+    float3 cp = project(unbendP(sc.cloudPos, sc), fx.cam);
+    float3 fp = project(unbendP(sc.cpos, sc), fx.cam);
+    float w = 0.35 * sc.cloud * fx.cam.focal / cp.z;
+    float lane = 0.016 * fx.cam.focal / cp.z * 4.0;
+    float colId = floor((fx.uv.x - cp.x) / lane);
+    float hr = hash11(colId * 1.7 + 0.3);
+    float ph = fract(hr + fx.time * (0.9 + 0.5 * hr));
+    float dropY = mix(cp.y - 0.05, fp.y, ph);
+    float inside = step(abs(fx.uv.x - cp.x), w) * smoothstep(0.26, 0.1, abs(fract((fx.uv.x - cp.x) / lane) - 0.5));
+    float streak = smoothstep(0.055, 0.0, abs(fx.uv.y - dropY)) * inside * step(0.25, hr);
+    col = mix(col, float3(0.5, 0.68, 1.0), streak * 0.95 * fx.sick);
+}
+
+// Lightning: a short chunky zigzag from the cloud's underside, off to one
+// side, stopping above its head; and the whole frame brightens with it.
+static inline __attribute__((always_inline)) void fxLightning(thread float3& col, thread const FX& fx, thread const Scene& sc) {
+    float flash = fx.storm * step(0.9, fract(fx.time * 0.37)) * step(0.4, fract(fx.time * 9.0));
+    if (flash > 0.01 && fx.nearW < 1.2) {
         float3 top = project(unbendP(sc.cloudPos + float3(0.0, -0.06 * sc.cloud, 0.0), sc)
-                             + cam.rt * 0.22 * sc.cloud, cam);
-        float bh = 0.42 * sc.cloud * cam.focal / top.z;          // bolt height on screen
-        float2 b = (uv - top.xy) / bh;                            // 0 at the top, -1 at the tip
+                             + fx.cam.rt * 0.22 * sc.cloud, fx.cam);
+        float bh = 0.42 * sc.cloud * fx.cam.focal / top.z;          // bolt height on screen
+        float2 b = (fx.uv - top.xy) / bh;                            // 0 at the top, -1 at the tip
         float bolt = 1e5;
         float2 zz[5] = { float2(0.0, 0.0), float2(-0.2, -0.38), float2(0.1, -0.44),
                          float2(-0.1, -0.78), float2(0.06, -1.0) };
@@ -1367,119 +1537,143 @@ fragment half4 lerpMain(float4 pos [[position]],
         col = mix(col, float3(1.0, 0.95, 0.6), flash * smoothstep(0.01, -0.01, bolt));
     }
     col += 0.05 * flash;
-    // Frazzled: a tangled scribble ball just above and beside its head,
-    // redrawn a few times a second.
-    float stress = clamp((0.4 - S.calm) / 0.3, 0.0, 1.0);
-    float zzzOff = 1.0 - min(zzz, 1.0);
-    float frazzle = max(storm, stress * 0.8) * zzzOff * (1.0 - dtake) * step(0.5, float(sc.stage));
-    if (frazzle > 0.01 && nearW < 0.9) {
-        float3 pj = project(unbendP(sc.cpos + float3(0.0, 2.05 * sc.s, 0.0), sc) - cam.rt * 0.75 * sc.s, cam);
-        float size = 0.1 * cam.focal / pj.z;
-        float2 b = (uv - pj.xy) / size;
-        if (dot(b, b) < 2.4) {
-            float jit = floor(time * 4.0);
-            float d = 1e5;
-            for (int i = 0; i < 4; i++) {
-                float fi = float(i);
-                float2 c = (hash22(float2(fi, jit)) - 0.5) * 0.5;
-                float2 r = float2(0.55, 0.42) + 0.2 * hash22(float2(jit, fi + 7.0));
-                float2 q2 = rotate(b - c, fi * 0.8 + jit);
-                d = min(d, abs(length(q2 / r) - 1.0) * min(r.x, r.y));
-            }
-            col = mix(col, float3(0.24, 0.23, 0.28), frazzle * smoothstep(0.075, 0.04, d) * step(pj.z, depth + 0.3));
-        }
-    }
-    // A sweat drop when it is stressed or poorly, sliding down by its head.
-    float sweat = max(max(storm, sick), stress) * zzzOff * (1.0 - dtake) * step(0.5, float(sc.stage));
-    if (sweat > 0.01 && nearW < 0.9) {
-        float ph = fract(time * 0.45);
-        float3 pj = project(unbendP(sc.cpos + float3(0.0, (1.7 - 0.35 * ph) * sc.s, 0.0), sc) + cam.rt * 1.05 * sc.s, cam);
-        float size = 0.12 * cam.focal / pj.z;
-        float2 b = (uv - pj.xy) / size;
-        float tear = length(float2(b.x * (1.0 + 1.8 * max(b.y, 0.0)), b.y)) - 0.5;
-        float a = sweat * smoothstep(0.0, 0.15, ph) * smoothstep(1.0, 0.75, ph) * step(pj.z, depth + 0.3);
-        col = mix(col, float3(0.2, 0.33, 0.6), a * smoothstep(0.12, 0.06, tear));
-        col = mix(col, float3(0.68, 0.87, 1.0), a * smoothstep(0.03, -0.02, tear));
-        col = mix(col, float3(1.0), a * smoothstep(0.12, 0.07, length(b - float2(-0.16, -0.08))));
-    }
-    // "!" — it has noticed you.
-    float bang = dtake * smoothstep(0.5, 0.6, time) * (1.0 - smoothstep(1.9, 2.3, time));
-    if (bang > 0.01 && nearW < 0.9) {
-        float3 pj = project(head + float3(0.0, 0.12, 0.0) + cam.rt * 0.45 * sc.s, cam);
-        float pop = smoothstep(0.5, 0.62, time) * (1.0 + 0.4 * exp(-max(time - 0.62, 0.0) * 8.0));
-        float size = 0.24 * pop * cam.focal / pj.z;
-        float2 b = (uv - pj.xy) / max(size, 1e-4);
-        float d = min(sdSeg(b, float2(0.0, 0.08), float2(0.0, 0.62)) - (0.08 + 0.07 * clamp(b.y / 0.62, 0.0, 1.0)),
-                      length(b - float2(0.0, -0.24)) - 0.12);
-        col = mix(col, float3(0.3, 0.16, 0.1), bang * smoothstep(0.11, 0.07, d));
-        col = mix(col, float3(1.0, 0.84, 0.25), bang * smoothstep(0.035, 0.0, d));
-    }
-    // The butterfly: saturated and outlined so it stands out from the
-    // falling petals, with a dotted trail. Its phase runs on, so a chase
-    // that follows a chase does not jump.
-    float flutter = (act == ACT_CHASE ? k : 0.0) + (prevAct == ACT_CHASE ? 1.0 - k : 0.0);
-    float3 fly0 = float3(0.0);
-    if (flutter > 0.01) {
-        float a = tl * 0.55;
-        fly0 = unbendP(float3(cos(a) * 1.45, 0.0, sin(a) * 1.45), sc);
-        // just above its head, out ahead of it
-        fly0.y = groundH(fly0.xz, sc.ident) - sc.bend * dot(fly0.xz - sc.focus, fly0.xz - sc.focus) + 0.55 + 1.3 * sc.s;
-        float3 pj = project(fly0, cam);
-        if (length(uv - pj.xy) * pj.z / cam.focal > 0.85) flutter = 0.0;   // trail spans ~0.7
-    }
-    if (flutter > 0.01) {
-        float3 pal[4] = { float3(0.35, 0.68, 1.0), float3(1.0, 0.88, 0.3), float3(1.0, 0.5, 0.42), float3(0.7, 0.55, 1.0) };
-        float3 wc = pal[int(fract(S.identity * 5.3) * 4.0) % 4];
-        for (int j = 6; j >= 0; j--) {
-            if (j == 1) continue;
-            float tj = time - float(j) * 0.14;
-            float a = (tl - float(j) * 0.14) * 0.55;
-            float3 fly = unbendP(float3(cos(a) * 1.45, 0.0, sin(a) * 1.45), sc);
-            fly.y = fly0.y + 0.15 * sin(tj * 3.1);   // the ground under the trail: near enough
-            float3 pj = project(fly, cam);
-            float vis = step(pj.z, depth + 0.2) * flutter;
-            if (j > 0) {
-                float dot0 = length(uv - pj.xy) - 0.007 * cam.focal / pj.z;
-                col = mix(col, float3(1.0), vis * 0.55 * (1.0 - float(j) / 7.0) * smoothstep(0.004, 0.0, dot0));
-                continue;
-            }
-            float size = 0.14 * cam.focal / pj.z;
-            float2 bp = (uv - pj.xy) / size;
-            if (dot(bp, bp) > 2.0) continue;
-            float flap = 0.25 + 0.75 * abs(sin(time * 13.0));
-            float2 wp = float2(abs(bp.x) / flap - 0.45, bp.y - 0.1);
-            float wing = min(length(wp * float2(1.0, 0.9)) - 0.42, length((wp - float2(-0.05, -0.45)) * float2(1.2, 1.0)) - 0.28);
-            col = mix(col, float3(0.12, 0.08, 0.14), smoothstep(0.08, 0.04, wing * flap) * vis);
-            float3 wcol = mix(wc, float3(1.0), smoothstep(0.1, 0.05, length(wp - float2(0.12, 0.12))));
-            col = mix(col, wcol, smoothstep(0.02, -0.02, wing) * vis);
-            col = mix(col, float3(0.12, 0.08, 0.14), smoothstep(0.1, 0.05, length(bp * float2(2.2, 0.55))) * vis);
-        }
-    }
-    if (night > 0.2 && S.health > 0.4) {
-        int count = int(4.0 + 10.0 * S.health);
-        for (int i = 0; i < 14; i++) {
-            if (i >= count) break;
-            float fi = float(i);
-            float a = fi * 2.4 + tphase(time, 0.05 + 0.04 * hash11(fi)) + S.identity * 3.0;
-            float r = 1.8 + 3.5 * hash11(fi * 3.3);
-            float2 xz = float2(cos(a), sin(a)) * r;
-            float3 wp = unbendP(float3(xz.x, groundH(xz, sc.ident) + 0.35 + 0.25 * sin(tphase(time, 0.7) + fi), xz.y), sc);
-            float3 pj = project(wp, cam);
-            float glow = exp(-dot(uv - pj.xy, uv - pj.xy) / pow(0.012 * cam.focal / pj.z * 6.0, 2.0) * 3.0);
-            float pulse = 0.5 + 0.5 * sin(tphase(time, 2.0) + fi * 1.7);
-            // The camera stands among them now: one passing the lens fades
-            // out rather than swelling into a blob.
-            float nearLens = smoothstep(0.6, 1.4, pj.z);
-            col += float3(0.85, 1.0, 0.45) * glow * pulse * night * nearLens * step(pj.z, depth + 0.3) * 0.9;
-        }
-    }
+}
 
-    // ---- the season in the air, in front of everything: spring petals,
-    // summer seed fluff, autumn leaves, winter snow. Three layers for depth.
-    // Sparse (one cell in eight; snow one in four), and thinned away over the
-    // critter itself, so the season is in the air but not in its face.
-    float3 cj = project(unbendP(sc.cpos + float3(0.0, (sc.stage == 0 ? 0.42 : 1.0 * sc.s * sc.sq), 0.0), sc), cam);
-    float cjr = (sc.stage == 0 ? 0.5 : 1.25 * sc.s) * cam.focal / cj.z;
+// Frazzled: a tangled scribble ball just above and beside its head, redrawn
+// a few times a second.
+static inline __attribute__((always_inline)) void fxScribble(thread float3& col, thread const FX& fx, thread const Scene& sc) {
+    float zzzOff = 1.0 - min(fx.zzz, 1.0);
+    float frazzle = max(fx.storm, fx.stress * 0.8) * zzzOff * (1.0 - fx.dtake) * step(0.5, float(sc.stage));
+    if (!(frazzle > 0.01 && fx.nearW < 0.9)) return;
+    float3 pj = project(unbendP(sc.cpos + float3(0.0, 2.05 * sc.s, 0.0), sc) - fx.cam.rt * 0.75 * sc.s, fx.cam);
+    float size = 0.1 * fx.cam.focal / pj.z;
+    float2 b = (fx.uv - pj.xy) / size;
+    if (dot(b, b) >= 2.4) return;
+    float jit = floor(fx.time * 4.0);
+    float d = 1e5;
+    for (int i = 0; i < 4; i++) {
+        float fi = float(i);
+        float2 c = (hash22(float2(fi, jit)) - 0.5) * 0.5;
+        float2 r = float2(0.55, 0.42) + 0.2 * hash22(float2(jit, fi + 7.0));
+        float2 q2 = rotate(b - c, fi * 0.8 + jit);
+        d = min(d, abs(length(q2 / r) - 1.0) * min(r.x, r.y));
+    }
+    col = mix(col, float3(0.24, 0.23, 0.28), frazzle * smoothstep(0.075, 0.04, d) * step(pj.z, fx.depth + 0.3));
+}
+
+// A sweat drop when it is stressed or poorly, sliding down by its head.
+static inline __attribute__((always_inline)) void fxSweat(thread float3& col, thread const FX& fx, thread const Scene& sc) {
+    float zzzOff = 1.0 - min(fx.zzz, 1.0);
+    float sweat = max(max(fx.storm, fx.sick), fx.stress) * zzzOff * (1.0 - fx.dtake) * step(0.5, float(sc.stage));
+    if (!(sweat > 0.01 && fx.nearW < 0.9)) return;
+    float ph = fract(fx.time * 0.45);
+    float3 pj = project(unbendP(sc.cpos + float3(0.0, (1.7 - 0.35 * ph) * sc.s, 0.0), sc) + fx.cam.rt * 1.05 * sc.s, fx.cam);
+    float size = 0.12 * fx.cam.focal / pj.z;
+    float2 b = (fx.uv - pj.xy) / size;
+    float tear = length(float2(b.x * (1.0 + 1.8 * max(b.y, 0.0)), b.y)) - 0.5;
+    float a = sweat * smoothstep(0.0, 0.15, ph) * smoothstep(1.0, 0.75, ph) * step(pj.z, fx.depth + 0.3);
+    col = mix(col, float3(0.2, 0.33, 0.6), a * smoothstep(0.12, 0.06, tear));
+    col = mix(col, float3(0.68, 0.87, 1.0), a * smoothstep(0.03, -0.02, tear));
+    col = mix(col, float3(1.0), a * smoothstep(0.12, 0.07, length(b - float2(-0.16, -0.08))));
+}
+
+// "!" — it has noticed you.
+static inline __attribute__((always_inline)) void fxBang(thread float3& col, thread const FX& fx, thread const Scene& sc) {
+    float time = fx.time;
+    float bang = fx.dtake * smoothstep(0.5, 0.6, time) * (1.0 - smoothstep(1.9, 2.3, time));
+    if (!(bang > 0.01 && fx.nearW < 0.9)) return;
+    float3 pj = project(fx.head + float3(0.0, 0.12, 0.0) + fx.cam.rt * 0.45 * sc.s, fx.cam);
+    float pop = smoothstep(0.5, 0.62, time) * (1.0 + 0.4 * exp(-max(time - 0.62, 0.0) * 8.0));
+    float size = 0.24 * pop * fx.cam.focal / pj.z;
+    float2 b = (fx.uv - pj.xy) / max(size, 1e-4);
+    float d = min(sdSeg(b, float2(0.0, 0.08), float2(0.0, 0.62)) - (0.08 + 0.07 * clamp(b.y / 0.62, 0.0, 1.0)),
+                  length(b - float2(0.0, -0.24)) - 0.12);
+    col = mix(col, float3(0.3, 0.16, 0.1), bang * smoothstep(0.11, 0.07, d));
+    col = mix(col, float3(1.0, 0.84, 0.25), bang * smoothstep(0.035, 0.0, d));
+}
+
+// The butterfly: saturated and outlined so it stands out from the falling
+// petals, with a dotted trail. Its phase runs on, so a chase that follows a
+// chase does not jump.
+static inline __attribute__((always_inline)) void fxButterfly(thread float3& col, thread const FX& fx, thread const Scene& sc, constant CritterState& S) {
+    float flutter = (fx.act == ACT_CHASE ? fx.k : 0.0) + (fx.prevAct == ACT_CHASE ? 1.0 - fx.k : 0.0);
+    if (flutter <= 0.01) return;
+    float a0 = fx.tl * 0.55;
+    float3 fly0 = unbendP(float3(cos(a0) * 1.45, 0.0, sin(a0) * 1.45), sc);
+    // just above its head, out ahead of it
+    fly0.y = groundH(fly0.xz, sc.ident) - sc.bend * dot(fly0.xz - sc.focus, fly0.xz - sc.focus) + 0.55 + 1.3 * sc.s;
+    float3 pj0 = project(fly0, fx.cam);
+    if (length(fx.uv - pj0.xy) * pj0.z / fx.cam.focal > 0.85) return;   // trail spans ~0.7
+    float3 pal[4] = { float3(0.35, 0.68, 1.0), float3(1.0, 0.88, 0.3), float3(1.0, 0.5, 0.42), float3(0.7, 0.55, 1.0) };
+    float3 wc = pal[int(fract(S.identity * 5.3) * 4.0) % 4];
+    for (int j = 6; j >= 0; j--) {
+        if (j == 1) continue;
+        float tj = fx.time - float(j) * 0.14;
+        float a = (fx.tl - float(j) * 0.14) * 0.55;
+        float3 fly = unbendP(float3(cos(a) * 1.45, 0.0, sin(a) * 1.45), sc);
+        fly.y = fly0.y + 0.15 * sin(tj * 3.1);   // the ground under the trail: near enough
+        float3 pj = project(fly, fx.cam);
+        float vis = step(pj.z, fx.depth + 0.2) * flutter;
+        if (j > 0) {
+            float dot0 = length(fx.uv - pj.xy) - 0.007 * fx.cam.focal / pj.z;
+            col = mix(col, float3(1.0), vis * 0.55 * (1.0 - float(j) / 7.0) * smoothstep(0.004, 0.0, dot0));
+            continue;
+        }
+        float size = 0.14 * fx.cam.focal / pj.z;
+        float2 bp = (fx.uv - pj.xy) / size;
+        if (dot(bp, bp) > 2.0) continue;
+        float flap = 0.25 + 0.75 * abs(sin(fx.time * 13.0));
+        float2 wp = float2(abs(bp.x) / flap - 0.45, bp.y - 0.1);
+        float wing = min(length(wp * float2(1.0, 0.9)) - 0.42, length((wp - float2(-0.05, -0.45)) * float2(1.2, 1.0)) - 0.28);
+        col = mix(col, float3(0.12, 0.08, 0.14), smoothstep(0.08, 0.04, wing * flap) * vis);
+        float3 wcol = mix(wc, float3(1.0), smoothstep(0.1, 0.05, length(wp - float2(0.12, 0.12))));
+        col = mix(col, wcol, smoothstep(0.02, -0.02, wing) * vis);
+        col = mix(col, float3(0.12, 0.08, 0.14), smoothstep(0.1, 0.05, length(bp * float2(2.2, 0.55))) * vis);
+    }
+}
+
+static inline __attribute__((always_inline)) void fxFireflies(thread float3& col, thread const FX& fx, thread const Scene& sc, constant CritterState& S) {
+    if (!(fx.night > 0.2 && S.health > 0.4)) return;
+    int count = int(4.0 + 10.0 * S.health);
+    for (int i = 0; i < 14; i++) {
+        if (i >= count) break;
+        float fi = float(i);
+        float a = fi * 2.4 + tphase(fx.time, 0.05 + 0.04 * hash11(fi)) + S.identity * 3.0;
+        float r = 1.8 + 3.5 * hash11(fi * 3.3);
+        float2 xz = float2(cos(a), sin(a)) * r;
+        float3 wp = unbendP(float3(xz.x, groundH(xz, sc.ident) + 0.35 + 0.25 * sin(tphase(fx.time, 0.7) + fi), xz.y), sc);
+        float3 pj = project(wp, fx.cam);
+        float glow = exp(-dot(fx.uv - pj.xy, fx.uv - pj.xy) / pow(0.012 * fx.cam.focal / pj.z * 6.0, 2.0) * 3.0);
+        float pulse = 0.5 + 0.5 * sin(tphase(fx.time, 2.0) + fi * 1.7);
+        // The camera stands among them now: one passing the lens fades
+        // out rather than swelling into a blob.
+        float nearLens = smoothstep(0.6, 1.4, pj.z);
+        col += float3(0.85, 1.0, 0.45) * glow * pulse * fx.night * nearLens * step(pj.z, fx.depth + 0.3) * 0.9;
+    }
+}
+
+static inline __attribute__((always_inline)) void overlays(thread float3& col, thread const FX& fx, thread const Scene& sc, constant CritterState& S) {
+    fxZzz(col, fx);
+    fxHearts(col, fx);
+    fxSparkles(col, fx, sc, S);
+    fxRain(col, fx, sc);
+    fxLightning(col, fx, sc);
+    fxScribble(col, fx, sc);
+    fxSweat(col, fx, sc);
+    fxBang(col, fx, sc);
+    fxButterfly(col, fx, sc, S);
+    fxFireflies(col, fx, sc, S);
+}
+
+// ---- seasonInTheAir: in front of everything — spring petals, summer seed
+// fluff, autumn leaves, winter snow. Three layers for depth. Sparse (one cell
+// in eight; snow one in four), and thinned away over the critter itself, so
+// the season is in the air but not in its face.
+static inline __attribute__((always_inline)) void seasonInTheAir(thread float3& col, thread const FX& fx, thread const Scene& sc) {
+    float2 uv = fx.uv;
+    float time = fx.time;
+    float3 cj = project(unbendP(sc.cpos + float3(0.0, (sc.stage == 0 ? 0.42 : 1.0 * sc.s * sc.sq), 0.0), sc), fx.cam);
+    float cjr = (sc.stage == 0 ? 0.5 : 1.25 * sc.s) * fx.cam.focal / cj.z;
     float clear = smoothstep(0.75 * cjr, 1.6 * cjr, length(uv - cj.xy));
     for (int layer = 0; layer < 3; layer++) {
         float fl = float(layer);
@@ -1513,13 +1707,56 @@ fragment half4 lerpMain(float4 pos [[position]],
                ? (tone < 0.33 ? float3(1.0, 0.55, 0.2) : (tone < 0.66 ? float3(0.92, 0.32, 0.2) : float3(1.0, 0.78, 0.28)))
                : (tone < 0.5 ? float3(1.0, 0.72, 0.8) : float3(1.0, 0.86, 0.9));
         }
-        float a = smoothstep(0.06, -0.06, shape) * (0.85 - 0.2 * fl) * mix(1.0, 0.45, night) * clear;
-        col = mix(col, pc * mix(1.0, 0.5, night), a);
+        float a = smoothstep(0.06, -0.06, shape) * (0.85 - 0.2 * fl) * mix(1.0, 0.45, fx.night) * clear;
+        col = mix(col, pc * mix(1.0, 0.5, fx.night), a);
     }
+}
 
-    // ---- finish: gentle vignette, a little warmth
-    float2 sp = lerpScreenUV(pos, u.resolution) - 0.5;
+// ---- finish: gentle vignette, and dither
+static inline __attribute__((always_inline)) half4 finish(float3 col, float4 pos, float2 res) {
+    float2 sp = lerpScreenUV(pos, res) - 0.5;
     col *= 1.0 - 0.28 * dot(sp, sp) * 1.6;
     col = lerpDither(col, pos);
     return half4(half3(clamp(col, 0.0, 1.0)), 1.0h);
+}
+
+// ---------------------------------------------------------------- main
+
+fragment half4 lerpMain(float4 pos [[position]],
+                        constant LerpUniforms& u [[buffer(0)]],
+                        constant CritterState& S [[buffer(1)]]) {
+    float2 uv = lerpUV(pos, u.resolution);
+    float time = u.time;
+
+    Scene sc = setupCritter(S, time, u.seed);
+    Story st = tellStory(sc, S, u);
+    poseCritter(sc, st, S, time, u.seed);
+    placeProps(sc, st, time);
+    Cam cam = setupCamera(sc, st, u);
+    float3 rd = normalize(uv.x * cam.rt + uv.y * cam.up + cam.focal * cam.fw);
+    placeIsland(sc, S, cam);
+    Light lt = lightFromClock(S.hour + time / 3600.0);
+
+    float tObj = rayMask(sc, cam.ro, rd);
+    Hit h = marchScene(sc, cam.ro, rd, tObj);
+    float3 col = shadeHit(sc, S, cam.ro, rd, h, lt, time);
+
+    FX fx;
+    fx.uv = uv;
+    fx.cam = cam;
+    fx.depth = h.found ? h.t : 1e5;
+    fx.head = unbendP(sc.cpos + float3(0.0, 2.1 * sc.s, 0.0), sc);
+    // How far this pixel is from the critter's head, in world units at its
+    // depth: every overlay but the butterfly is skipped beyond its reach.
+    float3 hj = project(fx.head, cam);
+    fx.nearW = length(uv - hj.xy) * hj.z / cam.focal;
+    fx.time = time; fx.tl = st.tl; fx.k = st.k;
+    fx.act = st.act; fx.prevAct = st.prevAct;
+    fx.dtake = st.dtake; fx.sick = st.sick; fx.storm = st.storm;
+    fx.zzz = (st.act == ACT_SLEEP ? st.k : 0.0) + (st.prevAct == ACT_SLEEP ? 1.0 - st.k : 0.0);
+    fx.stress = clamp((0.4 - S.calm) / 0.3, 0.0, 1.0);
+    fx.night = lt.night;
+    overlays(col, fx, sc, S);
+    seasonInTheAir(col, fx, sc);
+    return finish(col, pos, u.resolution);
 }
