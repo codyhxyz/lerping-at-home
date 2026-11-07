@@ -11,33 +11,39 @@ import os
 /// move. None of these stop it — a black screensaver is a bug — they only
 /// lower the ceiling the host's own frame-rate setting is clamped to.
 ///
-/// Of the three, only battery is our own policy rather than something the
-/// system or the user decided: Low Power Mode is a switch the user flipped and
-/// thermal pressure is the machine's. So battery is the one a host can opt
-/// out of (`LerpPowerMonitor.throttlesOnBattery`). The playground does: it is
-/// the thing the user is looking at, and silently dropping it to 20 fps the
-/// moment the laptop is unplugged made it look broken.
+/// The battery and Low Power Mode caps are our policy, stacked on top of
+/// what macOS already does. The system throttles every app on its own in Low
+/// Power Mode (ProMotion held to 60 Hz, some fullscreen vsync apps to 30), and
+/// does nothing to frame rate on battery alone. No native screensaver drops to
+/// 15 or 20 fps. So a host can opt out of both (`LerpPowerMonitor.savesPower`)
+/// and still get whatever the system imposes, through the display link. The
+/// playground does: it is the thing the user is looking at, and silently
+/// dropping it to 20 fps the moment the laptop was unplugged made it look
+/// broken. Thermal pressure caps every host regardless.
 public struct LerpPowerState: Equatable, Sendable {
     public var lowPowerMode: Bool
-    /// The machine is running on battery. Always the truth, whether or not
-    /// this process lets it throttle anything — see `batteryThrottles`.
+    /// The machine is running on battery. `onBattery` and `lowPowerMode` are
+    /// always the truth, whether or not this process acts on them — see
+    /// `savesPower`.
     public var onBattery: Bool
     public var thermal: ProcessInfo.ThermalState
-    /// Whether `onBattery` lowers the frame-rate cap and holds back EDR in
-    /// this process. False in the playground.
-    public var batteryThrottles: Bool
+    /// Whether battery and Low Power Mode lower the frame-rate cap and hold
+    /// back EDR in this process. False in the playground.
+    public var savesPower: Bool
 
     public init(lowPowerMode: Bool = false, onBattery: Bool = false,
                 thermal: ProcessInfo.ThermalState = .nominal,
-                batteryThrottles: Bool = true) {
+                savesPower: Bool = true) {
         self.lowPowerMode = lowPowerMode
         self.onBattery = onBattery
         self.thermal = thermal
-        self.batteryThrottles = batteryThrottles
+        self.savesPower = savesPower
     }
 
-    /// On battery in a process that lets battery hold it back.
-    public var throttledByBattery: Bool { onBattery && batteryThrottles }
+    /// Low Power Mode, in a process that holds back for it.
+    public var throttledByLowPowerMode: Bool { lowPowerMode && savesPower }
+    /// On battery, in a process that holds back for it.
+    public var throttledByBattery: Bool { onBattery && savesPower }
 
     /// The highest frame rate these conditions allow, or nil for no cap. The
     /// strictest condition wins; they do not compound.
@@ -51,7 +57,7 @@ public struct LerpPowerState: Equatable, Sendable {
         case .serious: return 15
         default: break
         }
-        if lowPowerMode { return 15 }
+        if throttledByLowPowerMode { return 15 }
         if throttledByBattery { return 20 }
         return nil
     }
@@ -71,8 +77,8 @@ public struct LerpPowerState: Equatable, Sendable {
         case .critical: thermalName = "critical"
         @unknown default: thermalName = "unknown(\(thermal.rawValue))"
         }
-        let source = onBattery ? (batteryThrottles ? "battery" : "battery (not throttled)") : "AC"
-        return "\(source), lowPower=\(lowPowerMode ? "on" : "off"), thermal=\(thermalName)"
+        let ignored = savesPower ? "" : " (battery and Low Power Mode not throttled here)"
+        return "\(onBattery ? "battery" : "AC"), lowPower=\(lowPowerMode ? "on" : "off"), thermal=\(thermalName)\(ignored)"
     }
 }
 
@@ -86,10 +92,10 @@ public struct LerpPowerState: Equatable, Sendable {
 public final class LerpPowerMonitor {
     public static let shared = LerpPowerMonitor()
     public static let didChange = Notification.Name("LerpPowerStateDidChange")
-    /// Whether running on battery throttles this process (frame-rate cap,
-    /// EDR). Set it before anything touches `shared` — the first read, and its
-    /// log line, happen then. The playground sets it false at launch.
-    public static var throttlesOnBattery = true
+    /// Whether battery and Low Power Mode throttle this process (frame-rate
+    /// cap, EDR). Set it before anything touches `shared` — the first read, and
+    /// its log line, happen then. The playground sets it false at launch.
+    public static var savesPower = true
 
     /// Same subsystem as every other Lerping line — see `LerpMetalView.log`.
     static let log = Logger(subsystem: LerpDefaults.productionModule, category: "power")
@@ -152,7 +158,7 @@ public final class LerpPowerMonitor {
         return LerpPowerState(lowPowerMode: info.isLowPowerModeEnabled,
                               onBattery: providingSourceIsBattery(),
                               thermal: info.thermalState,
-                              batteryThrottles: throttlesOnBattery)
+                              savesPower: savesPower)
     }
 
     /// Unreadable counts as AC: an unknown answer must not slow the saver.

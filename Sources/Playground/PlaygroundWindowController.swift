@@ -353,7 +353,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         edrCheckbox.target = self
         edrCheckbox.action = #selector(edrChanged)
         edrCheckbox.toolTip = "Lift the brightest highlights above SDR white on an HDR screen, "
-            + "as the screensaver does. Held back in Low Power Mode and on SDR screens."
+            + "as the screensaver does. Held back on SDR screens."
         edrCheckbox.setContentHuggingPriority(.required, for: .horizontal)
 
         metalView.config = LerpMetalView.Config(shaderName: nil, framesPerSecond: 60,

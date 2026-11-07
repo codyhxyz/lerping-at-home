@@ -72,7 +72,7 @@ public enum LerpEDR {
         // One reader of the power state per process: LerpPowerMonitor, which
         // also sets the frame-rate cap and logs every change.
         let power = LerpPowerMonitor.shared.state
-        if power.lowPowerMode { return "Low Power Mode" }
+        if power.throttledByLowPowerMode { return "Low Power Mode" }
         if power.throttledByBattery { return "on battery" }
         return nil
     }
