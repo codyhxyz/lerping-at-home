@@ -6,9 +6,8 @@
 //
 // That alone read as a still picture on the lock screen: the scroll moves the
 // grid as one rigid piece, and the randomizers drift so slowly that the
-// "Default" preset (sizeRange = opacityRange = 0) had nothing else at all
-// (`LerpPreview --motion` local change 0.04% of the short side per second;
-// 0.3-0.4 for the others). What keeps it moving now is three ripples of the
+// "Default" preset (sizeRange = opacityRange = 0) had nothing else at all.
+// What keeps it moving now is three ripples of the
 // lattice: longitudinal waves, in short-side units so they look the same at
 // any resolution, that push dots back and forth along their direction of
 // travel, so fronts of bunched and spread dots sweep across the grid at

@@ -5,8 +5,7 @@
 // zigzag / sine / irregular shapes.
 //
 // Scrolling alone read as "completely still" on the lock screen: the pattern
-// slid as one rigid piece (`LerpPreview --motion` local change 0.01-0.21% of
-// the short side per second), which gives the eye nothing to compare against.
+// slid as one rigid piece, which gives the eye nothing to compare against.
 // What keeps it moving now is the wave's own shape:
 // - its phase wanders by a modulation travelling along the wave, so crests
 //   bunch, spread and move at different speeds in different places;

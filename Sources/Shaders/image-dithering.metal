@@ -26,8 +26,7 @@
 //
 // What keeps it moving. The first landscape (a sky gradient, faint cloud
 // banks, ridges sliding sideways) read on the lock screen as a still even
-// after its drift was tripled: `LerpPreview --motion` put its local change
-// at 0.09-0.35% of the short side per second. Moving silhouette edges are
+// after its drift was tripled. Moving silhouette edges are
 // a sliver of the frame, and a 1-bit dither turns every mid-tone into a
 // static texture that swamps slow scenery under it. So now most of the
 // frame is moving structure, at several depths and in different ways:

@@ -21,7 +21,7 @@
 // reads as motion even where nothing is growing — and the eye-fixed light
 // walks its highlights along the pipes as they turn. PipesData keeps four tips
 // growing for the whole generation and turns the volume over with a short
-// fade instead of a hold. Measure with `LerpPreview --motion --shader pipes`.
+// fade instead of a hold.
 
 // --- Geometry. Original: divSize 7.0, pipe radius 1.0, ball joints √2·radius.
 constant float PP_R       = 1.0 / 7.0;
