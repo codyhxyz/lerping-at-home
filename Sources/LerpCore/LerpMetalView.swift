@@ -177,6 +177,14 @@ public final class LerpMetalView: NSView {
     /// when it resumes; a view a host pointed at a look keeps that look across
     /// stop/start.
     private var followsSchedule = false
+    /// Whether the look on screen was put there by `config.shaderName` — the
+    /// pin — rather than by a host calling `show` with a shader in hand. Only a
+    /// look the pin put up can be orphaned by the pin's file leaving the disk.
+    /// A host that passed `show` a `LerpShader` has vouched for it, whether or
+    /// not this view's own library would find that file: the playground ships
+    /// no Shaders folder and reads them from the checkout, so the gallery's
+    /// hover view, built with no search URLs, discovers none of the built-ins.
+    private var followsPin = false
 
     // MARK: Switching state
     //
@@ -436,9 +444,13 @@ public final class LerpMetalView: NSView {
         if pipeline == nil {
             selectInitialShader()
         } else if followsSchedule
-                    || (config.shaderName != nil && pin(in: library.discover()) == nil) {
+                    || (followsPin && pin(in: library.discover()) == nil) {
             // (The second case: the pinned shader left the disk since this view
-            // last ran, so there is no pin to keep and the schedule takes over.)
+            // last ran, so there is no pin to keep and the schedule takes over.
+            // Only for a look the pin put up: asking it of a look a host handed
+            // to `show` is how every hovered gallery card in the playground
+            // played whatever the schedule had due — maze's card showing a
+            // noise look — because the hover view could not find maze on disk.)
             // A view that already has a pipeline is one `legacyScreenSaver`
             // built for an earlier session and never destroyed. It used to
             // resume on whatever look it was showing hours ago and count five
@@ -574,8 +586,11 @@ public final class LerpMetalView: NSView {
     @discardableResult
     private func showPinned(from available: [LerpShader]) -> Bool {
         guard let name = pin(in: available) else { return false }
-        return setEntry(LerpRotationEntry(shader: name, preset: config.presetName),
-                        from: available, allowingDefaultsFallback: true)
+        let shown = setEntry(LerpRotationEntry(shader: name, preset: config.presetName),
+                             from: available, allowingDefaultsFallback: true)
+        // After `show` inside `setEntry` cleared it: the pin put this look up.
+        if shown { followsPin = true }
+        return shown
     }
 
     /// The shader `config` pins, if it is on disk; nil means the schedule
@@ -1000,6 +1015,7 @@ public final class LerpMetalView: NSView {
         // what is on screen. `playScheduledEntry` sets this back after its own
         // `show`, which is the one path where the schedule is the host.
         followsSchedule = false
+        followsPin = false
         do {
             let compiled = try library.pipeline(for: shader, pixelFormat: shaderPixelFormat)
             _ = try library.dataProvider(for: shader)

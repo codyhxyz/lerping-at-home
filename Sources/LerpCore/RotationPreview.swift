@@ -105,9 +105,15 @@ public final class RotationPreviewPlayer {
         guard let view = makeView() else { return }
         detach()
 
-        // Pinned, so the shuffle in `tick` can never step this view off the look
-        // the pointer is on.
-        view.config.shaderName = shader.name
+        // Not pinned through `config.shaderName`. A pin is a name the view's
+        // own library has to find on disk, and this view's library has no
+        // search URLs: in the playground, which reads its shaders from the
+        // checkout, it finds none of the built-ins. Re-pinning on every hover
+        // ran `rotationChanged`, and `start()` then took the missing pin for a
+        // deleted one and played whatever the rotation schedule had due — the
+        // same wrong look on every card. `show` with the shader in hand is the
+        // whole instruction; the view's shuffle interval is infinite and it is
+        // never handed a rotation, so nothing else can move it.
         // The whole look in one step — the same `(shader, parameters)` the
         // still was baked from, which is what makes the swap invisible. This
         // used to be `setShader` followed by the preset's values set one at a
