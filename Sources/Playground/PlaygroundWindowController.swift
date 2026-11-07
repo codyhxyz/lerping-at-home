@@ -1367,12 +1367,18 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         let overrides = LookOverrides(values: LerpPresetWriter.overrides(in: values),
                                       animations: LerpPresetWriter.animationOverrides(in: values))
         guard !overrides.isEmpty else {
-            return .cannot(title: "Nothing to save as a preset", detail: compiled.parameters.isEmpty
-                ? "\(current.name) declares no `// lerp-param:` parameters, so there is nothing a "
-                    + "preset could set. Add one to the file and the inspector grows a control for it."
-                : "Every control is at \(current.name)'s declared default, and a preset records only "
-                    + "what differs from them. A look that sets nothing is the Defaults look — pick it "
-                    + "in the inspector and the file is already saying it.")
+            if compiled.parameters.isEmpty {
+                return .cannot(title: "\(current.name) has no controls to save",
+                               detail: "A preset is a set of control values, and this look has no "
+                                   + "controls. Add a `// lerp-param:` line to the file to give it one.")
+            }
+            let axes = LerpTurn.axes(of: compiled.parameters)
+            let how = axes.yaw != nil || axes.pitch != nil
+                ? "Move a slider in the inspector, or drag the render to turn it"
+                : "Move a slider in the inspector"
+            return .cannot(title: "Change a control first",
+                           detail: "Every control is still at its default, so this preset would be "
+                               + "identical to Defaults. \(how), then save again.")
         }
         return .ready(overrides)
     }
