@@ -343,10 +343,11 @@ make playground
   - A buffer that does not compile still saves its text. An editor that refuses
     your typing because the shader is mid-edit is an editor with a bug in it —
     it is the *values* that wait for a compile, and the console says why.
-  - Save and Revert appear only when there is something to save, and do for a
-    keystroke, and Revert puts both halves back. Only the text raises the
-    close-the-window prompt: switching looks is how this window is browsed, and a
-    question on every step of it would be unusable.
+  - Save and Revert appear only when there is something to save — a moved
+    slider counts as much as a keystroke — and Revert puts both halves back.
+  - Closing and quitting do not ask about unsaved changes unless **File → Ask
+    to Save Before Closing** is ticked (off by default); off, they are let go.
+    Switching to another shader with unsaved *text* still asks.
 - **Shader → Save as Preset…** (`⇧⌘S`, or **+** in the Presets list) writes the
   values on screen back into the shader as a named `// lerp-preset:` block. A
   new name adds a preset; entering an existing name replaces it after

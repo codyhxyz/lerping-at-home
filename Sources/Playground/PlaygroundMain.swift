@@ -358,6 +358,8 @@ enum MainMenu {
             item("Revert to Saved", Selector(("revertShader:")), ""),
             .separator(),
             item("Close", #selector(NSWindow.performClose(_:)), "w"),
+            item("Ask to Save Before Closing",
+                 #selector(PlaygroundWindowController.toggleAskBeforeClosing(_:)), ""),
         ]))
 
         main.addItem(submenu("Edit", [

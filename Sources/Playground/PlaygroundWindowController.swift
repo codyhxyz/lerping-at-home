@@ -1866,14 +1866,28 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidBecomeKey(_ notification: Notification) { pollDisk() }
 
+    /// File › Ask to Save Before Closing. Off by default: the prompt stood in
+    /// the way of every close, every quit and every deploy's graceful quit,
+    /// over a moved slider as readily as over typed code. Off, closing and
+    /// quitting simply go ahead and unsaved changes are let go.
+    static let askBeforeClosingKey = "AskToSaveBeforeClosing"
+    private var asksBeforeClosing: Bool {
+        UserDefaults.standard.bool(forKey: Self.askBeforeClosingKey)
+    }
+
+    @objc func toggleAskBeforeClosing(_ sender: Any?) {
+        UserDefaults.standard.set(!asksBeforeClosing, forKey: Self.askBeforeClosingKey)
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         preview.hide()
+        guard asksBeforeClosing else { terminationApproved = true; return true }
         terminationApproved = confirmDiscardIfDirty(includingLook: true)
         return terminationApproved
     }
 
     func approveTermination() -> Bool {
-        if terminationApproved { return true }
+        if terminationApproved || !asksBeforeClosing { return true }
         terminationApproved = confirmDiscardIfDirty(includingLook: true)
         return terminationApproved
     }
@@ -1924,6 +1938,9 @@ extension PlaygroundWindowController: NSMenuItemValidation {
         case #selector(newMapping(_:)): return midi.isAvailable
         case #selector(renameMapping(_:)), #selector(deleteMapping(_:)): return activeMapping != nil
         case #selector(nextMapping(_:)): return mappings.count > 1
+        case #selector(toggleAskBeforeClosing(_:)):
+            item.state = asksBeforeClosing ? .on : .off
+            return true
         case #selector(togglePreview(_:)):
             item.title = preview.isShown ? "Exit Full Screen Preview" : "Preview Full Screen"
             return true
