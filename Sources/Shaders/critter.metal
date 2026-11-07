@@ -184,7 +184,7 @@ static float3 sdCritter(float3 q, thread const Scene& sc) {
     // Feet swing by `stride` (so a blend never spins them); sitting puts
     // them out in front.
     float sw = 0.13 * sc.stride * sin(sc.step);
-    float fx = 0.42 - 0.05 * sc.sit, fy = 0.12 + 0.05 * sc.sit, fz = 0.24 + 0.42 * sc.sit;
+    float fx = 0.42 - 0.05 * sc.sit, fy = 0.12 - 0.1 * sc.sit, fz = 0.24 + 0.42 * sc.sit;
     float feet = min(sdEll(p - float3(-fx, fy, fz + sw) * s, float3(0.21, 0.13, 0.27) * s),
                      sdEll(p - float3( fx, fy, fz - sw) * s, float3(0.21, 0.13, 0.27) * s));
     body = smin(body, feet, 0.07 * s);
@@ -994,7 +994,7 @@ fragment half4 lerpMain(float4 pos [[position]],
             alb = mix(palette[int(S.identity * 5.0) % 5], float3(0.64, 0.66, 0.58), (1.0 - S.health) * 0.3);
             // lighter tummy
             alb = mix(alb, mix(alb, float3(1.0, 0.98, 0.92), 0.55),
-                      smoothstep(0.35, 0.7, rel.z) * smoothstep(0.25, -0.3, rel.y));
+                      smoothstep(0.35, 0.7, rel.z) * smoothstep(0.25, -0.3, rel.y) * smoothstep(0.22, 0.38, lp.y / s));
             // blush
             float2 ck = float2(abs(rel.x) - 0.56 * hz, rel.y + 0.1);
             alb = mix(alb, float3(1.0, 0.55, 0.6), smoothstep(0.15, 0.06, length(ck)) * step(0.0, rel.z) * 0.8);
@@ -1079,9 +1079,11 @@ fragment half4 lerpMain(float4 pos [[position]],
             spec = 0.6; shine = 40.0;
         } else if (mat == M_CLOUD) {
             // slate, not black: lit on top, a shade darker underneath
-            alb = mix(float3(0.74, 0.78, 0.86), float3(0.52, 0.55, 0.66), sc.cloudDark);
+            // (a rain cloud a gloomier grey than a storm)
+            alb = mix(float3(0.44, 0.46, 0.53), float3(0.56, 0.59, 0.68), sc.cloudDark);
             alb *= mix(0.8, 1.2, smoothstep(-0.3, 0.7, n.y));
-            emit = sc.cloudDark * step(0.9, fract(time * 0.37)) * step(0.4, fract(time * 9.0)) * 1.5;
+            float fl = sc.cloudDark * step(0.9, fract(time * 0.37)) * step(0.4, fract(time * 9.0));
+            alb = mix(alb, float3(0.8, 0.85, 0.95), fl);
         } else if (mat == M_BLOSSOM) {
             float hue = fract(S.identity * 3.7);
             alb = mix(float3(1.0, 0.55, 0.7), float3(1.0, 0.85, 0.35), hue);
@@ -1174,48 +1176,50 @@ fragment half4 lerpMain(float4 pos [[position]],
         float hr = hash11(colId * 1.7 + 0.3);
         float ph = fract(hr + time * (0.9 + 0.5 * hr));
         float dropY = mix(cp.y - 0.05, fp.y, ph);
-        float inside = step(abs(uv.x - cp.x), w) * smoothstep(0.2, 0.08, abs(fract((uv.x - cp.x) / lane) - 0.5));
-        float streak = smoothstep(0.045, 0.0, abs(uv.y - dropY)) * inside * step(0.3, hr);
-        col = mix(col, float3(0.62, 0.76, 1.0), streak * 0.8 * sick);
+        float inside = step(abs(uv.x - cp.x), w) * smoothstep(0.26, 0.1, abs(fract((uv.x - cp.x) / lane) - 0.5));
+        float streak = smoothstep(0.055, 0.0, abs(uv.y - dropY)) * inside * step(0.25, hr);
+        col = mix(col, float3(0.5, 0.68, 1.0), streak * 0.95 * sick);
     }
-    // Lightning out of the storm cloud, to the ground beside it.
+    // Lightning: a short chunky zigzag from the cloud's underside, off to
+    // one side, stopping above its head.
     float flash = storm * step(0.9, fract(time * 0.37)) * step(0.4, fract(time * 9.0));
     if (flash > 0.01) {
-        float3 top = project(unbendP(sc.cloudPos + float3(0.0, -0.08, 0.0), sc), cam);
-        float3 g0 = sc.cpos + float3(cam.rt.x, 0.0, cam.rt.z) * (0.75 + 1.4 * sc.s);
-        float3 bot = project(unbendP(float3(g0.x, groundH(g0.xz, sc.ident), g0.z), sc), cam);
-        float2 ax = bot.xy - top.xy, nx = normalize(float2(-ax.y, ax.x)) * 0.025 * cam.focal / top.z;
+        float3 top = project(unbendP(sc.cloudPos + float3(0.0, -0.06 * sc.cloud, 0.0), sc)
+                             + cam.rt * 0.22 * sc.cloud, cam);
+        float bh = 0.42 * sc.cloud * cam.focal / top.z;          // bolt height on screen
+        float2 b = (uv - top.xy) / bh;                            // 0 at the top, -1 at the tip
         float bolt = 1e5;
-        float2 pa = top.xy;
-        for (int i = 1; i <= 4; i++) {
-            float2 pb = top.xy + ax * (float(i) / 4.0) + nx * (i == 4 ? 0.0 : (i % 2 == 1 ? 1.0 : -1.0));
-            bolt = min(bolt, sdSeg(uv, pa, pb));
-            pa = pb;
+        float2 zz[5] = { float2(0.0, 0.0), float2(-0.2, -0.38), float2(0.1, -0.44),
+                         float2(-0.1, -0.78), float2(0.06, -1.0) };
+        for (int i = 0; i < 4; i++) {
+            float2 pa = zz[i], pb = zz[i + 1];
+            float w = 0.075 - 0.045 * float(i) / 3.0;            // tapers to the tip
+            bolt = min(bolt, sdSeg(b, pa, pb) - w);
         }
-        float bw = 0.006 * cam.focal / top.z;
-        col = mix(col, float3(0.35, 0.3, 0.55), flash * smoothstep(2.6 * bw, 1.8 * bw, bolt));
-        col = mix(col, float3(1.0, 0.96, 0.62), flash * smoothstep(1.3 * bw, 0.6 * bw, bolt));
-        col += 0.07 * flash;
+        col = mix(col, float3(0.25, 0.22, 0.4), flash * smoothstep(0.045, 0.025, bolt));
+        col = mix(col, float3(1.0, 0.95, 0.6), flash * smoothstep(0.01, -0.01, bolt));
+        col += 0.05 * flash;
     }
-    // Frazzled: a scribble beside its head that keeps redrawing itself.
+    // Frazzled: a tangled scribble ball just above and beside its head,
+    // redrawn a few times a second.
     float stress = clamp((0.4 - S.calm) / 0.3, 0.0, 1.0);
     float zzzOff = 1.0 - min(zzz, 1.0);
     float frazzle = max(storm, stress * 0.8) * zzzOff * (1.0 - dtake) * step(0.5, float(sc.stage));
     if (frazzle > 0.01) {
-        float3 pj = project(unbendP(sc.cpos + float3(0.0, 1.95 * sc.s, 0.0), sc) - cam.rt * 1.05 * sc.s, cam);
-        float size = 0.15 * cam.focal / pj.z;
+        float3 pj = project(unbendP(sc.cpos + float3(0.0, 2.05 * sc.s, 0.0), sc) - cam.rt * 0.75 * sc.s, cam);
+        float size = 0.1 * cam.focal / pj.z;
         float2 b = (uv - pj.xy) / size;
-        if (dot(b, b) < 2.6) {
+        if (dot(b, b) < 2.4) {
+            float jit = floor(time * 4.0);
             float d = 1e5;
-            float jit = floor(time * 5.0);
-            float2 prev = float2(0.0);
-            for (int i = 0; i <= 18; i++) {
-                float th = float(i) * 0.7 + jit * 0.37;
-                float2 cur = float2(cos(th) + 0.45 * cos(3.7 * th + jit), 0.8 * sin(th) + 0.45 * sin(2.9 * th + 1.3 * jit)) * 0.62;
-                if (i > 0) d = min(d, sdSeg(b, prev, cur));
-                prev = cur;
+            for (int i = 0; i < 4; i++) {
+                float fi = float(i);
+                float2 c = (hash22(float2(fi, jit)) - 0.5) * 0.5;
+                float2 r = float2(0.55, 0.42) + 0.2 * hash22(float2(jit, fi + 7.0));
+                float2 q2 = rotate(b - c, fi * 0.8 + jit);
+                d = min(d, abs(length(q2 / r) - 1.0) * min(r.x, r.y));
             }
-            col = mix(col, float3(0.22, 0.2, 0.3), frazzle * smoothstep(0.085, 0.045, d) * step(pj.z, depth + 0.3));
+            col = mix(col, float3(0.24, 0.23, 0.28), frazzle * smoothstep(0.075, 0.04, d) * step(pj.z, depth + 0.3));
         }
     }
     // A sweat drop when it is stressed or poorly, sliding down by its head.
@@ -1248,7 +1252,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     // that follows a chase does not jump.
     float flutter = (act == ACT_CHASE ? k : 0.0) + (prevAct == ACT_CHASE ? 1.0 - k : 0.0);
     if (flutter > 0.01) {
-        float3 pal[4] = { float3(1.0, 0.5, 0.05), float3(0.15, 0.5, 1.0), float3(1.0, 0.25, 0.65), float3(1.0, 0.82, 0.05) };
+        float3 pal[4] = { float3(0.35, 0.68, 1.0), float3(1.0, 0.88, 0.3), float3(1.0, 0.5, 0.42), float3(0.7, 0.55, 1.0) };
         float3 wc = pal[int(fract(S.identity * 5.3) * 4.0) % 4];
         for (int j = 6; j >= 0; j--) {
             float tj = time - float(j) * 0.14;
@@ -1264,7 +1268,7 @@ fragment half4 lerpMain(float4 pos [[position]],
                 col = mix(col, float3(1.0), vis * 0.55 * (1.0 - float(j) / 7.0) * smoothstep(0.004, 0.0, dot0));
                 continue;
             }
-            float size = 0.4 * cam.focal / pj.z;
+            float size = 0.28 * cam.focal / pj.z;
             float2 bp = (uv - pj.xy) / size;
             if (dot(bp, bp) > 2.0) continue;
             float flap = 0.25 + 0.75 * abs(sin(time * 13.0));
