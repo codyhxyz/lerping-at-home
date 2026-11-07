@@ -97,21 +97,23 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// it, and for what the dropdown did better and had to be kept.
     /// The selector's button and its ‹ › — see `LookSwitcher`.
     private let switcher = LookSwitcher()
-    private let saveButton = NSButton(), revertButton = NSButton(), playButton = NSButton()
+    private let saveButton = NSButton(), revertButton = NSButton()
+    private lazy var playButton = PlayerIconButton(symbol: "pause.fill", accessibility: "Pause",
+                                                   target: self, action: #selector(togglePlayPause))
     private let status = NSButton()
     private let console = NSTextView()
     private let consoleScroll = NSScrollView()
     private var consoleHeight: NSLayoutConstraint!
     private let fpsLabel = NSTextField(labelWithString: "— fps")
-    /// Playback resolution, the way Premiere's Program Monitor does it: one
-    /// compact popup under the picture that shows its value — Full, 1/2, 1/4 —
-    /// beside the readout that shows what it bought.
-    private let resolutionPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// Playback resolution: Low / Med / High under a "Resolution" caption, so
+    /// it says what it is choosing rather than showing a bare "Full".
+    private let resolutionControl = PlayerSegments(PlaygroundWindowController.renderScales.map(\.title),
+                                                   accessibility: "Resolution")
     /// Matches the saver: on by default, at the saver's own peak, and engaged
     /// only where `LerpEDR.blocker` allows, so what you tune here is what the
     /// screensaver will show. A toggle and nothing more — there was a peak
     /// slider beside it, which is not a control anyone reaches for.
-    private let edrCheckbox = NSButton(checkboxWithTitle: "HDR", target: nil, action: nil)
+    private lazy var edrToggle = PlayerToggle("HDR", target: self, action: #selector(edrChanged))
     /// The render on a whole screen until Esc. Its button is the last thing on
     /// the strip under the picture, where every video player keeps it.
     private var preview: FullScreenPreview!
@@ -320,9 +322,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                             consoleScroll])
     }
 
-    /// The picture, then one strip under it: Play / Pause and the frame rate
-    /// and pixel size on the left, playback resolution and HDR on the right —
-    /// so changing one shows its cost or saving right beside it.
+    /// The picture, then one strip under it: play / pause and the frame rate on
+    /// the left; resolution, HDR and full screen on the right. Every control in
+    /// it is one family (`PlayerBar.swift`) — round or pill, the same height,
+    /// the same fill — and the pixel size and EDR headroom readouts are gone:
+    /// the frame rate is the one number worth watching while you work.
     ///
     /// There used to be a strip above the picture holding a Seed button, an
     /// unlabelled 100/75/50/25% menu, the HDR box and an HDR peak slider. Seed
@@ -330,31 +334,20 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// values it changes; the peak slider is gone; the menu came down here,
     /// reading Full / 1/2 / 1/4 like Premiere's rather than 100% / 75%.
     private func renderPane() -> NSView {
-        Chrome.configure(playButton, title: "Pause", target: self, action: #selector(togglePlayPause))
-        playButton.widthAnchor.constraint(equalToConstant: 62).isActive = true
-
-        fpsLabel.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
-        fpsLabel.textColor = EditorTheme.dim
-        fpsLabel.toolTip = "Frame rate, and the pixels each frame is drawn at"
+        fpsLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        fpsLabel.textColor = InspectorStyle.heading
+        fpsLabel.toolTip = "Frame rate"
         fpsLabel.lineBreakMode = .byTruncatingTail
         fpsLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
-        resolutionPopUp.controlSize = .small
-        resolutionPopUp.font = .systemFont(ofSize: 11)
-        resolutionPopUp.addItems(withTitles: Self.renderScales.map(\.title))
-        resolutionPopUp.target = self
-        resolutionPopUp.action = #selector(resolutionChanged)
-        resolutionPopUp.toolTip = "Playback resolution: draw fewer pixels for a higher frame rate"
-        resolutionPopUp.setContentHuggingPriority(.required, for: .horizontal)
+        resolutionControl.target = self
+        resolutionControl.action = #selector(resolutionChanged)
+        resolutionControl.select(Self.renderScales.firstIndex { $0.scale == 1 } ?? 0)
+        resolutionControl.toolTip = "Lower resolution draws fewer pixels for a smoother frame rate"
+        let resolutionCaption = PlayerStyle.caption("Resolution")
 
-        edrCheckbox.controlSize = .small
-        edrCheckbox.font = .systemFont(ofSize: 11)
-        edrCheckbox.state = .on
-        edrCheckbox.target = self
-        edrCheckbox.action = #selector(edrChanged)
-        edrCheckbox.toolTip = "Lift the brightest highlights above SDR white on an HDR screen, "
-            + "as the screensaver does. Held back on SDR screens."
-        edrCheckbox.setContentHuggingPriority(.required, for: .horizontal)
+        edrToggle.state = .on
+        edrToggle.toolTip = "Brighter highlights on an HDR screen, as the screensaver shows them"
 
         metalView.config = LerpMetalView.Config(shaderName: nil, framesPerSecond: 60,
                                                 renderScale: 1.0, shuffleInterval: .infinity)
@@ -375,18 +368,19 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             guard let self, isPaused else { return }
             metalView.renderOnce()
         }
-        let fullScreen = InspectorHeaderButton(symbol: "arrow.up.left.and.arrow.down.right",
-                                               title: nil, accessibility: "Preview Full Screen",
-                                               target: self, action: #selector(togglePreview(_:)))
-        fullScreen.toolTip = "Preview Full Screen (⌃⌘F) — Esc to return"
+        let fullScreen = PlayerIconButton(symbol: "arrow.up.left.and.arrow.down.right",
+                                          accessibility: "Preview Full Screen", pointSize: 10,
+                                          target: self, action: #selector(togglePreview(_:)))
+        fullScreen.toolTip = "Full screen (⌃⌘F)"
+        playButton.toolTip = "Play / Pause (⌘\\)"
 
         // Play / Pause is the only control over time. There used to be a
         // one-minute scrubber, a typed clock, minute-paging arrows and a
         // "0:00–1:00" label; nobody needs to seek a screensaver.
         return Chrome.pane([preview.stage,
-                            Chrome.bar([playButton, fpsLabel, Chrome.flexible(),
-                                        resolutionPopUp, edrCheckbox, fullScreen],
-                                       height: 34)])
+                            playerBar([playButton, gap(4), fpsLabel, Chrome.flexible(),
+                                       resolutionCaption, resolutionControl, gap(6),
+                                       edrToggle, fullScreen])])
     }
 
     /// The parameter controls, driven entirely by callbacks, so they know
@@ -1363,18 +1357,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         let overrides = LookOverrides(values: LerpPresetWriter.overrides(in: values),
                                       animations: LerpPresetWriter.animationOverrides(in: values))
         guard !overrides.isEmpty else {
-            if compiled.parameters.isEmpty {
-                return .cannot(title: "\(current.name) has no controls to save",
-                               detail: "A preset is a set of control values, and this look has no "
-                                   + "controls. Add a `// lerp-param:` line to the file to give it one.")
-            }
-            let axes = LerpTurn.axes(of: compiled.parameters)
-            let how = axes.yaw != nil || axes.pitch != nil
-                ? "Move a slider in the inspector, or drag the render to turn it"
-                : "Move a slider in the inspector"
-            return .cannot(title: "Change a control first",
-                           detail: "Every control is still at its default, so this preset would be "
-                               + "identical to Defaults. \(how), then save again.")
+            return .cannot(title: "Nothing to save as a preset", detail: compiled.parameters.isEmpty
+                ? "\(current.name) declares no `// lerp-param:` parameters, so there is nothing a "
+                    + "preset could set. Add one to the file and the inspector grows a control for it."
+                : "Every control is at \(current.name)'s declared default, and a preset records only "
+                    + "what differs from them. A look that sets nothing is the Defaults look — pick it "
+                    + "in the inspector and the file is already saying it.")
         }
         return .ready(overrides)
     }
@@ -1533,11 +1521,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             metalView.stop()
             metalView.renderOnce()
         }
-        playButton.title = isPaused ? "Play" : "Pause"
+        playButton.setSymbol(isPaused ? "play.fill" : "pause.fill",
+                             accessibility: isPaused ? "Play" : "Pause")
     }
 
     @objc private func edrChanged() {
-        metalView.config.extendedDynamicRange = edrCheckbox.state == .on
+        metalView.config.extendedDynamicRange = edrToggle.state == .on
         if isPaused { metalView.renderOnce() }
         refreshReadout()
     }
@@ -1546,23 +1535,34 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// to edit an expensive shader against, not a thing anybody wants left on
     /// their screen all night.
     private static let renderScales: [(title: String, scale: Double)] =
-        [("Full", 1.0), ("1/2", 0.5), ("1/4", 0.25)]
+        [("Low", 0.25), ("Med", 0.5), ("High", 1.0)]
 
     @objc private func resolutionChanged() {
-        let index = max(0, min(resolutionPopUp.indexOfSelectedItem, Self.renderScales.count - 1))
+        let index = max(0, min(resolutionControl.selectedIndex, Self.renderScales.count - 1))
         metalView.config.renderScale = Self.renderScales[index].scale
         if isPaused { metalView.renderOnce() }
         refreshReadout()
     }
 
-    /// "60 fps · 2624×1600 · EDR 2.0x" under the picture. The pixel size is
-    /// there so playback resolution shows its effect at once, even on a shader light
-    /// enough to sit at the frame-rate cap whatever it is drawn at.
+    /// "60 fps", or "Paused".
     private func refreshReadout() {
-        let size = metalView.renderSize
-        fpsLabel.stringValue = metalView.statusText
-            + String(format: " · %d×%d", Int(size.width), Int(size.height))
-            + (metalView.isEDRActive ? String(format: " · EDR %.1fx", metalView.edrHeadroomInUse) : "")
+        let text = metalView.isRunning ? metalView.statusText : "Paused"
+        if fpsLabel.stringValue != text { fpsLabel.stringValue = text }
+    }
+
+    /// The strip under the picture: a little taller than a toolbar so the
+    /// round controls have room, with the same edge insets as the bars above.
+    private func playerBar(_ views: [NSView]) -> NSView {
+        let bar = Chrome.bar(views, height: 42)
+        (bar as? NSStackView)?.spacing = 6
+        return bar
+    }
+
+    /// Extra room between two groups in a stack, on top of its spacing.
+    private func gap(_ width: CGFloat) -> NSView {
+        let view = NSView()
+        view.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return view
     }
 
     // MARK: - System audio
