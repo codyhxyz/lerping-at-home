@@ -7,6 +7,7 @@ import Metal
 ///   LerpPreview --list              list discovered shaders
 ///   LerpPreview --params [NAME]     print declared parameters, animations and presets
 ///   LerpPreview --animate-selftest  check the `// lerp-animate:` contract
+///   LerpPreview --critter-selftest  check the critter ledger and vitals (CPU only)
 ///   LerpPreview --snapshot DIR      render every shader to PNG in DIR
 ///       [--size WxH] [--time T] [--seed S] [--shader NAME]
 ///       [--preset NAME] [--param name=value ...] [--viewer x,y,z]
@@ -51,6 +52,11 @@ enum PreviewMain {
 
         if args.contains("--animate-selftest") {
             AnimateSelfTest.run(extraSearch)
+            return
+        }
+
+        if args.contains("--critter-selftest") {
+            CritterSelfTest.run()
             return
         }
 

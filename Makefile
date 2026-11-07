@@ -341,13 +341,19 @@ PULSE_PLIST := $(HOME)/Library/LaunchAgents/$(PULSE_LABEL).plist
 
 $(BUILD)/LerpPulse: $(PULSE_SRC)
 	@mkdir -p $(BUILD)
-	swiftc -O -parse-as-library -target $(TARGET) -o $@ $(PULSE_SRC) -framework AppKit -framework IOKit
+	swiftc -O -parse-as-library -target $(TARGET) -o $@ $(PULSE_SRC) \
+		-framework AppKit -framework IOKit -framework CoreAudio
 
+# The new binary is copied and signed beside the old one and renamed over it:
+# `bootout` returns before the old job has exited, and rewriting the running
+# file in place under KeepAlive can get the relaunch killed for an invalid code
+# signature. A rename swaps the whole file at once.
 pulse: $(BUILD)/LerpPulse
 	@mkdir -p "$(PULSE_DIR)" "$(HOME)/Library/LaunchAgents"
+	cp $(BUILD)/LerpPulse "$(PULSE_BIN).new"
+	codesign --force -s - --identifier $(PULSE_LABEL) "$(PULSE_BIN).new"
 	@launchctl bootout gui/$$(id -u)/$(PULSE_LABEL) 2>/dev/null || true
-	cp $(BUILD)/LerpPulse "$(PULSE_BIN)"
-	codesign --force -s - --identifier $(PULSE_LABEL) "$(PULSE_BIN)"
+	mv -f "$(PULSE_BIN).new" "$(PULSE_BIN)"
 	@printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
 		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
 		'<plist version="1.0"><dict>' \
@@ -372,7 +378,7 @@ pulse: $(BUILD)/LerpPulse
 # Stops the sampler. The ledger stays, so the critter is where you left it.
 uninstall-pulse:
 	@launchctl bootout gui/$$(id -u)/$(PULSE_LABEL) 2>/dev/null || true
-	rm -f "$(PULSE_PLIST)" "$(PULSE_BIN)"
+	rm -f "$(PULSE_PLIST)" "$(PULSE_BIN)" "$(PULSE_BIN).new"
 
 saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/Info.plist LICENSE NOTICE.txt splats
 	@mkdir -p $(SAVER_DIR)/Contents/MacOS $(SAVER_DIR)/Contents/Resources/Shaders $(SAVER_DIR)/Contents/Resources/Splats

@@ -751,13 +751,33 @@ weight, so it does not repeat itself.
 Mac, inside a sandbox that cannot write anywhere shared, so it cannot watch how
 the Mac is used. `make saver` also installs **LerpPulse** (`Sources/Pulse/`), a
 LaunchAgent (`com.hergenroeder.lerping.pulse`) that once a minute asks how long
-since the last input, whether the screen is locked and what kind of app is in
-front. It needs no privacy permission. It keeps per-day totals in
-`~/Library/Application Support/Lerping/Critter/ledger.json`: active minutes,
-minutes after midnight, the longest run without a 5-minute break, breaks taken,
-app switches, and minutes per *kind* of app (make / chat / browse / play /
-other). App names never reach the file. `CritterLedger.swift` holds the scoring.
+since the last input, whether the screen is locked, what kind of app is in
+front, whether an app is holding the display awake (a film, a video call) and
+whether the microphone is running (a call). It needs no privacy permission. It
+keeps per-day totals in
+`~/Library/Application Support/Lerping/Critter/ledger.json`: active minutes
+(watching counts as screen time, not as a break), minutes after midnight, the
+longest run without a 5-minute break, breaks taken after 10+ minutes of use,
+switches between *kinds* of app, and minutes per kind (make / chat / browse /
+play / other). Moving between two editors, or glancing at another app for under
+ten seconds, is not a switch, and launchers, password managers and menu-bar
+popovers are not apps in front. App names never reach the file.
 
+`CritterLedger.swift` holds all of it as pure functions — `fold` turns one
+sample into the ledger, `CritterVitals` turns the ledger into the critter. A
+day's score weighs screen hours, late nights, the longest run (which costs less
+than late nights: deep work is not doomscrolling), scatter, and what the hours
+went on (making and talking lift a day; long hours of play and browsing drag
+it). Growth
+adds each finished day — its score in proportion to how much of a day it was,
+the rest counted as rest, so an hour of good use never grows less than a day
+off. Days older than 120 are pruned into a running `archivedGrowth`, so growth
+keeps going for years. A ledger that cannot be read is moved aside as
+`ledger.corrupt-<time>.json`, never overwritten.
+
+- `LerpPreview --critter-selftest` checks all of that against a synthetic
+  clock (CPU only; it never touches the real ledger).
+- `LerpPulse --probe` prints what one sample would see right now.
 - `"$HOME/Library/Application Support/Lerping/Pulse/LerpPulse" --report` prints
   the critter's current vitals.
 - The look's `mood` parameter shows canned states (thriving, burnt out, night
