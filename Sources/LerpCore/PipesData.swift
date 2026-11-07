@@ -8,29 +8,9 @@ import Metal
 /// = 15 nodes across the window's long axis, `numDiv - 1 / aspect` across the
 /// short one, spaced `divSize` = 7 units apart, with a pipe radius of 1 —
 /// i.e. **radius = 1/7 of the lattice spacing** — and ball joints of
-/// **√2 × radius**. Four pipes grow at once (the original's maximum); a pipe
-/// that boxes itself in is replaced by a new one elsewhere, and once the
-/// volume is about 40% full it fades out and a new one starts growing.
-///
-/// What keeps it moving. The original's camera was dead still and its pipes
-/// ran out one by one: the last few seconds of every generation were one pipe
-/// growing, then nothing at all until the wipe. On a lock screen that read as
-/// a still picture (motion survey, local change 0.16% of the short side per
-/// second, 0.01 through the dead stretches). So:
-///
-/// - **No dead slots.** Every slot keeps a pipe growing for the whole
-///   generation; the generation ends on a node budget (`fillFraction`), not
-///   when the last pipe gets stuck, so all four tips are moving right up to a
-///   short hold and the fade. Only those last 2.7 s have nothing growing,
-///   and the camera keeps moving through them.
-/// - **A slow orbit.** `pipes.metal` turns the camera round the volume at a
-///   turntable pace with a small pitch sway. Near pipes cross far ones, so the
-///   motion is parallax — relative motion the eye reads as depth — not a flat
-///   slide of the whole picture, which the eye barely registers.
-///
-/// Each tip's next move is drawn from its own `(cycle, step, slot)` stream and
-/// the in-flight step is simulated for real (see `build`), so a tip never
-/// changes its mind at a step boundary.
+/// **√2 × radius**. Two to four pipes grow at once, each until it boxes itself
+/// in, and after a handful of pipes the volume wipes and starts over from a
+/// slightly different viewing angle.
 ///
 /// The whole walk is regenerated from scratch every frame from `(seed, time)`;
 /// nothing is carried across frames, so a frame stays a pure function of its
@@ -64,37 +44,29 @@ public final class PipesData: LerpDataProvider {
     /// very tall windows still get a sensibly shaped volume. See `dimensions`.
     static let minNodesShortAxis = 7
     static let maxNodesPerAxis = 32
-    /// Pipes growing at once. Original: `ss_iRand2(2, MAX_DRAW_THREADS = 4)`;
-    /// this always takes the top of that range so the volume never thins out
-    /// to a single growing tip.
-    static let concurrentPipes = 4
-    /// Share of lattice nodes laid before the volume wipes. The original
-    /// stopped after NORMAL_PIPE_COUNT = 5 pipes plus the threads running,
-    /// which on this lattice came to rest at roughly 42% — but only by letting
-    /// slots die one by one, so the tail of each generation was nearly still.
-    /// Budgeting nodes instead keeps the same density with every slot alive.
-    static let fillFraction: Float = 0.40
+    /// Pipes growing at once. Original: `ss_iRand2(2, MAX_DRAW_THREADS = 4)`.
+    static let concurrentPipes = 3
+    /// Pipes drawn before the volume wipes. Original: NORMAL_PIPE_COUNT = 5
+    /// plus the threads already running.
+    static let pipesPerCycle = 8
     /// Lattice steps per second, per pipe. The original just drew one segment
     /// per pipe per frame, so this tracked the machine; slowed to house pace.
     static let stepsPerSecond: Float = 8.0
+    /// Ceiling on steps per pipe per cycle. The volume saturates at roughly 42%
+    /// of nodes after about 290 steps — all eight pipes box themselves in — so
+    /// this is set just past that: enough headroom for a lucky seed, not so much
+    /// that the picture sits frozen waiting for the wipe.
+    static let stepsPerCycle = 330
     /// Relative weight of "keep going straight" against each of the four turns.
     static let straightWeight = 5
     /// Seconds the finished volume is held before the wipe, and the wipe length.
     /// The original punched out black squares in a pseudo-random dissolve; this
-    /// is a plain fade. Both are short, and the camera keeps orbiting through
-    /// them, so the turnover is a transition rather than a pause.
-    static let holdSeconds: Float = 1.5
-    static let fadeSeconds: Float = 1.2
+    /// is a plain fade.
+    static let holdSeconds: Float = 3.0
+    static let fadeSeconds: Float = 0.8
 
-    /// Steps per pipe per generation for a lattice of `nodeCount` nodes: the
-    /// node budget shared across the slots. A step spent respawning lays one
-    /// node rather than a segment's worth, so the real fill lands a shade
-    /// under `fillFraction`.
-    static func stepsPerCycle(nodeCount: Int) -> Int {
-        max(1, Int(fillFraction * Float(nodeCount) / Float(concurrentPipes)))
-    }
-    static func growSeconds(steps: Int) -> Float { Float(steps) / stepsPerSecond }
-    static func cycleSeconds(steps: Int) -> Float { growSeconds(steps: steps) + holdSeconds + fadeSeconds }
+    static var growSeconds: Float { Float(stepsPerCycle) / stepsPerSecond }
+    static var cycleSeconds: Float { growSeconds + holdSeconds + fadeSeconds }
 
     // MARK: - GPU-visible frame block (fragment buffer 1)
 
@@ -187,17 +159,16 @@ public final class PipesData: LerpDataProvider {
 
         // Offset the clock by the seed so each activation opens on a different
         // point of the growth cycle instead of always on an empty volume.
-        let steps = PipesData.stepsPerCycle(nodeCount: dim.x * dim.y * dim.z)
-        let cycle = PipesData.cycleSeconds(steps: steps)
+        let cycle = PipesData.cycleSeconds
         let t = max(0, uniforms.time) + uniforms.seed * cycle
         let cycleIndex = floor(t / cycle)
         let local = t - cycleIndex * cycle
 
-        let progress = min(local * PipesData.stepsPerSecond, Float(steps))
+        let progress = min(local * PipesData.stepsPerSecond, Float(PipesData.stepsPerCycle))
         let fullSteps = Int(progress)
         let frac = progress - Float(fullSteps)
 
-        let wipeStart = PipesData.growSeconds(steps: steps) + PipesData.holdSeconds
+        let wipeStart = PipesData.growSeconds + PipesData.holdSeconds
         let fade = local <= wipeStart
             ? 1
             : max(0, 1 - (local - wipeStart) / PipesData.fadeSeconds)
@@ -206,7 +177,7 @@ public final class PipesData: LerpDataProvider {
         let seedBits = UInt64(uniforms.seed.bitPattern) &* LerpSplitMix64.gamma
         let rngSeed = seedBits ^ (UInt64(bitPattern: Int64(cycleIndex)) &* 0xD1B5_4A32_D192_ED03)
 
-        build(fullSteps: fullSteps, growing: fullSteps < steps, frac: frac, rngSeed: rngSeed)
+        build(fullSteps: fullSteps, frac: frac, rngSeed: rngSeed)
 
         var frame = Frame(dim: SIMD4<UInt32>(UInt32(dim.x), UInt32(dim.y), UInt32(dim.z), 0),
                           fade: fade,
@@ -242,10 +213,11 @@ public final class PipesData: LerpDataProvider {
         inside(x, y, z) && nodes[index(x, y, z)] & PipesData.occupiedBit == 0
     }
 
-    /// Picks the next lattice direction for a pipe, or nil if it is boxed in,
-    /// in which case it draws nothing — so a respawn that follows starts from
-    /// the same stream state either way. Allocation-free: this runs a couple
-    /// of thousand times per frame.
+    /// Picks the next lattice direction for a pipe, or nil if it is boxed in.
+    /// Consumes exactly one RNG draw when at least one neighbour is free, which
+    /// is what lets the caller *peek* the direction for the partially-grown tip
+    /// without desynchronising the next frame's regeneration. Allocation-free:
+    /// this runs a few thousand times per frame.
     private func chooseDirection(_ pipe: Pipe, _ rng: inout LerpSplitMix64) -> Int? {
         var weights = SIMD8<Int32>(repeating: 0)
         var total = 0
@@ -284,24 +256,7 @@ public final class PipesData: LerpDataProvider {
         return nil
     }
 
-    /// The stream for one slot's move on one step. Keying draws by
-    /// `(step, slot)` rather than threading one stream through the whole walk
-    /// means a respawn in one slot cannot shift the draws of every slot after
-    /// it — which matters for the in-flight step below.
-    @inline(__always) private static func stepRNG(_ rngSeed: UInt64, step: Int, slot: Int) -> LerpSplitMix64 {
-        var rng = LerpSplitMix64(state: rngSeed
-            ^ (UInt64(step) &* 0xA24B_AED4_963E_E407)
-            ^ (UInt64(slot &+ 1) &* 0x9FB2_1C65_1E98_DF25))
-        _ = rng.next()
-        return rng
-    }
-
-    /// Replays the generation from empty up to `fullSteps` whole steps, then —
-    /// while `growing` — simulates step `fullSteps` itself for real and draws
-    /// its moves as part-grown tips. The in-flight step makes exactly the
-    /// choices, respawns and collisions the next frame will replay as a whole
-    /// step, so a tip never swings round at a step boundary.
-    private func build(fullSteps: Int, growing: Bool, frac: Float, rngSeed: UInt64) {
+    private func build(fullSteps: Int, frac: Float, rngSeed: UInt64) {
         let count = dim.x * dim.y * dim.z
         for i in 0..<count { nodes[i] = 0 }
 
@@ -309,35 +264,28 @@ public final class PipesData: LerpDataProvider {
         _ = rng.next()
 
         var pipes = [Pipe?](repeating: nil, count: PipesData.concurrentPipes)
+        var started = 0
         for i in 0..<pipes.count {
             pipes[i] = spawn(&rng, avoiding: UInt32(i))
+            if pipes[i] != nil { started += 1 }
         }
 
-        var tips = [(slot: Int, dir: Int)]()
-        tips.reserveCapacity(pipes.count)
-        let lastStep = growing ? fullSteps : fullSteps - 1
-        guard lastStep >= 0 else { return }
-        for step in 0...lastStep {
-            let inFlight = growing && step == fullSteps
+        for _ in 0..<fullSteps {
             for i in 0..<pipes.count {
-                var rng = PipesData.stepRNG(rngSeed, step: step, slot: i)
-                guard var pipe = pipes[i], let dir = chooseDirection(pipe, &rng) else {
-                    // Boxed in (or never placed): start another pipe elsewhere
-                    // in a new material. Every slot stays alive all generation,
-                    // so the volume is never down to one growing tip.
-                    let previous = pipes[i]?.color ?? UInt32(i)
-                    pipes[i] = spawn(&rng, avoiding: previous)
+                guard var pipe = pipes[i] else { continue }
+                guard let dir = chooseDirection(pipe, &rng) else {
+                    // Boxed in. Start another pipe elsewhere until the cycle's
+                    // pipe budget runs out, then leave this slot dead — which is
+                    // how the volume comes to rest before the wipe.
+                    if started < PipesData.pipesPerCycle {
+                        pipes[i] = spawn(&rng, avoiding: pipe.color)
+                        if pipes[i] != nil { started += 1 }
+                    } else {
+                        pipes[i] = nil
+                    }
                     continue
                 }
                 let (dx, dy, dz) = PipesData.delta[dir]
-                if inFlight {
-                    // Claim the target so later slots in this step steer round
-                    // it exactly as they will once the step completes;
-                    // `writePartial` replaces the claim with what is drawn.
-                    nodes[index(pipe.x + dx, pipe.y + dy, pipe.z + dz)] = PipesData.nodeRecord(color: pipe.color)
-                    tips.append((i, dir))
-                    continue
-                }
                 nodes[index(pipe.x, pipe.y, pipe.z)] |= UInt32(1 << dir)
                 pipe.x += dx; pipe.y += dy; pipe.z += dz
                 pipe.dir = dir
@@ -347,9 +295,12 @@ public final class PipesData: LerpDataProvider {
             }
         }
 
-        for tip in tips {
-            guard let pipe = pipes[tip.slot] else { continue }
-            writePartial(pipe: pipe, dir: tip.dir, frac: frac)
+        // The partially-extended tip. Peeking the next direction here is safe:
+        // it happens after every full step has been replayed, so the draws it
+        // consumes are exactly the ones the next frame's final step will make.
+        for i in 0..<pipes.count {
+            guard let pipe = pipes[i], let dir = chooseDirection(pipe, &rng) else { continue }
+            writePartial(pipe: pipe, dir: dir, frac: frac)
         }
     }
 
@@ -361,18 +312,17 @@ public final class PipesData: LerpDataProvider {
             return UInt32(max(0, min(scale, (len / PipesData.partialMaxLength) * scale)).rounded())
                 << PipesData.partialLenShift
         }
-        let (dx, dy, dz) = PipesData.delta[dir]
-        let nx = pipe.x + dx, ny = pipe.y + dy, nz = pipe.z + dz
         if frac <= PipesData.partialMaxLength {
-            // Stub grows outward from the head node's centre; the node it is
-            // heading for stays empty (it was only claimed during the step).
-            nodes[index(nx, ny, nz)] = 0
+            // Stub grows outward from the head node's centre.
             nodes[index(pipe.x, pipe.y, pipe.z)] |=
                 UInt32(dir) << PipesData.partialDirShift | PipesData.partialBit | quantise(frac)
         } else {
             // Head node's stub is complete; the remainder pokes back from the
             // next node's face toward its centre.
             nodes[index(pipe.x, pipe.y, pipe.z)] |= UInt32(1 << dir)
+            let (dx, dy, dz) = PipesData.delta[dir]
+            let nx = pipe.x + dx, ny = pipe.y + dy, nz = pipe.z + dz
+            guard inside(nx, ny, nz) else { return }
             nodes[index(nx, ny, nz)] = PipesData.nodeRecord(color: pipe.color)
                 | UInt32(dir ^ 1) << PipesData.partialDirShift
                 | PipesData.partialBit | PipesData.inwardBit

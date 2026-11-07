@@ -14,28 +14,16 @@
 // is stepped cell by cell through the lattice and only the one node record
 // belonging to the current cell is evaluated, so cost is independent of how
 // many pipes are on screen.
-//
-// What keeps it moving: the original's camera was dead still, and its pipes
-// stopped one by one before each wipe, so on a lock screen it read as a still
-// picture. Here the camera orbits the volume at a turntable pace with a small
-// pitch sway, so near pipes slide across far ones — parallax, which the eye
-// reads as motion even where nothing is growing — and the eye-fixed light
-// walks its highlights along the pipes as they turn. PipesData keeps four tips
-// growing for the whole generation and turns the volume over with a short
-// fade instead of a hold.
 
 // --- Geometry. Original: divSize 7.0, pipe radius 1.0, ball joints √2·radius.
 constant float PP_R       = 1.0 / 7.0;
 constant float PP_JOINT_R = 1.41421356 / 7.0;
 
 // --- Camera. Original: gluPerspective(90°), zTrans -75 with divSize 7, and a
-// scene yaw that advanced 9.73156° on every wipe and was otherwise dead still.
-// That stillness is what made it read as a photograph; it orbits instead.
+// scene yaw that advances 9.73156° on every wipe and is otherwise dead still.
 constant float PP_FOCAL    = 1.0;          // = 1 / tan(90°/2)
 constant float PP_VIEWDIST = 75.0 / 7.0;   // lattice units from the eye to the volume
-constant float PP_ORBIT    = 0.03;         // yaw rate, rad/s: one turn in ~3.5 minutes
-constant float PP_PITCH    = 0.14;         // pitch sway amplitude, rad (~8°)
-constant float PP_PITCH_HZ = 0.031;        // pitch sway rate, rad/s
+constant float PP_YAW_STEP = 0.16985;      // 9.73156° in radians
 
 constant int PP_STEPS = 160;                // cell/sphere-trace iterations per ray
 
@@ -188,16 +176,12 @@ fragment half4 lerpMain(float4 pos [[position]],
     int3 dim = int3(F.dim.xyz);
     float3 centre = float3(dim) * 0.5;
 
-    // Camera: aimed at the middle of the volume, orbiting it at a steady
-    // turntable pace and swaying gently above and below level. Seed picks the
-    // starting angle and the phase of the sway. Orbiting the centre rather
-    // than panning means near pipes cross far ones in opposite directions:
-    // relative motion, not a slide of the whole picture.
+    // Camera: level, aimed at the middle of the volume, one fixed yaw per
+    // cycle. Seed picks the starting angle; each wipe nudges it round.
     // The 0.42 offset only keeps seed 0.5 — the value the snapshot suite uses —
     // off a dead-on axis view; the distribution over seeds is unchanged.
-    float yaw = 0.42 + u.seed * TWO_PI + u.time * PP_ORBIT;
-    float pitch = PP_PITCH * sin(u.time * PP_PITCH_HZ + u.seed * 19.0);
-    float3 back = float3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch));
+    float yaw = 0.42 + u.seed * TWO_PI + F.cycleIndex * PP_YAW_STEP;
+    float3 back = float3(sin(yaw), 0.0, cos(yaw));
     float3 ro = centre + back * PP_VIEWDIST;
     float3 fwd = -back;
     float3 right = normalize(cross(fwd, float3(0.0, 1.0, 0.0)));
