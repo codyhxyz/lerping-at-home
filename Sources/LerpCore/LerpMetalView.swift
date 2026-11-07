@@ -42,6 +42,14 @@ public final class LerpMetalView: NSView {
         /// 1.0 = native. 0.5 renders quarter the pixels and upscales — usually
         /// indistinguishable for noise-type shaders, ~4x cheaper.
         public var renderScale: Double
+        /// Draw exactly this many pixels whatever size the view is, and let the
+        /// layer scale them to fit; `renderScale` is then ignored. For a view
+        /// that has to continue a picture drawn at a known size — the gallery's
+        /// hover preview, over a still. Many looks are not resolution
+        /// independent: game-of-life sizes its cells in pixels, dot-grid and the
+        /// ditherers their dots, so the same (shader, time, seed) at 176×264 is
+        /// a different board, grid or pattern from the one at 240×360.
+        public var drawableSize: CGSize?
         public var shuffleInterval: TimeInterval
         /// Stop rendering after this many seconds and hold the last frame
         /// (GPU drops to zero). 0 = never. Resets each start().
@@ -98,7 +106,8 @@ public final class LerpMetalView: NSView {
     /// work off the assignment path entirely.)
     public var config = Config() {
         didSet {
-            if config.renderScale != oldValue.renderScale { updateDrawableSize() }
+            if config.renderScale != oldValue.renderScale
+                || config.drawableSize != oldValue.drawableSize { updateDrawableSize() }
             if config.extendedDynamicRange != oldValue.extendedDynamicRange { refreshDynamicRange(force: true) }
             if config.enabledEntries != oldValue.enabledEntries
                 || config.shaderName != oldValue.shaderName
@@ -1245,8 +1254,8 @@ public final class LerpMetalView: NSView {
     private func updateDrawableSize() {
         guard window != nil else { return }
         let scale = (window?.backingScaleFactor ?? 2.0) * config.renderScale
-        let size = CGSize(width: max(1, bounds.width * scale),
-                          height: max(1, bounds.height * scale))
+        let size = config.drawableSize ?? CGSize(width: max(1, bounds.width * scale),
+                                                 height: max(1, bounds.height * scale))
         if metalLayer.drawableSize != size {
             metalLayer.contentsScale = window?.backingScaleFactor ?? 2.0
             metalLayer.drawableSize = size

@@ -35,6 +35,7 @@ enum RotationSelfTest {
         reserved(check)
         gallery(extraSearch, check)
         stillMode(extraSearch, check)
+        hoverSize(extraSearch, check)
         pins(extraSearch, check)
         if let dir = ProcessInfo.processInfo.environment["LERP_GALLERY_SNAPSHOT"] {
             snapshot(extraSearch, to: URL(fileURLWithPath: dir))
@@ -46,7 +47,7 @@ enum RotationSelfTest {
         }
         print("OK    rotation: shader switch keeps picks, shader/* round trip, per-shader airtime, "
               + "no back-to-back repeats, * reserved, Library cards/search/floor, "
-              + "stills ignore host inputs")
+              + "stills ignore host inputs, hover draws at the still's size")
     }
 
     // MARK: - Fixtures
@@ -298,6 +299,34 @@ enum RotationSelfTest {
         check(still == fixture, "a .still critter in a host with live inputs is not the fixture: "
               + "its gallery still and hover preview would show a creature the other does not")
         check(live != fixture, "a .live critter with live inputs drew the fixture, so the still-mode check proves nothing")
+    }
+
+    /// The hover preview, driven the way a pointer drives it, draws exactly the
+    /// still's pixels rather than the tile's. At the tile's size game-of-life
+    /// is a different board and dot-grid a different grid, so a preview at any
+    /// other size is a different picture from the card it covers.
+    static func hoverSize(_ extraSearch: [URL], _ check: (Bool, @autoclosure () -> String) -> Void) {
+        let shaders = PreviewMain.makeLibrary(extraSearch).library.discover()
+        guard let life = shaders.named("game-of-life") else {
+            return check(false, "hover size: no game-of-life to point at")
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let gallery = RotationGalleryView(frame: window.contentLayoutRect, tileSize: RotationTile.size(width: 96))
+        window.contentView = gallery
+        gallery.show(shaders: shaders, selection: LerpRotationSelection(discovered: shaders.rotationEntries()))
+        gallery.layoutSubtreeIfNeeded()
+        guard let tile: RotationTile = find("card:game-of-life", in: gallery) else {
+            return check(false, "hover size: no game-of-life card")
+        }
+        gallery.preview.want(tile, shader: life)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        defer { gallery.preview.stop() }
+        let recipe = gallery.preview.recipe
+        let want = CGSize(width: recipe.width, height: recipe.height)
+        check(gallery.preview.renderSize == want,
+              "the hover preview draws \(gallery.preview.renderSize.map { "\($0)" } ?? "nothing"), "
+              + "not the still's \(want): it cannot continue the picture on the card")
     }
 
     // MARK: - Pins

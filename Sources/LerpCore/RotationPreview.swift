@@ -25,7 +25,12 @@ import AppKit
 /// composition the moment you touched it.
 ///
 /// The recipe is taken from `RotationThumbnails.Recipe` rather than copied, so
-/// the still and the first live frame cannot drift apart.
+/// the still and the first live frame cannot drift apart — its size included.
+/// The view draws the still's 240×360 pixels and the layer scales them into
+/// the tile, exactly as the still itself is scaled, because a look is a
+/// function of its resolution too: drawn at the tile's own 176×264,
+/// game-of-life played a different board from the one on the card, and
+/// dot-grid, the ditherers and pulse-rings a different pattern.
 ///
 /// ## What it has to survive
 ///
@@ -42,9 +47,8 @@ import AppKit
 ///   this project is careful about.
 public final class RotationPreviewPlayer {
 
-    /// The still's recipe. Only `time` and `seed` are read; they are the two
-    /// numbers that decide whether the first live frame matches the picture it
-    /// replaces.
+    /// The still's recipe: its `time`, `seed` and size are the numbers that
+    /// decide whether the first live frame matches the picture it replaces.
     public let recipe: RotationThumbnails.Recipe
 
     /// How long the pointer has to rest on a tile before it starts playing.
@@ -123,6 +127,10 @@ public final class RotationPreviewPlayer {
         current = tile
     }
 
+    /// The pixels the playing preview draws, or nil when nothing is playing.
+    /// For the self-test, which checks they are the still's.
+    public var renderSize: CGSize? { current == nil ? nil : view?.renderSize }
+
     private func detach() {
         view?.stop()
         view?.removeFromSuperview()
@@ -141,8 +149,10 @@ public final class RotationPreviewPlayer {
         guard let made = LerpMetalView(frame: NSRect(x: 0, y: 0, width: 120, height: 180),
                                        mode: .still)
         else { return nil }
-        made.config = LerpMetalView.Config(shaderName: nil, renderScale: 1.0,
-                                           shuffleInterval: .infinity)
+        var config = LerpMetalView.Config(shaderName: nil, renderScale: 1.0,
+                                          shuffleInterval: .infinity)
+        config.drawableSize = CGSize(width: recipe.width, height: recipe.height)
+        made.config = config
         made.onCompileError = { _, _ in }   // a broken shader shows its still, silently
         view = made
         return made
