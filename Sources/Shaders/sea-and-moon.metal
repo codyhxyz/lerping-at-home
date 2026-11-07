@@ -18,9 +18,15 @@
 //   moon colours with a `.zyx` swizzle and scales; the defaults below are
 //   those results. The "Old sunset" preset drops the swizzle, giving a warm
 //   sky and sun from the same constants.
+// - Follows the Mac's clock (`lerp-data: clock`). Night is the colours
+//   below — upstream's moon. Dusk and dawn are the same constants without
+//   upstream's swizzle (its "old sunset"), and day is a fixed blue sky with
+//   the disc lifted off the horizon. Today's sunrise and sunset come from the
+//   provider; `clock` pins the hour on an equinox day. Stills are midnight.
 // - GPU cost: 8 analytic waves per pixel, about the cheapest shader here.
 //
 // lerp-category: Scenes
+// lerp-data: clock
 // lerp-param: gravity      float 0.2 4  = 1.0  "Gravity"
 // lerp-param: waterTension float 0 0.1  = 0.01 "Water tension"
 // lerp-param: skyCol1 color = (0.15, 0.175, 0.3) "Sky, horizon"
@@ -33,9 +39,9 @@
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -30 30   = 0 "Tilt"
 // lerp-param: magnify  float -1 1.5 = 0 "Zoom"
+// lerp-param: clock    float -1 24 = -1 "Hour (-1 = now)"
 //
-// lerp-preset: "Old sunset" skyCol1=(0.3, 0.175, 0.15), skyCol2=(0.5, 0.15, 0.15)
-// lerp-preset: "Old sunset" sunCol1=(1.0, 0.5, 0.4), sunCol2=(1.0, 0.8, 0.8)
+// lerp-preset: "Old sunset" clock=18
 // lerp-preset: Upstream speed=1.0
 
 static float2 seaWave(float t, float a, float w, float p) {
@@ -108,21 +114,59 @@ static float4 seaSea(float2 p, float ia, float time, float g, float tension) {
     return float4(y, nor);
 }
 
-static float3 seaSkyColor(float3 rd, constant LerpUniforms& u) {
-    const float3 sunDir = normalize(float3(0.0, 0.06, 1.0));
-    float sunDot = max(dot(rd, sunDir), 0.0);
+// The sky's colours and the disc's direction at one time of day.
+struct SeaLight {
+    float3 sky1, sky2, sun1, sun2;
+    float3 sunDir;
+};
+
+// a at t <= 0 and b at t >= 1 exactly, so a pinned night or sunset draws the
+// very colours it did before the look followed the clock.
+static float3 seaPick(float3 a, float3 b, float t) {
+    return t <= 0.0 ? a : (t >= 1.0 ? b : mix(a, b, t));
+}
+
+static SeaLight seaLight(float hour, float rise, float set, constant LerpUniforms& u) {
+    // Altitude proxy: 0 at sunrise and sunset, +1 at midday, -1 at midnight.
+    float alt;
+    if (hour >= rise && hour <= set) {
+        alt = sin(PI * (hour - rise) / (set - rise));
+    } else {
+        float night = 24.0 - (set - rise);
+        alt = -sin(PI * glmod(hour - set, 24.0) / night);
+    }
+    float toDay   = smoothstep(0.08, 0.4, alt);           // golden hour -> day
+    float toNight = 1.0 - smoothstep(-0.25, -0.03, alt);  // dusk -> moonlight
+
+    SeaLight L;
+    // Dusk/dawn: upstream's own colours before its .zyx swizzle.
+    float3 dusk1 = u.skyCol1.zyx, dusk2 = u.skyCol2.zyx;
+    float3 duskS1 = u.sunCol1.zyx, duskS2 = u.sunCol2.zyx;
+    L.sky1 = seaPick(seaPick(dusk1,  float3(0.42, 0.58, 0.78), toDay), u.skyCol1.rgb, toNight);
+    L.sky2 = seaPick(seaPick(dusk2,  float3(0.12, 0.30, 0.72), toDay), u.skyCol2.rgb, toNight);
+    L.sun1 = seaPick(seaPick(duskS1, float3(1.0, 0.86, 0.62),  toDay), u.sunCol1.rgb, toNight);
+    L.sun2 = seaPick(seaPick(duskS2, float3(1.0, 0.95, 0.85),  toDay), u.sunCol2.rgb, toNight);
+    // The moon and the setting sun sit just over the horizon; the day's sun
+    // climbs to the top of the frame by noon.
+    float elev = 0.06 + 0.12 * smoothstep(0.0, 1.0, max(alt, 0.0));
+    L.sunDir = elev == 0.06 ? normalize(float3(0.0, 0.06, 1.0)) : normalize(float3(0.0, elev, 1.0));
+    return L;
+}
+
+static float3 seaSkyColor(float3 rd, SeaLight L) {
+    float sunDot = max(dot(rd, L.sunDir), 0.0);
     float3 final = float3(0.0);
-    final += mix(u.skyCol1.rgb, u.skyCol2.rgb, rd.y);
-    final += 0.5 * u.sunCol1.rgb * pow(sunDot, 90.0);
-    final += 4.0 * u.sunCol2.rgb * pow(sunDot, 900.0);
+    final += mix(L.sky1, L.sky2, rd.y);
+    final += 0.5 * L.sun1 * pow(sunDot, 90.0);
+    final += 4.0 * L.sun2 * pow(sunDot, 900.0);
     return final;
 }
 
-static float3 seaRender(float3 ro, float3 rd, float time, constant LerpUniforms& u) {
+static float3 seaRender(float3 ro, float3 rd, float time, SeaLight L, constant LerpUniforms& u) {
     float3 col = float3(0.0);
     float dsea = (0.0 - ro.y) / rd.y;
-    const float3 sunDir = normalize(float3(0.0, 0.06, 1.0));
-    float3 sky = seaSkyColor(rd, u);
+    float3 sunDir = L.sunDir;
+    float3 sky = seaSkyColor(rd, L);
 
     if (dsea > 0.0) {
         float3 p = ro + dsea * rd;
@@ -135,8 +179,8 @@ static float3 seaRender(float3 ro, float3 rd, float time, constant LerpUniforms&
         fre = fre * fre * fre;
         float dif = mix(0.25, 1.0, max(dot(nor, sunDir), 0.0));
 
-        float3 refl = seaSkyColor(reflect(rd, nor), u);
-        float3 refr = u.seaCol1.rgb + dif * u.sunCol1.rgb * u.seaCol2.rgb * 0.1;
+        float3 refl = seaSkyColor(reflect(rd, nor), L);
+        float3 refr = u.seaCol1.rgb + dif * L.sun1 * u.seaCol2.rgb * 0.1;
 
         col = mix(refr, 0.9 * refl, fre);
 
@@ -151,7 +195,9 @@ static float3 seaRender(float3 ro, float3 rd, float time, constant LerpUniforms&
     return col;
 }
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+fragment half4 lerpMain(float4 pos [[position]],
+                        constant LerpUniforms& u [[buffer(0)]],
+                        constant LerpClock& clock [[buffer(1)]]) {
     // Upstream: p in [-1, 1] vertically, x scaled by the aspect, y up.
     float2 frag = float2(pos.x, u.resolution.y - pos.y);
     float2 q = frag / u.resolution;
@@ -166,7 +212,9 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 vv = normalize(cross(ww, uu));
     float3 rd = normalize(p.x * uu + p.y * vv + lens * 2.5 * ww);
 
-    float3 color = max(seaRender(ro, rd, time, u), 0.0);
+    float hour = glmod(clock.hourAtZero + u.time / 3600.0, 24.0);
+    SeaLight L = seaLight(hour, clock.sunrise, clock.sunset, u);
+    float3 color = max(seaRender(ro, rd, time, L, u), 0.0);
 
     color = lerpDither(color, pos);
     return half4(half3(color), 1.0h);

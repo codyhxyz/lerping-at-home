@@ -92,11 +92,12 @@ public enum LerpRenderMode: Sendable {
 /// Name → provider registry. Built-ins are registered here; a host can add more
 /// before creating a `ShaderLibrary`. A factory is told the library's
 /// `LerpRenderMode`; one that reads nothing beyond `(uniforms, params)` — every
-/// provider but the critter — ignores it.
+/// provider but the critter and the clock — ignores it.
 public enum LerpDataProviders {
     public typealias Factory = (MTLDevice, LerpRenderMode) -> LerpDataProvider
 
     nonisolated(unsafe) private static var factories: [String: Factory] = [
+        "clock": { _, mode in ClockData(mode: mode) },
         "critter": { CritterData(device: $0, mode: $1) },
         "heatmap": { d, _ in HeatmapData(device: d) },
         "ink-fluid": { d, _ in InkFluidData(device: d) },
