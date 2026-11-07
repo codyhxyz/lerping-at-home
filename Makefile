@@ -340,6 +340,11 @@ saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) Sources/Saver/
 	cp Sources/Saver/Info.plist $(SAVER_DIR)/Contents/Info.plist
 	plutil -replace CFBundleVersion -string $(BUNDLE_VERSION) $(SAVER_DIR)/Contents/Info.plist
 	plutil -replace LerpBuild -string $(LERP_BUILD) $(SAVER_DIR)/Contents/Info.plist
+	# Cleared first, like Splats below: `cp` only adds, so a shader deleted or
+	# merged away in the source kept shipping from build/ and kept playing.
+	# The topologica-*/multiverse-* families were merged into one shader each,
+	# and their old files went on reaching the screen as 27 extra looks.
+	rm -f $(SAVER_DIR)/Contents/Resources/Shaders/*.metal
 	cp $(SHADERS) $(SAVER_DIR)/Contents/Resources/Shaders/
 	rm -f $(SAVER_DIR)/Contents/Resources/Splats/*.lsplat
 	cp $(SPLAT_OUT)/*.lsplat $(SAVER_DIR)/Contents/Resources/Splats/

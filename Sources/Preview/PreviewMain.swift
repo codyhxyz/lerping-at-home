@@ -17,6 +17,8 @@ import Metal
 ///                                   a .saver bundle
 ///   LerpPreview --bench             per-shader GPU cost table (Markdown)
 ///       [--size WxH] [--frames N] [--shader NAME] [--looks] [--time T] [--seed S]
+///   LerpPreview --motion            every look's on-screen speed, slowest first
+///       [--size WxH] [--times T,T,...] [--dt S] [--seed S] [--shader NAME]
 ///
 /// `--gputrace PATH.gputrace` (or `LERP_GPUTRACE=PATH`) records a Metal
 /// capture: of every frame `--snapshot` draws, or of the live window's first
@@ -86,6 +88,11 @@ enum PreviewMain {
                 fail("--thumbnails needs the path to a .saver bundle")
             }
             bakeThumbnails(into: URL(fileURLWithPath: args[index + 1]))
+            return
+        }
+
+        if args.contains("--motion") {
+            MotionSurvey.run(args: args, extraSearch: extraSearch)
             return
         }
 
