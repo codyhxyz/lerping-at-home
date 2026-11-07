@@ -682,7 +682,7 @@ against the head and farther ones follow. With nobody tracked — the saver, a
 still — the look drifts slowly by itself (`sway`, 0 for the photo exactly as
 taken).
 
-- `scripts/photo-window.sh` keeps SHARP in `~/Documents/lerping-tools/ml-sharp`:
+- `scripts/photo-window.sh` keeps SHARP in `tools/ml-sharp` (gitignored):
   its source at a pinned commit, a Python 3.13 venv, and its 2.8 GB checkpoint,
   checked against a pinned SHA-256. `make photo-window-setup` prepares all of
   that without a photo; `DRY_RUN=1` checks everything and prints each step.
@@ -717,7 +717,7 @@ taken).
   exact depth, so there is no binary art or third-party image in the repo.
 - Your own photo: `make depth-window IMAGE=~/Pictures/beach.jpg NAME=beach`.
   Depth Anything V2 Small, Core ML, runs on this Mac (about 25 ms); the 50 MB
-  model is downloaded once into `~/Documents/lerping-tools`, pinned by sha256.
+  model is downloaded once into `tools/` (gitignored), pinned by sha256.
   It writes `beach.jpg` and `beach.depth.png` to the Images folder above and a
   look, `depth-window-beach.metal`, to the custom Shaders folder. `make saver`
   bakes that look into the saver like any custom shader.

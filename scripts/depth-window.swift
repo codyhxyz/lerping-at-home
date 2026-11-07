@@ -6,7 +6,7 @@
 //
 // Runs Depth Anything V2 Small — Apple's Core ML conversion,
 // https://huggingface.co/apple/coreml-depth-anything-v2-small, Apache-2.0,
-// downloaded by the Makefile into ~/Documents/lerping-tools and never stored in
+// downloaded by the Makefile into tools/ (gitignored) and never committed to
 // this repo — on the photo, on this Mac, and writes:
 //
 //   <out-dir>/<name>.jpg        the photo, upright, at most 3840 px on its long

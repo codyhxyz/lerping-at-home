@@ -5,3 +5,28 @@ out/
 # SwiftPM's checkout and build tree for the playground's MIDI shim.
 # Sources/MIDIDeps/Package.resolved is committed; this is not.
 .build/
+
+# Machine-local, never committed. The repo is public: model weights are
+# research-licensed, the launch track is commercial, renders are output.
+/tools/ml-sharp/
+/tools/depth-anything-v2-small/
+/renders/
+
+# The launch video (launch-video/README.md): its scripts, edit and notes are
+# tracked; footage, music, fonts, renders, node_modules and builds stay here.
+/launch-video/**
+!/launch-video/**/
+!/launch-video/**/*.md
+!/launch-video/**/*.sh
+!/launch-video/**/*.py
+!/launch-video/**/*.ts
+!/launch-video/**/*.tsx
+!/launch-video/**/*.swift
+!/launch-video/**/*.metal
+!/launch-video/**/*.json
+/launch-video/**/node_modules/
+/launch-video/**/out/
+/launch-video/**/*.before-*
+/launch-video/recorder/snap/
+/launch-video/hdr-compare/edr-src/
+/launch-video/hdr-compare/chrome/

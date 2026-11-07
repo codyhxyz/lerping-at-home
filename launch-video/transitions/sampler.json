@@ -1,0 +1,10 @@
+{"bpm": 133, "shots": [
+  {"look": "liquid-metal", "beats": 4},
+  {"look": "gem-smoke--Fire", "beats": 4, "in": "burn"},
+  {"look": "pipes", "beats": 4, "in": "pour"},
+  {"look": "pulsing-border", "beats": 4, "in": "zoom"},
+  {"look": "god-rays", "beats": 4, "in": "ripple"},
+  {"look": "heatmap--Default", "beats": 4, "in": "halftone"},
+  {"look": "fluted-glass--Waves", "beats": 4, "in": "melt"},
+  {"look": "water", "beats": 4, "in": "cut"}
+]}

@@ -1,0 +1,147 @@
+{
+  "titleConcept": "molten",
+  "labels": true,
+  "closingBackground": "mesh-gradient--Purple",
+  "grid": [
+    "agate--Malachite",
+    "gem-smoke--Infrared",
+    "curl-flow--Ink",
+    "aurora",
+    "fractal-multiverse--Coral",
+    "splat-strawberry",
+    "splat-medinet-habu",
+    "mandelbulb--Organic",
+    "metaballs--Solar",
+    "fractal-multiverse--Cathedral",
+    "god-rays",
+    "splat-vesta",
+    "ink-fluid--Nebula",
+    "splat-graffiti-tunnel",
+    "splat-trogir",
+    "liquid-metal",
+    "physarum--Reticulum",
+    "topologica--Minimal_Surfaces",
+    "topologica--Hopf_Fibration",
+    "kleinian--Indra's_Pearls",
+    "splat-triceratops",
+    "fractal-d--Upstream",
+    "castle-to-castle--Moonstone",
+    "menger-sponge--Folded_Cube",
+    "sea-and-moon--Old_sunset",
+    "pipes",
+    "simulated-reality--Moonlight",
+    "warp--Passion",
+    "splat-milano-apartment",
+    "fluted-glass--Waves",
+    "polytope-4d--600-Cell",
+    "quaternion-julia--Glass",
+    "splat-shrine-telephoto",
+    "splat-rose",
+    "sierpinski-pyramid--Amethyst_Icosahedron",
+    "splat-bonsai-globe"
+  ],
+  "montage": [
+    {
+      "look": "liquid-metal",
+      "beats": 4
+    },
+    {
+      "look": "gem-smoke--Fire",
+      "beats": 4
+    },
+    {
+      "look": "splat-graffiti-tunnel",
+      "beats": 4,
+      "rate": 2.5,
+      "label": false
+    },
+    {
+      "look": "castle-to-castle--Moonstone",
+      "beats": 4
+    },
+    {
+      "look": "pipes",
+      "beats": 4
+    },
+    {
+      "look": "splat-medinet-habu",
+      "beats": 4,
+      "rate": 2.5,
+      "label": false
+    },
+    {
+      "look": "kleinian--Indra's_Pearls",
+      "beats": 2
+    },
+    {
+      "look": "splat-strawberry",
+      "beats": 2,
+      "rate": 2.5
+    },
+    {
+      "look": "splat-triceratops",
+      "beats": 2,
+      "rate": 2.5
+    },
+    {
+      "look": "god-rays",
+      "beats": 2
+    },
+    {
+      "look": "splat-castle",
+      "beats": 4,
+      "rate": 2.5,
+      "label": false
+    },
+    {
+      "look": "topologica--Hopf_Fibration",
+      "beats": 2
+    },
+    {
+      "look": "polytope-4d--600-Cell",
+      "beats": 2
+    },
+    {
+      "look": "splat-vesta",
+      "beats": 4,
+      "rate": 2.5,
+      "label": false
+    },
+    {
+      "look": "mandelbulb--Organic",
+      "beats": 4
+    },
+    {
+      "look": "critter",
+      "beats": 2
+    },
+    {
+      "look": "splat-bonsai-globe",
+      "beats": 2,
+      "rate": 2.5
+    },
+    {
+      "look": "fluted-glass--Waves",
+      "beats": 4
+    },
+    {
+      "look": "splat-rose",
+      "beats": 2,
+      "rate": 2.5,
+      "label": false
+    },
+    {
+      "look": "splat-tiny-planet",
+      "beats": 2,
+      "rate": 2.5,
+      "label": false
+    },
+    {
+      "look": "fractal-multiverse--Coral",
+      "beats": 4
+    }
+  ],
+  "opening": {
+    "camera": "glide"
+  }
+}

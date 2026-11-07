@@ -20,7 +20,7 @@
 # What it does:
 #
 #   1. SHARP (https://github.com/apple-aiml-research/ml-sharp, formerly
-#      apple/ml-sharp) lives in ~/Documents/lerping-tools/ml-sharp: its source
+#      apple/ml-sharp) lives in tools/ml-sharp (gitignored): its source
 #      at a pinned commit, a Python 3.13 venv (.venv) with its pinned
 #      requirements, and its checkpoint in weights/, fetched once and checked
 #      against the SHA-256 below. Prediction runs on the GPU through MPS;
@@ -50,7 +50,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TOOLS="${LERP_TOOLS:-$HOME/Documents/lerping-tools}"
+# tools/ is gitignored, so it exists only in the main checkout; worktrees use that one.
+MAIN="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")"
+TOOLS="${LERP_TOOLS:-$MAIN/tools}"
 SHARP_DIR="$TOOLS/ml-sharp"
 SHARP_REPO="https://github.com/apple-aiml-research/ml-sharp.git"
 SHARP_REF="aed6527499ef91cba3b54c18d49a870f25947190"

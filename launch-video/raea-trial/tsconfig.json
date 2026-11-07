@@ -1,0 +1,284 @@
+{
+ "//": "typecheck only: resolves 'raea' to the installed release's SDK sources and React's types to remotion/node_modules (read-only).",
+ "compilerOptions": {
+  "jsx": "react-jsx",
+  "module": "esnext",
+  "target": "esnext",
+  "moduleResolution": "bundler",
+  "strict": true,
+  "noEmit": true,
+  "paths": {
+   "react": [
+    "../remotion/node_modules/@types/react"
+   ],
+   "react/jsx-runtime": [
+    "../remotion/node_modules/@types/react/jsx-runtime"
+   ],
+   "raea": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/raea/src/prelude.ts"
+   ],
+   "raea/arena": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/arena.tsx"
+   ],
+   "raea/animate": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/math/src/animate.tsx"
+   ],
+   "raea/bevy": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/bevy.ts"
+   ],
+   "raea/bevy-own": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/bevy-own.gen.tsx"
+   ],
+   "raea/bevy3d": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/bevy3d.tsx"
+   ],
+   "raea/character": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/character.tsx"
+   ],
+   "raea/clip": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/clip.ts"
+   ],
+   "raea/clock": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/clock.tsx"
+   ],
+   "raea/codecs": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/codecs.ts"
+   ],
+   "raea/course": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/course.ts"
+   ],
+   "raea/daylight": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/daylight.tsx"
+   ],
+   "raea/easing": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/math/src/easing.ts"
+   ],
+   "raea/ecs": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/ecs.ts"
+   ],
+   "raea/effects": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/effects.ts"
+   ],
+   "raea/feet": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/feet.ts"
+   ],
+   "raea/glb": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/asset/src/glb.ts"
+   ],
+   "raea/games": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/games.ts"
+   ],
+   "raea/grasp": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/grasp.ts"
+   ],
+   "raea/interpolate": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/math/src/interpolate.ts"
+   ],
+   "raea/items": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/items.ts"
+   ],
+   "raea/lint": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/lint.ts"
+   ],
+   "raea/machine": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/machine.ts"
+   ],
+   "raea/matching": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/matching.ts"
+   ],
+   "raea/matchmove": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/matchmove.tsx"
+   ],
+   "raea/media": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/media.tsx"
+   ],
+   "raea/mix": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/audio/src/mix.tsx"
+   ],
+   "raea/ml": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/ml/src/ml.ts"
+   ],
+   "raea/modelling": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/modelling/src/modelling.tsx"
+   ],
+   "raea/music": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/audio/src/music.tsx"
+   ],
+   "raea/native": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/native.ts"
+   ],
+   "raea/overlay": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/overlay.tsx"
+   ],
+   "raea/paint": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/paint.tsx"
+   ],
+   "raea/panel": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/panel.ts"
+   ],
+   "raea/physics": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/physics/src/physics.tsx"
+   ],
+   "raea/pick": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/pick.ts"
+   ],
+   "raea/playtest": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/playtest.ts"
+   ],
+   "raea/ragdoll": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/ragdoll.ts"
+   ],
+   "raea/region": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/region.tsx"
+   ],
+   "raea/registry": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/registry.tsx"
+   ],
+   "raea/room": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/room/src/room.tsx"
+   ],
+   "raea/scene": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/scene.tsx"
+   ],
+   "raea/screen": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/screen.tsx"
+   ],
+   "raea/seedling": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/audio/src/seedling.tsx"
+   ],
+   "raea/solid": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/solid.ts"
+   ],
+   "raea/song": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/audio/src/song.tsx"
+   ],
+   "raea/speech": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/audio/src/speech.tsx"
+   ],
+   "raea/splat": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/splat.tsx"
+   ],
+   "raea/spring": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/math/src/spring.ts"
+   ],
+   "raea/style": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/style.ts"
+   ],
+   "raea/things": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/things.ts"
+   ],
+   "raea/timeline": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/timeline.tsx"
+   ],
+   "raea/tone": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/audio/src/tone.tsx"
+   ],
+   "raea/words": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/words.tsx"
+   ],
+   "raea/world": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/world.ts"
+   ],
+   "raea/views": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/dev_tools/src/views.tsx"
+   ],
+   "raea/window": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/window.ts"
+   ],
+   "raea/plugins/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/plugins/src/*.gen"
+   ],
+   "raea/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/raea/src/*"
+   ],
+   "@raea/app": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/index.ts"
+   ],
+   "@raea/app/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/app/src/*"
+   ],
+   "@raea/math": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/math/src/index.ts"
+   ],
+   "@raea/math/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/math/src/*"
+   ],
+   "@raea/audio": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/audio/src/index.ts"
+   ],
+   "@raea/audio/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/audio/src/*"
+   ],
+   "@raea/video": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/index.ts"
+   ],
+   "@raea/video/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/video/src/*"
+   ],
+   "@raea/character": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/index.ts"
+   ],
+   "@raea/character/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/character/src/*"
+   ],
+   "@raea/asset": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/asset/src/index.ts"
+   ],
+   "@raea/asset/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/asset/src/*"
+   ],
+   "@raea/dev_tools": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/dev_tools/src/index.ts"
+   ],
+   "@raea/dev_tools/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/dev_tools/src/*"
+   ],
+   "@raea/modelling": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/modelling/src/index.ts"
+   ],
+   "@raea/modelling/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/modelling/src/*"
+   ],
+   "@raea/ml": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/ml/src/index.ts"
+   ],
+   "@raea/ml/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/ml/src/*"
+   ],
+   "@raea/render": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/index.ts"
+   ],
+   "@raea/render/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/render/src/*"
+   ],
+   "@raea/ui/plugin": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/ui/src/plugin.ts"
+   ],
+   "@raea/physics": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/physics/src/index.ts"
+   ],
+   "@raea/physics/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/physics/src/*"
+   ],
+   "@raea/room": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/room/src/index.ts"
+   ],
+   "@raea/room/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/room/src/*"
+   ],
+   "@raea/plugins": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/plugins/src/index.ts"
+   ],
+   "@raea/plugins/*": [
+    "/Users/codyhergenroeder/Documents/raea/share/raea/sdk/plugins/src/*"
+   ]
+  },
+  "resolveJsonModule": true,
+  "skipLibCheck": true,
+  "allowImportingTsExtensions": true,
+  "types": []
+ },
+ "files": [
+  "Launch.tsx"
+ ]
+}

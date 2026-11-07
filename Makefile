@@ -25,6 +25,10 @@ PLAYGROUND_FW := $(FRAMEWORKS) -framework ScreenSaver
 SAVER_DIR  := $(BUILD)/Lerping@Home.saver
 CUSTOM_DIR := $(HOME)/Library/Application Support/Lerping/Shaders
 INSTALLED  := $(HOME)/Library/Screen Savers/Lerping@Home.saver
+# Gitignored, machine-local tools (tools/ml-sharp, tools/depth-anything-v2-small)
+# live in the main checkout; linked worktrees share them from there.
+MAIN_CHECKOUT := $(patsubst %/.git,%,$(shell git rev-parse --path-format=absolute --git-common-dir))
+LOCAL_TOOLS   := $(MAIN_CHECKOUT)/tools
 
 # The playground is a real .app, assembled the same way as the .saver above.
 # A bundle is not decoration: the identifier in its Info.plist is what macOS
@@ -333,7 +337,7 @@ $(SPLAT_STAMP): Sources/Splats/captures.json scripts/splat-convert.py
 # (scripts/photo-window.sh says how). Its splats and look are the user's own and
 # go to ~/Library/Application Support/Lerping/{Splats,Shaders}, never into the
 # repo or build/splats; SHARP and its research-licensed weights live in
-# ~/Documents/lerping-tools/ml-sharp, never in the repo.
+# tools/ml-sharp, which is gitignored and never committed.
 #   make photo-window PHOTO=~/Pictures/beach.jpg NAME=beach [GLASS=near|median|far|METRES]
 #                     [TITLE="Beach at dusk"] [FORCE=1] [DRY_RUN=1]
 #   make photo-window-setup      clone SHARP, make its venv, fetch its weights
@@ -366,13 +370,13 @@ $(IMAGES_STAMP): scripts/depth-window-default.swift
 # own photo. Depth Anything V2 Small (Apple's Core ML conversion, Apache-2.0)
 # estimates its depth on this Mac; the model is 50 MB of third-party weights, so
 # it is downloaded once, pinned by revision and sha256, into
-# ~/Documents/lerping-tools and never into the repo. Writes NAME.jpg and
+# tools/ (gitignored) and never committed. Writes NAME.jpg and
 # NAME.depth.png to the custom Images folder, and a look,
 # depth-window-NAME.metal, to the custom Shaders folder beside it — a copy of
 # depth-window.metal pointed at NAME. A look file there that this target did not
 # write is left alone. Override DEPTH_IMAGES_OUT / DEPTH_LOOKS_OUT to aim
 # elsewhere.
-DEPTH_MODEL_DIR  := $(HOME)/Documents/lerping-tools/depth-anything-v2-small
+DEPTH_MODEL_DIR  := $(LOCAL_TOOLS)/depth-anything-v2-small
 DEPTH_MODEL_REV  := cfef6f6f2a70783dedc0bfae40cecbc2052285d3
 DEPTH_MODEL_URL  := https://huggingface.co/apple/coreml-depth-anything-v2-small/resolve/$(DEPTH_MODEL_REV)/DepthAnythingV2SmallF16.mlpackage
 DEPTH_MODEL_PKG  := $(DEPTH_MODEL_DIR)/DepthAnythingV2SmallF16.mlpackage
