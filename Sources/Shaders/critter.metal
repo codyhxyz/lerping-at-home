@@ -34,6 +34,8 @@
 // lerp-param: clock float -1 24 = -1   "Hour (-1 = now)"
 // lerp-param: drift float 0 1   = 0.35 "Camera drift"
 // lerp-param: act   int   -1 9  = -1   "Activity (-1 = its choice)"
+// lerp-param: yaw   float -180 180 = 0 "Turn"
+// lerp-param: pitch float -35 20   = 0 "Tilt"
 
 #define ISLAND_R 7.0
 #define SEA_Y   -0.2
@@ -127,6 +129,16 @@ static inline float3 opU(float3 a, float3 b) { return a.x < b.x ? a : b; }
 static inline float3 srgb(float3 c) { return c * c; }   // cheap sRGB → linear
 
 // ---------------------------------------------------------------- world
+
+// sin(t * w) for a clock that has run for hours: u.time is a float, and a
+// fast-math sin of a large argument reduces it badly. Wrapping the cycle count
+// first keeps the error at the product's rounding (about t·w·6e-8 rad).
+// Not wrapped: the scrolls of non-periodic noise (sea ripple, cloud shadows,
+// sky clouds, the season's drift), which hold to a pixel for days of u.time;
+// past that it is the host's to restart the clock per session.
+static inline float tphase(float t, float w) {
+    return TWO_PI * fract(t * (w / TWO_PI));
+}
 
 static inline float groundH(float2 xz, float ident) {
     float d = length(xz);
@@ -262,13 +274,24 @@ static float3 sdTree(float3 q, float4 T, int i, thread const Scene& sc) {
     return res;
 }
 
-static float3 sdFlowers(float3 q, float gh, thread const Scene& sc) {
+// One flower per 0.6 cell at most. `rdxz` is the marching ray's xz direction
+// (zero when there is no ray, as for a normal): with it, the bound to the
+// neighbouring cells is the distance to where the ray leaves this cell, not
+// just to the cell's nearest edge, so an empty cell costs one step.
+static float3 sdFlowers(float3 q, float gh, thread const Scene& sc, float2 rdxz = float2(0.0)) {
     if (q.y - gh > 0.42) return float3(q.y - gh - 0.36, M_PETAL, 0.0);
     const float cell = 0.6;
     float2 c = floor(q.xz / cell);
     float2 inCell = q.xz - (c + 0.5) * cell;
-    float border = cell * 0.5 - max(abs(inCell.x), abs(inCell.y));
-    float empty = float3(border + 0.09, M_PETAL, 0.0).x;
+    // A flower's centre is within 0.1 of its cell's (0.3 from every edge) and
+    // it reaches 0.13 from there (petals 0.1, sway 0.03), so it keeps 0.07
+    // inside its own cell: a neighbour's is at least (the way out) + 0.06 off.
+    float exitD = cell * 0.5 - max(abs(inCell.x), abs(inCell.y));
+    if (rdxz.x != 0.0 || rdxz.y != 0.0) {
+        float2 ex = (cell * 0.5 - inCell * sign(rdxz)) / max(abs(rdxz), 1e-5);
+        exitD = max(exitD, min(ex.x, ex.y));
+    }
+    float empty = exitD + 0.06;
     float2 jit = (hash22(c + 17.0) - 0.5) * 0.2;
     float2 center = (c + 0.5) * cell + jit;
     float dc = length(center);
@@ -278,18 +301,27 @@ static float3 sdFlowers(float3 q, float gh, thread const Scene& sc) {
     float base = gh;
     float fh = 0.15 + 0.1 * hash21(c + 5.5);
     float3 lp = q - float3(center.x, base, center.y);
-    float gust = 0.6 + 0.4 * sin(sc.time * 0.31 + center.x * 0.4);
-    float3 sway = float3(sin(sc.time * 1.7 + pres * 40.0 + center.x), 0.0,
-                         cos(sc.time * 1.3 + pres * 23.0 + center.y)) * 0.03 * gust;
+    // Bounding sphere of stem, sway and head: skip the flower until close.
+    float bnd = length(lp - float3(0.0, 0.5 * fh, 0.0)) - (0.5 * fh + 0.12);
+    if (bnd > 0.04) return float3(min(bnd, empty), M_PETAL, 0.0);
+    float gust = 0.6 + 0.4 * sin(tphase(sc.time, 0.31) + center.x * 0.4);
+    float3 sway = float3(sin(tphase(sc.time, 1.7) + pres * 40.0 + center.x), 0.0,
+                         cos(tphase(sc.time, 1.3) + pres * 23.0 + center.y)) * 0.03 * gust;
     float stem = sdCap(lp, float3(0.0), float3(0.0, fh, 0.0) + sway, 0.012);
     float3 hp = lp - float3(0.0, fh, 0.0) - sway;
-    float pm = 1.0 + 0.32 * cos(5.0 * atan2(hp.z, hp.x) + pres * 30.0);
-    float head = sdEll(float3(hp.x / pm, hp.y, hp.z / pm), float3(0.075, 0.025, 0.075)) * 0.75;
+    // Petals: the head's radius is scaled by pm(θ). Its gradient then grows
+    // by up to sqrt(pm² + pm'²) / pm², so shrink the distance by that much
+    // (the flat 0.75 it had let steps pass through petal tips).
+    float pa = 5.0 * atan2(hp.z, hp.x) + pres * 30.0;
+    float pm = 1.0 + 0.32 * cos(pa);
+    float dpm = 1.6 * sin(pa);
+    float lip = 0.9 * min(1.0, pm * pm * rsqrt(pm * pm + dpm * dpm));
+    float head = sdEll(float3(hp.x / pm, hp.y, hp.z / pm), float3(0.075, 0.025, 0.075)) * lip;
     float core = length(hp - float3(0.0, 0.018, 0.0)) - 0.028;
     float3 res = float3(stem, M_LEAF, 0.0);
     res = opU(res, float3(head, M_PETAL, pres / max(density, 1e-3)));
     res = opU(res, float3(core, M_FCORE, 0.0));
-    res.x = min(res.x, empty + 0.2);   // never step past the next cell's flower
+    res.x = min(res.x, empty);   // never step past the next cell's flower
     return res;
 }
 
@@ -365,29 +397,45 @@ static float4 mapScene(float3 p, thread const Scene& sc, bool full, bool flowers
 }
 
 // Ground and flowers only — for the second pass, which pass 1 has already
-// shown nothing else can be hit in.
-static float3 mapMeadow(float3 p, thread const Scene& sc) {
+// shown nothing else can be hit in. Steps along `rd` (see sdFlowers).
+static float3 mapMeadow(float3 p, float3 rd, thread const Scene& sc) {
     float3 q = bendP(p, sc);
     float gh = groundH(q.xz, sc.ident);
-    return opU(float3((q.y - gh) * 0.8, M_GROUND, 0.0), sdFlowers(q, gh, sc));
+    return opU(float3((q.y - gh) * 0.8, M_GROUND, 0.0), sdFlowers(q, gh, sc, rd.xz));
 }
 
-static float3 calcNormal(float3 p, thread const Scene& sc) {
+static inline float flowerAt(float3 p, thread const Scene& sc) {
+    float3 q = bendP(p, sc);
+    return sdFlowers(q, groundH(q.xz, sc.ident), sc).x;
+}
+
+// Normals of objects only — the ground and sea have exact ones of their own.
+// A hit on an object is on that object, so the ground and flowers are left
+// out of its taps; a flower (found by pass 2) needs nothing but the flowers.
+static float3 calcNormal(float3 p, thread const Scene& sc, bool flower) {
     const float2 e = float2(0.0012, -0.0012);
-    return normalize(e.xyy * mapScene(p + e.xyy, sc, true).x + e.yyx * mapScene(p + e.yyx, sc, true).x
-                   + e.yxy * mapScene(p + e.yxy, sc, true).x + e.xxx * mapScene(p + e.xxx, sc, true).x);
+    if (flower)
+        return normalize(e.xyy * flowerAt(p + e.xyy, sc) + e.yyx * flowerAt(p + e.yyx, sc)
+                       + e.yxy * flowerAt(p + e.yxy, sc) + e.xxx * flowerAt(p + e.xxx, sc));
+    return normalize(e.xyy * mapScene(p + e.xyy, sc, false).x + e.yyx * mapScene(p + e.yyx, sc, false).x
+                   + e.yxy * mapScene(p + e.yxy, sc, false).x + e.xxx * mapScene(p + e.xxx, sc, false).x);
 }
 
-// Can a ray reach this bent-space sphere? Its world centre is unbent, and the
-// radius padded for how much the bend shifts it across its own extent.
-static inline bool rayReaches(float3 ro, float3 rd, float3 c, float r, thread const Scene& sc) {
+// Where a ray enters this bent-space sphere, or -1 if it never does. Its
+// world centre is unbent, and the radius padded for how much the bend shifts
+// it across its own extent.
+static inline float rayEntry(float3 ro, float3 rd, float3 c, float r, thread const Scene& sc) {
     float3 w = unbendP(c, sc);
     float pad = 2.0 * sc.bend * length(c.xz - sc.focus) * r + 0.05;
     float3 oc = ro - w;
     float b = dot(oc, rd);
     float cc = dot(oc, oc) - (r + pad) * (r + pad);
     float h = b * b - cc;
-    return h > 0.0 && (cc < 0.0 || b < 0.0);
+    if (h <= 0.0 || (cc >= 0.0 && b >= 0.0)) return -1.0;
+    return max(-b - sqrt(h), 0.0);
+}
+static inline bool rayReaches(float3 ro, float3 rd, float3 c, float r, thread const Scene& sc) {
+    return rayEntry(ro, rd, c, r, sc) >= 0.0;
 }
 
 // Soft shadow of a sphere (after Inigo Quilez). Shadows here are soft blobs
@@ -716,10 +764,14 @@ static inline float sdHeart(float2 p) {
 
 struct Cam { float3 ro, fw, rt, up; float focal; };
 
+// Screen position and depth. Anything closer than 0.2 to the lens (or behind
+// it) is sent far off screen and far away, so an overlay sized by focal / z
+// neither balloons over the picture nor passes a depth test.
 static inline float3 project(float3 wp, Cam c) {
     float3 v = wp - c.ro;
     float z = dot(v, c.fw);
-    return float3(float2(dot(v, c.rt), dot(v, c.up)) * c.focal / max(z, 1e-3), z);
+    if (z < 0.2) return float3(1e4, 1e4, 1e5);
+    return float3(float2(dot(v, c.rt), dot(v, c.up)) * c.focal / z, z);
 }
 
 // ---------------------------------------------------------------- sky
@@ -746,11 +798,30 @@ static float3 skyColor(float3 rd, float3 sunDir, float3 moonDir, float night, fl
             float h = hash21(cell);
             float2 off = hash22(cell + 3.0) - 0.5;
             float star = smoothstep(0.12, 0.0, length(fract(st) - 0.5 - off * 0.6)) * step(0.965, h);
-            star *= 0.6 + 0.4 * sin(time * (1.0 + 3.0 * h) + h * 40.0);
+            star *= 0.6 + 0.4 * sin(tphase(time, 1.0 + 3.0 * h) + h * 40.0);
             c += night * star * (1.0 - cl) * float3(0.9, 0.92, 1.0);
         }
     }
     return c;
+}
+
+// ---------------------------------------------------------------- camera
+
+// How far the camera turns toward the way the critter faces, by activity.
+// The pose is built from the camera's azimuth and the camera then moves, so
+// there is no feedback — but the camera follows the face *now*, with no lag,
+// so an activity whose facing swings fast (pacing turns half round in under a
+// second, chasing runs a circle) gets none or the camera would whip. Sitting
+// gets none: watching the sea, its back is the picture.
+static inline float camFaceWeight(int act) {
+    switch (act) {
+        case ACT_IDLE:  return 0.35;   // looks around slowly; follow a little
+        case ACT_HOP:   return 0.35;
+        case ACT_PACE:  return 0.0;
+        case ACT_CHASE: return 0.0;
+        case ACT_SIT:   return 0.0;
+        default:        return 0.8;    // sleep, stretch, wave, sick, build: held
+    }
 }
 
 // ---------------------------------------------------------------- main
@@ -825,29 +896,47 @@ fragment half4 lerpMain(float4 pos [[position]],
     sc.castlePos = float3(castle2.x, groundH(castle2, sc.ident), castle2.y);
 
     // ---- camera
-    float3 target = float3(sc.cpos.x * 0.5, 0.35 + sc.s * 0.8, sc.cpos.z * 0.5);
+    // Close enough that the critter is the subject — about a third of the
+    // frame's height at any age, since the distance scales with its size —
+    // and swung part of the way round to the side it faces (yaw == az is
+    // face-on), so its face is usually what we see; see camFaceWeight.
+    float fsz = sc.stage == 0 ? 0.42 : sc.s;
+    float zoom = mix(1.0, fsz / 0.5, 0.75);
+    float3 target = float3(sc.cpos.x * 0.65, 0.15 + 1.1 * fsz, sc.cpos.z * 0.65);
     sc.focus = target.xz;
-    float dist = 4.6, height = 2.35;
+    float dist = 3.6 * zoom, height = 1.85 * zoom;
+    float faceW = mix(camFaceWeight(prevAct), camFaceWeight(act), k);
+    float caz = az + faceW * sin(sc.yaw - az);   // sin: ≈ the angle when small, 0 at a half-turn, no wrap
     Cam cam;
-    cam.ro = target + float3(sin(az) * dist, height, cos(az) * dist);
+    cam.ro = target + float3(sin(caz) * dist, height, cos(caz) * dist);
     cam.fw = normalize(target - cam.ro);
     cam.rt = normalize(cross(cam.fw, float3(0.0, 1.0, 0.0)));
+    // Drag to turn, round what the camera looks at. +pitch lowers the camera
+    // (the scene comes up under the hand): +20° is 7° over the meadow, -35°
+    // is 62°, looking down.
+    lerpOrbit(u.yaw, u.pitch, target, float3(0.0, 1.0, 0.0), cam.ro, cam.rt, cam.fw);
     cam.up = cross(cam.rt, cam.fw);
     cam.focal = 2.7;
     float3 rd = normalize(uv.x * cam.rt + uv.y * cam.up + cam.focal * cam.fw);
 
     // ---- the island's record: trees by age, rocks by identity
     sc.trees = int(clamp(2.0 + floor(S.ageDays / 3.0), 2.0, 8.0));
-    float2 camDir = normalize(float2(sin(az), cos(az)));
+    // From what the camera looks at toward where it really is (drift, the
+    // turn toward the face and a drag all included).
+    float2 camDir = normalize(cam.ro.xz - target.xz);
     for (int i = 0; i < 8; i++) {
         float a = float(i) * 2.39996 + S.identity * 6.283;
         float r = 3.1 + hash11(float(i) * 7.13 + S.identity * 91.0) * 2.6;
         float2 xz = float2(cos(a), sin(a)) * r;
         float born = max(0.0, float(i) - 1.0) * 3.0;
         float size = 0.7 + 0.35 * clamp((S.ageDays - born) / 12.0, 0.0, 1.0);
-        // Never let a tree stand between the camera and the critter.
-        float blocks = dot(normalize(xz), camDir) > 0.72 ? 1.0 : 0.0;
-        sc.tree[i] = float4(xz.x, groundH(xz, sc.ident), xz.y, blocks > 0.5 ? 0.0 : size);
+        // Never let a tree stand between the camera and the critter, or
+        // right in front of the lens: one that would sinks into the ground,
+        // smoothly, as the camera comes round to it.
+        float sink = max(smoothstep(0.66, 0.8, dot(normalize(xz - target.xz), camDir)),
+                         smoothstep(2.4, 1.3, length(xz - cam.ro.xz)));
+        sc.tree[i] = float4(xz.x, groundH(xz, sc.ident) - sink * 2.1 * size, xz.y,
+                            sink > 0.995 ? 0.0 : size);
     }
     for (int i = 0; i < 3; i++) {
         float a = float(i) * 2.1 + S.identity * 4.0 + 0.7;
@@ -856,6 +945,8 @@ fragment half4 lerpMain(float4 pos [[position]],
     }
 
     // ---- light from the real clock
+    // S.hour is the wall-clock hour at time 0 of this session (CritterData
+    // holds the vitals for the session), so this is the real hour throughout.
     float hour = S.hour + time / 3600.0;
     float ha = (hour - 6.0) / 12.0 * PI;
     float sunUp = sin(ha);
@@ -867,25 +958,46 @@ fragment half4 lerpMain(float4 pos [[position]],
     float3 sunCol = mix(mix(float3(1.12, 1.04, 0.92), float3(1.25, 0.8, 0.52), golden), float3(0.45, 0.56, 0.95) * 0.75, night);
     float3 skyAmb = mix(mix(float3(0.55, 0.7, 0.95), float3(0.75, 0.6, 0.65), golden), float3(0.2, 0.27, 0.52), night);
 
-    // ---- which objects this ray can meet
+    // ---- which objects this ray can meet, and where it first could
     sc.mask = 0u;
+    float tObj = 1e5, e;
     for (int i = 0; i < 8; i++) {
         float4 T = sc.tree[i];
-        if (i < sc.trees && T.w > 0.0 && rayReaches(cam.ro, rd, T.xyz + float3(0.0, 1.0 * T.w, 0.0), 1.2 * T.w, sc))
-            sc.mask |= 1u << uint(i);
+        if (i >= sc.trees || T.w <= 0.0) continue;
+        e = rayEntry(cam.ro, rd, T.xyz + float3(0.0, 1.0 * T.w, 0.0), 1.2 * T.w, sc);
+        if (e >= 0.0) { sc.mask |= 1u << uint(i); tObj = min(tObj, e); }
     }
-    if (rayReaches(cam.ro, rd, sc.cpos + float3(0.0, 1.1 * sc.s, 0.0), 2.4 * sc.s + 0.25, sc)) sc.mask |= 256u;
-    for (int i = 0; i < 3; i++)
-        if (rayReaches(cam.ro, rd, sc.rock[i].xyz, sc.rock[i].w + 0.25, sc)) sc.mask |= 512u;
-    if (sc.cloud > 0.01 && rayReaches(cam.ro, rd, sc.cloudPos, 0.9 * sc.cloud + 0.3, sc)) sc.mask |= 1024u;
-    if (sc.castle > 0.001 && rayReaches(cam.ro, rd, sc.castlePos + float3(0.0, 0.2, 0.0), 0.75, sc)) sc.mask |= 2048u;
+    e = rayEntry(cam.ro, rd, sc.cpos + float3(0.0, 1.1 * sc.s, 0.0), 2.4 * sc.s + 0.25, sc);
+    if (e >= 0.0) { sc.mask |= 256u; tObj = min(tObj, e); }
+    for (int i = 0; i < 3; i++) {
+        e = rayEntry(cam.ro, rd, sc.rock[i].xyz, sc.rock[i].w + 0.25, sc);
+        if (e >= 0.0) { sc.mask |= 512u; tObj = min(tObj, e); }
+    }
+    if (sc.cloud > 0.01) {
+        e = rayEntry(cam.ro, rd, sc.cloudPos, 0.9 * sc.cloud + 0.3, sc);
+        if (e >= 0.0) { sc.mask |= 1024u; tObj = min(tObj, e); }
+    }
+    if (sc.castle > 0.001) {
+        e = rayEntry(cam.ro, rd, sc.castlePos + float3(0.0, 0.2, 0.0), 0.75, sc);
+        if (e >= 0.0) { sc.mask |= 2048u; tObj = min(tObj, e); }
+    }
 
     // ---- march
-    float t = 0.5;
+    // Nothing can be met before the first object's bounding sphere or before
+    // the ray is down to the top of the land (0.185; the bend only lifts
+    // things), so start at the nearer of the two — or not at all.
+    float tLand = rd.y < 0.0 ? (cam.ro.y - 0.19) / -rd.y : 1e5;
+    float t = max(0.5, min(tLand, tObj));
+    // Past this cylinder there is only sea (rocks end at 7.7, the land is
+    // under the water by 7.9), which pass 1 meets analytically below.
+    const float seaR = ISLAND_R + 0.9;
+    float a2 = dot(rd.xz, rd.xz), bxz = dot(cam.ro.xz, rd.xz);
+    float tCyl = a2 > 1e-8 ? (-bxz + sqrt(max(bxz * bxz - a2 * (dot(cam.ro.xz, cam.ro.xz) - seaR * seaR), 0.0))) / a2 : 1e5;
     float3 hit = float3(0.0);
-    bool found = false;
+    bool found = false, open = t < 45.0;
     // Pass 1 leaves the flowers out, so it can stride over open ground.
-    for (int i = 0; i < 96; i++) {
+    for (int i = 0; i < 96 && open; i++) {
+        if (t > tCyl) break;
         float3 p = cam.ro + rd * t;
         float4 h = mapScene(p, sc, true, false);
         if (h.x < 0.0005 * t) { hit = h.xyz; found = true; break; }
@@ -903,22 +1015,50 @@ fragment half4 lerpMain(float4 pos [[position]],
         }
         t += step;
         // Above everything and climbing (the bend only lifts it further): sky.
-        if (t > 45.0 || (p.y + sc.bend * dot(p.xz - sc.focus, p.xz - sc.focus) > 2.6 && rd.y > 0.0)) break;
+        if (t > 45.0 || (p.y + sc.bend * dot(p.xz - sc.focus, p.xz - sc.focus) > 2.6 && rd.y > 0.0)) { open = false; break; }
     }
-    // Pass 2: if that landed on the meadow, back up to the top of the flower
-    // layer and come down again with the flowers in.
-    if (found && hit.y == M_GROUND) {
+    // Out over the open sea: solve the bent surface,
+    // ro.y + t·rd.y + bend·|ro.xz − focus + t·rd.xz|² = SEA_Y, as a quadratic
+    // in t (no root, or both behind: the ray clears the horizon — sky).
+    if (!found && open && t > tCyl) {
+        float2 D = cam.ro.xz - sc.focus;
+        float A = sc.bend * a2;
+        float B = rd.y + 2.0 * sc.bend * dot(D, rd.xz);
+        float C = cam.ro.y + sc.bend * dot(D, D) - SEA_Y;
+        float disc = B * B - 4.0 * A * C;
+        if (B < 0.0 && disc >= 0.0) {
+            float qq = 0.5 * (-B + sqrt(disc));       // stable: no cancellation
+            float t1 = C / qq, t2 = qq / max(A, 1e-12);
+            // (Past 45 it was always sky, the haze's edge; keep it there.)
+            if (t2 >= t && t1 <= 45.0) { t = max(t1, t); hit = float3(0.0, M_SEA, 0.0); found = true; }
+        }
+    }
+    // Pass 2: if that landed on the meadow — or on anything standing within
+    // the flower layer, a trunk, a foot, a rock, which a flower may be in
+    // front of — back up to the top of the flower layer and come down again
+    // with only the ground and flowers in, as far as the first hit.
+    bool flowerHit = false;
+    if (found && hit.y != M_SEA) {
         float3 p = cam.ro + rd * t;
-        float2 dq = p.xz - sc.focus;
-        if (length(p.xz) < ISLAND_R - 1.2 && length(p.xz) > 1.1) {
+        float3 q = bendP(p, sc);
+        if (hit.y == M_GROUND || q.y - groundH(q.xz, sc.ident) < 0.42) {
+            float2 dq = p.xz - sc.focus;
             float vy = rd.y + 2.0 * sc.bend * dot(dq, rd.xz);
             float tg = t;
-            float tb = max(0.5, t - 0.34 / max(-vy, 0.08));
-            for (int i = 0; i < 24; i++) {
-                float3 h = mapMeadow(cam.ro + rd * tb, sc);
-                if (h.x < 0.0003 * tb) { if (h.y != M_GROUND) { hit = h.xyz; t = tb; } break; }
-                tb += h.x * 0.9;
-                if (tb > tg - 0.001) break;
+            float tb = max(0.5, t - 0.34 / max(-vy, 0.05));
+            // Flowers grow between 1.22 and 5.75 from the middle; the
+            // segment's far point from it is an end, its near one about one.
+            float rb = length(cam.ro.xz + rd.xz * tb), rh = length(p.xz);
+            if (max(rb, rh) > 1.2 && min(rb, rh) < ISLAND_R - 1.2) {
+                for (int i = 0; i < 32; i++) {
+                    float3 h = mapMeadow(cam.ro + rd * tb, rd, sc);
+                    if (h.x < 0.0003 * tb) {
+                        if (h.y != M_GROUND) { hit = h.xyz; t = tb; flowerHit = true; }
+                        break;
+                    }
+                    tb += h.x * 0.9;
+                    if (tb > tg - 0.001) break;
+                }
             }
         }
     }
@@ -945,7 +1085,7 @@ fragment half4 lerpMain(float4 pos [[position]],
                 n = normalize(float3(grad.x, 1.0, grad.y));
             }
         } else {
-            n = calcNormal(p, sc);
+            n = calcNormal(p, sc, flowerHit);
         }
         float3 alb = float3(0.5);
         float spec = 0.0, shine = 16.0, emit = 0.0, rim = 0.0;
@@ -977,12 +1117,13 @@ fragment half4 lerpMain(float4 pos [[position]],
             alb = mix(float3(0.42, 0.9, 0.86), float3(0.18, 0.46, 0.78), smoothstep(0.0, 0.7, depth));
             alb = mix(alb, alb * float3(0.35, 0.45, 0.7), night * 0.5);
             float ang = atan2(q.z, q.x);
-            float foam = 1.0 - smoothstep(0.0, 0.05 + 0.025 * sin(time * 1.4 + ang * 9.0), depth);
+            float foam = 1.0 - smoothstep(0.0, 0.05 + 0.025 * sin(tphase(time, 1.4) + ang * 9.0), depth);
             float ripple = valueNoise(q.xz * 3.0 + float2(time * 0.25, time * 0.18));
             alb += ripple * 0.06;
             alb = mix(alb, float3(1.0), foam * 0.85);
             spec = 0.9; shine = 80.0;
-            n = normalize(n + float3(0.05 * sin(q.x * 4.0 + time), 0.0, 0.05 * cos(q.z * 4.0 + time * 1.2)));
+            n = normalize(n + float3(0.05 * sin(q.x * 4.0 + tphase(time, 1.0)), 0.0,
+                                     0.05 * cos(q.z * 4.0 + tphase(time, 1.2))));
         } else if (mat == M_BODY) {
             float3 lp = critterLocal(q, sc);
             float s = sc.s;
@@ -1096,7 +1237,7 @@ fragment half4 lerpMain(float4 pos [[position]],
         float ndl = dot(n, L);
         int self = mat == M_CANOPY || mat == M_TRUNK || mat == M_FRUIT ? int(hit.z)
                  : (mat == M_BODY || mat == M_EYE || mat == M_LEAF || mat == M_EGG || mat == M_BLOSSOM ? 8 : -1);
-        if (mat == M_LEAF && length(q - sc.cpos) > 2.5 * sc.s) self = -1;   // a flower stem, not the sprout
+        if (flowerHit) self = -1;   // a flower stem, not the sprout
         float sh = mat == M_SEA && t > 9.0 ? 1.0 : softShadow(q + n * 0.01, L, sc, self);
         float2 cs = q.xz * 0.16 + float2(0.05, 0.022) * time;
         float cloudShade = smoothstep(0.52, 0.72, valueNoise(cs) * 0.65 + valueNoise(cs * 2.3 + 5.0) * 0.35);
@@ -1285,19 +1426,27 @@ fragment half4 lerpMain(float4 pos [[position]],
         for (int i = 0; i < 14; i++) {
             if (i >= count) break;
             float fi = float(i);
-            float a = fi * 2.4 + time * (0.05 + 0.04 * hash11(fi)) + S.identity * 3.0;
+            float a = fi * 2.4 + tphase(time, 0.05 + 0.04 * hash11(fi)) + S.identity * 3.0;
             float r = 1.8 + 3.5 * hash11(fi * 3.3);
             float2 xz = float2(cos(a), sin(a)) * r;
-            float3 wp = unbendP(float3(xz.x, groundH(xz, sc.ident) + 0.35 + 0.25 * sin(time * 0.7 + fi), xz.y), sc);
+            float3 wp = unbendP(float3(xz.x, groundH(xz, sc.ident) + 0.35 + 0.25 * sin(tphase(time, 0.7) + fi), xz.y), sc);
             float3 pj = project(wp, cam);
             float glow = exp(-dot(uv - pj.xy, uv - pj.xy) / pow(0.012 * cam.focal / pj.z * 6.0, 2.0) * 3.0);
-            float pulse = 0.5 + 0.5 * sin(time * 2.0 + fi * 1.7);
-            col += float3(0.85, 1.0, 0.45) * glow * pulse * night * step(pj.z, depth + 0.3) * 0.9;
+            float pulse = 0.5 + 0.5 * sin(tphase(time, 2.0) + fi * 1.7);
+            // The camera stands among them now: one passing the lens fades
+            // out rather than swelling into a blob.
+            float nearLens = smoothstep(0.6, 1.4, pj.z);
+            col += float3(0.85, 1.0, 0.45) * glow * pulse * night * nearLens * step(pj.z, depth + 0.3) * 0.9;
         }
     }
 
     // ---- the season in the air, in front of everything: spring petals,
     // summer seed fluff, autumn leaves, winter snow. Three layers for depth.
+    // Sparse (one cell in eight; snow one in four), and thinned away over the
+    // critter itself, so the season is in the air but not in its face.
+    float3 cj = project(unbendP(sc.cpos + float3(0.0, (sc.stage == 0 ? 0.42 : 1.0 * sc.s * sc.sq), 0.0), sc), cam);
+    float cjr = (sc.stage == 0 ? 0.5 : 1.25 * sc.s) * cam.focal / cj.z;
+    float clear = smoothstep(0.75 * cjr, 1.6 * cjr, length(uv - cj.xy));
     for (int layer = 0; layer < 3; layer++) {
         float fl = float(layer);
         float cell = 0.2 - 0.045 * fl;
@@ -1305,10 +1454,13 @@ fragment half4 lerpMain(float4 pos [[position]],
         float2 pp = uv + float2(0.025 * time * (sc.season == 3 ? 0.3 : 1.0) + fl * 3.1, fall * time);
         float2 id = floor(pp / cell);
         float hp1 = hash21(id + fl * 17.0);
-        if (hp1 > (sc.season == 3 ? 0.55 : 0.3)) continue;
+        float keep = sc.season == 3 ? 0.25 : 0.12;
+        if (hp1 > keep) continue;
+        hp1 *= (sc.season == 3 ? 0.55 : 0.3) / keep;   // the old spread of sizes and speeds
         float2 f = fract(pp / cell) - 0.5;
         float2 jit = (hash22(id + 3.0 + fl) - 0.5) * 0.36;
-        float ph = time * (0.8 + hp1 * 2.0) + hp1 * 40.0;
+        // Wrapped at 20π, a whole number of turns for ph, ph·0.7 and ph·2.
+        float ph = 20.0 * PI * fract(time * (0.8 + hp1 * 2.0) / (20.0 * PI)) + hp1 * 40.0;
         f -= jit + float2(0.07 * sin(ph), 0.0);
         float size = (0.17 + 0.07 * hp1) * (1.0 - 0.22 * fl);
         float2 g2 = rotate(f, ph * 0.7) / size;
@@ -1327,7 +1479,7 @@ fragment half4 lerpMain(float4 pos [[position]],
                ? (tone < 0.33 ? float3(1.0, 0.55, 0.2) : (tone < 0.66 ? float3(0.92, 0.32, 0.2) : float3(1.0, 0.78, 0.28)))
                : (tone < 0.5 ? float3(1.0, 0.72, 0.8) : float3(1.0, 0.86, 0.9));
         }
-        float a = smoothstep(0.06, -0.06, shape) * (0.85 - 0.2 * fl) * mix(1.0, 0.45, night);
+        float a = smoothstep(0.06, -0.06, shape) * (0.85 - 0.2 * fl) * mix(1.0, 0.45, night) * clear;
         col = mix(col, pc * mix(1.0, 0.5, night), a);
     }
 
