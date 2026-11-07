@@ -167,6 +167,12 @@ enum PlaygroundMain {
         // ⌃⌘F belongs to Shader › Preview Full Screen. Without this AppKit adds
         // its own Enter Full Screen on the same key, for the window.
         UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
+        // Battery is the screensaver's reason to slow down, not the editor's:
+        // the playground is what the user is watching, so unplugging must not
+        // drop it to 20 fps or dim its highlights. Low Power Mode and thermal
+        // pressure still hold it back — those are the user's and the machine's
+        // calls. Before anything reads `LerpPowerMonitor.shared`.
+        MainActor.assumeIsolated { LerpPowerMonitor.throttlesOnBattery = false }
         let app = NSApplication.shared
         app.setActivationPolicy(policy)
         app.appearance = NSAppearance(named: .darkAqua)
