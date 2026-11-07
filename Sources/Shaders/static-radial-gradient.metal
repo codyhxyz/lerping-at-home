@@ -1,8 +1,10 @@
 // Static Radial Gradient — ported from paper-design/shaders (Apache-2.0)
 // https://github.com/paper-design/shaders
 // A focal (cone-traced) radial gradient with a petal distortion and film
-// grain. Upstream renders one still frame; this port orbits the focal point
-// and breathes the distortion so the bloom drifts across the screen.
+// grain. Upstream renders one still frame; this port orbits the focal point,
+// breathes the distortion, and runs slow ripples outward through the colour
+// stops. The ripple is what keeps distortion-0 presets (Radial, Lo-Fi) from
+// reading as a still: orbiting a plain concentric gradient barely changes it.
 
 // Parameters mirror the upstream <StaticRadialGradient> props. Upstream takes
 // a variable-length `colors` array (max 10); this port fixes four tunable
@@ -48,6 +50,17 @@
 // lerp-preset: Radial grainMixer=0, grainOverlay=0
 
 constant int SRG_COLOR_COUNT = 4;
+
+// The ripple through the colour stops (see where `shape` gets it below).
+// RIPPLE_K = 4/3 wavelengths across the gradient puts the three stop
+// boundaries (shape 0.25, 0.5, 0.75) a third of a cycle apart, so one is
+// always mid-stride while another turns; at K = 4 they would all pause at
+// once, which is what made a K = 1 sine dip to 0.4 at its turning points.
+// Amplitude 0.045 keeps the remap monotonic (slope >= 1 - A(4 + 2*pi*K)
+// = 0.44), so bands never fold over each other.
+constant float RIPPLE_RATE = 0.9;   // cycles per unit of t (8.5 s at speed 0.13)
+constant float RIPPLE_K    = 4.0 / 3.0;
+constant float RIPPLE_AMP  = 0.045;
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
     float3 colors[SRG_COLOR_COUNT] = { u.color1.rgb, u.color2.rgb, u.color3.rgb, u.color4.rgb };
@@ -101,6 +114,16 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
                               step(0.0, u.falloff));
     shape = pow(shape, mix(falloffMapped, 1.0, shape));
     shape = 1.0 - clamp(shape, 0.0, 1.0);
+
+    // Slow ripples running outward from the focus through the colour stops.
+    // The focal orbit alone moved Radial and Lo-Fi at 0.2% of the short side
+    // per second with the drift taken out (they have distortion 0, so there
+    // are no petals to swirl): a still picture on the lock screen. This works
+    // on `shape` itself, so it moves every preset whatever its distortion.
+    // The window pins the rim (shape 0) so the disc's edge stays put, and rises
+    // fast so the background-to-colour1 boundary still ripples.
+    float rippleWindow = 1.0 - pow(1.0 - shape, 4.0);
+    shape += RIPPLE_AMP * rippleWindow * sin(TWO_PI * (RIPPLE_K * shape + RIPPLE_RATE * t));
 
     const float outerMask = 0.002;
     float outer = 1.0 - smoothstep(radius - outerMask, radius + outerMask, r);
