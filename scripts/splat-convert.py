@@ -10,6 +10,12 @@
                                               drawing a capture published with
                                               no licence (`make package` drops
                                               them)
+    scripts/splat-convert.py photo PLY OUT [--glass near|median|far|METRES]
+                                              one Apple SHARP prediction (a
+                                              single photo's splats) into the
+                                              `splat:window:` frame; prints its
+                                              framing as JSON (`make
+                                              photo-window` calls this)
 
 Inputs: PlayCanvas SOG v2 (what SuperSplat serves; one or more chunks),
 standard 3DGS binary .ply, antimatter15 .splat, Niantic .spz. Only SOG keeps
@@ -681,7 +687,136 @@ def unlicensed(configs):
                 break
 
 
+# ------------------------------------------------------------ photo window ----
+
+def read_ply_extras(path):
+    """The small elements a .ply carries after its vertex block, by name, as
+    flat arrays. Apple's SHARP writes the photo's camera there: `intrinsic`
+    (3×3, row-major, pixels), `image_size` (width, height), `disparity` (its
+    10th and 90th percentiles) and `color_space`."""
+    types = {"float": "f4", "float32": "f4", "double": "f8", "uchar": "u1", "uint8": "u1",
+             "char": "i1", "int8": "i1", "short": "i2", "int16": "i2", "ushort": "u2",
+             "uint16": "u2", "int": "i4", "int32": "i4", "uint": "u4", "uint32": "u4"}
+    elements = []
+    with open(path, "rb") as f:
+        while True:
+            line = f.readline()
+            if not line:
+                raise ValueError("no end_header")
+            parts = line.decode("ascii", "replace").split()
+            if parts and parts[0] == "element":
+                elements.append((parts[1], int(parts[2]), []))
+            elif parts and parts[0] == "property" and elements:
+                if parts[1] == "list":
+                    raise ValueError(f"list property in {elements[-1][0]}")
+                elements[-1][2].append((parts[2], "<" + types[parts[1]]))
+            elif parts == ["end_header"]:
+                break
+        out = {}
+        for name, count, props in elements:
+            dtype = np.dtype(props)
+            data = np.fromfile(f, dtype=dtype, count=count)
+            if name != "vertex" and len(props) == 1:
+                out[name] = data[props[0][0]].astype(np.float64)
+    return out
+
+
+def photo(ply, out, glass="median"):
+    """A SHARP prediction in the frame the `window` camera (SplatData.swift)
+    expects, written whole, and that frame's numbers for the look's header.
+
+    SHARP predicts in OpenCV camera axes — x right, y down, z forward, the
+    photo's camera at the origin — in metres. Here it is turned 180° about x
+    (y up, looking down -z, as every capture is) and scaled so that the
+    *glass*, a plane through the scene at one chosen depth, sits on z = 0
+    with the photo spanning y = ±1 across it. The photo's camera is then at
+    z = 1/tan(fovy/2), which is exactly where the window camera stands, so a
+    centred viewer sees the photo as it was taken: the glass's points stay
+    put as the head moves, nearer ones swing against it, farther ones follow.
+
+    `glass` picks that depth: "median" (the default: the median disparity of
+    the solid splats, which keeps the most of the scene near the glass and so
+    the least void showing at the frame's edges as the head moves), "near" or
+    "far" (the 90th / 10th percentile of disparity, so most of the scene sits
+    behind / in front of the glass), or a distance in metres.
+
+    Nothing is thinned. The only splats left out are those whose opacity
+    rounds to 0 in the file's 8 bits and so could never be drawn; the usual
+    haze cull (`max_log_scale`) is off, since a photo's far background is
+    meant to be large.
+    """
+    extras = read_ply_extras(ply)
+    splats = read_ply(ply)
+    pos, alpha = splats[0], splats[2]
+    if "intrinsic" not in extras or "image_size" not in extras:
+        raise SystemExit(f"{ply}: no intrinsic/image_size elements; is this a SHARP prediction?")
+    K = extras["intrinsic"].reshape(3, 3)
+    width, height = (float(v) for v in extras["image_size"][:2])
+    fy = float(K[1, 1])
+    fovy = 2 * math.atan(0.5 * height / fy)
+    aspect = width / height
+
+    ahead = pos[:, 2] > 1e-6
+    solid = ahead & (alpha > 0.5)
+    disparity = 1.0 / pos[solid if solid.any() else ahead, 2]
+    if glass == "median":
+        depth = 1.0 / float(np.median(disparity))
+    elif glass == "near":
+        depth = 1.0 / float(np.percentile(disparity, 90))
+    elif glass == "far":
+        depth = 1.0 / float(np.percentile(disparity, 10))
+    else:
+        depth = float(glass)
+        if not depth > 0:
+            raise SystemExit(f"--glass {glass}: want near, median, far or a distance in metres")
+
+    t = math.tan(fovy / 2)
+    k = 1.0 / (depth * t)
+    eye = 1.0 / t
+    cfg = {
+        "sources": [ply],
+        "rotate": [180, 0, 0],
+        "scale": k,
+        "shift": [0, 0, eye],
+        # Only what 8-bit opacity would store as 0.
+        "min_alpha": 0.5 / 255,
+        "max_log_scale": float("inf"),
+    }
+    check_full_quality(os.path.basename(out), cfg)
+    placed = apply_config(splats, cfg)
+    log_scale = placed[3]
+    clamped = int(((log_scale > LOG_MAX) | (log_scale < LOG_MIN)).any(1).sum())
+    n, size = write_lsplat(out, placed)
+    info = {
+        "count": n,
+        "source_count": int(len(pos)),
+        "dropped_invisible": int(len(pos) - n),
+        "bytes": size,
+        "fovy_degrees": round(math.degrees(fovy), 4),
+        "aspect": round(aspect, 5),
+        "image_size": [int(width), int(height)],
+        "focal_px": round(fy, 3),
+        "glass": glass,
+        "glass_metres": round(depth, 4),
+        "scale": k,
+        "eye_z": eye,
+        "scale_clamped": clamped,
+    }
+    print(json.dumps(info))
+    print(f"{os.path.basename(out)}: {n:,} of {len(pos):,} splats (dropped {len(pos) - n:,} with "
+          f"opacity 0), {size / 1e6:.1f} MB, fovy {info['fovy_degrees']}°, glass at {depth:.3f} m",
+          file=sys.stderr)
+    if clamped:
+        print(f"warning: {clamped:,} splats have a scale outside the format's e^{LOG_MIN:g}..e^{LOG_MAX:g} "
+              "and are stored clamped to it", file=sys.stderr)
+
+
 def main():
+    if len(sys.argv) >= 4 and sys.argv[1] == "photo":
+        args = sys.argv[4:]
+        glass = args[args.index("--glass") + 1] if "--glass" in args else "median"
+        photo(sys.argv[2], sys.argv[3], glass)
+        return
     if len(sys.argv) == 2 and sys.argv[1] == "unlicensed":
         unlicensed(json.load(open(CONFIG)))
         return

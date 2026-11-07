@@ -17,6 +17,10 @@ import simd
 ///     path    the capture author's own keyframed camera, as SuperSplat plays
 ///             it when the scene opens (`LerpSplatPath`; `make splats` writes
 ///             it beside the capture for every scene published with one)
+///     window  a photo turned into splats (`make photo-window`): the camera
+///             stands where the photo was taken and the photo fills the
+///             screen, so a centred viewer sees the photo itself and a
+///             tracked head looks round its depth (`windowCamera`)
 ///
 /// A drag on the render (`LerpTurn`, for a look that declares `yaw`/`pitch`)
 /// swings the camera round the point it looks at, which is right wherever the
@@ -37,7 +41,7 @@ import simd
 /// the decoded capture, which is input, not state.
 public final class SplatData: LerpDataProvider {
 
-    public enum Move: String { case orbit, dolly, path }
+    public enum Move: String { case orbit, dolly, path, window }
 
     let move: Move
     let captureName: String
@@ -252,7 +256,56 @@ public final class SplatData: LerpDataProvider {
 
     private func camera(uniforms: LerpUniforms, params: LerpParameterValues?, size: SIMD2<Float>) -> Camera {
         var cam = movingCamera(uniforms: uniforms, params: params, size: size)
-        Self.applyViewer(uniforms.viewer, gain: LerpViewer.gain(in: params), to: &cam, size: size)
+        var viewer = uniforms.viewer
+        if move == .window, viewer == .centered {
+            viewer = Self.sway(time: max(0, uniforms.time), seed: uniforms.seed,
+                               amount: param(params, "sway", 0), period: max(4, param(params, "period", 40)))
+        }
+        Self.applyViewer(viewer, gain: LerpViewer.gain(in: params), to: &cam, size: size)
+        return cam
+    }
+
+    /// A photo window with nobody tracked — the saver, a still — drifts as if
+    /// a head were moving slowly in front of it, so it still shows its depth.
+    /// `amount` is in `LerpViewer` units (about the tangent of the swing); a
+    /// slow figure-of-eight, the seed picking where on it a launch starts.
+    /// 0 leaves the photo exactly as taken.
+    static func sway(time t: Float, seed: Float, amount: Float, period: Float) -> LerpViewer {
+        guard amount != 0 else { return .centered }
+        let a = 2 * Float.pi * (t / period + seed)
+        return LerpViewer(x: amount * sin(a), y: 0.45 * amount * sin(2 * a + 0.7))
+    }
+
+    /// The `window` move's camera, for a capture `splat-convert.py photo`
+    /// wrote: the glass (the plane through the photo at its chosen depth) on
+    /// z = 0, the photo spanning y = ±1 across it, and the photo's own camera
+    /// on +z at 1/tan(fov/2), looking down -z. `fov` is the photo's vertical
+    /// field of view and `aspect` its width over height; `make photo-window`
+    /// writes both into the look.
+    ///
+    /// The photo covers the drawable — whichever way the two shapes differ,
+    /// the photo's overhang is cropped rather than the screen letterboxed —
+    /// and `overscan` crops a little more, so a moving head finds less of the
+    /// edge, past which the photo saw nothing.
+    ///
+    /// A covering lens is longer than the photo's own, which would put the
+    /// plane `applyViewer` pins (at depth focal ÷ half the target's height)
+    /// behind the glass. So the view is scaled about the eye until the glass
+    /// is at exactly that depth: a uniform scale about the eye leaves every
+    /// ray, and so the centred image, as it was, and only moves the pin.
+    private func windowCamera(params: LerpParameterValues?, size: SIMD2<Float>) -> Camera {
+        let fovy = min(170, max(1, param(params, "fov", 50))) * .pi / 180
+        let aspect = max(0.05, param(params, "aspect", 1.5))
+        let overscan = max(1, param(params, "overscan", 1))
+        let t = tan(fovy * 0.5)
+        let focal = max(0.5 * size.y / t, 0.5 * size.x / (aspect * t)) * overscan
+        let hand = held(eye: SIMD3(0, 0, 1 / t), target: .zero, params: params)
+        var cam = Camera(view: hand.view, focal: focal * hand.lens,
+                         fovy: 2 * atan(0.5 * size.y / (focal * hand.lens)))
+        let glass = cam.focal / (0.5 * size.y)
+        let k = glass / max(1e-4, hand.distance)
+        cam.view = simd_float4x4(diagonal: SIMD4(k, k, k, 1)) * cam.view
+        cam.subjectRadius = k
         return cam
     }
 
@@ -328,6 +381,9 @@ public final class SplatData: LerpDataProvider {
             let fovy = 2 * atan(0.5 * size.y / focal)
             let hand = held(eye: pose.eye, target: pose.target, up: path.up, params: params)
             return Camera(view: hand.view, focal: focal * hand.lens, fovy: Self.narrowed(fovy, by: hand.lens))
+
+        case .window:
+            return windowCamera(params: params, size: size)
         }
     }
 
@@ -854,7 +910,17 @@ enum LerpSplatError: Error, CustomStringConvertible {
 /// Where captures are found, and the decoded ones kept. The installed saver
 /// reads `Resources/Splats` in its bundle; a development host also reads
 /// `build/splats` beside whichever `Sources/Shaders` it was pointed at.
+/// Every host also reads the user's own captures — the photos `make
+/// photo-window` turns into splats — from `~/Library/Application
+/// Support/Lerping/Splats`, beside the custom shaders that draw them. They
+/// are the user's, so they live there rather than in `build/` (which `make
+/// splats` prunes to captures.json, and which `make package` ships).
 public enum LerpSplatAssets {
+    /// `~/Library/Application Support/Lerping/Splats` (sandbox home first).
+    public static func userDirectories() -> [URL] {
+        LerpFileLocations.homeDirectories(appending: "Library/Application Support/Lerping/Splats")
+    }
+
     private static let lock = NSLock()
     nonisolated(unsafe) private static var extraDirectories: [URL] = []
     nonisolated(unsafe) private static var cache: [String: LerpSplatAsset] = [:]
@@ -881,7 +947,7 @@ public enum LerpSplatAssets {
             dirs.append(repo.deletingLastPathComponent().deletingLastPathComponent()
                 .appendingPathComponent("build/splats"))
         }
-        dirs = LerpBundleResources.directories(named: "Splats") + dirs
+        dirs = LerpBundleResources.directories(named: "Splats") + dirs + userDirectories()
         return dirs.map { $0.appendingPathComponent(name + "." + ext) }
             .first { FileManager.default.fileExists(atPath: $0.path) }
     }

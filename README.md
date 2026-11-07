@@ -664,6 +664,41 @@ its parameters and presets wherever the file goes.
   `clip` in `// lerp-camera:`, which drops every splat nearer than the subject
   minus `clip`.
 
+#### Your photo as a window
+
+    make photo-window PHOTO=~/Pictures/beach.jpg NAME=beach
+
+turns one photo into a splat look you can lean into. Apple's
+[SHARP](https://github.com/apple-aiml-research/ml-sharp) predicts, from the
+single image, a 3D Gaussian splat of the scene behind it (on the GPU through
+MPS). `splat-convert.py photo` takes that from SHARP's OpenCV
+axes (y down, the scene at +z, metres) into the `splat:window:` frame, whole,
+and the look stands its camera where the photo was taken, with the photo
+covering the screen: a centred viewer sees the photo as it was, and with
+Shader › Track Head a moving head looks round the depth in it. One plane
+through the scene sits on the glass (`GLASS=median`, the default, or `near`,
+`far`, or a distance in metres): it stays put while nearer things swing
+against the head and farther ones follow. With nobody tracked — the saver, a
+still — the look drifts slowly by itself (`sway`, 0 for the photo exactly as
+taken).
+
+- `scripts/photo-window.sh` keeps SHARP in `~/Documents/lerping-tools/ml-sharp`:
+  its source at a pinned commit, a Python 3.13 venv, and its 2.8 GB checkpoint,
+  checked against a pinned SHA-256. `make photo-window-setup` prepares all of
+  that without a photo; `DRY_RUN=1` checks everything and prints each step.
+- The splats go to `~/Library/Application Support/Lerping/Splats/photo-NAME.lsplat`
+  and the look to `…/Lerping/Shaders/splat-photo-NAME.metal`, beside the other
+  custom shaders: the playground picks it up at once, the saver reads both, and
+  `make saver` bakes the look into this Mac's installed bundle.
+- **Licences.** SHARP's weights are under Apple's research-only model licence
+  (`LICENSE_MODEL` in its repo), and the splats are made from your own photo.
+  Neither is ever committed, put in `build/splats`, or shipped by `make
+  package`; the weights are downloaded onto this Mac only.
+- Nothing is thinned: the converter drops only splats whose opacity rounds to 0
+  in the file's 8 bits, and keeps SHARP's large far-background splats that the
+  captures' haze cull would remove. It reports any splat whose size is past
+  the format's range.
+
 ### GLSL → Metal mapping
 
 | GLSL | Metal |

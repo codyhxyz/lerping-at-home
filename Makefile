@@ -219,7 +219,7 @@ define STAGE_DMG
 		-srcfolder "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
 endef
 
-.PHONY: splats all preview playground playground-build saver saver-build midi-deps \
+.PHONY: splats photo-window photo-window-setup all preview playground playground-build saver saver-build midi-deps \
         verify-rotation pulse uninstall-pulse \
         install install-example install-playground uninstall-playground package dmg release clean \
         FORCE
@@ -323,6 +323,24 @@ splats: $(SPLAT_STAMP)
 $(SPLAT_STAMP): Sources/Splats/captures.json scripts/splat-convert.py
 	python3 -I scripts/splat-convert.py all
 	@touch $@
+
+# Your photo becomes a window: Apple's SHARP turns one photo into 3D Gaussian
+# splats, and a head-parallax look stands the camera where the photo was taken
+# (scripts/photo-window.sh says how). Its splats and look are the user's own and
+# go to ~/Library/Application Support/Lerping/{Splats,Shaders}, never into the
+# repo or build/splats; SHARP and its research-licensed weights live in
+# ~/Documents/lerping-tools/ml-sharp, never in the repo.
+#   make photo-window PHOTO=~/Pictures/beach.jpg NAME=beach [GLASS=near|median|far|METRES]
+#                     [TITLE="Beach at dusk"] [FORCE=1] [DRY_RUN=1]
+#   make photo-window-setup      clone SHARP, make its venv, fetch its weights
+photo-window:
+	@test -n "$(PHOTO)" && test -n "$(NAME)" || \
+		{ echo "usage: make photo-window PHOTO=/path/to/photo.jpg NAME=slug [GLASS=…] [TITLE=…] [FORCE=1] [DRY_RUN=1]"; exit 2; }
+	scripts/photo-window.sh $(if $(DRY_RUN),--dry-run) $(if $(FORCE),--force) \
+		$(if $(GLASS),--glass "$(GLASS)") $(if $(TITLE),--title "$(TITLE)") "$(PHOTO)" "$(NAME)"
+
+photo-window-setup:
+	scripts/photo-window.sh --setup
 
 # `saver` means the saver the machine will actually run. Use `saver-build` only
 # when a staging bundle is explicitly wanted.
