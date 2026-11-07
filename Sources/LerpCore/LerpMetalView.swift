@@ -255,7 +255,10 @@ public final class LerpMetalView: NSView {
     public private(set) var edrHeadroomInUse: Float = 1.0
     /// The look on screen, kept so a range switch can recompile *this* source
     /// for the other pixel format — the playground's draft is not on disk.
-    private var currentShader: LerpShader?
+    /// Readable for the same reason: the playground's Desktop Mode mirrors
+    /// this view into views of its own, and the draft is the only copy of
+    /// what is on screen. Written only by `install`, beside `currentEntry`.
+    public private(set) var currentShader: LerpShader?
     private var edrPostPipeline: MTLRenderPipelineState?
     private var edrSource: MTLTexture?
     private var edrCheckedAt: CFTimeInterval = 0
