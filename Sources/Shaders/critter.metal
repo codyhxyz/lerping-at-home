@@ -18,8 +18,10 @@
 //   eleven-hour day, pacing under a storm cloud after an hour of tab-hopping,
 //   stretching when the screensaver came on after a long run without a break,
 //   waving after days away, building a sandcastle on a day of making things,
-//   hopping and chasing butterflies when things are good. The first chapter of
-//   each session is its strongest feeling; later ones are drawn by weight.
+//   hopping and chasing butterflies when things are good. Each session opens
+//   with it noticing you and waving; the first chapter is usually its
+//   strongest feeling (drawn by squared weight), later ones by weight, with
+//   small unscripted beats — a yawn, a sneeze, a sniff — layered over them.
 // - The sky is the real time of day and the trees are the real season; the
 //   camera comes in from a different side every session.
 //
@@ -68,6 +70,11 @@
 struct Pose {
     float3 pos;
     float yaw, sq, lean, roll, armL, armR, eye, step, mouth;
+    // lid: upper eyelids down (0 open … 1 shut); lidTilt > 0 drops the outer
+    // corners (sad, worried); happy: closed ^^ eyes; mouthO: an open "o";
+    // stride: how much the feet swing on `step`; reach: arms swing forward
+    // instead of out to the sides; sit: feet out in front.
+    float lid, lidTilt, happy, mouthO, stride, reach, sit;
 };
 
 struct Scene {
@@ -75,6 +82,8 @@ struct Scene {
     float3 cs0, cs1;   // cos/sin of yaw, lean, roll
     float  yaw, s, sq, lean, roll, armL, armR, eye, droop, step, mouth;
     int    stage;
+    float  lid, lidTilt, happy, mouthO, stride, reach, sit;
+    float  bags;       // under-eye shadows, 0…1, from tiredness and a bad week
     float  hatch, wobble;
     float2 focus;
     float  bend, ident, health, bloom, ageDays;
@@ -172,35 +181,52 @@ static float3 sdCritter(float3 q, thread const Scene& sc) {
     float hz = rsqrt(sc.sq);
     float3 bc = float3(0.0, 0.95 * s * sc.sq, 0.0);
     float body = sdEll(p - bc, float3(1.0 * hz, 0.95 * sc.sq, 0.92 * hz) * s);
-    float sw = 0.13 * s * sin(sc.step);
-    float feet = min(sdEll(p - float3(-0.42 * s, 0.12 * s, 0.24 * s + sw), float3(0.21, 0.13, 0.27) * s),
-                     sdEll(p - float3( 0.42 * s, 0.12 * s, 0.24 * s - sw), float3(0.21, 0.13, 0.27) * s));
+    // Feet swing by `stride` (so a blend never spins them); sitting puts
+    // them out in front.
+    float sw = 0.13 * sc.stride * sin(sc.step);
+    float fx = 0.42 - 0.05 * sc.sit, fy = 0.12 + 0.05 * sc.sit, fz = 0.24 + 0.42 * sc.sit;
+    float feet = min(sdEll(p - float3(-fx, fy, fz + sw) * s, float3(0.21, 0.13, 0.27) * s),
+                     sdEll(p - float3( fx, fy, fz - sw) * s, float3(0.21, 0.13, 0.27) * s));
     body = smin(body, feet, 0.07 * s);
+    // Arms long enough to wave over its head, a mitten on each. `reach`
+    // swings them forward (patting, reaching) instead of out to the side.
     float3 shL = bc + float3(-0.74 * hz * s, 0.08 * s, 0.08 * s);
     float3 shR = bc + float3( 0.74 * hz * s, 0.08 * s, 0.08 * s);
-    float3 dL = normalize(float3(-sin(sc.armL), -cos(sc.armL), 0.3));
-    float3 dR = normalize(float3( sin(sc.armR), -cos(sc.armR), 0.3));
-    float arms = min(sdCap(p, shL, shL + dL * 0.56 * s, 0.11 * s),
-                     sdCap(p, shR, shR + dR * 0.56 * s, 0.11 * s));
+    float rc = sc.reach;
+    float3 dL = normalize(float3(-sin(sc.armL) * (1.0 - rc) - 0.15 * rc, -cos(sc.armL), mix(0.3, sin(sc.armL), rc)));
+    float3 dR = normalize(float3( sin(sc.armR) * (1.0 - rc) + 0.15 * rc, -cos(sc.armR), mix(0.3, sin(sc.armR), rc)));
+    float3 hL = shL + dL * 0.84 * s, hR = shR + dR * 0.84 * s;
+    float arms = min(sdCap(p, shL, hL, 0.095 * s), sdCap(p, shR, hR, 0.095 * s));
+    arms = smin(arms, min(length(p - hL), length(p - hR)) - 0.145 * s, 0.05 * s);
     body = smin(body, arms, 0.06 * s);
     float3 res = float3(body, M_BODY, 0.0);
 
-    float eyeH = (0.12 * sc.eye + 0.02) * s;
+    // Eyes: an upper lid (a tilted plane; outer corners down reads sad or
+    // worried), and on a happy face they bend into closed ^^ arches.
+    float hp = abs(sc.happy);   // < 0: sleeping, closed the other way up
+    float eyeH = mix((0.12 * sc.eye + 0.02) * s, 0.032 * s, hp);
+    float3 er = float3((0.085 + 0.012 * hp) * s, eyeH, 0.07 * s);
     float3 eo = float3(0.34 * hz * s, 0.1 * s * sc.sq, 0.83 * hz * s);
-    float eyes = min(sdEll(p - (bc + float3(-eo.x, eo.y, eo.z)), float3(0.085 * s, eyeH, 0.07 * s)),
-                     sdEll(p - (bc + eo), float3(0.085 * s, eyeH, 0.07 * s)));
-    res = opU(res, float3(eyes, M_EYE, 0.0));
+    float3 eL = p - (bc + float3(-eo.x, eo.y, eo.z));
+    float3 eR = p - (bc + eo);
+    float arch = 6.5 / s * sc.happy;
+    eL.y += arch * eL.x * eL.x - 0.025 * s * sc.happy;
+    eR.y += arch * eR.x * eR.x - 0.025 * s * sc.happy;
+    float lt = sc.lidTilt, h0 = eyeH * (1.0 - 2.0 * sc.lid), lk = rsqrt(1.0 + lt * lt);
+    float eyes = min(max(sdEll(eL, er), (eL.y - h0 - lt * eL.x) * lk),
+                     max(sdEll(eR, er), (eR.y - h0 + lt * eR.x) * lk));
+    res = opU(res, float3(eyes * (1.0 - 0.35 * hp), M_EYE, 0.0));
 
-    // Sprout: longer with each stage, drooping when unwell.
+    // Sprout: longer with each stage; on a bad week it wilts forward and one
+    // leaf hangs.
     float3 top = bc + float3(0.0, 0.92 * sc.sq * s, 0.0);
     float len = (0.2 + 0.08 * float(sc.stage)) * s;
-    float3 sdir = normalize(float3(0.0, 1.0, 0.1 + 1.2 * sc.droop));
+    float3 sdir = normalize(float3(0.0, 1.0 - 0.75 * sc.droop, 0.1 + 1.3 * sc.droop));
     float3 tip = top + sdir * len;
     res = opU(res, float3(sdCap(p, top - float3(0.0, 0.06 * s, 0.0), tip, 0.035 * s), M_LEAF, 0.0));
     float ls = (0.95 + 0.2 * float(sc.stage)) * s;
-    float lean = 0.5 + 0.8 * sc.droop;
-    float3 a = p - tip; a.xy = rotate(a.xy, -lean); a.x += 0.18 * ls;
-    float3 b = p - tip; b.x = -b.x; b.xy = rotate(b.xy, -lean); b.x += 0.18 * ls;
+    float3 a = p - tip; a.xy = rotate(a.xy, -(0.5 + 0.8 * sc.droop)); a.x += 0.18 * ls;
+    float3 b = p - tip; b.x = -b.x; b.xy = rotate(b.xy, -(0.5 + 1.9 * sc.droop)); b.x += 0.18 * ls;
     float leaves = min(sdEll(a, float3(0.19, 0.035, 0.1) * ls), sdEll(b, float3(0.19, 0.035, 0.1) * ls));
     res = opU(res, float3(leaves, M_LEAF, 0.0));
     if (sc.stage >= 3) {
@@ -273,10 +299,12 @@ static float3 sdCloud(float3 q, thread const Scene& sc) {
     float bound = length(p) - 0.9 * k;
     if (bound > 0.3) return float3(bound, M_CLOUD, 0.0);
     float jit = sc.cloudDark * 0.03 * sin(sc.time * 23.0);
-    float d = sdEll(p, float3(0.42, 0.22, 0.3) * k);
+    float d = sdEll(p, float3(0.46, 0.2, 0.32) * k);
     d = smin(d, length(p - float3(0.28 + jit, 0.08, 0.04) * k) - 0.24 * k, 0.12 * k);
     d = smin(d, length(p - float3(-0.3, 0.06 - jit, -0.03) * k) - 0.22 * k, 0.12 * k);
     d = smin(d, length(p - float3(0.02, 0.2, 0.02) * k) - 0.25 * k, 0.12 * k);
+    // A flat underside, so it reads as a cloud and not a hat.
+    d = max(d, -p.y - 0.09 * k);
     return float3(d, M_CLOUD, 0.0);
 }
 
@@ -424,18 +452,27 @@ static float ambientOcc(float3 q, float3 n, thread const Scene& sc, int skip) {
 
 // ---------------------------------------------------------------- behaviour
 
-static Pose makePose(int act, float t, float r, float s, float az, float2 right, float joy) {
+// `castle` is where the sandcastle stands (BUILD faces it and pats it).
+static Pose makePose(int act, float t, float r, float s, float az, float2 right, float2 castle,
+                     constant CritterState& S) {
     Pose P;
+    float joy = S.joy;
     float breath = sin(t * 1.8 + r * 6.0);
     P.pos = float3(0.0);
     P.yaw = az + 0.25 * sin(r * 12.0);
     P.sq = 1.0 + 0.025 * breath;
     P.lean = 0.0; P.roll = 0.0;
-    P.armL = 0.35 + 0.05 * breath; P.armR = P.armL;
+    P.armL = 0.5 + 0.05 * breath; P.armR = P.armL;
     float bl = fract(t * 0.29 + r * 3.0);
     P.eye = 1.0 - (smoothstep(0.0, 0.02, bl) - smoothstep(0.02, 0.045, bl));
-    P.step = 0.0;
+    // The feet always step on the same clock; activities only change how far.
+    P.step = t * 14.0; P.stride = 0.0;
     P.mouth = mix(-0.8, 1.0, joy);
+    // The week in its face: heavy lids when tired, worried brows when low.
+    float tired = clamp((0.55 - S.energy) / 0.45, 0.0, 1.0);
+    P.lid = 0.45 * tired;
+    P.lidTilt = 0.7 * clamp((0.6 - joy) / 0.5, 0.0, 1.0);
+    P.happy = 0.0; P.mouthO = 0.0; P.reach = 0.0; P.sit = 0.0;
     switch (act) {
         case ACT_IDLE: {
             P.yaw = az + 0.55 * sin(t * 0.37 + r * 6.0);
@@ -448,18 +485,28 @@ static Pose makePose(int act, float t, float r, float s, float az, float2 right,
             float land = ph >= 0.6 ? exp(-(ph - 0.6) * 18.0) : 0.0;
             P.pos.y = 0.4 * s * air;
             P.sq = 1.0 - 0.24 * land + 0.1 * air;
-            P.armL = P.armR = 0.4 + 1.7 * air;
+            P.armL = P.armR = 0.6 + 2.1 * air;
             P.yaw = az + 0.45 * sin(t * 0.4 + r * 5.0);
             P.mouth = 1.0;
+            P.mouthO = 0.75 * air;
+            P.happy = air * smoothstep(0.55, 0.85, joy);
+            P.lid = 0.0;
             break;
         }
         case ACT_SLEEP: {
-            P.sq = 0.82 + 0.035 * sin(t * 1.1);
-            P.eye = 0.0;
-            P.roll = 0.36; P.lean = -0.08;
-            P.armL = P.armR = 0.15;
-            P.yaw = az + 0.5;
-            P.mouth = 0.1;
+            // A good week curls up facing you, eyes closed in a smile; a
+            // burnt-out one lies face down where it dropped.
+            float worn = clamp((0.55 - S.health) / 0.3, 0.0, 1.0);
+            P.sq = mix(0.82, 0.74, worn) + 0.035 * sin(t * 1.1);
+            P.eye = 0.0; P.lid = 0.0; P.lidTilt = 0.0;
+            P.happy = -0.9;
+            P.roll = mix(0.4, 0.08, worn);
+            P.lean = mix(-0.18, 0.6, worn);
+            P.armL = P.armR = mix(0.95, 1.45, worn);
+            P.reach = 0.7 * (1.0 - worn);
+            P.yaw = az + mix(0.2, 0.35, worn);
+            P.pos.y = -0.06 * s * worn;
+            P.mouth = mix(0.5, -0.3, worn);
             break;
         }
         case ACT_PACE: {
@@ -467,64 +514,81 @@ static Pose makePose(int act, float t, float r, float s, float az, float2 right,
             float vx = cos(t * 0.8 + r * 6.0);
             P.pos = float3(right.x * x, abs(sin(t * 7.0)) * 0.05 * s, right.y * x);
             P.yaw = az + 1.5708 * clamp(vx * 3.0, -1.0, 1.0);
-            P.step = t * 14.0;
+            P.stride = 1.0;
             P.lean = 0.16;
-            P.armL = 0.25 + 0.2 * sin(t * 7.0); P.armR = 0.25 - 0.2 * sin(t * 7.0);
-            P.eye = min(P.eye, 0.75);
+            P.armL = 0.45 + 0.25 * sin(t * 7.0); P.armR = 0.45 - 0.25 * sin(t * 7.0);
+            P.lid = max(P.lid, 0.15); P.lidTilt = 0.75;
             P.mouth = -0.7;
             break;
         }
         case ACT_STRETCH: {
             float c = fract(t / 7.0) * 7.0;
             float k = smoothstep(0.3, 1.8, c) - smoothstep(4.6, 6.2, c);
-            P.armL = P.armR = mix(0.35, 2.25, k);
+            P.armL = P.armR = mix(0.5, 2.9, k);
             P.sq = 1.0 + 0.2 * k;
-            P.eye = mix(P.eye, 0.0, k);
-            P.lean = -0.13 * k;
+            P.happy = k;
+            P.lid = P.lid * (1.0 - k);
+            P.lean = 0.0;
             P.roll = 0.03 * sin(t * 9.0) * k;
             P.mouth = 1.0;
+            P.mouthO = 0.7 * k;
             break;
         }
         case ACT_CHASE: {
-            float a = t * 0.55 + r * 6.283 - 0.55;
+            // Same phase as the butterfly, so one chase follows on from another.
+            float a = t * 0.55 - 0.55;
             P.pos = float3(cos(a) * 1.25, abs(sin(t * 7.0)) * 0.09 * s, sin(a) * 1.25);
             P.yaw = atan2(-sin(a), cos(a));
-            P.step = t * 14.0;
-            P.armL = 1.2 + 0.3 * sin(t * 7.0); P.armR = 1.2 - 0.3 * sin(t * 7.0);
-            P.mouth = 1.0;
+            P.stride = 1.0;
+            P.armL = 1.5 + 0.35 * sin(t * 7.0); P.armR = 1.5 - 0.35 * sin(t * 7.0);
+            P.mouth = 1.0; P.mouthO = 0.45; P.lid = 0.0;
             break;
         }
         case ACT_SIT: {
-            P.yaw = az + 2.4 + 0.4 * sin(r * 9.0);
+            // Sitting back on its bottom, feet out, three-quarters to you.
+            float side = r < 0.5 ? -1.0 : 1.0;
+            P.yaw = az + side * (0.85 + 0.25 * sin(t * 0.23 + r * 5.0));
             P.sq = 0.9 + 0.02 * breath;
-            P.roll = 0.06 * sin(t * 0.7);
-            P.armL = P.armR = 0.25;
+            P.lean = -0.25;
+            P.sit = 1.0;
+            P.roll = 0.05 * sin(t * 0.7);
+            P.armL = P.armR = 0.8; P.reach = 0.6;
+            P.lid = max(P.lid, 0.3);
+            P.mouth = max(P.mouth, 0.4);
             break;
         }
         case ACT_WAVE: {
             P.yaw = az;
-            P.armR = 1.95 + 0.4 * sin(t * 9.0);
-            P.armL = 0.45;
+            P.armR = 2.7 + 0.35 * sin(t * 9.0);
+            P.armL = 0.55;
             P.pos.y = 0.03 * s * abs(sin(t * 4.5));
-            P.mouth = 1.0;
+            P.mouth = 1.0; P.mouthO = 0.3;
+            P.happy = 0.85; P.lid = 0.0;
             break;
         }
         case ACT_SICK: {
             P.sq = 0.86;
             P.lean = 0.28;
-            P.eye = min(P.eye, 0.45);
-            P.armL = P.armR = 0.08;
+            P.eye = min(P.eye, 0.8);
+            P.lid = max(P.lid, 0.45); P.lidTilt = 0.85;
+            P.armL = P.armR = 0.3;
             P.roll = 0.05 * sin(t * 38.0) * step(0.75, fract(t * 0.17));
             P.yaw = az + 0.25;
             P.mouth = -0.9;
             break;
         }
         case ACT_BUILD: {
-            P.pos = float3(-right.x, 0.0, -right.y) * 0.3;
-            P.yaw = az + 1.05;
+            // Kneels at the castle and pats it with both mittens.
+            float2 u = normalize(right * 0.8 + float2(sin(az), cos(az)) * 0.55);
+            float2 at = castle - u * (0.38 + 0.95 * s);
+            P.pos = float3(at.x, 0.0, at.y);
+            P.yaw = atan2(u.x, u.y);
             float pat = abs(sin(t * 5.0));
-            P.armL = P.armR = 1.0 + 0.5 * pat;
-            P.lean = 0.18 + 0.06 * pat;
+            P.reach = 1.0;
+            P.armL = P.armR = 0.95 + 0.45 * pat;   // lands on the cusp
+            P.lean = 0.2 + 0.08 * pat;
+            P.sq = 0.96 - 0.04 * pat;
+            P.lid = max(P.lid, 0.25);
             P.mouth = 1.0;
             break;
         }
@@ -532,18 +596,16 @@ static Pose makePose(int act, float t, float r, float s, float az, float2 right,
     return P;
 }
 
+// The first chapter is drawn by squared weight — usually the strongest
+// feeling, not always; later ones by plain weight.
 static int pickActivity(float chapter, float seed, constant CritterState& S) {
     float w[10] = { S.w0.x, S.w0.y, S.w0.z, S.w0.w, S.w1.x, S.w1.y, S.w1.z, S.w1.w, S.w2.x, S.w2.y };
-    if (chapter < 0.5) {
-        int best = 0;
-        for (int i = 1; i < 10; i++) if (w[i] > w[best]) best = i;
-        return best;
-    }
+    float pw = chapter < 0.5 ? 2.0 : 1.0;
     float total = 0.0;
-    for (int i = 0; i < 10; i++) total += max(w[i], 0.0);
+    for (int i = 0; i < 10; i++) total += pow(max(w[i], 0.0), pw);
     float r = hash11(chapter * 12.9898 + seed * 78.233) * total;
     for (int i = 0; i < 10; i++) {
-        r -= max(w[i], 0.0);
+        r -= pow(max(w[i], 0.0), pw);
         if (r <= 0.0) return i;
     }
     return 0;
@@ -557,8 +619,79 @@ static inline Pose blendPose(Pose a, Pose b, float k) {
     P.yaw = a.yaw + dy * k;
     P.sq = mix(a.sq, b.sq, k); P.lean = mix(a.lean, b.lean, k); P.roll = mix(a.roll, b.roll, k);
     P.armL = mix(a.armL, b.armL, k); P.armR = mix(a.armR, b.armR, k);
-    P.eye = mix(a.eye, b.eye, k); P.step = mix(a.step, b.step, k); P.mouth = mix(a.mouth, b.mouth, k);
+    P.eye = mix(a.eye, b.eye, k); P.step = b.step; P.mouth = mix(a.mouth, b.mouth, k);
+    P.lid = mix(a.lid, b.lid, k); P.lidTilt = mix(a.lidTilt, b.lidTilt, k);
+    P.happy = mix(a.happy, b.happy, k); P.mouthO = mix(a.mouthO, b.mouthO, k);
+    P.stride = mix(a.stride, b.stride, k); P.reach = mix(a.reach, b.reach, k);
+    P.sit = mix(a.sit, b.sit, k);
     return P;
+}
+
+// A little unscripted moment every 6–12 s, over whatever it is doing: a
+// yawn, a sneeze, sniffing a flower, looking up at a falling leaf, a shiver
+// of delight. `w` fades it (0 during a chapter blend).
+static void addBeat(thread Pose& P, float t, float seed, int act, float w) {
+    float slot = floor(t / 9.0);
+    float start = 1.0 + 4.5 * hash11(slot * 2.71 + seed * 13.0);
+    float ph = (t - slot * 9.0 - start) / 2.4;
+    if (ph <= 0.0 || ph >= 1.0) return;
+    float env = smoothstep(0.0, 0.2, ph) * smoothstep(1.0, 0.75, ph) * w;
+    int kind = act == ACT_SICK ? 1 : min(int(hash11(slot * 5.13 + seed * 31.0) * 5.0), 4);
+    if (kind == 0) {            // yawn
+        P.mouthO = mix(P.mouthO, 1.0, env);
+        P.lid = mix(P.lid, 0.8, env); P.happy *= 1.0 - env;
+        P.lean -= 0.12 * env;
+        P.armL += 0.6 * env; P.armR += 0.6 * env;
+        P.sq += 0.06 * env;
+    } else if (kind == 1) {     // sneeze: wind up… achoo
+        float wind = smoothstep(0.05, 0.55, ph) * (1.0 - smoothstep(0.58, 0.62, ph));
+        float jolt = smoothstep(0.57, 0.62, ph) * (1.0 - smoothstep(0.7, 0.95, ph));
+        P.lean += (-0.18 * wind + 0.34 * jolt) * w;
+        P.lid = mix(P.lid, 0.7, wind * w);
+        P.mouthO = mix(P.mouthO, 0.55, wind * w);
+        P.eye = mix(P.eye, 0.0, jolt * w);
+        P.sq -= 0.1 * jolt * w;
+        P.armL += 0.5 * jolt * w; P.armR += 0.5 * jolt * w;
+    } else if (kind == 2) {     // sniff a flower
+        P.lean += 0.38 * env;
+        P.happy = mix(P.happy, 0.9, env);
+        P.mouth = mix(P.mouth, 0.8, env);
+        P.sq += 0.025 * sin(t * 18.0) * env;
+    } else if (kind == 3) {     // look up at a falling leaf
+        P.lean -= 0.34 * env;
+        P.roll += 0.12 * env;
+        P.eye = mix(P.eye, 1.15, env); P.lid *= 1.0 - env;
+        P.mouthO = mix(P.mouthO, 0.35, env);
+    } else {                    // a little shiver of delight
+        P.roll += 0.06 * sin(t * 45.0) * env;
+        P.sq += 0.05 * sin(t * 30.0) * env;
+        P.happy = mix(P.happy, 1.0, env);
+        P.mouth = mix(P.mouth, 1.0, env); P.mouthO = mix(P.mouthO, 0.25, env);
+        P.armL += 0.4 * env; P.armR += 0.4 * env;
+    }
+}
+
+// The first seconds of a session: it is looking off to one side, notices
+// you (a jolt and a "!"), turns to face you and waves.
+static Pose doubleTake(Pose P, float time, float az, float s) {
+    Pose D = P;
+    float jolt = smoothstep(0.55, 0.68, time) * (1.0 - smoothstep(0.7, 1.05, time));
+    float turn = smoothstep(0.8, 1.45, time);
+    float wv = smoothstep(1.35, 1.75, time);
+    D.pos = float3(0.0, 0.12 * s * jolt, 0.0);
+    D.yaw = mix(az + 1.15 + 0.12 * sin(time * 1.7), az, turn);
+    D.sq = 1.0 + 0.13 * jolt;
+    D.lean = -0.12 * jolt; D.roll = 0.0;
+    D.eye = mix(P.eye, 1.25, smoothstep(0.55, 0.65, time));
+    D.lid = 0.0; D.lidTilt = 0.0;
+    D.happy = 0.9 * wv;
+    D.mouth = wv;
+    D.mouthO = 0.7 * smoothstep(0.55, 0.65, time) * (1.0 - smoothstep(1.1, 1.4, time)) + 0.3 * wv;
+    D.armL = 0.5 + 0.7 * jolt;
+    D.armR = mix(0.5 + 0.7 * jolt, 2.7 + 0.35 * sin(time * 9.0), wv);
+    D.stride = 2.0 * turn * (1.0 - turn);   // a shuffle while it turns
+    D.reach = 0.0; D.sit = 0.0;
+    return D;
 }
 
 // ---------------------------------------------------------------- 2D overlays
@@ -653,18 +786,30 @@ fragment half4 lerpMain(float4 pos [[position]],
     float tl = time + seed * 997.0;
     float chapter = floor(time / CHAPTER);
     float inCh = time - chapter * CHAPTER;
+    float2 castle2 = right * 0.5 + float2(sin(az), cos(az)) * 0.35;
     int act = sc.stage == 0 ? ACT_IDLE : (u.act >= 0 ? u.act : pickActivity(chapter, seed, S));
     int prevAct = (chapter < 0.5 || u.act >= 0) ? act : pickActivity(chapter - 1.0, seed, S);
     float rr = hash11(chapter * 3.7 + seed * 17.0);
     float rp = hash11((chapter - 1.0) * 3.7 + seed * 17.0);
-    Pose P = makePose(act, tl, rr, sc.s, az, right, S.joy);
+    Pose P = makePose(act, tl, rr, sc.s, az, right, castle2, S);
     float k = chapter < 0.5 ? 1.0 : smoothstep(0.0, 2.5, inCh);
-    if (k < 1.0) P = blendPose(makePose(prevAct, tl, rp, sc.s, az, right, S.joy), P, k);
+    if (k < 1.0) P = blendPose(makePose(prevAct, tl, rp, sc.s, az, right, castle2, S), P, k);
+    if (act == ACT_IDLE || act == ACT_SIT || act == ACT_BUILD || act == ACT_PACE || act == ACT_SICK)
+        addBeat(P, tl, seed, act, k * k);
+    // It notices you when the screensaver comes up (unless it is asleep).
+    float dtake = (sc.stage > 0 && act != ACT_SLEEP && chapter < 0.5) ? 1.0 - smoothstep(3.4, 4.3, time) : 0.0;
+    if (dtake > 0.0) P = blendPose(P, doubleTake(P, time, az, sc.s), dtake);
     if (sc.stage == 0) { P.pos = float3(0.0); P.yaw = az; }
     float2 cxz = P.pos.xz;
     sc.cpos = float3(cxz.x, groundH(cxz, sc.ident) + P.pos.y, cxz.y);
-    sc.yaw = P.yaw; sc.sq = P.sq; sc.lean = P.lean; sc.roll = P.roll;
+    // A bad week shows whatever the light: it sags, wider and lower, and has
+    // shadows under its eyes when tired.
+    float sag = clamp((0.65 - S.health) / 0.45, 0.0, 1.0);
+    sc.yaw = P.yaw; sc.sq = P.sq * (1.0 - 0.1 * sag); sc.lean = P.lean; sc.roll = P.roll;
     sc.armL = P.armL; sc.armR = P.armR; sc.eye = P.eye; sc.step = P.step; sc.mouth = P.mouth;
+    sc.lid = clamp(P.lid, 0.0, 0.85); sc.lidTilt = P.lidTilt; sc.happy = clamp(P.happy, -1.0, 1.0);
+    sc.mouthO = clamp(P.mouthO, 0.0, 1.0); sc.stride = P.stride; sc.reach = P.reach; sc.sit = P.sit;
+    sc.bags = clamp(0.9 * max(1.0 - 1.6 * S.energy, 0.0) + 0.6 * sag, 0.0, 1.0);
     sc.cs0 = cos(float3(sc.yaw, sc.lean, sc.roll));
     sc.cs1 = sin(float3(sc.yaw, sc.lean, sc.roll));
 
@@ -672,11 +817,12 @@ fragment half4 lerpMain(float4 pos [[position]],
     float storm = (act == ACT_PACE ? k : 0.0) + (prevAct == ACT_PACE ? 1.0 - k : 0.0);
     sc.cloud = max(sick, storm) * mix(0.8, 1.0, sc.s);
     sc.cloudDark = storm;
-    sc.cloudPos = float3(sc.cpos.x, sc.cpos.y + 2.1 * sc.s + 0.28 + 0.04 * sin(time * 1.3), sc.cpos.z);
-    float build = (act == ACT_BUILD ? k : 0.0);
-    sc.castle = build * smoothstep(1.0, CHAPTER * 0.8, inCh);
-    float2 cpos2 = float2(right.x, right.y) * 0.45 + float2(sin(az), cos(az)) * 0.15;
-    sc.castlePos = float3(cpos2.x, groundH(cpos2, sc.ident), cpos2.y);
+    sc.cloudPos = float3(sc.cpos.x, sc.cpos.y + 2.1 * sc.s + 0.53 + 0.04 * sin(time * 1.3), sc.cpos.z);
+    // The castle starts as a mound, grows over the chapter and, when the
+    // chapter ends, sinks back into the sand rather than vanishing.
+    sc.castle = (act == ACT_BUILD ? k * mix(0.3, 1.0, smoothstep(1.0, CHAPTER * 0.8, inCh)) : 0.0)
+              + (prevAct == ACT_BUILD ? 1.0 - k : 0.0);
+    sc.castlePos = float3(castle2.x, groundH(castle2, sc.ident), castle2.y);
 
     // ---- camera
     float3 target = float3(sc.cpos.x * 0.5, 0.35 + sc.s * 0.8, sc.cpos.z * 0.5);
@@ -843,20 +989,39 @@ fragment half4 lerpMain(float4 pos [[position]],
             float hz = rsqrt(sc.sq);
             float3 bc = float3(0.0, 0.95 * s * sc.sq, 0.0);
             float3 rel = (lp - bc) / s;
-            alb = bodyCol;
+            // Its own colour, only a little greyed by a bad week (the sag,
+            // the wilt and the tired eyes say the rest, and survive the night).
+            alb = mix(palette[int(S.identity * 5.0) % 5], float3(0.64, 0.66, 0.58), (1.0 - S.health) * 0.3);
             // lighter tummy
             alb = mix(alb, mix(alb, float3(1.0, 0.98, 0.92), 0.55),
                       smoothstep(0.35, 0.7, rel.z) * smoothstep(0.25, -0.3, rel.y));
             // blush
             float2 ck = float2(abs(rel.x) - 0.56 * hz, rel.y + 0.1);
             alb = mix(alb, float3(1.0, 0.55, 0.6), smoothstep(0.15, 0.06, length(ck)) * step(0.0, rel.z) * 0.8);
-            // mouth: a little arc that smiles or frowns
+            // shadows under the eyes when it is worn out
+            float2 ue = float2(abs(rel.x) - 0.34 * hz, rel.y - 0.1 * sc.sq);
+            float bag = smoothstep(0.22, 0.06, abs(length(ue / float2(0.12, 0.19)) - 1.0))
+                      * smoothstep(-0.07, -0.13, ue.y) * step(0.3, rel.z);
+            alb = mix(alb, alb * float3(0.55, 0.45, 0.68), bag * sc.bags * 0.85);
+            // mouth: a curve deep enough to read as a smile or a frown from
+            // across the room, or an open "o" (a "D" when it is happy)
             float mx = rel.x, my = rel.y + 0.14 * sc.sq;
-            float curve = -0.9 * sc.mouth * (0.01 - mx * mx * 1.4);
-            float mouth = step(abs(my - curve), 0.022) * step(abs(mx), 0.11) * step(0.5, rel.z);
-            alb = mix(alb, float3(0.28, 0.12, 0.12), mouth);
+            float amp = 5.4 * sc.mouth;
+            float cx = clamp(mx, -0.12, 0.12);
+            float slope = amp * 2.8 * cx;
+            float dm = length(float2(mx - cx, (my + amp * (0.01 - cx * cx * 1.4)) * rsqrt(1.0 + slope * slope)));
+            float line = smoothstep(0.03, 0.02, dm) * (1.0 - smoothstep(0.15, 0.4, sc.mouthO));
+            float2 orad = float2(0.04 + 0.04 * sc.mouthO, 0.02 + 0.07 * sc.mouthO);
+            float2 mo = float2(mx, my + 0.01) / orad;
+            float lip = mo.y - (1.0 - 0.75 * clamp(sc.mouth, 0.0, 1.0));   // flat top on a "D"
+            float open = smoothstep(1.0, 0.85, max(length(mo), 1.0 + lip)) * step(0.05, sc.mouthO);
+            alb = mix(alb, float3(0.28, 0.12, 0.12), max(line, open) * step(0.5, rel.z));
+            alb = mix(alb, float3(0.95, 0.45, 0.5), open * smoothstep(-0.25, -0.6, mo.y) * step(0.5, rel.z));
             // feet a shade darker
             alb *= mix(1.0, 0.85, smoothstep(0.3, 0.15, lp.y / s));
+            // a warm fill at night, so its colour survives the moonlight
+            alb *= mix(float3(1.0), float3(1.6, 1.35, 1.0), night);
+            emit = night * 0.035 * (0.4 + 0.6 * max(dot(n, -rd), 0.0));
             spec = 0.18; shine = 20.0; rim = 0.55;
         } else if (mat == M_EYE) {
             float3 lp = critterLocal(q, sc);
@@ -866,7 +1031,7 @@ fragment half4 lerpMain(float4 pos [[position]],
             float3 e = lp - (bc + float3(sign(lp.x) * 0.34 * hz * s, 0.1 * s * sc.sq, 0.83 * hz * s));
             alb = float3(0.04, 0.035, 0.06);
             float glint = smoothstep(0.03 * s, 0.018 * s, length(e.xy - float2(0.025, 0.045) * s));
-            alb = mix(alb, float3(1.6), glint * step(0.3, sc.eye));
+            alb = mix(alb, float3(1.6), glint * step(0.3, sc.eye) * step(sc.lid, 0.4) * (1.0 - abs(sc.happy)));
             spec = 1.0; shine = 60.0;
         } else if (mat == M_LEAF) {
             alb = mix(float3(0.42, 0.76, 0.3), float3(0.62, 0.55, 0.3), sc.droop * 0.8);
@@ -913,8 +1078,10 @@ fragment half4 lerpMain(float4 pos [[position]],
             alb = sc.season == 2 ? float3(1.0, 0.45, 0.15) : float3(0.95, 0.2, 0.2);
             spec = 0.6; shine = 40.0;
         } else if (mat == M_CLOUD) {
-            alb = mix(float3(0.58, 0.62, 0.7), float3(0.3, 0.31, 0.38), sc.cloudDark);
-            emit = sc.cloudDark * step(0.93, fract(time * 0.37)) * step(0.5, fract(time * 9.0)) * 1.5;
+            // slate, not black: lit on top, a shade darker underneath
+            alb = mix(float3(0.74, 0.78, 0.86), float3(0.52, 0.55, 0.66), sc.cloudDark);
+            alb *= mix(0.8, 1.2, smoothstep(-0.3, 0.7, n.y));
+            emit = sc.cloudDark * step(0.9, fract(time * 0.37)) * step(0.4, fract(time * 9.0)) * 1.5;
         } else if (mat == M_BLOSSOM) {
             float hue = fract(S.identity * 3.7);
             alb = mix(float3(1.0, 0.55, 0.7), float3(1.0, 0.85, 0.35), hue);
@@ -969,7 +1136,9 @@ fragment half4 lerpMain(float4 pos [[position]],
             col = mix(col, float3(1.0), a * smoothstep(0.09 * size, 0.04 * size, d));
         }
     }
-    float love = (act == ACT_WAVE || act == ACT_STRETCH) ? k : 0.0;
+    float love = ((act == ACT_WAVE || act == ACT_STRETCH) ? k : 0.0)
+               + ((prevAct == ACT_WAVE || prevAct == ACT_STRETCH) ? 1.0 - k : 0.0);
+    love = max(love, dtake * smoothstep(1.6, 2.2, time));
     if (love > 0.01) {
         for (int i = 0; i < 2; i++) {
             float ph = fract(time * 0.3 + float(i) * 0.5);
@@ -982,7 +1151,8 @@ fragment half4 lerpMain(float4 pos [[position]],
             col = mix(col, float3(1.0, 0.4, 0.5), a * smoothstep(0.02 * size, -0.03 * size, d));
         }
     }
-    float glee = ((act == ACT_HOP || act == ACT_CHASE) ? k : 0.0) * smoothstep(0.55, 0.8, S.joy);
+    float glee = (((act == ACT_HOP || act == ACT_CHASE) ? k : 0.0)
+               + ((prevAct == ACT_HOP || prevAct == ACT_CHASE) ? 1.0 - k : 0.0)) * smoothstep(0.55, 0.8, S.joy);
     if (glee > 0.01) {
         for (int i = 0; i < 5; i++) {
             float ph = fract(time * 0.45 + float(i) * 0.2 + hash11(float(i)) * 0.3);
@@ -1008,22 +1178,103 @@ fragment half4 lerpMain(float4 pos [[position]],
         float streak = smoothstep(0.045, 0.0, abs(uv.y - dropY)) * inside * step(0.3, hr);
         col = mix(col, float3(0.62, 0.76, 1.0), streak * 0.8 * sick);
     }
-    float flutter = (act == ACT_CHASE ? k : 0.0);
+    // Lightning out of the storm cloud, to the ground beside it.
+    float flash = storm * step(0.9, fract(time * 0.37)) * step(0.4, fract(time * 9.0));
+    if (flash > 0.01) {
+        float3 top = project(unbendP(sc.cloudPos + float3(0.0, -0.08, 0.0), sc), cam);
+        float3 g0 = sc.cpos + float3(cam.rt.x, 0.0, cam.rt.z) * (0.75 + 1.4 * sc.s);
+        float3 bot = project(unbendP(float3(g0.x, groundH(g0.xz, sc.ident), g0.z), sc), cam);
+        float2 ax = bot.xy - top.xy, nx = normalize(float2(-ax.y, ax.x)) * 0.025 * cam.focal / top.z;
+        float bolt = 1e5;
+        float2 pa = top.xy;
+        for (int i = 1; i <= 4; i++) {
+            float2 pb = top.xy + ax * (float(i) / 4.0) + nx * (i == 4 ? 0.0 : (i % 2 == 1 ? 1.0 : -1.0));
+            bolt = min(bolt, sdSeg(uv, pa, pb));
+            pa = pb;
+        }
+        float bw = 0.006 * cam.focal / top.z;
+        col = mix(col, float3(0.35, 0.3, 0.55), flash * smoothstep(2.6 * bw, 1.8 * bw, bolt));
+        col = mix(col, float3(1.0, 0.96, 0.62), flash * smoothstep(1.3 * bw, 0.6 * bw, bolt));
+        col += 0.07 * flash;
+    }
+    // Frazzled: a scribble beside its head that keeps redrawing itself.
+    float stress = clamp((0.4 - S.calm) / 0.3, 0.0, 1.0);
+    float zzzOff = 1.0 - min(zzz, 1.0);
+    float frazzle = max(storm, stress * 0.8) * zzzOff * (1.0 - dtake) * step(0.5, float(sc.stage));
+    if (frazzle > 0.01) {
+        float3 pj = project(unbendP(sc.cpos + float3(0.0, 1.95 * sc.s, 0.0), sc) - cam.rt * 1.05 * sc.s, cam);
+        float size = 0.15 * cam.focal / pj.z;
+        float2 b = (uv - pj.xy) / size;
+        if (dot(b, b) < 2.6) {
+            float d = 1e5;
+            float jit = floor(time * 5.0);
+            float2 prev = float2(0.0);
+            for (int i = 0; i <= 18; i++) {
+                float th = float(i) * 0.7 + jit * 0.37;
+                float2 cur = float2(cos(th) + 0.45 * cos(3.7 * th + jit), 0.8 * sin(th) + 0.45 * sin(2.9 * th + 1.3 * jit)) * 0.62;
+                if (i > 0) d = min(d, sdSeg(b, prev, cur));
+                prev = cur;
+            }
+            col = mix(col, float3(0.22, 0.2, 0.3), frazzle * smoothstep(0.085, 0.045, d) * step(pj.z, depth + 0.3));
+        }
+    }
+    // A sweat drop when it is stressed or poorly, sliding down by its head.
+    float sweat = max(max(storm, sick), stress) * zzzOff * (1.0 - dtake) * step(0.5, float(sc.stage));
+    if (sweat > 0.01) {
+        float ph = fract(time * 0.45);
+        float3 pj = project(unbendP(sc.cpos + float3(0.0, (1.7 - 0.35 * ph) * sc.s, 0.0), sc) + cam.rt * 1.05 * sc.s, cam);
+        float size = 0.12 * cam.focal / pj.z;
+        float2 b = (uv - pj.xy) / size;
+        float tear = length(float2(b.x * (1.0 + 1.8 * max(b.y, 0.0)), b.y)) - 0.5;
+        float a = sweat * smoothstep(0.0, 0.15, ph) * smoothstep(1.0, 0.75, ph) * step(pj.z, depth + 0.3);
+        col = mix(col, float3(0.2, 0.33, 0.6), a * smoothstep(0.12, 0.06, tear));
+        col = mix(col, float3(0.68, 0.87, 1.0), a * smoothstep(0.03, -0.02, tear));
+        col = mix(col, float3(1.0), a * smoothstep(0.12, 0.07, length(b - float2(-0.16, -0.08))));
+    }
+    // "!" — it has noticed you.
+    float bang = dtake * smoothstep(0.5, 0.6, time) * (1.0 - smoothstep(1.9, 2.3, time));
+    if (bang > 0.01) {
+        float3 pj = project(head + float3(0.0, 0.12, 0.0) + cam.rt * 0.45 * sc.s, cam);
+        float pop = smoothstep(0.5, 0.62, time) * (1.0 + 0.4 * exp(-max(time - 0.62, 0.0) * 8.0));
+        float size = 0.24 * pop * cam.focal / pj.z;
+        float2 b = (uv - pj.xy) / max(size, 1e-4);
+        float d = min(sdSeg(b, float2(0.0, 0.08), float2(0.0, 0.62)) - (0.08 + 0.07 * clamp(b.y / 0.62, 0.0, 1.0)),
+                      length(b - float2(0.0, -0.24)) - 0.12);
+        col = mix(col, float3(0.3, 0.16, 0.1), bang * smoothstep(0.11, 0.07, d));
+        col = mix(col, float3(1.0, 0.84, 0.25), bang * smoothstep(0.035, 0.0, d));
+    }
+    // The butterfly: big, saturated and outlined so it stands out from the
+    // falling petals, with a dotted trail. Its phase runs on, so a chase
+    // that follows a chase does not jump.
+    float flutter = (act == ACT_CHASE ? k : 0.0) + (prevAct == ACT_CHASE ? 1.0 - k : 0.0);
     if (flutter > 0.01) {
-        float a = tl * 0.55 + rr * 6.283;
-        float3 fly = unbendP(float3(cos(a) * 1.3, 0.0, sin(a) * 1.3), sc);
-        fly.y = groundH(fly.xz, sc.ident) - sc.bend * dot(fly.xz - sc.focus, fly.xz - sc.focus)
-              + 0.75 + 0.18 * sin(time * 3.1);
-        float3 pj = project(fly, cam);
-        float size = 0.2 * cam.focal / pj.z;
-        float2 bp = (uv - pj.xy) / size;
-        float flap = 0.25 + 0.75 * abs(sin(time * 13.0));
-        float2 wp = float2(abs(bp.x) / flap - 0.45, bp.y - 0.1);
-        float wing = min(length(wp * float2(1.0, 0.9)) - 0.42, length((wp - float2(-0.05, -0.45)) * float2(1.2, 1.0)) - 0.28);
-        float3 wc = mix(float3(1.0, 0.7, 0.25), float3(0.55, 0.75, 1.0), fract(S.identity * 5.3));
-        float vis = step(pj.z, depth + 0.2) * flutter;
-        col = mix(col, wc, smoothstep(0.03, -0.03, wing) * vis);
-        col = mix(col, float3(0.2, 0.15, 0.15), smoothstep(0.1, 0.05, length(bp * float2(2.2, 0.55))) * vis);
+        float3 pal[4] = { float3(1.0, 0.5, 0.05), float3(0.15, 0.5, 1.0), float3(1.0, 0.25, 0.65), float3(1.0, 0.82, 0.05) };
+        float3 wc = pal[int(fract(S.identity * 5.3) * 4.0) % 4];
+        for (int j = 6; j >= 0; j--) {
+            float tj = time - float(j) * 0.14;
+            float a = (tl - float(j) * 0.14) * 0.55;
+            float3 fly = unbendP(float3(cos(a) * 1.3, 0.0, sin(a) * 1.3), sc);
+            fly.y = groundH(fly.xz, sc.ident) - sc.bend * dot(fly.xz - sc.focus, fly.xz - sc.focus)
+                  + 0.75 + 0.18 * sin(tj * 3.1);
+            float3 pj = project(fly, cam);
+            float vis = step(pj.z, depth + 0.2) * flutter;
+            if (j > 0) {
+                if (j == 1) continue;
+                float dot0 = length(uv - pj.xy) - 0.007 * cam.focal / pj.z;
+                col = mix(col, float3(1.0), vis * 0.55 * (1.0 - float(j) / 7.0) * smoothstep(0.004, 0.0, dot0));
+                continue;
+            }
+            float size = 0.4 * cam.focal / pj.z;
+            float2 bp = (uv - pj.xy) / size;
+            if (dot(bp, bp) > 2.0) continue;
+            float flap = 0.25 + 0.75 * abs(sin(time * 13.0));
+            float2 wp = float2(abs(bp.x) / flap - 0.45, bp.y - 0.1);
+            float wing = min(length(wp * float2(1.0, 0.9)) - 0.42, length((wp - float2(-0.05, -0.45)) * float2(1.2, 1.0)) - 0.28);
+            col = mix(col, float3(0.12, 0.08, 0.14), smoothstep(0.08, 0.04, wing * flap) * vis);
+            float3 wcol = mix(wc, float3(1.0), smoothstep(0.1, 0.05, length(wp - float2(0.12, 0.12))));
+            col = mix(col, wcol, smoothstep(0.02, -0.02, wing) * vis);
+            col = mix(col, float3(0.12, 0.08, 0.14), smoothstep(0.1, 0.05, length(bp * float2(2.2, 0.55))) * vis);
+        }
     }
     if (night > 0.2 && S.health > 0.4) {
         int count = int(4.0 + 10.0 * S.health);
