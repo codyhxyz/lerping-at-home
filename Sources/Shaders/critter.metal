@@ -36,6 +36,7 @@
 // lerp-param: act   int   -1 9  = -1   "Activity (-1 = its choice)"
 // lerp-param: yaw   float -180 180 = 0 "Turn"
 // lerp-param: pitch float -35 20   = 0 "Tilt"
+// lerp-param: magnify float -0.7 0.6 = 0 "Zoom"
 
 #define ISLAND_R 7.0
 #define SEA_Y   -0.2
@@ -820,6 +821,7 @@ static inline float camFaceWeight(int act) {
         case ACT_PACE:  return 0.0;
         case ACT_CHASE: return 0.0;
         case ACT_SIT:   return 0.0;
+        case ACT_BUILD: return 0.0;    // it faces its castle; the camera keeps the 3/4 view
         default:        return 0.8;    // sleep, stretch, wave, sick, build: held
     }
 }
@@ -902,7 +904,8 @@ fragment half4 lerpMain(float4 pos [[position]],
     // face-on), so its face is usually what we see; see camFaceWeight.
     float fsz = sc.stage == 0 ? 0.42 : sc.s;
     float zoom = mix(1.0, fsz / 0.5, 0.75);
-    float3 target = float3(sc.cpos.x * 0.65, 0.15 + 1.1 * fsz, sc.cpos.z * 0.65);
+    // A cloud over its head comes into the frame with it.
+    float3 target = float3(sc.cpos.x * 0.65, 0.15 + 1.1 * fsz + 0.35 * sc.cloud, sc.cpos.z * 0.65);
     sc.focus = target.xz;
     float dist = 3.6 * zoom, height = 1.85 * zoom;
     float faceW = mix(camFaceWeight(prevAct), camFaceWeight(act), k);
@@ -914,7 +917,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     // Drag to turn, round what the camera looks at. +pitch lowers the camera
     // (the scene comes up under the hand): +20° is 7° over the meadow, -35°
     // is 62°, looking down.
-    lerpOrbit(u.yaw, u.pitch, target, float3(0.0, 1.0, 0.0), cam.ro, cam.rt, cam.fw);
+    lerpOrbit(u.yaw, u.pitch, u.magnify, target, float3(0.0, 1.0, 0.0), cam.ro, cam.rt, cam.fw);
     cam.up = cross(cam.rt, cam.fw);
     cam.focal = 2.7;
     float3 rd = normalize(uv.x * cam.rt + uv.y * cam.up + cam.focal * cam.fw);
@@ -1398,9 +1401,9 @@ fragment half4 lerpMain(float4 pos [[position]],
         for (int j = 6; j >= 0; j--) {
             float tj = time - float(j) * 0.14;
             float a = (tl - float(j) * 0.14) * 0.55;
-            float3 fly = unbendP(float3(cos(a) * 1.3, 0.0, sin(a) * 1.3), sc);
+            float3 fly = unbendP(float3(cos(a) * 1.45, 0.0, sin(a) * 1.45), sc);
             fly.y = groundH(fly.xz, sc.ident) - sc.bend * dot(fly.xz - sc.focus, fly.xz - sc.focus)
-                  + 0.75 + 0.18 * sin(tj * 3.1);
+                  + 0.55 + 1.3 * sc.s + 0.15 * sin(tj * 3.1);   // just above its head, out ahead
             float3 pj = project(fly, cam);
             float vis = step(pj.z, depth + 0.2) * flutter;
             if (j > 0) {
@@ -1409,7 +1412,7 @@ fragment half4 lerpMain(float4 pos [[position]],
                 col = mix(col, float3(1.0), vis * 0.55 * (1.0 - float(j) / 7.0) * smoothstep(0.004, 0.0, dot0));
                 continue;
             }
-            float size = 0.28 * cam.focal / pj.z;
+            float size = 0.14 * cam.focal / pj.z;
             float2 bp = (uv - pj.xy) / size;
             if (dot(bp, bp) > 2.0) continue;
             float flap = 0.25 + 0.75 * abs(sin(time * 13.0));
