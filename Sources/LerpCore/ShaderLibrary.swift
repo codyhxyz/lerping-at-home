@@ -400,6 +400,7 @@ public final class ShaderLibrary: @unchecked Sendable {
         self.extraSearchURLs = extraSearchURLs
         LerpSplatAssets.addSourceRoots(extraSearchURLs)
         LerpImageAssets.addSourceRoots(extraSearchURLs)
+        CritterAssets.addSourceRoots(extraSearchURLs)
     }
 
     /// Which compiler new pipelines go through: `mtl4` or `classic`.
