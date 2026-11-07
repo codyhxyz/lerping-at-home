@@ -252,8 +252,11 @@ static float3 sdFlowers(float3 q, float gh, thread const Scene& sc) {
     float base = gh;
     float fh = 0.15 + 0.1 * hash21(c + 5.5);
     float3 lp = q - float3(center.x, base, center.y);
-    float stem = sdCap(lp, float3(0.0), float3(0.0, fh, 0.0), 0.012);
-    float3 hp = lp - float3(0.0, fh, 0.0);
+    float gust = 0.6 + 0.4 * sin(sc.time * 0.31 + center.x * 0.4);
+    float3 sway = float3(sin(sc.time * 1.7 + pres * 40.0 + center.x), 0.0,
+                         cos(sc.time * 1.3 + pres * 23.0 + center.y)) * 0.03 * gust;
+    float stem = sdCap(lp, float3(0.0), float3(0.0, fh, 0.0) + sway, 0.012);
+    float3 hp = lp - float3(0.0, fh, 0.0) - sway;
     float pm = 1.0 + 0.32 * cos(5.0 * atan2(hp.z, hp.x) + pres * 30.0);
     float head = sdEll(float3(hp.x / pm, hp.y, hp.z / pm), float3(0.075, 0.025, 0.075)) * 0.75;
     float core = length(hp - float3(0.0, 0.018, 0.0)) - 0.028;
@@ -645,7 +648,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     sc.bend = 0.011;
 
     // ---- what it is doing
-    float az = TWO_PI * fract(seed * 7.31 + S.identity) + time * 0.006 * u.drift;
+    float az = TWO_PI * fract(seed * 7.31 + S.identity) + time * 0.02 * u.drift;
     float2 right = float2(cos(az), -sin(az));
     float tl = time + seed * 997.0;
     float chapter = floor(time / CHAPTER);
@@ -926,6 +929,9 @@ fragment half4 lerpMain(float4 pos [[position]],
                  : (mat == M_BODY || mat == M_EYE || mat == M_LEAF || mat == M_EGG || mat == M_BLOSSOM ? 8 : -1);
         if (mat == M_LEAF && length(q - sc.cpos) > 2.5 * sc.s) self = -1;   // a flower stem, not the sprout
         float sh = mat == M_SEA && t > 9.0 ? 1.0 : softShadow(q + n * 0.01, L, sc, self);
+        float2 cs = q.xz * 0.16 + float2(0.05, 0.022) * time;
+        float cloudShade = smoothstep(0.52, 0.72, valueNoise(cs) * 0.65 + valueNoise(cs * 2.3 + 5.0) * 0.35);
+        sh *= 1.0 - 0.42 * cloudShade * (1.0 - night);
         float dif = smoothstep(-0.05, 0.3, ndl) * mix(0.25, 1.0, sh);
         float ao = ambientOcc(q, n, sc, self);
         float3 lin = srgb(sunCol) * dif * 1.05;
@@ -1033,6 +1039,41 @@ fragment half4 lerpMain(float4 pos [[position]],
             float pulse = 0.5 + 0.5 * sin(time * 2.0 + fi * 1.7);
             col += float3(0.85, 1.0, 0.45) * glow * pulse * night * step(pj.z, depth + 0.3) * 0.9;
         }
+    }
+
+    // ---- the season in the air, in front of everything: spring petals,
+    // summer seed fluff, autumn leaves, winter snow. Three layers for depth.
+    for (int layer = 0; layer < 3; layer++) {
+        float fl = float(layer);
+        float cell = 0.2 - 0.045 * fl;
+        float fall = (sc.season == 1 ? -0.03 : (sc.season == 3 ? 0.07 : 0.055)) * (1.0 - 0.25 * fl);
+        float2 pp = uv + float2(0.025 * time * (sc.season == 3 ? 0.3 : 1.0) + fl * 3.1, fall * time);
+        float2 id = floor(pp / cell);
+        float hp1 = hash21(id + fl * 17.0);
+        if (hp1 > (sc.season == 3 ? 0.55 : 0.3)) continue;
+        float2 f = fract(pp / cell) - 0.5;
+        float2 jit = (hash22(id + 3.0 + fl) - 0.5) * 0.36;
+        float ph = time * (0.8 + hp1 * 2.0) + hp1 * 40.0;
+        f -= jit + float2(0.07 * sin(ph), 0.0);
+        float size = (0.17 + 0.07 * hp1) * (1.0 - 0.22 * fl);
+        float2 g2 = rotate(f, ph * 0.7) / size;
+        float shape, tone = hash11(hp1 * 91.0);
+        float3 pc;
+        if (sc.season == 3) {
+            shape = length(g2) - 0.55;
+            pc = float3(1.0);
+        } else if (sc.season == 1) {
+            shape = min(length(g2) - 0.25, length(float2(abs(g2.x), g2.y * 0.9) - float2(0.25, 0.25)) - 0.2);
+            pc = float3(1.0, 1.0, 0.95);
+        } else {
+            g2.x *= 1.0 + 0.6 * sin(ph * 2.0);     // tumbling
+            shape = length(g2 * float2(1.0, 2.0)) - 0.6;
+            pc = sc.season == 2
+               ? (tone < 0.33 ? float3(1.0, 0.55, 0.2) : (tone < 0.66 ? float3(0.92, 0.32, 0.2) : float3(1.0, 0.78, 0.28)))
+               : (tone < 0.5 ? float3(1.0, 0.72, 0.8) : float3(1.0, 0.86, 0.9));
+        }
+        float a = smoothstep(0.06, -0.06, shape) * (0.85 - 0.2 * fl) * mix(1.0, 0.45, night);
+        col = mix(col, pc * mix(1.0, 0.5, night), a);
     }
 
     // ---- finish: gentle vignette, a little warmth
