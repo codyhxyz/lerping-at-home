@@ -25,6 +25,7 @@
 // lerp-param: vignette   float 0 1     = 0.3   "Vignette"
 // lerp-param: yaw        float -30 30 = 0 "Turn"
 // lerp-param: pitch      float -20 20 = 0 "Tilt"
+// lerp-param: magnify    float -0.5 1 = 0 "Zoom"
 
 fragment half4 lerpMain(float4 pos [[position]],
                         constant LerpUniforms& u [[buffer(0)]],

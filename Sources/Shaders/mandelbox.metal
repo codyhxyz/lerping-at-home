@@ -67,6 +67,7 @@
 // lerp-param: haze    color          = (0.020, 0.026, 0.036) "Fog colour"
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -90 90   = 0 "Tilt"
+// lerp-param: magnify  float -1 0.6 = 0 "Zoom"
 //
 // lerp-preset: "Outer Box"            form=1, scale=animate(1.75, 2.0, period=240)
 // lerp-preset: "Minus One and a Half" form=1, scale=animate(-1.62, -1.42, period=260), metal=0.65
@@ -321,16 +322,17 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 right = normalize(cross(upv, fwd));
     // Drag to turn: round the box from outside; in the halls and over the
     // slab the view turns where it is.
-    if (form == 1) lerpOrbit(u.yaw, u.pitch, float3(0.0), upv, ro, right, fwd);
-    else           lerpLook(u.yaw, u.pitch, upv, right, fwd);
+    float lens = 1.0;
+    if (form == 1) lerpOrbit(u.yaw, u.pitch, u.magnify, float3(0.0), upv, ro, right, fwd);
+    else           lens = lerpLook(u.yaw, u.pitch, u.magnify, upv, right, fwd);
     float3 up = cross(fwd, right);
-    float3 rd = normalize(uv.x * right + uv.y * up + MB_FOCAL * fwd);
+    float3 rd = normalize(uv.x * right + uv.y * up + lens * MB_FOCAL * fwd);
 
     // Hit tolerance and LOD are fixed angles (2 px of a 1500-px view), so a
     // 5K frame costs no more per pixel than a small one. A fixed angle seals
     // the same on-screen size of hole at every distance; the fog may widen it
     // by at most MB_FOG_EPS, so it cannot keep sealing bigger ones further out.
-    float px = 2.0 / (MB_FOCAL * 1500.0);
+    float px = 2.0 / (lens * MB_FOCAL * 1500.0);
     float fogK = mix(0.12, 0.9, u.fog) / sceneUnit;
 
     // Fog starts at the bounding cube outside the box, at the eye elsewhere.

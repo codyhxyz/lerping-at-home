@@ -25,6 +25,7 @@
 // lerp-param: background color         = (0.035, 0.03, 0.03) "Background"
 // lerp-param: yaw        float -180 180 = 0 "Turn"
 // lerp-param: pitch      float -30 30 = 0 "Tilt"
+// lerp-param: magnify    float -0.5 0.6 = 0 "Zoom"
 //
 // dnbt777's "you can just deform gaussian splats": the berry wrung about its
 // own axis and let go.

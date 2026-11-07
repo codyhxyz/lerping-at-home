@@ -24,6 +24,7 @@
 // lerp-param: background color         = (0.03, 0.028, 0.026) "Background"
 // lerp-param: yaw        float -60 60 = 0 "Turn"
 // lerp-param: pitch      float -25 25 = 0 "Tilt"
+// lerp-param: magnify    float -0.5 0.6 = 0 "Zoom"
 //
 // lerp-preset: "Fossil bloom"  deform=4, amount=0.03, cycle=26
 

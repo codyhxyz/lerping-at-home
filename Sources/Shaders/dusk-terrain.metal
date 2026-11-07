@@ -45,6 +45,7 @@
 // lerp-param: speed      float 0 3 = 1.0  "Camera speed"
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -45 45   = 0 "Tilt"
+// lerp-param: magnify  float -1 1.5 = 0 "Zoom"
 // lerp-param: cloudCover float 0 1 = 0.45 "Cloud cover"
 // lerp-param: cloudSea   float 0 1 = 0.45 "Cloud sea"
 // lerp-param: altitude   float 0 1 = 0.35 "Flight altitude"
@@ -416,16 +417,16 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float roll = clamp(-3.0 * (turn.x * ahead.y - turn.y * ahead.x), -0.12, 0.12);
     float3 upw = float3(sin(roll), cos(roll), 0.0);
     float3 right = normalize(cross(upw, fwd));
-    lerpLook(u.yaw, u.pitch, float3(0.0, 1.0, 0.0), right, fwd);   // drag to look round
+    float lens = lerpLook(u.yaw, u.pitch, u.magnify, float3(0.0, 1.0, 0.0), right, fwd);   // drag to look round, pinch to zoom
     float3 up = cross(fwd, right);
-    float3 rd = normalize(uv.x * right + uv.y * up + DT_FOCAL * fwd);
+    float3 rd = normalize(uv.x * right + uv.y * up + lens * DT_FOCAL * fwd);
 
     // --- Trace.
     float tSea = 1e9;
     if (seaOn && rd.y < 0.0 && ro.y > seaY) tSea = (seaY - ro.y) / rd.y;
     const float seaDepth = 1.0;      // ray length through cloud before it's opaque
     float tmax = min(DT_FAR, tSea + seaDepth);
-    float pixelAngle = 2.0 / (DT_FOCAL * min(u.resolution.x, u.resolution.y));
+    float pixelAngle = 2.0 / (lens * DT_FOCAL * min(u.resolution.x, u.resolution.y));
     float t = dtMarch(ro, rd, tmax, pixelAngle, salt);
 
     float3 fogDir = normalize(float3(rd.x, 0.0, rd.z));

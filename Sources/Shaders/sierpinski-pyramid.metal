@@ -146,6 +146,7 @@
 // lerp-param: zoom      float 0 1     = 0.4  "Camera distance (orbit)"
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -90 90   = 0 "Tilt"
+// lerp-param: magnify  float -1 1 = 0 "Zoom"
 // lerp-param: fly       bool          = true "Fly-through"
 // lerp-param: metal     float 0 1     = 1.0  "Metalness"
 // lerp-param: gloss     float 0 1     = 0.7  "Gloss"
@@ -1393,6 +1394,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     }
     bool fly = route >= 0;
     float3 roF, fwdF, rightF, upF, upRef;
+    float lens = 1.0;
     float sigma = F.bound;    // the neighbourhood's scale: clearance along a route
     if (fly) {
         // Seed: where on the loop, and which of the form's symmetries about
@@ -1416,7 +1418,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         roF = G * P.xyz;
         fwdF = normalize(G * lk);
         rightF = normalize(cross(G * upP, fwdF));
-        lerpLook(u.yaw, u.pitch, G * upP, rightF, fwdF);   // drag to turn, where it flies
+        lens = lerpLook(u.yaw, u.pitch, u.magnify, G * upP, rightF, fwdF);   // drag to turn, pinch to zoom, where it flies
         upF = cross(fwdF, rightF);
         upRef = upF;
         sigma = P.w;
@@ -1431,14 +1433,14 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         float3 fwd = normalize(look - ro);
         float roll = 0.05 * sin(0.017 * ct + seed * 11.0);
         float3 right = normalize(cross(float3(sin(roll), cos(roll), 0.0), fwd));
-        lerpOrbit(u.yaw, u.pitch, look, float3(0.0, 1.0, 0.0), ro, right, fwd);   // drag to turn
+        lerpOrbit(u.yaw, u.pitch, u.magnify, look, float3(0.0, 1.0, 0.0), ro, right, fwd);   // drag to turn, pinch to zoom
         roF = W * ro;
         fwdF = W * fwd;
         rightF = W * right;
         upF = W * cross(fwd, right);
         upRef = fu;
     }
-    float3 rdF = normalize(uv.x * rightF + uv.y * upF + SP_FOCAL * fwdF);
+    float3 rdF = normalize(uv.x * rightF + uv.y * upF + lens * SP_FOCAL * fwdF);
 
     // Lights carried with the camera, so the lit side stays toward the viewer.
     float3 key = normalize(-0.55 * rightF + 0.75 * upRef - 0.35 * fwdF);

@@ -25,6 +25,7 @@
 // lerp-param: background color         = (0.03, 0.028, 0.035) "Background"
 // lerp-param: yaw        float -180 180 = 0 "Turn"
 // lerp-param: pitch      float -30 30 = 0 "Tilt"
+// lerp-param: magnify    float -0.5 0.6 = 0 "Zoom"
 
 // One layer of flakes falling through the globe: a jittered grid in globe
 // space, wrapping vertically, each flake a soft disc.

@@ -84,6 +84,7 @@
 // lerp-param: tint  color       = (0.86, 0.81, 0.72) "Tint"
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -90 90   = 0 "Tilt"
+// lerp-param: magnify  float -1 0.3 = 0 "Zoom"   (nearer, the march loses the fold)
 //
 // lerp-preset: Upstream  speed=1.0, swing=1.0, steps=100, tint=(1.0, 1.0, 1.0)
 // lerp-preset: Moonstone tint=(0.58, 0.70, 0.86)
@@ -129,9 +130,9 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float2x2 tumble = float2x2(float2(c, -s), float2(s, c));
     float3 origin = float3(0.0, 0.0, -4.3);
     float3 dir = float3(uv, 1.0);
-    if (u.yaw != 0.0 || u.pitch != 0.0) {         // drag to turn, round the castle
+    if (u.yaw != 0.0 || u.pitch != 0.0 || u.magnify != 0.0) {   // drag to turn, pinch to zoom
         float3 right = float3(1.0, 0.0, 0.0), fwd = float3(0.0, 0.0, 1.0);
-        lerpOrbit(u.yaw, u.pitch, float3(0.0), float3(0.0, 1.0, 0.0), origin, right, fwd);
+        lerpOrbit(u.yaw, u.pitch, u.magnify, float3(0.0), float3(0.0, 1.0, 0.0), origin, right, fwd);
         dir = uv.x * right + uv.y * cross(fwd, right) + fwd;
     }
     origin.zy = origin.zy * tumble;

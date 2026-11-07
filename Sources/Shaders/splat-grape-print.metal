@@ -23,6 +23,7 @@
 // lerp-param: ink        color         = (0.10, 0.09, 0.12) "Ink"
 // lerp-param: yaw        float -180 180 = 0 "Turn"
 // lerp-param: pitch      float -30 30 = 0 "Tilt"
+// lerp-param: magnify    float -0.5 0.6 = 0 "Zoom"
 //
 // lerp-preset: Halftone      filter=0, cell=9
 // lerp-preset: Dither        filter=1, cell=3

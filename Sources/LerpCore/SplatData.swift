@@ -19,7 +19,8 @@ import simd
 /// swings the camera round the point it looks at, which is right wherever the
 /// subject is that point. A capture seen from inside — a square, a room — is
 /// mostly far beyond it, and would move against the hand; `:look` on the end
-/// (`splat:orbit:trogir-square:look`) turns that camera where it stands.
+/// (`splat:orbit:trogir-square:look`) turns that camera where it stands, and
+/// zooms it by lengthening the lens rather than walking it into the scene.
 ///
 /// The engine draws one fullscreen fragment function, so the splats are drawn
 /// here, in `encodeCompute`, into a texture this provider owns; the look's
@@ -253,8 +254,9 @@ public final class SplatData: LerpDataProvider {
             let eye = SIMD3(sin(angle) * distance, height + bob, cos(angle) * distance)
             let focal = 0.5 * size.y / tan(fovy * 0.5)
             let clip = param(params, "clip", 0)
-            return Camera(view: turnedView(eye: eye, target: target, params: params), focal: focal, fovy: fovy,
-                          near: clip > 0 ? max(0.02, simd_length(eye - target) - clip) : 0.02)
+            let hand = held(eye: eye, target: target, params: params)
+            return Camera(view: hand.view, focal: focal * hand.lens, fovy: Self.narrowed(fovy, by: hand.lens),
+                          near: clip > 0 ? max(0.02, hand.distance - clip) : 0.02)
 
         case .dolly:
             // VoxelKei's telephoto compression, as a move: the field of view
@@ -274,26 +276,40 @@ public final class SplatData: LerpDataProvider {
             let eye = target + dir * d + SIMD3(0, height * d / distance, 0)
             let focal = 0.5 * size.y / tan(half)
             let clip = param(params, "clip", 1.5)
-            return Camera(view: turnedView(eye: eye, target: target, params: params), focal: focal, fovy: 2 * half,
-                          near: max(0.02, simd_length(eye - target) - clip))
+            let hand = held(eye: eye, target: target, params: params)
+            return Camera(view: hand.view, focal: focal * hand.lens, fovy: Self.narrowed(2 * half, by: hand.lens),
+                          near: max(0.02, hand.distance - clip))
         }
     }
 
-    /// `lookAt`, after a drag has swung the eye round the target or, for a
-    /// `:look` capture, turned it where it stands (`LerpTurn`). The distance
-    /// to the target is unchanged, so the clip plane measured from it holds.
-    private func turnedView(eye: SIMD3<Float>, target: SIMD3<Float>, params: LerpParameterValues?) -> simd_float4x4 {
+    /// The camera after the hand (`LerpTurn`): the eye swung round the target
+    /// and brought nearer by `magnify`, or — for a `:look` capture — turned
+    /// where it stands, with `lens` to lengthen the focal length by. The
+    /// distance is the eye's from the target afterwards, for the clip plane.
+    private func held(eye: SIMD3<Float>, target: SIMD3<Float>, params: LerpParameterValues?)
+        -> (view: simd_float4x4, distance: Float, lens: Float) {
         let yaw = param(params, LerpTurn.yawParameter, 0), pitch = param(params, LerpTurn.pitchParameter, 0)
-        guard yaw != 0 || pitch != 0 else { return Self.lookAt(eye: eye, target: target) }
+        let magnify = param(params, LerpTurn.magnifyParameter, 0)
+        guard yaw != 0 || pitch != 0 || magnify != 0 else {
+            return (Self.lookAt(eye: eye, target: target), simd_length(eye - target), 1)
+        }
         let up = SIMD3<Float>(0, 1, 0)
         var eye = eye, fwd = simd_normalize(target - eye)
         var right = simd_normalize(simd_cross(fwd, up))
+        var lens: Float = 1
         if turnsInPlace {
-            LerpTurn.look(yaw: yaw, pitch: pitch, up: up, right: &right, fwd: &fwd)
+            lens = LerpTurn.look(yaw: yaw, pitch: pitch, magnify: magnify, up: up, right: &right, fwd: &fwd)
         } else {
-            LerpTurn.orbit(yaw: yaw, pitch: pitch, pivot: target, up: up, eye: &eye, right: &right, fwd: &fwd)
+            LerpTurn.orbit(yaw: yaw, pitch: pitch, magnify: magnify, pivot: target, up: up,
+                           eye: &eye, right: &right, fwd: &fwd)
         }
-        return Self.lookAt(eye: eye, target: eye + fwd, up: simd_cross(right, fwd))
+        return (Self.lookAt(eye: eye, target: eye + fwd, up: simd_cross(right, fwd)),
+                simd_length(eye - target), lens)
+    }
+
+    /// A vertical field of view with its focal length multiplied by `lens`.
+    static func narrowed(_ fovy: Float, by lens: Float) -> Float {
+        lens == 1 ? fovy : 2 * atan(tan(fovy * 0.5) / lens)
     }
 
     /// `LerpViewer.eye` as a rasteriser applies it: the eye steps by `e`

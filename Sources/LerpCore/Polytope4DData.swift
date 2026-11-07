@@ -191,7 +191,10 @@ public final class Polytope4DData: LerpDataProvider {
         let tol = max(0.6, short / 1400)
         // A fixed 3D tilt so the first frame is not a face-on view, then the
         // drag's turn (`LerpTurn`): the camera stays put on +z and the figure
-        // turns the opposite way, which is the same picture.
+        // turns the opposite way, which is the same picture. `magnify` dollies
+        // the eye in along z with the lens unchanged, so the near side swells
+        // faster than the far, and edges that come close fade as they always
+        // have (`zNear`).
         var tilt = Self.tilt
         let yaw = Self.scalar(params, LerpTurn.yawParameter, 0)
         let pitch = Self.scalar(params, LerpTurn.pitchParameter, 0)
@@ -200,6 +203,7 @@ public final class Polytope4DData: LerpDataProvider {
                                            right: SIMD3(1, 0, 0), fwd: SIMD3(0, 0, -1))
             tilt = simd_float3x3(q.inverse) * tilt
         }
+        let eye = cam * exp2(-Self.scalar(params, LerpTurn.magnifyParameter, 0))
 
         @inline(__always) func project(_ v4: SIMD4<Float>) -> PP {
             var X: SIMD3<Float>
@@ -215,7 +219,7 @@ public final class Polytope4DData: LerpDataProvider {
             }
             let r3 = simd_length(X)
             let P = tilt * X
-            let zc = cam - P.z
+            let zc = eye - P.z
             if zc < 0.2 { return PP(px: .zero, r: 0, wcue: 1, fade: 0, radius3: r3, ok: false) }
             let persp = cam / zc
             let s = SIMD2(P.x, P.y) * (persp * fit)

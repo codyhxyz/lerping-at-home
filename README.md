@@ -420,10 +420,23 @@ the camera stands. It is not a separate control: the drag moves the look's
 Save or **+** keeps a framing as a preset that the screensaver then plays, and
 a knob or a hand can be bound to it with Learn…. Turn wraps all the way round;
 Tilt stops where the look says it should — a splat capture only a little way,
-because a capture only holds up near where it was photographed. Looks that turn:
-the raymarched fractals (mandelbulb, mandelbox, menger-sponge, quaternion-julia,
-kleinian, sierpinski-pyramid, topologica, castle-to-castle), dusk-terrain,
-sea-and-moon, star-nest, maze, pipes, polytope-4d and every `splat-*` capture.
+because a capture only holds up near where it was photographed.
+
+**Pinch to zoom.** On the same looks, pinch on a trackpad, or scroll with two
+fingers or a mouse wheel over the render, and the scene comes nearer or goes
+back. Fingers apart is nearer, at the pinch's own rate — spread to twice the
+span and the subject is drawn twice the size. Scrolling reads the way it does
+in a web 3D viewer, so it follows your Natural Scrolling setting: content up is
+nearer, about a stop for a long trackpad swipe or ten wheel lines, and a
+trackpad's momentum carries on after the fingers lift. An object comes nearer
+the way a camera walks up to it, so its perspective deepens; a landscape, a
+corridor or the maze lengthens the lens instead, since walking would put you
+in a wall. It moves the look's **Zoom** parameter (`magnify`, in stops), which
+stops where the look says — before the camera is inside the fractal, or past
+the edge of a capture. Looks that turn and zoom: the raymarched fractals
+(mandelbulb, mandelbox, menger-sponge, quaternion-julia, kleinian,
+sierpinski-pyramid, topologica, castle-to-castle), dusk-terrain, sea-and-moon,
+star-nest, maze, pipes, polytope-4d and every `splat-*` capture.
 
 The tracking is coding cube's MediaPipe hand control, run in a transparent web
 view over the render. The overlay follows The Poet Engineer's hand interfaces:

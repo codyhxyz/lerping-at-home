@@ -25,6 +25,7 @@
 // lerp-param: background color         = (0.02, 0.025, 0.03) "Background"
 // lerp-param: yaw        float -180 180 = 0 "Turn"
 // lerp-param: pitch      float -30 30 = 0 "Tilt"
+// lerp-param: magnify    float -0.5 0.6 = 0 "Zoom"
 //
 // lerp-preset: Ripple  deform=1, amount=0.09, frequency=3
 

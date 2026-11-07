@@ -67,6 +67,7 @@
 // lerp-param: speed    float 0 3 = 1.0  "Speed"
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -90 90   = 0 "Tilt"
+// lerp-param: magnify  float -1 1.5 = 0 "Zoom"
 // lerp-param: material float 0 1 = 0.25 "Bone / iridescent"
 // lerp-param: hue      float 0 1 = 0.0  "Hue"
 // lerp-param: fog      float 0 1 = 0.5  "Fog"
@@ -335,9 +336,12 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         fwd = normalize(float3(1.0, 0.45 * sin(ph + r2 * 6.0), 0.55 * sin(2.0 * ph + r1 * 6.0)));
     }
     float3 right = normalize(cross(wup, fwd));
-    lerpLook(u.yaw, u.pitch, wup, right, fwd);   // drag to turn: every route flies inside the limit set
+    // Drag to turn, pinch to zoom: every route flies inside the limit set, so
+    // the view turns and the lens lengthens where the camera is.
+    float lens = lerpLook(u.yaw, u.pitch, u.magnify, wup, right, fwd);
+    pix /= lens;
     float3 up = cross(fwd, right);
-    float3 rd = normalize(uv.x * right + uv.y * up + KL_FOCAL * fwd);
+    float3 rd = normalize(uv.x * right + uv.y * up + lens * KL_FOCAL * fwd);
     float camScale = (S.mode == 3) ? length(ro) : 1.0;
     S.deep = camScale * KL_ZOOM_DEEP;
 

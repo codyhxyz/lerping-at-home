@@ -66,7 +66,7 @@ enum ShaderScaffold {
         // Uniforms:  u.resolution (px)  u.time (s)  u.seed ([0,1), per launch)
         //            u.audioLevel/audioBass/audioMid/audioTreble (~0..1; 0 unless audio is on)
         //            u.viewer (tracked head; 0 unless a `parallax` param opts in and tracking is on)
-        //            declare `yaw`/`pitch` params and a drag on the render turns a 3D look
+        //            declare `yaw`/`pitch`/`magnify` params and drag/pinch on the render turn and zoom a 3D look
         // Prelude:   lerpUV, lerpScreenUV, rotate, hash11/21/22, valueNoise,
         //            snoise, glmod/2/3, lerpDither, lerpViewerRay, lerpOrbit,
         //            lerpLook, PI, TWO_PI

@@ -31,6 +31,7 @@
 // lerp-param: speed   float 0 2 = 0.5            "Speed"
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -30 30   = 0 "Tilt"
+// lerp-param: magnify  float -1 1.5 = 0 "Zoom"
 //
 // lerp-preset: "Old sunset" skyCol1=(0.3, 0.175, 0.15), skyCol2=(0.5, 0.15, 0.15)
 // lerp-preset: "Old sunset" sunCol1=(1.0, 0.5, 0.4), sunCol2=(1.0, 0.8, 0.8)
@@ -160,9 +161,9 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 ro = float3(0.0, 10.0, 0.0);
     float3 ww = normalize(float3(0.0, -0.1, 1.0));
     float3 uu = normalize(cross(float3(0.0, 1.0, 0.0), ww));
-    lerpLook(u.yaw, u.pitch, float3(0.0, 1.0, 0.0), uu, ww);   // drag to look round
+    float lens = lerpLook(u.yaw, u.pitch, u.magnify, float3(0.0, 1.0, 0.0), uu, ww);   // drag to look round, pinch to zoom
     float3 vv = normalize(cross(ww, uu));
-    float3 rd = normalize(p.x * uu + p.y * vv + 2.5 * ww);
+    float3 rd = normalize(p.x * uu + p.y * vv + lens * 2.5 * ww);
 
     float3 color = max(seaRender(ro, rd, time, u), 0.0);
 

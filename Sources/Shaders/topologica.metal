@@ -41,6 +41,7 @@
 // lerp-param: morph  float 0 1        = 0.5                "Morph"
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -90 90   = 0 "Tilt"
+// lerp-param: magnify  float -1 1 = 0 "Zoom"
 // lerp-animate: morph 0 1 period=180
 //
 // lerp-preset: Upstream           gain=10, detail=2.32
@@ -57,14 +58,14 @@ struct TopoClassicIn {
     float2 resolution;
     float time;
     float seed;
-    float yaw; float pitch;           // drag to turn
+    float yaw; float pitch; float magnify;   // drag to turn, pinch to zoom
     float4 color; float speed; float gain; int steps;
 };
 struct TopoFractalIn {
     float2 resolution;
     float time;
     float seed;
-    float yaw; float pitch;           // drag to turn
+    float yaw; float pitch; float magnify;   // drag to turn, pinch to zoom
     float4 color; float speed; float zoom; float gain; int wire;
     float tilt; float bloom; int steps;
 };
@@ -72,7 +73,7 @@ struct TopoGyroidIn {
     float2 resolution;
     float time;
     float seed;
-    float yaw; float pitch;           // drag to turn
+    float yaw; float pitch; float magnify;   // drag to turn, pinch to zoom
     float4 color; float4 accent; float speed; float gain; int steps;
     float surface; float morph; float scale; float twist; float warp;
     float membrane; float bands;
@@ -81,7 +82,7 @@ struct Topo4DIn {
     float2 resolution;
     float time;
     float seed;
-    float yaw; float pitch;           // drag to turn
+    float yaw; float pitch; float magnify;   // drag to turn, pinch to zoom
     int mode; float4 color; float4 color2; float dichroic; float speed;
     float gain; float width; float slab; float cells; float tilt; float drift;
     float turn; int rings; int fibers; int knotP; int knotQ; int steps;
@@ -248,7 +249,7 @@ static half4 topoClassic(float4 pos, TopoClassicIn u) {
 
     float3 camVec = normalize(camLookat - camPos);
     float3 sideNorm = normalize(cross(camUp, camVec));
-    lerpOrbit(u.yaw, u.pitch, camLookat, camUp, camPos, sideNorm, camVec);
+    lerpOrbit(u.yaw, u.pitch, u.magnify, camLookat, camUp, camPos, sideNorm, camVec);
     float3 upNorm = cross(camVec, sideNorm);
     float3 worldFacing = camPos + camVec;
     float3 worldPix = worldFacing + uv.x * sideNorm * (u.resolution.x / u.resolution.y) + uv.y * upNorm;
@@ -524,7 +525,7 @@ static half4 topoFractal(float4 pos, TopoFractalIn u) {
     float3 eye = TFR_EYE * float3(cos(el) * cos(az), sin(el), cos(el) * sin(az));
     float3 fwd = normalize(-eye);
     float3 side = normalize(cross(float3(0.0, 1.0, 0.0), fwd));
-    lerpOrbit(u.yaw, u.pitch, float3(0.0), float3(0.0, 1.0, 0.0), eye, side, fwd);
+    lerpOrbit(u.yaw, u.pitch, u.magnify, float3(0.0), float3(0.0, 1.0, 0.0), eye, side, fwd);
     float3 up = cross(fwd, side);
     float2 uv = lerpUV(pos, u.resolution);
     float3 dir = normalize(fwd * 1.5 + uv.x * side + uv.y * up);
@@ -724,7 +725,7 @@ static half4 topoGyroid(float4 pos, TopoGyroidIn u) {
 
     float3 camVec = normalize(-camPos);
     float3 sideNorm = normalize(cross(float3(0.0, 1.0, 0.0), camVec));
-    lerpOrbit(u.yaw, u.pitch, float3(0.0), float3(0.0, 1.0, 0.0), camPos, sideNorm, camVec);
+    lerpOrbit(u.yaw, u.pitch, u.magnify, float3(0.0), float3(0.0, 1.0, 0.0), camPos, sideNorm, camVec);
     float3 upNorm = cross(camVec, sideNorm);
     float3 relVec = normalize(camVec * focal + uv.x * sideNorm * (u.resolution.x / u.resolution.y) + uv.y * upNorm);
 
@@ -1145,7 +1146,7 @@ static half4 topo4D(float4 pos, Topo4DIn u) {
 
     float3 camVec = normalize(-camPos);
     float3 sideNorm = normalize(cross(float3(0.0, 1.0, 0.0), camVec));
-    lerpOrbit(u.yaw, u.pitch, float3(0.0), float3(0.0, 1.0, 0.0), camPos, sideNorm, camVec);
+    lerpOrbit(u.yaw, u.pitch, u.magnify, float3(0.0), float3(0.0, 1.0, 0.0), camPos, sideNorm, camVec);
     float3 upNorm = cross(camVec, sideNorm);
     float3 rd = normalize(camVec + uv.x * sideNorm * (u.resolution.x / u.resolution.y) + uv.y * upNorm);
 
@@ -1300,7 +1301,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     if (form == 0) {
         TopoClassicIn s;
         s.resolution = u.resolution; s.time = u.time; s.seed = u.seed;
-        s.yaw = u.yaw; s.pitch = u.pitch;
+        s.yaw = u.yaw; s.pitch = u.pitch; s.magnify = u.magnify;
         s.color = u.color; s.speed = u.speed;
         s.gain = 0.02 * u.gain;
         s.steps = topoSteps(16.0, u.detail);
@@ -1309,7 +1310,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     if (form <= 3) {
         TopoFractalIn s;
         s.resolution = u.resolution; s.time = u.time; s.seed = u.seed;
-        s.yaw = u.yaw; s.pitch = u.pitch;
+        s.yaw = u.yaw; s.pitch = u.pitch; s.magnify = u.magnify;
         s.color = u.color; s.speed = u.speed;
         s.wire = form - 1;
         s.zoom = 1.5;
@@ -1322,7 +1323,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     if (form <= 5) {
         TopoGyroidIn s;
         s.resolution = u.resolution; s.time = u.time; s.seed = u.seed;
-        s.yaw = u.yaw; s.pitch = u.pitch;
+        s.yaw = u.yaw; s.pitch = u.pitch; s.magnify = u.magnify;
         s.color = u.color; s.accent = u.accent; s.speed = u.speed;
         s.gain = 0.02 * u.gain;
         s.steps = topoSteps(10.0, u.detail);
@@ -1335,7 +1336,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     }
     Topo4DIn s;
     s.resolution = u.resolution; s.time = u.time; s.seed = u.seed;
-    s.yaw = u.yaw; s.pitch = u.pitch;
+    s.yaw = u.yaw; s.pitch = u.pitch; s.magnify = u.magnify;
     s.mode = form - 6;
     s.color = u.color; s.color2 = u.accent; s.dichroic = 1.0;
     s.speed = u.speed;

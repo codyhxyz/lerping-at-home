@@ -68,7 +68,8 @@ Grammar, one declaration per comment line, anywhere in the file:
   built-in fields: `resolution`, `time`, `seed`, `audioLevel`, `audioBass`,
   `audioMid`, `audioTreble`, `viewer`. Three names are special rather than
   reserved: `parallax` opts a look into head tracking (see "Head-tracked
-  shaders"), and `yaw` and `pitch` into drag to turn (see "Drag to turn").
+  shaders"), and `yaw`, `pitch` and `magnify` into drag to turn and pinch to
+  zoom (see "Drag to turn, pinch to zoom").
 - **TYPE** — `float`, `int`, `bool` or `color`.
 - **MIN MAX** — required for `float` and `int`, rejected for `bool` and
   `color`. The default has to fall inside the range.
@@ -318,48 +319,60 @@ the tangent of the angle the head has moved through. **Shader › Recentre Head*
 makes wherever they are now the centre. See `Sources/LerpCore/LerpViewer.swift`
 and `Sources/Playground/HeadTracker.swift`.
 
-## Drag to turn
+## Drag to turn, pinch to zoom
 
-In the playground, clicking and dragging on the render turns a 3D look: the
-scene moves with the pointer, like a globe under a hand. A look opts in by
-declaring the angles, in degrees, as ordinary parameters:
+In the playground, dragging on the render turns a 3D look — the scene moves
+with the pointer, like a globe under a hand — and pinching, or scrolling with
+two fingers or a wheel, brings it nearer or sends it back. A look opts in by
+declaring the angles (degrees) and the zoom (stops) as ordinary parameters:
 
 ```
-// lerp-param: yaw   float -180 180 = 0 "Turn"
-// lerp-param: pitch float -90  90  = 0 "Tilt"
+// lerp-param: yaw     float -180 180 = 0 "Turn"
+// lerp-param: pitch   float -90  90  = 0 "Tilt"
+// lerp-param: magnify float -1   1   = 0 "Zoom"
 ```
 
-The drag moves them exactly as their sliders do, so presets, Save, MIDI Learn,
-hands and `LerpPreview --param yaw=30` all work on them with nothing added. A
-range that spans 360° wraps; a narrower one is a hard stop, which is how a
-terrain keeps the camera out of its ground. A look may declare only one of
-the two. At 0 — the default, and wherever nobody has dragged — the camera is
-untouched, so the screensaver and the stills are unchanged.
+The gestures move them exactly as their sliders do, so presets, Save, MIDI
+Learn, hands and `LerpPreview --param magnify=0.5` all work on them with
+nothing added. A range that spans 360° wraps; a narrower one is a hard stop,
+which is how a terrain keeps the camera out of its ground and a fractal keeps
+it from zooming inside itself. Declare only what fits: a look may take any of
+the three. At 0 — the default, and wherever nobody has touched them — the
+camera is untouched, so the screensaver and the stills are unchanged.
 
-Then hand the angles to the prelude, between the camera's `right` and its
-`up`, passing the world-up hint `right` was crossed from:
+Then hand them to the prelude, between the camera's `right` and its `up`,
+passing the world-up hint `right` was crossed from:
 
 ```
 float3 right = normalize(cross(upHint, fwd));
-lerpOrbit(u.yaw, u.pitch, float3(0.0), upHint, ro, right, fwd);   // an object: swing round a pivot
-// or
-lerpLook(u.yaw, u.pitch, upHint, right, fwd);                     // a place: turn where you stand
+// An object: swing round a pivot, and walk towards it to zoom.
+lerpOrbit(u.yaw, u.pitch, u.magnify, float3(0.0), upHint, ro, right, fwd);
+// Or a place: turn where you stand, and lengthen the lens to zoom.
+float lens = lerpLook(u.yaw, u.pitch, u.magnify, upHint, right, fwd);
 float3 up = cross(fwd, right);
-float3 rd = normalize(uv.x * right + uv.y * up + focal * fwd);
+float3 rd = normalize(uv.x * right + uv.y * up + lens * focal * fwd);
 ```
 
-Both turn the whole frame rigidly, so it never degenerates even upside down,
-and both work out which way the look's own `right` points, so `cross(fwd,
-up)` cameras need nothing different. Pick by what is under the pointer:
-`lerpOrbit` when it is near the pivot (a fractal, an object), `lerpLook` when
-it is far beyond the camera (a landscape, a corridor, the inside of a set).
-Choose wrongly and the scene moves against the hand. A splat look needs only
-the parameters (`SplatData` orbits its camera, or turns it in place with
-`:look`); a look whose camera is built in Swift uses `LerpTurn.orbit`,
-`LerpTurn.look` or, for a fixed camera and a turning object,
-`LerpTurn.orbitRotation` (`polytope-4d`). `mandelbulb`, `maze` and `mandelbox`
-(which uses both) are the worked examples. See `Sources/LerpCore/LerpTurn.swift`
-and `Sources/Playground/DragToTurn.swift`.
+`lerpLook` returns what to multiply the focal length by. Multiply it into every
+use of the focal length, a per-pixel footprint included
+(`px = 2.0 / (lens * focal * minRes)`), so a raymarcher's detail sharpens as the
+lens lengthens; `lerpOrbit` needs nothing, because a dolly keeps the pixel's
+angle. Both turn the whole frame rigidly, so it never degenerates even upside
+down, and both work out which way the look's own `right` points, so
+`cross(fwd, up)` cameras need nothing different.
+
+Pick by what is under the pointer: `lerpOrbit` when it is near the pivot (a
+fractal, an object), `lerpLook` when it is far beyond the camera (a landscape,
+a corridor, the inside of a set). Choose wrongly and the scene moves against the
+hand, and a zoom walks you into a wall. Find `magnify`'s upper limit by
+rendering it: `castle-to-castle` stops at 0.3, past which its capped march
+loses the fold. A splat look needs only the parameters (`SplatData` dollies
+its camera, or with `:look` turns it in place and lengthens the lens); a look
+whose camera is built in Swift uses `LerpTurn.orbit`, `LerpTurn.look` or, for a
+fixed camera and a turning object, `LerpTurn.orbitRotation` (`polytope-4d`,
+which dollies its own eye distance). `mandelbulb`, `maze` and `mandelbox` (which
+uses both) are the worked examples. See `Sources/LerpCore/LerpTurn.swift` and
+`Sources/Playground/RenderGestures.swift`.
 
 ## Shaders that need CPU-computed data
 

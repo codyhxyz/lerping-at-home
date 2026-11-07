@@ -45,6 +45,7 @@
 // lerp-param: background    color        = (0.010, 0.014, 0.028) "Background"
 // lerp-param: yaw           float -180 180 = 0 "Turn"
 // lerp-param: pitch         float -90 90 = 0 "Tilt"
+// lerp-param: magnify       float -1 1 = 0 "Zoom"
 //
 // lerp-preset: "16-Cell"        polytope=1, eye4=2.1, tube=0.013, node=0.03
 // lerp-preset: "24-Cell"        polytope=2, eye4=2.6, tube=0.008, node=0.02, glass=0.75, colorNear=(0.90, 0.80, 0.55), colorFar=(0.30, 0.42, 0.80)

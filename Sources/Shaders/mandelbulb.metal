@@ -89,6 +89,7 @@
 // lerp-param: glow     float 0 1   = 0.5  "Glow"
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -90 90   = 0 "Tilt"
+// lerp-param: magnify  float -1 0.8 = 0 "Zoom"
 //
 // lerp-preset: Classic   breathe=0.0, distance=0.7, palette=0.333, glow=0.6
 // lerp-preset: Organic   power=5.0, breathe=0.6, distance=0.65, palette=1.0, glow=0.8
@@ -278,7 +279,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 fwd = normalize(mix(-radial, normalize(tangent - 0.9 * radial), skim));
     float3 upHint = normalize(mix(float3(0.0, 1.0, 0.0), radial, skim));
     float3 right = normalize(cross(upHint, fwd));
-    lerpOrbit(u.yaw, u.pitch, float3(0.0), upHint, ro, right, fwd);   // drag to turn
+    lerpOrbit(u.yaw, u.pitch, u.magnify, float3(0.0), upHint, ro, right, fwd);   // drag to turn
     float3 up = cross(fwd, right);
     float3 rd = normalize(uv.x * right + uv.y * up + MB_FOCAL * fwd);
 

@@ -171,8 +171,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// launch for the same reason as system audio. Its gestures arrive as CCs
     /// through `receive`, exactly like a knob's.
     private var hands: HandControl?
-    /// Click-and-drag on the render, for looks that declare `yaw`/`pitch`.
-    private var dragToTurn: DragToTurn!
+    /// Drag, pinch and scroll on the render, for looks that declare
+    /// `yaw`/`pitch`/`magnify`.
+    private var gestures: RenderGestures!
 
     private static let windowAutosave = "LerpPlaygroundWindow"
     /// Bumped when the inspector added a third pane: an autosaved two-subview
@@ -366,13 +367,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             FileHandle.standardError.write(Data("compile error in \(name):\n\(message)\n".utf8))
         }
         preview = FullScreenPreview(view: metalView)
-        dragToTurn = DragToTurn(view: metalView)
-        dragToTurn.canTurn = { [weak self] in
+        gestures = RenderGestures(view: metalView)
+        gestures.accepts = { [weak self] name in
             guard let self else { return false }
-            let axes = LerpTurn.axes(of: shownParameters)
-            return axes.yaw != nil || axes.pitch != nil
+            return LerpTurn.parameter(name, in: shownParameters) != nil
         }
-        dragToTurn.onTurn = { [weak self] yaw, pitch in self?.turn(yaw: yaw, pitch: pitch) }
+        gestures.onMove = { [weak self] moves in self?.nudge(moves) }
         preview.stage.setContentHuggingPriority(.init(1), for: .vertical)
         preview.onChange = { [weak self] in
             guard let self, isPaused else { return }
@@ -699,15 +699,14 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if isPaused { metalView.renderOnce() }
     }
 
-    /// A drag on the render, in degrees: moves the look's `yaw` and `pitch`
-    /// exactly as their sliders would. An axis the look does not declare is
-    /// simply not turned — a look with only `yaw` spins on a fixed horizon.
-    private func turn(yaw: Double, pitch: Double) {
-        let axes = LerpTurn.axes(of: shownParameters)
-        for (param, degrees) in [(axes.yaw, yaw), (axes.pitch, pitch)] {
-            guard let param, degrees != 0,
+    /// A gesture on the render: moves each named parameter by its delta
+    /// exactly as its slider would. One the look does not declare is simply
+    /// not moved — a look with only `yaw` spins on a fixed horizon.
+    private func nudge(_ moves: [(parameter: String, delta: Double)]) {
+        for (name, delta) in moves {
+            guard delta != 0, let param = LerpTurn.parameter(name, in: shownParameters),
                   let now = currentValue(of: param).scalarValue else { continue }
-            setParameter(param.name, .scalar(LerpTurn.turned(param, from: now, by: degrees)))
+            setParameter(name, .scalar(LerpTurn.moved(param, from: now, by: delta)))
         }
         inspector.show(values: metalView.liveParameterValues)
     }

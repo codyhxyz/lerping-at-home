@@ -31,6 +31,7 @@
 // lerp-param: vignette   float 0 1     = 0.25  "Vignette"
 // lerp-param: yaw        float -30 30 = 0 "Turn"
 // lerp-param: pitch      float -15 15 = 0 "Tilt"
+// lerp-param: magnify    float 0 0.5 = 0 "Zoom"   (back, it sees past the capture)
 //
 // lerp-preset: Drifting  drift=12, period=80
 

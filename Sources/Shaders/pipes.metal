@@ -7,6 +7,7 @@
 //
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -80 80   = 0 "Tilt"
+// lerp-param: magnify  float -1 1 = 0 "Zoom"
 //
 // The lattice walk lives on the CPU (Sources/LerpCore/PipesData.swift) and is
 // regenerated from (seed, time) every frame. This file raymarches it: the ray
@@ -200,7 +201,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     float3 ro = centre + back * PP_VIEWDIST;
     float3 fwd = -back;
     float3 right = normalize(cross(fwd, float3(0.0, 1.0, 0.0)));
-    lerpOrbit(u.yaw, u.pitch, centre, float3(0.0, 1.0, 0.0), ro, right, fwd);   // drag to turn
+    lerpOrbit(u.yaw, u.pitch, u.magnify, centre, float3(0.0, 1.0, 0.0), ro, right, fwd);   // drag to turn
     float3 up = cross(right, fwd);
     float3 rd = normalize(uv.x * right + uv.y * up + PP_FOCAL * fwd);
 
