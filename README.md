@@ -291,7 +291,11 @@ make playground
 - Navigation is three controls, each with one job:
   - **The selector** — the toolbar button, `⌘O`, or **Shader → Open Shader…** —
     is a popover Library of one card per shader, over `Sources/Shaders/` plus
-    the custom shader directory, refreshed when files change on disk. A click
+    the custom shader directory, refreshed when files change on disk. Cards sit
+    on shelves — Scenes, Splats, Fractals, Simulations, Abstract, Gradients,
+    Patterns — each shader naming its own with `// lerp-category: Fractals`;
+    one that names none (yours, until you add the line) goes on Other, with
+    the "+" card. ‹ › walk the shelves in the same order. A click
     opens the shader at its cover (the preset its picture shows). The badge in
     the corner is the one place anything goes in or out of the screensaver: on
     a shader with one preset it switches it; on one with several it opens a
