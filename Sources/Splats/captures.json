@@ -231,6 +231,402 @@
       ],
       "scale": 0.08,
       "min_alpha": 0.2
+    },
+    "office-lobby": {
+      "title": "Sunlit Office Lobby, Multi-level",
+      "author": "spaitial (spAItial)",
+      "page": "https://superspl.at/scene/942c5f7e",
+      "license": "none",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/942c5f7e/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        180,
+        0
+      ],
+      "center": [
+        0,
+        1.6,
+        -1.0
+      ],
+      "scale": 0.25,
+      "max_splats": 4000000
+    },
+    "lake-maggiore": {
+      "title": "Lake Maggiore, Autumn forest",
+      "author": "argenzio (Corridori Ruggero)",
+      "page": "https://superspl.at/scene/cf199d86",
+      "license": "CC BY-NC 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/cf199d86/v1/2_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/cf199d86/v1/2_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/cf199d86/v1/2_2/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/cf199d86/v1/2_3/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/cf199d86/v1/2_4/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        -0.62,
+        -0.19,
+        -1.49
+      ],
+      "scale": 0.2,
+      "crop": {
+        "sphere": 5.0
+      }
+    },
+    "rose": {
+      "title": "Rose Flower",
+      "author": "danylyon (Dany Bittel)",
+      "page": "https://superspl.at/scene/4d837bca",
+      "license": "none",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/4d837bca/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        0,
+        0.8,
+        0
+      ],
+      "scale": 0.3,
+      "center_xz": true
+    },
+    "tiny-planet": {
+      "title": "Tiny Planet – Still Life",
+      "author": "sa3d (Stéphane Agullo)",
+      "page": "https://superspl.at/scene/d59f99ee",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/d59f99ee/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "scale": 0.03,
+      "max_splats": 4500000
+    },
+    "orchid-greenhouse": {
+      "title": "Orchid Greenhouse",
+      "author": "vice (Shachar Weis)",
+      "page": "https://superspl.at/scene/2cf8a82c",
+      "license": "none",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/1_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/1_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/1_2/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/1_3/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/2cf8a82c/v1/1_4/meta.json"
+      ],
+      "rotate": [
+        180,
+        159.3,
+        0
+      ],
+      "center": [
+        -2.387,
+        0,
+        0.401
+      ],
+      "scale": 0.25
+    },
+    "fruit-bowl": {
+      "title": "The Fruit Bowl",
+      "author": "superdelphi (SuperDelphi)",
+      "page": "https://superspl.at/scene/d8ba72a6",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/d8ba72a6/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        180,
+        0
+      ],
+      "center": [
+        0,
+        -0.04,
+        0
+      ],
+      "scale": 6.2,
+      "center_xz": true
+    },
+    "milano-apartment": {
+      "title": "Milano Subterranean Apartment",
+      "author": "argenzio (Corridori Ruggero)",
+      "page": "https://superspl.at/scene/15b6b784",
+      "license": "CC BY-NC 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/15b6b784/v1/0_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/15b6b784/v1/0_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/15b6b784/v1/0_2/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/15b6b784/v1/0_3/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/15b6b784/v1/0_4/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/15b6b784/v1/0_5/meta.json"
+      ],
+      "rotate": [
+        180,
+        140.6,
+        0
+      ],
+      "center": [
+        1.72,
+        0,
+        0.3
+      ],
+      "scale": 1.0,
+      "crop": {
+        "box": [
+          [
+            -3.0,
+            -0.4,
+            -4.5
+          ],
+          [
+            7.0,
+            3.2,
+            3.2
+          ]
+        ]
+      }
+    },
+    "vanadinite": {
+      "title": "Vanadinite",
+      "author": "doudoid (Yann de Couëssin)",
+      "page": "https://superspl.at/scene/663d6a97",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/663d6a97/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        10.2,
+        -1.9,
+        -0.35
+      ],
+      "scale": 0.09,
+      "center_xz": true,
+      "crop": {
+        "box": [
+          [
+            -5,
+            -0.98,
+            -5
+          ],
+          [
+            5,
+            5,
+            5
+          ]
+        ]
+      }
+    },
+    "smoky-quartz": {
+      "title": "S0804012/16",
+      "author": "digitization_center_zlin_region (Digitization Center of the Zlín Region)",
+      "page": "https://superspl.at/scene/8e3ae31f",
+      "license": "none",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/8e3ae31f/v1/0_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/8e3ae31f/v1/0_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/8e3ae31f/v1/0_2/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        0,
+        -9.2,
+        0
+      ],
+      "scale": 0.075,
+      "crop": {
+        "cylinder": [
+          1.0,
+          -0.585,
+          2
+        ]
+      },
+      "center_xz": true
+    },
+    "quartz-crystal": {
+      "title": "Quartz Crystal",
+      "author": "trilithon (Huib Schippers)",
+      "page": "https://superspl.at/scene/a91f39a1",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/a91f39a1/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        0,
+        0.02,
+        0
+      ],
+      "scale": 3.6,
+      "center_xz": true
+    },
+    "castle": {
+      "title": "Castle",
+      "author": "ethan3111 (Ethan)",
+      "page": "https://superspl.at/scene/d276acb9",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/d276acb9/v1/0_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/d276acb9/v1/0_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/d276acb9/v1/0_2/meta.json"
+      ],
+      "rotate": [
+        180,
+        0,
+        0
+      ],
+      "center": [
+        0.91,
+        0.14,
+        2.93
+      ],
+      "scale": 0.45,
+      "crop": {
+        "cylinder": [
+          2.8,
+          -1.0,
+          0.5
+        ]
+      }
+    },
+    "diosa-justicia": {
+      "title": "La Diosa de la Justicia",
+      "author": "conservacionuaq (Coordinación de Conservación del Patrimonio Artístico, UAQ)",
+      "page": "https://superspl.at/scene/f07db9fd",
+      "license": "none",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/f07db9fd/v1/0_0/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/f07db9fd/v1/0_1/meta.json",
+        "https://d28zzqy0iyovbz.cloudfront.net/f07db9fd/v1/0_2/meta.json"
+      ],
+      "rotate": [
+        180,
+        51,
+        0
+      ],
+      "center": [
+        0,
+        -18.5,
+        0
+      ],
+      "scale": 0.05,
+      "center_xz": true
+    },
+    "medinet-habu": {
+      "title": "Medinet Habu Royal Treasure 2",
+      "author": "liquiduslabs (Liquidus Labs)",
+      "page": "https://superspl.at/scene/06145dc7",
+      "license": "CC BY 4.0",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/06145dc7/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        180,
+        0
+      ],
+      "center": [
+        1.001,
+        0,
+        -8.768
+      ],
+      "scale": 0.04,
+      "shift": [
+        0,
+        1.48,
+        0
+      ],
+      "crop": {
+        "box": [
+          [
+            -3.2,
+            -0.3,
+            -1.9
+          ],
+          [
+            8.0,
+            4.3,
+            1.9
+          ]
+        ]
+      },
+      "max_splats": 4500000
+    },
+    "nuo-mask": {
+      "title": "Nuo mask",
+      "author": "yichen1 (Yichen)",
+      "page": "https://superspl.at/scene/0b382df2",
+      "license": "none",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/0b382df2/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        90,
+        0
+      ],
+      "center": [
+        0.42,
+        -1.6,
+        -0.12
+      ],
+      "scale": 0.42,
+      "center_xz": true,
+      "crop": {
+        "cylinder": [
+          1.2,
+          -1.1,
+          1.1
+        ]
+      }
+    },
+    "seated-dari": {
+      "title": "Seated Dari",
+      "author": "crowmuseum (Crow Museum of Asian Arts)",
+      "page": "https://superspl.at/scene/e43c3c94",
+      "license": "none",
+      "sources": [
+        "https://d28zzqy0iyovbz.cloudfront.net/e43c3c94/v1/meta.json"
+      ],
+      "rotate": [
+        180,
+        180,
+        0
+      ],
+      "center": [
+        0,
+        -9.95,
+        0.2
+      ],
+      "scale": 0.1,
+      "center_xz": true
     }
   }
 }

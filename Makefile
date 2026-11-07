@@ -561,6 +561,16 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 	cp -R "$(RELEASE_SAVER)/Contents/Resources/Splats" "$(RELEASE_PLAYGROUND)/Contents/Resources/"
 	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_SAVER)/Contents/Resources/"
 	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_PLAYGROUND)/Contents/Resources/"
+	# Splat captures published with no licence play on this machine only:
+	# drop them, the looks that draw them, and those looks' stills.
+	@python3 -I scripts/splat-convert.py unlicensed | while read -r look capture; do \
+		for app in "$(RELEASE_SAVER)" "$(RELEASE_PLAYGROUND)"; do \
+			rm -f "$$app/Contents/Resources/Shaders/$$look.metal" \
+				"$$app/Contents/Resources/Splats/$$capture.lsplat" \
+				"$$app/Contents/Resources/Thumbnails/$$look"-*.heic; \
+		done; \
+		echo "package: left out $$look (capture $$capture has no licence)"; \
+	done
 	@if [ "$(APP_SIGN_IDENTITY)" = "-" ]; then \
 		codesign --force -s - "$(RELEASE_SAVER)"; \
 		codesign --force -s - "$(RELEASE_PLAYGROUND)"; \
@@ -572,7 +582,7 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 	codesign --verify --deep --strict "$(RELEASE_SAVER)"
 	codesign --verify --deep --strict "$(RELEASE_PLAYGROUND)"
 	@src_count="$$(find "$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders" -name '*.metal' | wc -l | tr -d ' ')"; \
-		test "$$src_count" = "$$(find Sources/Shaders -name '*.metal' | wc -l | tr -d ' ')"
+		test "$$src_count" = "$$(( $$(find Sources/Shaders -name '*.metal' | wc -l) - $$(python3 -I scripts/splat-convert.py unlicensed | wc -l) ))"
 	"$(RELEASE_PLAYGROUND)/Contents/MacOS/LerpPlayground" --shaders
 	pkgbuild --analyze --root "$(RELEASE_SAVER_ROOT)" "$(RELEASE_DIR)/saver-components.plist"
 	plutil -replace 0.BundleIsRelocatable -bool NO "$(RELEASE_DIR)/saver-components.plist"

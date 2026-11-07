@@ -324,6 +324,27 @@ International license (https://creativecommons.org/licenses/by/4.0/):
   "Saka Shrine" by kotohibi, https://superspl.at/scene/3f8c617d
   "Shenley Church" by naturalsplats, https://superspl.at/scene/aa451b94
   "Main square, Trogir" by tosolini, https://superspl.at/scene/89f82474
+  "Tiny Planet – Still Life" by sa3d (Stéphane Agullo), https://superspl.at/scene/d59f99ee
+  "The Fruit Bowl" by superdelphi (SuperDelphi), https://superspl.at/scene/d8ba72a6
+  "Vanadinite" by doudoid (Yann de Couëssin), https://superspl.at/scene/663d6a97
+  "Quartz Crystal" by trilithon (Huib Schippers), https://superspl.at/scene/a91f39a1
+  "Castle" by ethan3111 (Ethan), https://superspl.at/scene/d276acb9
+  "Medinet Habu Royal Treasure 2" by liquiduslabs (Liquidus Labs), data from
+      Open Heritage 3D, https://superspl.at/scene/06145dc7
+
+These two are published under the Creative Commons Attribution-NonCommercial
+4.0 International license (https://creativecommons.org/licenses/by-nc/4.0/),
+and are shipped under it, for non-commercial use only:
+
+  "Lake Maggiore, Autumn forest" by argenzio (Corridori Ruggero),
+      https://superspl.at/scene/cf199d86
+  "Milano Subterranean Apartment" by argenzio (Corridori Ruggero),
+      https://superspl.at/scene/15b6b784
+
+Captures whose captures.json entry has "license": "none" were published with
+no licence. `make splats` fetches them for the local saver only, the way the
+SuperSplat viewer streams them; `make package` leaves them and the looks that
+draw them out of anything distributed.
 
 Changes made: rotated, recentred, rescaled and cropped
 (Sources/Splats/captures.json), faint splats dropped from some, and
@@ -331,7 +352,7 @@ requantised into this project's .lsplat format (the view-dependent colour
 palette is re-encoded with a single shared codebook). The captures are not part of
 this program's source and are not covered by its AGPL license; they are
 downloaded at build time by `make splats` and shipped alongside it under
-CC BY 4.0.
+their own licences, above.
 
 The SOG decoder in scripts/splat-convert.py follows the reader in
 splat-transform (https://github.com/playcanvas/splat-transform), Copyright

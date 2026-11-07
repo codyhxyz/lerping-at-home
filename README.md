@@ -4,7 +4,7 @@
 
 - Screensaver for macOS that renders procedural shaders with Metal.
 - Shaders are single `.metal` files compiled at runtime via `MTLDevice.makeLibrary(source:)`.
-- 70 built-in shaders in `Sources/Shaders/`: all 30 of Paper Shaders' looks ported to Metal, eight photoreal Gaussian splat captures (`splat-*`), raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
+- 70 built-in shaders in `Sources/Shaders/`: all 30 of Paper Shaders' looks ported to Metal, 23 photoreal Gaussian splat captures (`splat-*`), most with a museum-style caption, raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
 - Custom `.metal` files are supported without rebuilding the engine.
 - No Xcode project. Builds with `swiftc` through a Makefile.
 - No build-time Metal toolchain and no precompiled shader archive.
@@ -570,8 +570,12 @@ its parameters and presets wherever the file goes.
 ### Gaussian splat captures
 
 - The `splat-*` looks draw real, photographed scenes stored as 3D Gaussian
-  splats (3DGS): a strawberry, a triceratops skull, a carved owl, a grape, a
-  bonsai, a shrine approach, a parish church and a town square. Each declares
+  splats (3DGS): objects turned like pieces in a museum case (a strawberry, a
+  triceratops skull, a carved owl, a grape, a bonsai, a rose, a fruit bowl, a
+  jade Buddha, a Nuo mask, vanadinite, two quartzes, a bronze Justice, a tiny
+  planet, a castle on its lake) and places the camera stands inside (a shrine
+  approach, a parish church, a town square, an office lobby, a forest path, an
+  orchid greenhouse, a Milan basement kitchen, a room of Medinet Habu). Each declares
   `// lerp-data: splat:<move>:<capture>`; `<move>` is `orbit` (a turntable, or
   an eased arc) or `dolly` (a dolly zoom). A drag on the render swings the
   camera round what it looks at; a capture seen from inside, like the town
@@ -590,14 +594,38 @@ its parameters and presets wherever the file goes.
   direction turned back into the capture's own frame, before the splats are
   drawn. Stone, fruit skin and glaze catch the light as the camera moves.
   Trogir was published without it, so it has band 0 only.
-- The captures are third-party (CC BY 4.0, credited in `NOTICE.txt`) and
+- The captures are third-party (licences and credits in `NOTICE.txt`) and
   large, so they are not in git. `Sources/Splats/captures.json` lists where
   each comes from and how it is turned upright, centred, cropped and scaled;
   `make splats` (run by `make saver`) downloads each one's SOG files once,
   decodes them (`scripts/splat-convert.py`, checked against PlayCanvas's own
   reader), and writes a compact `.lsplat` to `build/splats`, which the saver
-  bundles under `Resources/Splats`. Each is used at full detail, 0.2–4.6M
-  splats; about 220 MB for all eight. Needs network the first time.
+  bundles under `Resources/Splats`. Each is used at 0.2–4.6M splats (a
+  streamed level-of-detail set at one level, a larger capture thinned to its
+  most opaque, largest splats); about 740 MB for all 23. Needs network the
+  first time.
+- A splat look can carry a caption, the way a museum labels a piece:
+
+      // lerp-caption-title:  Seated Dari (Vairocana)
+      // lerp-caption:        Jade, 19th century. China, Qing dynasty (1644–1911)
+      // lerp-caption-credit: Crow Museum of Asian Arts
+
+  `SplatCaption.swift` sets them like a gallery wall label (a New York title
+  in regular weight, an SF line or two set to balanced lines, the credit in
+  tracked small capitals under a hairline; all sized from the drawable's
+  height) into a mipmapped coverage
+  texture at `texture(2)`, and `LerpSplatView.caption` says where its panel
+  sits. The look composites it with `lerpSplatCaption`, in one of four
+  treatments chosen by its `caption` parameter: 1 frosted (a panel of the
+  capture blurred through its mipmaps), 2 liquid glass (clear, with edges that
+  refract what lies beyond them, a lit rim and dispersion), 3 diffuse (no edge;
+  the capture dims and blurs in a soft cloud behind the type) and 4 label
+  (type alone over a soft halo). Frosted and glass switch to dark type over a
+  bright scene. A captioned look's splat texture is mipmapped; an uncaptioned
+  one is drawn exactly as before.
+- Some captures were published with no licence (`"license": "none"` in
+  `captures.json`). They are fetched for this machine's saver, as SuperSplat's
+  viewer streams them, and `make package` leaves them and their looks out.
 - A capture only holds together near where its photos were taken. Cameras
   that leave that region (the dolly backing away, the town square's arc) set
   `clip`, which drops every splat nearer than the subject minus `clip`.

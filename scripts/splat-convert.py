@@ -6,6 +6,10 @@
     scripts/splat-convert.py fetch  ID        download one capture's SOG files
     scripts/splat-convert.py convert ID       convert one capture
     scripts/splat-convert.py inspect FILE|ID [--views OUT_PREFIX] [--config ID]
+    scripts/splat-convert.py unlicensed       "<shader> <capture>" for every look
+                                              drawing a capture published with
+                                              no licence (`make package` drops
+                                              them)
 
 Inputs: PlayCanvas SOG v2 (what SuperSplat serves; one or more chunks),
 standard 3DGS binary .ply, antimatter15 .splat, Niantic .spz. Only SOG keeps
@@ -443,7 +447,7 @@ def write_lsplat(path, splats):
 
 def render_views(prefix, splats, extent=None):
     from PIL import Image
-    pos, rgb, alpha, log_scale, quat = splats
+    pos, rgb, alpha, log_scale, quat = splats[:5]
     if extent is None:
         lo, hi = np.percentile(pos, 1, 0), np.percentile(pos, 99, 0)
     else:
@@ -471,7 +475,7 @@ def inspect(path, prefix=None, cfg=None):
     splats = read_any(path)
     if cfg:
         splats = apply_config(splats, cfg)
-    pos, rgb, alpha, log_scale, quat = splats
+    pos, rgb, alpha, log_scale, quat = splats[:5]
     print(f"{path}: {len(pos):,} splats")
     for p in (1, 5, 50, 95, 99):
         print(f"  p{p:<2} pos {np.percentile(pos, p, 0).round(3)}")
@@ -534,7 +538,31 @@ def convert_all(configs):
             os.remove(os.path.join(out_dir, name))
 
 
+def unlicensed(configs):
+    """Looks whose capture was published with no licence ("license": "none").
+
+    Those captures are fetched for this machine's own saver, which is what the
+    viewer on SuperSplat streams anyway, but they are not ours to pass on: a
+    distributed package leaves them, and the looks drawing them, out.
+    """
+    ids = {cid for cid, cfg in configs["captures"].items() if cfg.get("license", "none") == "none"}
+    shaders = os.path.join(ROOT, "Sources", "Shaders")
+    for name in sorted(os.listdir(shaders)):
+        if not name.endswith(".metal"):
+            continue
+        for line in open(os.path.join(shaders, name), encoding="utf-8").read().splitlines()[:40]:
+            body = line.strip().lstrip("/").strip()
+            if body.startswith("lerp-data:"):
+                spec = body[len("lerp-data:"):].strip().split(":")
+                if len(spec) >= 3 and spec[0] == "splat" and spec[2] in ids:
+                    print(name[:-len(".metal")], spec[2])
+                break
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "unlicensed":
+        unlicensed(json.load(open(CONFIG)))
+        return
     if len(sys.argv) < 2 or (len(sys.argv) < 3 and sys.argv[1] != "all"):
         print(__doc__)
         sys.exit(2)

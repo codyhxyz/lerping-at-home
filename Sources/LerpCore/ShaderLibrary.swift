@@ -2,6 +2,13 @@ import Foundation
 import Metal
 import os
 
+/// One line of a look's `// lerp-caption…:` text.
+public struct LerpCaptionLine: Sendable, Equatable {
+    public enum Role: Sendable { case title, body, credit }
+    public let role: Role
+    public let text: String
+}
+
 public struct LerpShader: Sendable {
     public let name: String        // file stem, e.g. "neuro-noise"
     public let source: String
@@ -94,6 +101,30 @@ public struct LerpShader: Sendable {
             return value.isEmpty ? nil : value
         }
         return nil
+    }
+
+    /// Text the look sets over itself, one line per directive, in file order:
+    ///
+    ///     // lerp-caption-title:  Seated Dari (Vairocana)
+    ///     // lerp-caption:        Jade, 19th century. China, Qing dynasty
+    ///     // lerp-caption-credit: Crow Museum of Asian Arts · superspl.at
+    ///
+    /// Only splat looks draw it today (`SplatData` renders the lines into a
+    /// texture and the look's fragment shader composites it with
+    /// `lerpSplatCaption`). Empty for every other shader.
+    public var captionLines: [LerpCaptionLine] {
+        var lines: [LerpCaptionLine] = []
+        for raw in source.split(separator: "\n", omittingEmptySubsequences: false).prefix(80) {
+            for (directive, role) in [("lerp-caption-title:", LerpCaptionLine.Role.title),
+                                      ("lerp-caption-credit:", .credit),
+                                      ("lerp-caption:", .body)] {
+                if let value = LerpParamParser.directiveBody(raw, directive), !value.isEmpty {
+                    lines.append(LerpCaptionLine(role: role, text: value))
+                    break
+                }
+            }
+        }
+        return lines
     }
 
     /// Whether this machine can run the shader, from an optional comment among
@@ -468,6 +499,9 @@ public final class ShaderLibrary: @unchecked Sendable {
             dataProviders[name] = made
             return made
         }
+        // The caption belongs to the shader file, not the capture, so it is
+        // handed over every time a look using this provider is installed.
+        (provider as? SplatData)?.caption = shader.captionLines
         guard let provider else {
             try fail(shader, 2, "shader '\(shader.name)' declares `// lerp-data: \(name)` but no such data provider is registered (known: \(LerpDataProviders.registeredNames.joined(separator: ", ")))")
         }
