@@ -48,6 +48,7 @@ public final class RotationThumbnails {
     /// exists so a change to how stills are made can invalidate the cache
     /// without anyone having to find and delete it.
     /// v2: stills are tagged Display P3, matching the live layer, not sRGB.
+    /// v3: no captions; a splat's size is capped in proportion to the frame.
     public struct Recipe {
         public var width = 240
         public var height = 360
@@ -55,7 +56,7 @@ public final class RotationThumbnails {
         public var time: Float = 6
         /// Fixed, so a tile is the same picture on every launch.
         public var seed: Float = 0.37
-        public var version = 2
+        public var version = 3
 
         public init() {}
 
@@ -457,7 +458,7 @@ public final class RotationThumbnails {
                                                      renderer: renderer,
                                                      width: recipe.width, height: recipe.height,
                                                      time: recipe.time, seed: recipe.seed,
-                                                     params: values, to: url)
+                                                     params: values, captions: false, to: url)
                     guard result.error == nil, let image = Self.decodedImage(at: url) else {
                         lock.lock()
                         failed.append(job.entry.key + ": " + (result.error ?? "unreadable still"))

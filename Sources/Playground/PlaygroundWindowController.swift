@@ -180,6 +180,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Drag, pinch and scroll on the render, for looks that declare
     /// `yaw`/`pitch`/`magnify`.
     private var gestures: RenderGestures!
+    private var captionReveal: CaptionReveal!
 
     private static let windowAutosave = "LerpPlaygroundWindow"
     /// Bumped when the inspector added a third pane: an autosaved two-subview
@@ -351,6 +352,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             return LerpTurn.parameter(name, in: shownParameters) != nil
         }
         gestures.onMove = { [weak self] moves in self?.nudge(moves) }
+        captionReveal = CaptionReveal(view: metalView)
         preview.stage.setContentHuggingPriority(.init(1), for: .vertical)
         preview.onChange = { [weak self] in
             guard let self, isPaused else { return }
@@ -1498,6 +1500,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     /// On the screen the playground window is on, which is the one you are
     /// looking at.
+    /// Shader › Show Captions: keep a captioned look's label on screen
+    /// instead of letting it go after the look's first seconds.
+    @objc func toggleCaptions(_ sender: Any?) {
+        captionReveal.pinned.toggle()
+    }
+
     @objc func togglePreview(_ sender: Any?) {
         guard let screen = window?.screen ?? NSScreen.main else { return NSSound.beep() }
         preview.toggle(on: screen)
@@ -1962,6 +1970,9 @@ extension PlaygroundWindowController: NSMenuItemValidation {
         case #selector(nextMapping(_:)): return mappings.count > 1
         case #selector(toggleAskBeforeClosing(_:)):
             item.state = asksBeforeClosing ? .on : .off
+            return true
+        case #selector(toggleCaptions(_:)):
+            item.state = captionReveal.pinned ? .on : .off
             return true
         case #selector(togglePreview(_:)):
             item.title = preview.isShown ? "Exit Full Screen Preview" : "Preview Full Screen"

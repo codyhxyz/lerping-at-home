@@ -4,8 +4,8 @@ import Metal
 
 /// A look's `// lerp-caption…:` lines, set in type and kept as a texture the
 /// fragment shader composites over the capture (`lerpSplatCaption` in the splat
-/// prelude). The texture is a single coverage channel the size of the caption's
-/// panel, mipmapped so a look can blur the glyphs into a halo; where the panel
+/// prelude). The texture is a single coverage channel just bigger than the
+/// type, mipmapped so the shader can blur the glyphs into a shadow; where it
 /// sits on screen goes to the look as `LerpSplatView.caption`.
 ///
 /// Type is sized from the drawable's height, so a caption reads the same on a
@@ -62,102 +62,134 @@ final class LerpSplatCaptionLayer {
         }
     }
 
-    /// Set like a gallery wall label: a serif title in regular weight, a
-    /// quieter sans line or two under it, and the credit in small tracked
-    /// capitals under a hairline. The lines are balanced, so a body that
+    /// Set like the caption under a plate in an art book, straight onto the
+    /// image with no panel: the title in Iowan Old Style, the description
+    /// under it in the italic, the credit last in small roman. One family,
+    /// three sizes, left aligned and ragged, the lines balanced so a body that
     /// needs two lines gets two even ones rather than a long one and a widow.
+    ///
+    /// Sizes follow the drawable's height. Where the smaller lines would drop
+    /// under a size that can still be read, the caption steps down to its
+    /// title alone, and below that to nothing. A word never breaks: the
+    /// measure is never narrower than the widest word, and the type shrinks
+    /// if even that would not fit the screen.
     private func build(_ lines: [LerpCaptionLine], size: SIMD2<Float>) {
         let h = CGFloat(size.y), w = CGFloat(size.x)
-        let titleSize = (0.0235 * h).rounded()
-        let bodySize = (0.0128 * h).rounded()
-        let creditSize = max(9, (0.0092 * h).rounded())
-        let padX = (0.026 * h).rounded(), padY = (0.022 * h).rounded()
-        let margin = (0.055 * h).rounded()
-        let maxText = max(4 * titleSize, min(0.36 * w - 2 * padX, 0.30 * h))
-        let hairline = max(1, (0.0007 * h).rounded())
+        texture = nil; rect = .zero
+        let margin = (0.065 * h).rounded()
+        // The tiers: everything, the title alone, or nothing.
+        let readable: CGFloat = 9
+        let full = 0.0125 * h >= readable * 0.9
+        // A gallery thumbnail names its look under the picture, and a label
+        // that small could only sit on the subject.
+        guard h >= 160 else { return }
+        var titleSize = full ? 0.034 * h : max(0.034 * h, min(11, 0.09 * h))
+        var bodySize = max(readable, 0.0185 * h), creditSize = max(readable, 0.0138 * h)
+        let shown = full ? lines : lines.filter { $0.role == .title }
+        guard !shown.isEmpty else { return }
 
-        let serif = NSFont.systemFont(ofSize: titleSize, weight: .regular).fontDescriptor.withDesign(.serif)
-        let titleFont = serif.flatMap { NSFont(descriptor: $0, size: titleSize) }
-            ?? NSFont.systemFont(ofSize: titleSize, weight: .regular)
-        let bodyFont = NSFont.systemFont(ofSize: bodySize, weight: .regular)
-        // Small capitals, so a name keeps the capitals its owner gave it
-        // ("spAItial", "SuperDelphi") and still sets as one even row.
-        let creditBase = NSFont.systemFont(ofSize: creditSize * 1.22, weight: .medium)
-        let creditFont = NSFont(descriptor: creditBase.fontDescriptor.addingAttributes([
-            .featureSettings: [[NSFontDescriptor.FeatureKey.typeIdentifier: kLowerCaseType,
-                                NSFontDescriptor.FeatureKey.selectorIdentifier: kLowerCaseSmallCapsSelector]],
-        ]), size: creditSize * 1.22) ?? creditBase
+        func font(_ name: String, _ size: CGFloat) -> NSFont {
+            NSFont(name: name, size: size) ?? NSFont.systemFont(ofSize: size)
+        }
+        // Shrink everything together until the widest word fits the screen.
+        let room = max(1, w - 2 * margin)
+        func widestWord(_ ts: CGFloat, _ bs: CGFloat, _ cs: CGFloat) -> CGFloat {
+            shown.map { line -> CGFloat in
+                let f: NSFont = line.role == .title ? font("IowanOldStyle-Roman", ts)
+                    : line.role == .body ? font("IowanOldStyle-Italic", bs) : font("IowanOldStyle-Roman", cs)
+                return line.text.split(separator: " ").map {
+                    NSAttributedString(string: String($0), attributes: [.font: f]).size().width
+                }.max() ?? 0
+            }.max() ?? 0
+        }
+        let widest = widestWord(titleSize, bodySize, creditSize)
+        if widest > room {
+            let k = room / widest
+            titleSize *= k; bodySize *= k; creditSize *= k
+        }
+        titleSize = titleSize.rounded(); bodySize = bodySize.rounded(); creditSize = creditSize.rounded()
 
-        func paragraph(lineHeight: CGFloat, before: CGFloat) -> NSParagraphStyle {
+        // The title in the titling cut once it is display sized. The smaller
+        // lines take old-style figures, and in the credit a word set all in
+        // capitals (a licence, an acronym) takes small capitals, so neither
+        // shouts over the names round it.
+        func featured(_ f: NSFont, _ features: [(Int, Int)]) -> NSFont {
+            NSFont(descriptor: f.fontDescriptor.addingAttributes([.featureSettings: features.map {
+                [NSFontDescriptor.FeatureKey.typeIdentifier: $0.0, .selectorIdentifier: $0.1]
+            }]), size: f.pointSize) ?? f
+        }
+        let figures = [(kNumberCaseType, kLowerCaseNumbersSelector)]
+        let smallCaps = figures + [(kUpperCaseType, kUpperCaseSmallCapsSelector)]
+        let titleFont = font(titleSize >= 30 ? "IowanOldStyle-Titling" : "IowanOldStyle-Roman", titleSize)
+        let bodyFont = featured(font("IowanOldStyle-Italic", bodySize), figures)
+        let creditFont = featured(font("IowanOldStyle-Roman", creditSize), figures)
+        let capitals = try? NSRegularExpression(pattern: "(?<![\\p{L}\\p{N}])\\p{Lu}{2,}(?:-\\p{Lu}{2,})*(?![\\p{L}\\p{N}])")
+
+        // Coverage carries each line's weight in the label: the title at full
+        // strength, the rest quieter.
+        let block = NSMutableAttributedString()
+        var previous: LerpCaptionLine.Role?
+        for line in shown {
+            let (f, ink, leading): (NSFont, CGFloat, CGFloat) = switch line.role {
+            case .title: (titleFont, 1.0, 1.08)
+            case .body: (bodyFont, 0.84, 1.22)
+            case .credit: (creditFont, 0.64, 1.25)
+            }
             let para = NSMutableParagraphStyle()
             para.lineBreakMode = .byWordWrapping
-            para.lineHeightMultiple = lineHeight
-            para.paragraphSpacingBefore = before
-            return para
-        }
-        let block = NSMutableAttributedString()
-        let credit = NSMutableAttributedString()
-        for line in lines {
-            switch line.role {
-            case .title, .body:
-                let title = line.role == .title
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: title ? titleFont : bodyFont,
-                    .foregroundColor: NSColor(white: title ? 0.97 : 0.70, alpha: 1),
-                    .paragraphStyle: paragraph(lineHeight: title ? 1.0 : 1.3,
-                                               before: block.length > 0 ? (title ? 0.3 : 0.55) * bodySize : 0),
-                    .kern: title ? -0.012 * titleSize : 0.0,
-                ]
-                if block.length > 0 { block.append(NSAttributedString(string: "\n", attributes: attrs)) }
-                // A hyphenated compound stays on one line.
-                block.append(NSAttributedString(string: line.text.replacingOccurrences(of: "-", with: "\u{2011}"),
-                                                attributes: attrs))
-            case .credit:
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: creditFont,
-                    .foregroundColor: NSColor(white: 0.5, alpha: 1),
-                    .paragraphStyle: paragraph(lineHeight: 1.2, before: 0),
-                    .kern: 0.09 * creditSize,
-                ]
-                if credit.length > 0 { credit.append(NSAttributedString(string: "\n", attributes: attrs)) }
-                credit.append(NSAttributedString(string: line.text, attributes: attrs))
+            para.lineHeightMultiple = leading
+            para.paragraphSpacingBefore = switch (previous, line.role) {
+            case (nil, _): 0
+            case (.title, .body): 0.12 * bodySize
+            case (_, .credit) where previous != .credit: 1.1 * bodySize
+            default: 0
             }
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: f, .foregroundColor: NSColor(white: ink, alpha: 1), .paragraphStyle: para,
+                .kern: line.role == .title ? -0.006 * titleSize : 0.0,
+            ]
+            if block.length > 0 { block.append(NSAttributedString(string: "\n", attributes: attrs)) }
+            // A hyphenated compound stays on one line, and an apostrophe is
+            // the typeset one, to match the curly quotes a caption already uses.
+            let typeset = line.text.replacingOccurrences(of: "-", with: "\u{2011}")
+                .replacingOccurrences(of: "(?<=\\p{L})'", with: "\u{2019}", options: .regularExpression)
+            let text = NSMutableAttributedString(string: typeset, attributes: attrs)
+            if line.role == .credit, let capitals {
+                for m in capitals.matches(in: line.text, range: NSRange(location: 0, length: (line.text as NSString).length)) {
+                    text.addAttributes([.font: featured(f, smallCaps), .kern: 0.05 * f.pointSize], range: m.range)
+                }
+            }
+            block.append(text)
+            previous = line.role
         }
 
-        // Size of a string set at `width`, and how many lines it took.
-        func set(_ text: NSAttributedString, _ width: CGFloat) -> (CTFramesetter, CGSize, Int) {
-            let setter = CTFramesetterCreateWithAttributedString(text as CFAttributedString)
+        func set(_ width: CGFloat) -> (CGSize, Int) {
+            let setter = CTFramesetterCreateWithAttributedString(block as CFAttributedString)
             let fit = CTFramesetterSuggestFrameSizeWithConstraints(
                 setter, CFRange(location: 0, length: 0), nil,
                 CGSize(width: width, height: .greatestFiniteMagnitude), nil)
             let path = CGPath(rect: CGRect(x: 0, y: 0, width: width, height: 100_000), transform: nil)
             let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: 0), path, nil)
-            return (setter, CGSize(width: ceil(fit.width), height: ceil(fit.height)),
-                    CFArrayGetCount(CTFrameGetLines(frame)))
+            return (CGSize(width: ceil(fit.width), height: ceil(fit.height)), CFArrayGetCount(CTFrameGetLines(frame)))
         }
+        // The measure: about fifty characters of the description, never more
+        // than the screen allows, never less than the widest word.
+        let floorW = ceil(widestWord(titleSize, bodySize, creditSize)) + 1
+        let maxText = max(floorW, min(room, 0.62 * w, 26 * bodySize))
         // Balance: the narrowest measure that needs no more lines than the
         // widest one does.
-        var measure = maxText
-        if block.length > 0 {
-            let lineCount = set(block, maxText).2
-            var lo = min(maxText, set(NSAttributedString(string: lines.first { $0.role == .title }?.text ?? "",
-                                                          attributes: [.font: titleFont]), maxText).1.width)
-            var hi = maxText
-            while hi - lo > 2 {
-                let mid = (lo + hi) / 2
-                if set(block, mid).2 <= lineCount { hi = mid } else { lo = mid }
-            }
-            measure = hi + 1
+        let lineCount = set(maxText).1
+        var lo = floorW, hi = maxText
+        while hi - lo > 2 {
+            let mid = (lo + hi) / 2
+            if set(mid).1 <= lineCount { hi = mid } else { lo = mid }
         }
-        let (blockSetter, blockSize, _) = set(block, measure)
-        let (creditSetter, creditSize2, _) = set(credit, maxText)
-        let hasCredit = credit.length > 0, hasBlock = block.length > 0
-        let gapAbove = hasCredit && hasBlock ? (0.95 * bodySize).rounded() : 0
-        let gapBelow = hasCredit && hasBlock ? (0.75 * bodySize).rounded() : 0
-        let textW = max(blockSize.width, creditSize2.width)
-        let ruleH = hasCredit && hasBlock ? hairline : 0
-        let textH = blockSize.height + gapAbove + ruleH + gapBelow + (hasCredit ? creditSize2.height : 0)
-        let pw = Int(ceil(textW + 2 * padX)), ph = Int(ceil(textH + 2 * padY))
+        let measure = hi + 1
+        let textSize = set(measure).0
+
+        // Room round the type for the shadow the shader blurs out of it.
+        let pad = ceil(max(2, 0.022 * h))
+        let pw = Int(ceil(textSize.width + 2 * pad)), ph = Int(ceil(textSize.height + 2 * pad))
         guard pw > 0, ph > 0,
               let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: pw,
                                   space: CGColorSpaceCreateDeviceGray(),
@@ -166,24 +198,10 @@ final class LerpSplatCaptionLayer {
         ctx.fill(CGRect(x: 0, y: 0, width: pw, height: ph))
         ctx.setShouldSmoothFonts(false)
         ctx.setAllowsFontSubpixelPositioning(true)
-        // CoreGraphics is y up: lay out from the top edge down.
-        var top = CGFloat(ph) - padY
-        if hasBlock {
-            let r = CGRect(x: padX, y: top - blockSize.height, width: measure, height: blockSize.height)
-            CTFrameDraw(CTFramesetterCreateFrame(blockSetter, CFRange(location: 0, length: 0),
-                                                 CGPath(rect: r, transform: nil), nil), ctx)
-            top -= blockSize.height + gapAbove
-        }
-        if ruleH > 0 {
-            ctx.setFillColor(gray: 0.22, alpha: 1)
-            ctx.fill(CGRect(x: padX, y: top - ruleH, width: textW, height: ruleH))
-            top -= ruleH + gapBelow
-        }
-        if hasCredit {
-            let r = CGRect(x: padX, y: top - creditSize2.height, width: maxText, height: creditSize2.height)
-            CTFrameDraw(CTFramesetterCreateFrame(creditSetter, CFRange(location: 0, length: 0),
-                                                 CGPath(rect: r, transform: nil), nil), ctx)
-        }
+        let setter = CTFramesetterCreateWithAttributedString(block as CFAttributedString)
+        let r = CGRect(x: pad, y: pad, width: measure, height: textSize.height)
+        CTFrameDraw(CTFramesetterCreateFrame(setter, CFRange(location: 0, length: 0),
+                                             CGPath(rect: r, transform: nil), nil), ctx)
         guard let data = ctx.data else { return }
 
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: pw, height: ph, mipmapped: true)
@@ -195,6 +213,7 @@ final class LerpSplatCaptionLayer {
         t.replace(region: MTLRegionMake2D(0, 0, pw, ph), mipmapLevel: 0, withBytes: data, bytesPerRow: pw)
         texture = t
         needsMipmaps = true
-        rect = SIMD4(Float(margin), Float(h - margin) - Float(ph), Float(pw), Float(ph))
+        // The type's left edge and the bottom of its last line sit on the margin.
+        rect = SIMD4(Float(margin - pad), Float(h - margin + pad) - Float(ph), Float(pw), Float(ph))
     }
 }

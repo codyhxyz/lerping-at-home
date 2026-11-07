@@ -59,6 +59,10 @@ public final class SplatData: LerpDataProvider {
         set { captionLayer.set(newValue) }
     }
 
+    /// How much of the caption shows, 0...1. The host fades it out a few
+    /// seconds into a look, so the look's resting state is the bare capture.
+    public var captionOpacity: Float = 1
+
     /// The `path` move's keyframes: input, read once like the capture.
     private lazy var path: LerpSplatPath? = {
         guard move == .path else { return nil }
@@ -112,8 +116,8 @@ public final class SplatData: LerpDataProvider {
         let res = uniforms.resolution
         let scale = min(1, sqrt(Self.maxPixels / max(1, res.x * res.y)))
         let w = max(1, Int((res.x * scale).rounded())), h = max(1, Int((res.y * scale).rounded()))
-        // A caption's glass and frost blur the capture behind them by reading
-        // its mipmaps, so a captioned look keeps a mipmapped target.
+        // A caption gauges how bright the capture is behind it by reading its
+        // mipmaps, so a captioned look keeps a mipmapped target.
         captionLayer.update(drawable: res, commandBuffer: commandBuffer)
         let mipmapped = !captionLayer.isEmpty
         if target?.width != w || target?.height != h || (target?.mipmapLevelCount ?? 1 > 1) != mipmapped {
@@ -137,7 +141,7 @@ public final class SplatData: LerpDataProvider {
             // Missing capture: an empty (transparent) frame, so the look shows
             // its background rather than last frame's splats.
             commandBuffer.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
-            view = LerpSplatViewInfo(caption: captionLayer.rect)
+            view = LerpSplatViewInfo(captionOpacity: captionOpacity, caption: captionLayer.rect)
             return
         }
 
@@ -207,7 +211,8 @@ public final class SplatData: LerpDataProvider {
             center: SIMD2(res.x * 0.5 + focalDrawable * o.x / z + shift.x,
                           res.y * 0.5 - focalDrawable * o.y / z - shift.y),
             radius: focalDrawable * cam.subjectRadius / z,
-            fovy: cam.fovy, ready: 1, phase: deform.phase, splats: Float(visible.count), pad: 0,
+            fovy: cam.fovy, ready: 1, phase: deform.phase, splats: Float(visible.count),
+            captionOpacity: captionOpacity,
             caption: captionLayer.rect)
     }
 
@@ -293,6 +298,7 @@ public final class SplatData: LerpDataProvider {
             let hand = held(eye: eye, target: target, params: params)
             return Camera(view: hand.view, focal: focal * hand.lens, fovy: Self.narrowed(2 * half, by: hand.lens),
                           near: max(0.02, hand.distance - clip))
+
         case .path:
             guard let path else {
                 // No path file: a slow turntable rather than nothing.
@@ -504,8 +510,8 @@ public final class SplatData: LerpDataProvider {
         float  ready;    // 0 while the capture is missing
         float  phase;    // deform cycle phase, 0..1
         float  splats;   // splats drawn this frame
-        float  pad;
-        float4 caption;  // the caption's panel: x, y, w, h in drawable px, y down (w = 0: none)
+        float  captionOpacity; // 0...1: how much of the caption shows
+        float4 caption;  // the caption's texture: x, y, w, h in drawable px, y down (w = 0: none)
     };
 
     static inline float4 lerpSplatSample(texture2d<half> t, float2 px, float2 res) {
@@ -532,13 +538,7 @@ public final class SplatData: LerpDataProvider {
     // ---- captions ----------------------------------------------------------
     // texture(2): the look's `// lerp-caption…:` lines as glyph coverage,
     // mipmapped, covering exactly V.caption. A captioned look's texture(1) is
-    // mipmapped too, so the panel can blur what is behind it.
-
-    // Signed distance to a rounded rectangle, in pixels; negative inside.
-    static inline float lerpCaptionBox(float2 p, float2 c, float2 half_, float r) {
-        float2 q = abs(p - c) - half_ + r;
-        return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
-    }
+    // mipmapped too, so the caption can read how bright the scene behind it is.
 
     // The capture over `bg`, blurred by about `radiusPx` drawable pixels: a
     // 3×3 tent read from the mip level that size lands on.
@@ -558,34 +558,44 @@ public final class SplatData: LerpDataProvider {
     }
 
     // The look's caption over `color` (the capture over `bg` at this pixel).
-    // One treatment for every captioned look: a smoked panel of the capture
-    // blurred behind it, dark type instead over a bright scene.
+    // One treatment for every captioned look, and no panel: warm white type
+    // set on the image, the way a photograph's caption sits in a book. What
+    // keeps it legible is the image itself, burned down: a broad, soft
+    // darkening round the type that is barely there over a dark scene and
+    // deepens over a bright one, and a close shadow blurred out of the
+    // glyphs, so a stroke still reads over a busy patch. V.captionOpacity
+    // fades all of it together.
     static inline float3 lerpSplatCaption(float3 color, float3 bg, float2 px, float2 res,
                                           constant LerpSplatView& V, texture2d<half> splat,
                                           texture2d<half> label) {
-        if (V.caption.z <= 0.0) return color;
+        float fade = saturate(V.captionOpacity);
+        if (V.caption.z <= 0.0 || fade <= 0.0) return color;
         float H = res.y;
         float2 org = V.caption.xy, size = V.caption.zw, c = org + 0.5 * size;
-        float radius = 0.009 * H;
-        float d = lerpCaptionBox(px, c, 0.5 * size, radius);
-        if (d > 0.12 * H) return color;
 
-        constexpr sampler ts(filter::linear, mip_filter::linear, address::clamp_to_zero);
-        float glyph = float(label.sample(ts, (px - org) / size, level(0.0)).r);
-        float inside = 1.0 - smoothstep(-0.75, 0.75, d);
+        // The burn: a soft ellipse round the type, reaching past it by about
+        // the type's own height, its depth set by how bright the scene is there.
+        float2 reach = 0.5 * size + float2(0.14 * H, 0.10 * H);
+        float2 q = (px - c) / reach;
+        float r2 = dot(q, q);
+        if (r2 > 4.0) return color;
         float3 behind = lerpSplatBlur(splat, c, res, 0.5 * max(size.x, size.y), bg);
-        bool dark = dot(behind, float3(0.2126, 0.7152, 0.0722)) > 0.5;
-        float3 ink = dark ? float3(0.05, 0.05, 0.06) : float3(1.0);
+        float lum = dot(behind, float3(0.2126, 0.7152, 0.0722));
+        float depth = mix(0.15, 0.72, smoothstep(0.03, 0.40, lum));
+        float burn = depth * exp(-1.4 * r2);
+        float3 out = color * (1.0 - burn);
 
-        float3 frost = lerpSplatBlur(splat, px, res, 0.035 * H, bg);
-        float rise = saturate((c.y - px.y) / (0.5 * size.y));
-        float3 tint = dark ? float3(0.97) : float3(0.035, 0.037, 0.042) + 0.018 * rise;
-        float3 panel = mix(frost, tint, dark ? 0.55 : 0.62);
-        float edge = 1.0 - smoothstep(0.0, 1.0, abs(d + 0.5));
-        panel += edge * (0.015 + 0.09 * pow(rise, 3.0));
-        float shadow = 0.35 * (1.0 - smoothstep(0.0, 0.03 * H, d)) * step(0.0, d);
-        float3 out = mix(color * (1.0 - shadow), panel, inside);
-        return mix(out, ink, glyph);
+        if (all(px >= org) && all(px < org + size)) {
+            constexpr sampler ts(filter::linear, mip_filter::linear, address::clamp_to_zero);
+            float2 uv = (px - org) / size;
+            float glyph = float(label.sample(ts, uv, level(0.0)).r);
+            float spread = log2(max(1.0, 0.0035 * H));
+            float halo = float(label.sample(ts, uv + float2(0.0, 0.0012 * H) / size, level(spread)).r);
+            out *= 1.0 - mix(0.3, 0.6, smoothstep(0.03, 0.40, lum)) * saturate(1.6 * halo);
+            float3 ink = float3(0.965, 0.945, 0.905);
+            out = mix(out, ink, glyph);
+        }
+        return mix(color, out, fade);
     }
     """
 }
@@ -598,7 +608,7 @@ struct LerpSplatViewInfo {
     var ready: Float = 0
     var phase: Float = 0
     var splats: Float = 0
-    var pad: Float = 0
+    var captionOpacity: Float = 1
     var caption = SIMD4<Float>(0, 0, 0, 0)
 }
 

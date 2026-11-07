@@ -202,6 +202,13 @@ public final class LerpMetalView: NSView {
     /// Whether the look on screen has been drawn at least once. A look nobody
     /// has seen is cut away from, not faded from.
     private var drewCurrentLook = false
+    /// When (on the shader clock) the look on screen came in: its caption
+    /// shows for `LerpCaptionSchedule.hold` seconds of it, then fades.
+    private var lookStart: CFTimeInterval = 0
+    /// How far a host's `captionHeld` has brought the caption up, 0…1, and
+    /// when that was last moved (wall clock).
+    private var captionReveal: Double = 0
+    private var captionRevealStamp: CFTimeInterval = 0
     /// The look being faded out, and when (on the shader clock) it started.
     private var fadingOut: Look?
     private var fadeStart: CFTimeInterval = 0
@@ -1024,6 +1031,7 @@ public final class LerpMetalView: NSView {
         currentShader = shader
         currentShaderName = shader.name
         currentEntry = entry
+        lookStart = time
         renderer.gpuCost.begin(look: entry.key)
         // Every look starts at the panel's rate and earns a lower one only
         // by being measured too slow for it.
@@ -1301,6 +1309,7 @@ public final class LerpMetalView: NSView {
             }
             let uniforms = liveUniforms(width: Int(metalLayer.drawableSize.width),
                                         height: Int(metalLayer.drawableSize.height), at: time)
+            applyCaptionOpacity(at: time)
             if isEDRActive, let post = edrPostPipeline {
                 drawEDR(drawable: drawable, pipeline: pipeline, post: post, uniforms: uniforms)
             } else {
@@ -1358,6 +1367,21 @@ public final class LerpMetalView: NSView {
                      time: Float(time), seed: seed,
                      audio: audioLevels?() ?? .silent,
                      viewer: viewer?() ?? .centered)
+    }
+
+    /// Keeps a captioned look's label up while a host holds it
+    /// (`captionHeld`), and otherwise lets it go after the look's first
+    /// seconds (`LerpCaptionSchedule`).
+    public var captionHeld = false
+
+    private func applyCaptionOpacity(at time: CFTimeInterval) {
+        guard let splat = dataProvider as? SplatData else { return }
+        let now = CACurrentMediaTime()
+        let dt = captionRevealStamp > 0 ? min(0.1, now - captionRevealStamp) : 0
+        captionRevealStamp = now
+        captionReveal += ((captionHeld ? 1 : 0) - captionReveal) * min(1, dt / LerpCaptionSchedule.reveal)
+        let scheduled = LerpCaptionSchedule.opacity(age: time - lookStart)
+        splat.captionOpacity = Float(max(scheduled, captionReveal))
     }
 
     /// Mid-fade: renders the outgoing look into the scratch texture, in its

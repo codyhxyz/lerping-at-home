@@ -42,6 +42,7 @@ public enum LerpSnapshot {
                               params: LerpParameterValues? = nil,
                               hdrPeak: Float? = nil,
                               viewer: LerpViewer = .centered,
+                              captions: Bool = true,
                               to url: URL) -> Result {
         let format: MTLPixelFormat = hdrPeak == nil ? .bgra8Unorm : LerpEDR.shaderPixelFormat
         let pipeline: MTLRenderPipelineState
@@ -49,6 +50,9 @@ public enum LerpSnapshot {
         do {
             pipeline = try library.pipeline(for: shader, pixelFormat: format)
             data = try library.dataProvider(for: shader)
+            // A still is the look as it plays once its caption has gone,
+            // unless the caller asks to see the caption.
+            (data as? SplatData)?.captionOpacity = captions ? 1 : 0
         } catch {
             return Result(shader: shader.name, url: nil, error: String(describing: error), meanLuminance: 0)
         }

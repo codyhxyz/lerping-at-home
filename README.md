@@ -632,7 +632,11 @@ its parameters and presets wherever the file goes.
   height) into a mipmapped coverage
   texture at `texture(2)`, and `LerpSplatView.caption` says where its panel
   sits. The look composites it with `lerpSplatCaption`: one treatment for
-  every captioned look, with no per-look setting. A captioned look's splat
+  every captioned look, with no per-look setting. The label is there when
+  the look comes in and fades after six seconds (`LerpCaptionSchedule`), so
+  the look plays textless; in the playground, moving the pointer over the
+  picture brings it back for a moment, and Shader › Show Captions keeps it.
+  Gallery stills leave it out. A captioned look's splat
   texture is mipmapped so the label can blur what is behind it; an
   uncaptioned one is drawn exactly as before.
 - Some captures were published with no licence (`"license": "none"` in

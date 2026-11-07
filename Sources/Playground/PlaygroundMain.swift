@@ -389,6 +389,9 @@ enum MainMenu {
             // full screen gives up the key: it would only enlarge the editor.
             item("Preview Full Screen", #selector(PlaygroundWindowController.togglePreview(_:)), "f",
                  [.command, .control]),
+            // Off at launch: a look's caption shows for its first seconds and
+            // when the pointer moves over the picture; this keeps it up.
+            item("Show Captions", #selector(PlaygroundWindowController.toggleCaptions(_:)), ""),
             item("Randomize Parameters",
                  #selector(PlaygroundWindowController.randomizeParameters(_:)), "r", [.command, .shift]),
             // Off at launch. Feeds u.audioLevel/Bass/Mid/Treble; see PORTING.md.
