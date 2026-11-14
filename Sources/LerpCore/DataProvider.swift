@@ -99,6 +99,7 @@ public enum LerpDataProviders {
     nonisolated(unsafe) private static var factories: [String: Factory] = [
         "clock": { _, mode in ClockData(mode: mode) },
         "critter": { CritterData(device: $0, mode: $1) },
+        "frost": { d, _ in FrostData(device: d) },
         "heatmap": { d, _ in HeatmapData(device: d) },
         "ink-fluid": { d, _ in InkFluidData(device: d) },
         "life": { d, _ in LifeData(device: d) },

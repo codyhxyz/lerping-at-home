@@ -61,6 +61,11 @@ enum PreviewMain {
             return
         }
 
+        if args.contains("--frost-selftest") {
+            frostSelfTest(extraSearch)
+            return
+        }
+
         if args.contains("--rd-selftest") {
             reactionDiffusionSelfTest(extraSearch)
             return
@@ -154,6 +159,31 @@ enum PreviewMain {
                          + "steady frame mean %.3f ms / max %.3f ms CPU",
                          w, h, cols, rows, worst, ReactionDiffusionData.epochSteps, steady.mean, steady.max))
         }
+    }
+
+    /// Exercise the actual render path cold, cached, and after a backwards scrub.
+    static func frostSelfTest(_ extraSearch: [URL]) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lerp-frost-\(getpid())")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        func render(_ times: [Float], _ name: String, seed: Float = 0.31) -> Data {
+            let (renderer, library) = makeLibrary(extraSearch)
+            guard let shader = library.shader(named: "frost-dendrites") else { fail("missing frost") }
+            let url = dir.appendingPathComponent(name + ".png")
+            for time in times {
+                let result = LerpSnapshot.render(shader: shader, library: library, renderer: renderer,
+                                                 width: 320, height: 200, time: time, seed: seed, to: url)
+                if let error = result.error { fail("frost: \(error)") }
+            }
+            guard let data = try? Data(contentsOf: url) else { fail("frost: cannot read snapshot") }
+            return data
+        }
+        let cold = render([30], "cold")
+        let warm = render([0, 10, 20, 30], "warm")
+        let back = render([40, 30], "back")
+        guard cold == warm && cold == back else { fail("frost: history changed the frame") }
+        guard cold != render([30], "other", seed: 0.77) else { fail("frost: seed had no effect") }
+        print("OK    frost: cold, warm and scrubbed frames agree; seed changes frame")
     }
 
     static func fail(_ message: String) -> Never {
