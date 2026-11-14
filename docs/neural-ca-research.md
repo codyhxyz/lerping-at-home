@@ -60,7 +60,9 @@ actual GPU cost and memory as well; neither has been measured here.
 
 The state is 16 float channels on a 96×96 toroidal grid. Two GPU passes
 compute the dense update and apply the pre/post life masks. At step 320 an
-identical, circular wound is applied to all channels. Dropout hashes cell,
+circular wound (radius 10, offset 8 cells right of center) is applied to all
+channels in the production update pass. It occurs about 26.7 seconds into
+the 53.3-second epoch at 12 steps/second. Dropout hashes cell,
 step, seed and epoch; each 640-step epoch starts from the center seed. This
 changes the WebGL renderer's quantized activation representation and random
 stream; it is not a bit-for-bit reproduction. We use scalar Metal arithmetic,
@@ -74,6 +76,15 @@ was 227.10 immediately and 60.98 after 180 further steps. That demonstrates
 partial recovery on this particular seed, wound, grid, and interval, not
 general regeneration or convergence of all channels. Cold and incremental
 replay and backward scrub matched bit-for-bit across all 16 channels on that
-device. A 500-step cold replay took approximately 94 ms GPU, while the 180
-steps after the wound took 34 ms GPU, including the test readback blit; results
-are device-dependent.
+device. The original 4c1542a production kernel had no wound at all, so the
+previously documented wound measurements were not supported by that code. The current test exercises the production wound and verifies all 16
+channels are cleared, compares an unwounded control, and forces cold replay.
+
+On the same Apple M5, a 639-step cold replay measured 140 ms wall / 136 ms GPU
+without readback; ten individually submitted one-step frames had maxima of
+0.40 ms wall / 0.24 ms GPU. The 500-step cold replay with readback took about
+106 ms GPU, and 180 steps about 38 ms. These are single-run measurements, not
+latency guarantees. A cold seek can visibly hitch and slower GPUs may be much
+worse; this change does not mitigate that latency. Splitting replay across
+frames would change exact-time rendering and requires a separate design. No
+visual host observation or wider seed/device study is claimed.

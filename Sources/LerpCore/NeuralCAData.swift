@@ -36,7 +36,14 @@ kernel void ncaDelta(constant LerpSimFrame& f [[buffer(0)]], texture2d<float, ac
  o4.write(r[0],p); o5.write(r[1],p); o6.write(r[2],p); o7.write(r[3],p);
 }
 kernel void ncaUpdate(constant LerpSimFrame& f [[buffer(0)]], texture2d<float, access::read> s0 [[texture(0)]], texture2d<float, access::read> s1 [[texture(1)]], texture2d<float, access::read> s2 [[texture(2)]], texture2d<float, access::read> s3 [[texture(3)]], texture2d<float, access::read> d0 [[texture(4)]], texture2d<float, access::read> d1 [[texture(5)]], texture2d<float, access::read> d2 [[texture(6)]], texture2d<float, access::read> d3 [[texture(7)]], texture2d<float, access::write> o0 [[texture(8)]], texture2d<float, access::write> o1 [[texture(9)]], texture2d<float, access::write> o2 [[texture(10)]], texture2d<float, access::write> o3 [[texture(11)]], uint2 p [[thread_position_in_grid]]) {
- if(any(p>=f.size)) return; float pre=0,post=0;
+ if(any(p>=f.size)) return;
+ // A single bounded, deterministic injury per epoch. Clear all channels at
+ // generation 320; subsequent ordinary updates perform the healing.
+ int2 wound = int2(p) - (int2(f.size) / 2 + int2(8, 0));
+ if(f.config[0].x > 0.5 && f.step == 320 && wound.x * wound.x + wound.y * wound.y < 100) {
+   o0.write(float4(0),p); o1.write(float4(0),p); o2.write(float4(0),p); o3.write(float4(0),p); return;
+ }
+ float pre=0,post=0;
  for(int y=-1;y<=1;y++) for(int x=-1;x<=1;x++) {int2 q=(int2(p)+int2(x,y)+int2(f.size))%int2(f.size); float a=state(s0,s1,s2,s3,q,f,0).a; pre=max(pre,a); post=max(post,a+d0.read(uint2(q)).a);}
  bool alive=min(pre,post)>=0.1; o0.write(alive?state(s0,s1,s2,s3,int2(p),f,0)+d0.read(p):float4(0),p); o1.write(alive?state(s0,s1,s2,s3,int2(p),f,1)+d1.read(p):float4(0),p); o2.write(alive?state(s0,s1,s2,s3,int2(p),f,2)+d2.read(p):float4(0),p); o3.write(alive?state(s0,s1,s2,s3,int2(p),f,3)+d3.read(p):float4(0),p);
 }
