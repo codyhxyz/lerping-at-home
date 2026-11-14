@@ -9,6 +9,7 @@
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -80 80   = 0 "Tilt"
 // lerp-param: magnify  float -1 1 = 0 "Zoom"
+// lerp-param: parallax float 0 2 = 1 "Head parallax"
 //
 // The lattice walk lives on the CPU (Sources/LerpCore/PipesData.swift) and is
 // regenerated from (seed, time) every frame. This file raymarches it: the ray
@@ -188,7 +189,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     float3 right = normalize(cross(fwd, float3(0.0, 1.0, 0.0)));
     lerpOrbit(u.yaw, u.pitch, u.magnify, centre, float3(0.0, 1.0, 0.0), ro, right, fwd);   // drag to turn
     float3 up = cross(right, fwd);
-    float3 rd = normalize(uv.x * right + uv.y * up + PP_FOCAL * fwd);
+    float3 rd = lerpViewerRay(u, u.parallax, uv, PP_FOCAL, right, up, fwd, ro);
 
     // Light and half-vector are fixed in eye space; rotate them into the
     // lattice frame once per pixel (eye +z points back toward the viewer).

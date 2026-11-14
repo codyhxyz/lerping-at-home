@@ -19,11 +19,15 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float2 p = lerpUV(pos, u.resolution);
     float phase = u.time * u.speed + u.seed * 6.2831853;
     float d = 10.0;
-    float2 prev = vsPoint(0.0, phase, u.audioBass, u.audioTreble);
-    for (int i = 1; i <= 80; ++i) {
-        float2 next = vsPoint(float(i) * (6.2831853 / 80.0), phase, u.audioBass, u.audioTreble);
-        d = min(d, vsSegment(p, prev, next));
-        prev = next;
+    // The curve lies inside ±(0.72, 0.48). Beyond this padded box its
+    // widest glow is below 0.0001, so avoid 80 segment tests in the margins.
+    if (all(abs(p) < float2(1.14, 0.90))) {
+        float2 prev = vsPoint(0.0, phase, u.audioBass, u.audioTreble);
+        for (int i = 1; i <= 80; ++i) {
+            float2 next = vsPoint(float(i) * (6.2831853 / 80.0), phase, u.audioBass, u.audioTreble);
+            d = min(d, vsSegment(p, prev, next));
+            prev = next;
+        }
     }
     float hour = glmod(clock.hourAtZero + u.time / 3600.0, 24.0);
     float minuteAngle = 6.2831853 * fract(hour);

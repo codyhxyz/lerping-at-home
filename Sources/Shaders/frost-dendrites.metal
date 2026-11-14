@@ -16,7 +16,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     if (f.ready == 0u) return half4(half3(lerpDither(back, pos)), 1.0h);
     float2 size = float2(grid.get_width(), grid.get_height());
     // Axial coordinates: x and y lattice axes meet at 60 degrees.
-    float2 xy = (pos.xy - 0.5 * u.resolution) * (size.y / u.resolution.y);
+    // The axial y coordinate is 2/sqrt(3) times screen y. Leave a
+    // small border so the entire screen, including the linear-filter taps,
+    // stays inside the simulation texture.
+    float2 xy = (pos.xy - 0.5 * u.resolution) * (0.85 * size.y / u.resolution.y);
     float2 axial = float2(xy.x - xy.y * 0.57735, xy.y * 1.1547) + size * 0.5;
     constexpr sampler s(coord::normalized, address::clamp_to_zero, filter::linear);
     float ice = grid.sample(s, axial / size).r;

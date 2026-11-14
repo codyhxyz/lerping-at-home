@@ -38,7 +38,7 @@ public final class FrostData: LerpDataProvider {
         let clock = max(0, uniforms.time) * speed + 50
         let epoch = Int(floor(clock / 180))
         let step = Int(clock.truncatingRemainder(dividingBy: 180))
-        let aspect = min(2.5, max(0.5, uniforms.resolution.x / max(1, uniforms.resolution.y)))
+        let aspect = max(0.5, uniforms.resolution.x / max(1, uniforms.resolution.y))
         let key = LerpGPUSimulation.Key(seed: uniforms.seed, epoch: epoch,
                                         width: Int(ceil(160 * aspect)) + 80, height: 160)
         let phase = Float(step) / 180
