@@ -1677,10 +1677,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func startCamera() {
+        FaceLandmarks.log.notice("head: starting for \(self.current.name, privacy: .public)")
         askingForCamera = true
         HeadTracker.requestAccess { [weak self] granted in
             guard let self else { return }
             self.askingForCamera = false
+            FaceLandmarks.log.notice("head: camera access \(granted ? "granted" : "refused", privacy: .public)")
             guard granted else {
                 return self.cameraFailed("Camera access is off for LerpPlayground (System Settings › "
                                          + "Privacy & Security › Camera)")
@@ -1688,6 +1690,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             // The look may have changed while the question was up.
             guard self.metalView.viewer != nil, self.headTracker == nil else { return }
             let tracker = HeadTracker()
+            tracker.onStarted = { [weak self] in self?.refreshInputs() }
+            tracker.onFailure = { [weak self, weak tracker] why in
+                guard let self, let tracker, self.headTracker === tracker else { return }
+                self.headTracker = nil
+                self.cameraFailed("No head tracking: \(why)")
+            }
             do {
                 try tracker.start()
             } catch {
@@ -1699,6 +1707,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func cameraFailed(_ why: String) {
+        FaceLandmarks.log.error("head: \(why, privacy: .public); the pointer steers")
         cameraUnavailable = why
         refreshInputs()
         setStatus("\(why). The pointer steers the view instead", .error)
@@ -1813,7 +1822,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             live[.audio] = ("Audio", "System audio — click to stop")
         }
         if let headTracker {
-            live[.head] = ("Head", "Head tracking with \(headTracker.cameraName) — click to stop")
+            let camera = headTracker.cameraName.isEmpty ? "the camera (starting)" : headTracker.cameraName
+            live[.head] = ("Head", "Head tracking with \(camera) — click to stop")
         } else if metalView.viewer != nil {
             let why = cameraUnavailable ?? "Waiting for the camera"
             live[.head] = ("Pointer", "\(why); the pointer steers the view — click to stop")

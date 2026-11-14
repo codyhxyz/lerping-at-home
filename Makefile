@@ -192,6 +192,11 @@ MEDIAPIPE_TGZ      := https://registry.npmjs.org/@mediapipe/tasks-vision/-/tasks
 MEDIAPIPE_TGZ_SHA  := 84597a25e13d123b5f4cbe768bb72e97a2c28c7a465f0ace287d8cbe5246bff0
 HAND_MODEL         := https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
 HAND_MODEL_SHA     := fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1
+# Shader › Track Head with Camera: MediaPipe Face Landmarker (478 points, the
+# irises among them), the detector this year's head-coupled demos share. Same
+# runtime, same page server; see Sources/Playground/FaceLandmarks.swift.
+FACE_MODEL         := https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+FACE_MODEL_SHA     := 64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff
 # $(call FETCH,url,sha256,dest): download, refuse anything but the pinned bytes.
 define FETCH
 	curl -fsSL --retry 3 -o "$(3).part" "$(1)"
@@ -284,12 +289,13 @@ $(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/
 	codesign --force -s - $(PLAYGROUND_APP)
 
 # Rebuilt when the pins change, which is the only time the bytes can.
-MEDIAPIPE_PINS := $(MEDIAPIPE_TGZ_SHA)$(HAND_MODEL_SHA)
+MEDIAPIPE_PINS := $(MEDIAPIPE_TGZ_SHA)$(HAND_MODEL_SHA)$(FACE_MODEL_SHA)
 $(MEDIAPIPE_STAMP): $(if $(filter $(MEDIAPIPE_PINS),$(shell cat $(MEDIAPIPE_STAMP) 2>/dev/null)),,FORCE)
 	rm -rf $(MEDIAPIPE)
 	@mkdir -p $(MEDIAPIPE)/vendor/mediapipe/wasm $(MEDIAPIPE)/models $(MEDIAPIPE)/npm
 	$(call FETCH,$(MEDIAPIPE_TGZ),$(MEDIAPIPE_TGZ_SHA),$(MEDIAPIPE)/tasks-vision.tgz)
 	$(call FETCH,$(HAND_MODEL),$(HAND_MODEL_SHA),$(MEDIAPIPE)/models/hand_landmarker.task)
+	$(call FETCH,$(FACE_MODEL),$(FACE_MODEL_SHA),$(MEDIAPIPE)/models/face_landmarker.task)
 	tar -xzf $(MEDIAPIPE)/tasks-vision.tgz -C $(MEDIAPIPE)/npm \
 		package/vision_bundle.mjs \
 		package/wasm/vision_wasm_module_internal.js package/wasm/vision_wasm_module_internal.wasm

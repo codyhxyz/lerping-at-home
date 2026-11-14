@@ -964,5 +964,5 @@ even before `make saver` bakes it into the bundle.
 - Microsoft 3D Maze (`ssmaze`) — `Sources/Shaders/maze.metal` is an original ray-cast homage sharing no code, textures or artwork with it. See `NOTICE.txt`.
 - The OpenGL "teapot" material table (emerald, jade, pearl, ruby, turquoise, brass, bronze, copper, gold, silver, plastics, rubbers) — long-published values used by `pipes`.
 - [orchetect/swift-midi](https://github.com/orchetect/swift-midi) — MIT. MIDI I/O for the playground, linked statically via `Sources/MIDIDeps`. Formerly named MIDIKit.
-- [MediaPipe](https://github.com/google-ai-edge/mediapipe) — Apache-2.0. Tasks Vision web runtime and hand landmarker model, for the playground's hand control; downloaded and bundled at build time, not in git.
+- [MediaPipe](https://github.com/google-ai-edge/mediapipe) — Apache-2.0. Tasks Vision web runtime and the hand and face landmarker models, for the playground's hand control and head tracking; downloaded and bundled at build time, not in git.
 - [MIKMIDI](https://github.com/mixedinkey-opensource/MIKMIDI) — MIT. The MIDI mapping model (per-device bindings, MIDI learn, named banks) follows its design. No MIKMIDI code is used and it is not a dependency.
