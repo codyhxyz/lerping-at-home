@@ -3,6 +3,7 @@ import CoreGraphics
 import CoreMedia
 import Foundation
 import os
+import QuartzCore
 import simd
 import Vision
 
@@ -79,13 +80,6 @@ struct HeadPoseEstimator {
     /// Whether the frames arrive mirrored, as some connections deliver them.
     var mirrored = false
 
-    /// A face that vanishes for a moment (a blink of the detector, a hand
-    /// passing) holds its last pose this long before easing back to centre.
-    static let hold: Double = 0.4
-    /// How far ahead of the filtered pose to report, in seconds: the camera
-    /// and the detector are ~50 ms behind the head, and leading by most of
-    /// that is what keeps the scene from swimming after a quick move.
-    static let lead: Float = 0.045
     /// Head poses outside these are clamped: past them the face is leaving
     /// the frame and the estimate is mostly noise.
     static let lateral: Float = 0.8
@@ -93,8 +87,8 @@ struct HeadPoseEstimator {
     /// A head turned further than this (radians) is not measured. The pupils
     /// close up as the head turns (by cos yaw, which is corrected for below
     /// this), and past it the far eye is half hidden and its landmark is a
-    /// guess: the pose holds instead, for as long as the face stays turned —
-    /// the watcher is still in the same place, looking at something else.
+    /// guess. The face is still there, so the caller holds the last pose
+    /// rather than reporting it lost.
     static let maxYaw: Float = 35 * .pi / 180
     /// Adult inter-pupil distance, mm (the population mean; individuals run
     /// ~54–74). Only `calibrationDistanceMM` uses it: the pose itself is a
@@ -111,9 +105,6 @@ struct HeadPoseEstimator {
     /// Seeded with a typical Vision face box.
     private var eyeInBox = SIMD2<Float>(0.5, 0.62)
     private var spanPerBoxWidth: Float = 0.42
-    private var filter = OneEuroFilter()
-    private var lastFace = -Double.infinity
-    private var lastPose = SIMD3<Float>(0, 0, 0)
 
     init(horizontalFOVDegrees: Float) {
         tanHalfFOV = tan(horizontalFOVDegrees * .pi / 360)
@@ -122,7 +113,6 @@ struct HeadPoseEstimator {
     /// Make the next face seen the centre.
     mutating func recenter() {
         reference = nil
-        filter = OneEuroFilter()
     }
 
     /// How far from the camera the watcher sat at calibration, in mm, if
@@ -132,45 +122,32 @@ struct HeadPoseEstimator {
         reference.map { Self.typicalIPD / ($0.span * 2 * tanHalfFOV) }
     }
 
-    /// The old entry point, a bare Vision face box: the box fallback only.
-    mutating func update(face: CGRect?, at time: Double) -> LerpViewer {
-        update(face.map { FaceSample(box: $0) }, at: time)
+    /// What one face says about where the head is: its pose, clamped, or
+    /// `.turned` when it is there but turned too far to measure.
+    enum Reading { case pose(SIMD3<Float>), turned }
+
+    mutating func read(_ face: FaceSample) -> Reading {
+        if let yaw = face.yaw, abs(yaw) > Self.maxYaw { return .turned }
+        return .pose(simd_clamp(measure(face), SIMD3(-Self.lateral, -Self.lateral, Self.farthest),
+                                SIMD3(Self.lateral, Self.lateral, Self.nearest)))
     }
 
-    /// One camera frame at `time` seconds: the face to follow, or nil when
-    /// none was found.
-    mutating func update(_ face: FaceSample?, at time: Double) -> LerpViewer {
-        var pose = SIMD3<Float>(0, 0, 0)
-        let turned = face?.yaw.map { abs($0) > Self.maxYaw } ?? false
-        if let face, !turned {
-            let (eye, span) = locate(face)
-            // The ray from the camera to the eyes, as slopes.
-            let direction = (eye * 2 - 1) * SIMD2(tanHalfFOV, tanHalfFOV / aspect)
-            let ref = reference ?? (direction, span)
-            reference = ref
-            // Distance now over distance at calibration: pupils half as far
-            // apart are twice as far away. The head's offset across the
-            // screen is then that distance times the slope, less where it
-            // started, all in units of the calibrated distance. The camera
-            // faces the watcher, so their right is the image's left unless
-            // the frame is mirrored.
-            let r = ref.span / span
-            let across = r * direction - ref.direction
-            pose = SIMD3(mirrored ? across.x : -across.x, across.y, 1 - r)
-            lastFace = time
-        } else if turned {
-            // Still there, just looking away: keep the last good pose, and
-            // count it as seen so the ordinary hold starts when it leaves.
-            pose = lastPose
-            lastFace = time
-        } else if time - lastFace < Self.hold {
-            pose = lastPose
-        }
-        lastPose = pose
-        let smoothed = filter(simd_clamp(pose, SIMD3(-Self.lateral, -Self.lateral, Self.farthest),
-                                         SIMD3(Self.lateral, Self.lateral, Self.nearest)), at: time)
-        let led = smoothed + filter.velocity * Self.lead
-        return LerpViewer(x: led.x, y: led.y, z: led.z)
+    /// The head's pose from one face, before clamping or filtering, in units
+    /// of the calibrated distance. The first face measured is the centre.
+    private mutating func measure(_ face: FaceSample) -> SIMD3<Float> {
+        let (eye, span) = locate(face)
+        // The ray from the camera to the eyes, as slopes.
+        let direction = (eye * 2 - 1) * SIMD2(tanHalfFOV, tanHalfFOV / aspect)
+        let ref = reference ?? (direction, span)
+        reference = ref
+        // Distance now over distance at calibration: pupils half as far
+        // apart are twice as far away. The head's offset across the screen
+        // is then that distance times the slope, less where it started, all
+        // in units of the calibrated distance. The camera faces the watcher,
+        // so their right is the image's left unless the frame is mirrored.
+        let r = ref.span / span
+        let across = r * direction - ref.direction
+        return SIMD3(mirrored ? across.x : -across.x, across.y, 1 - r)
     }
 
     /// The eye midpoint (normalised image coordinates) and the pupil span
@@ -222,37 +199,225 @@ struct ViewingGeometry: Sendable {
 
 /// The 1€ filter (Casiez, Roussel & Vogel, CHI 2012), per component: a
 /// low-pass whose cutoff rises with speed, so a still head reads steady and a
-/// moving one reads without lag.
+/// moving one reads without lag. As `HeadPoseFilter`'s 2026 reference runs
+/// it: besides the value it keeps a 5 Hz low-pass of the *output's* velocity,
+/// which is what latency prediction extrapolates with.
 struct OneEuroFilter {
     /// Hz. The cutoff at rest: lower is steadier and laggier.
-    var minCutoff: Float = 0.7
-    /// How fast the cutoff rises with speed (per pose-unit/s).
-    var beta: Float = 4.0
-    /// Hz, for the speed estimate itself.
+    var minCutoff: Float
+    /// How fast the cutoff rises with speed (Hz per pose-unit/s).
+    var beta: Float
+    /// Hz, for the speed estimate that drives the cutoff.
     var derivativeCutoff: Float = 1.0
+    /// Hz, for `velocity`.
+    static let velocityCutoff: Float = 5
 
     private var value: SIMD3<Float>?
-    private(set) var velocity = SIMD3<Float>(0, 0, 0)
+    private var dx = SIMD3<Float>(repeating: 0)
+    /// Low-passed velocity of the filtered output, pose units/s.
+    private(set) var velocity = SIMD3<Float>(repeating: 0)
     private var time: Double = 0
+
+    /// Per-component cutoffs, so depth can be smoothed harder than x and y.
+    var cutoffScale = SIMD3<Float>(repeating: 1)
+
+    init(minCutoff: Float, beta: Float) {
+        self.minCutoff = minCutoff
+        self.beta = beta
+    }
+
+    mutating func reset() {
+        value = nil
+        dx = SIMD3(repeating: 0)
+        velocity = SIMD3(repeating: 0)
+    }
 
     mutating func callAsFunction(_ x: SIMD3<Float>, at t: Double) -> SIMD3<Float> {
         guard let previous = value else {
             value = x; time = t
             return x
         }
-        let dt = Float(max(1e-3, t - time))
+        let dt = Float(t - time)
+        guard dt > 0 else { return previous }   // a duplicate or out-of-order frame
         time = t
-        velocity += Self.alpha(dt, derivativeCutoff) * ((x - previous) / dt - velocity)
-        let cutoff = minCutoff + beta * simd_abs(velocity)
-        let a = SIMD3(Self.alpha(dt, cutoff.x), Self.alpha(dt, cutoff.y), Self.alpha(dt, cutoff.z))
-        let next = previous + a * (x - previous)
+        dx += Self.alpha(dt, SIMD3(repeating: derivativeCutoff)) * ((x - previous) / dt - dx)
+        let cutoff = (minCutoff + beta * simd_abs(dx)) * cutoffScale
+        let next = previous + Self.alpha(dt, cutoff) * (x - previous)
+        velocity += Self.alpha(dt, SIMD3(repeating: Self.velocityCutoff)) * ((next - previous) / dt - velocity)
         value = next
         return next
     }
 
-    private static func alpha(_ dt: Float, _ cutoff: Float) -> Float {
+    private static func alpha(_ dt: Float, _ cutoff: SIMD3<Float>) -> SIMD3<Float> {
         let tau = 1 / (2 * .pi * cutoff)
         return 1 / (1 + tau / dt)
+    }
+}
+
+/// Irregular, late eye measurements (~30 Hz, ~50 ms behind) in; a smooth eye
+/// position sampled every rendered frame out. A port of the pose stage of
+/// VintagePhebe/head-tracked-3d-display (`src/tracking/headPose.ts`, October
+/// 2026) — the MediaPipe + Kooima + 1€ pipeline this year's head-coupled
+/// demos share — with its default settings, converted from metres to this
+/// file's units (fractions of the calibrated viewing distance, `D0`):
+///
+/// - 1€ per axis, depth at 0.35× the cutoffs (depth from eye spacing is the
+///   noisiest axis).
+/// - Prediction over the pipeline latency plus the render smoother's own lag,
+///   capped at 60 ms, and gated by head speed so velocity noise never makes a
+///   still view wiggle.
+/// - Render-rate exponential smoothing (160 ms still, 18 ms moving), so the
+///   view moves continuously between camera frames instead of in 30 Hz steps.
+/// - Tracking loss: hold the shown pose 0.6 s, then ease to centre over 1.2 s.
+///   Frames that stop arriving for 0.4 s count as a loss. A face found again
+///   restarts the filters and blends in from what is shown over 0.25 s.
+///
+/// Measurements arrive on the tracker's queue and samples are taken on the
+/// main thread, so the state is behind a lock.
+final class HeadPoseFilter: @unchecked Sendable {
+    // The reference's DEFAULT_POSE_PARAMS, seconds.
+    static let hold: Double = 0.6
+    static let returning: Double = 1.2
+    static let recover: Double = 0.25
+    static let stale: Double = 0.4
+    static let maxPredict: Double = 0.06
+    static let stillTau: Double = 0.16
+    static let moveTau: Double = 0.018
+    /// Head speeds (m/s) below which it counts as still, above which as moving.
+    static let stillSpeed: Float = 0.035
+    static let moveSpeed: Float = 0.16
+    /// `oneEuroFromSettings(0.5, 0.5)`, the reference's default sliders:
+    /// 6·(0.3/6)^0.5 Hz, and 60·0.5^1.5 Hz per m/s.
+    static let minCutoff: Float = 6 * (0.3 / 6 as Float).squareRoot()
+    static let betaPerMetre: Float = 60 * pow(0.5, 1.5)
+    static let depthCutoffScale: Float = 0.35
+    /// The reference's default viewing distance, for converting its metric
+    /// speeds until a face has calibrated the real one.
+    static let defaultDistanceM: Float = 0.6
+
+    private struct State {
+        var filter: OneEuroFilter
+        var distanceM: Float = HeadPoseFilter.defaultDistanceM
+        var filtered = SIMD3<Float>(repeating: 0)
+        var display = SIMD3<Float>(repeating: 0)
+        var holdFrom = SIMD3<Float>(repeating: 0)
+        var blendFrom = SIMD3<Float>(repeating: 0)
+        var smoothed = SIMD3<Float>(repeating: 0)
+        var smoothValid = false
+        var lastSample: Double = 0
+        var hasData = false
+        var inLoss = false
+        var lostSince: Double?
+        var lastMeasurement: Double = 0
+        var blendStart = -Double.infinity
+    }
+
+    private let state: OSAllocatedUnfairLock<State>
+
+    init() {
+        var filter = OneEuroFilter(minCutoff: Self.minCutoff, beta: Self.betaPerMetre * Self.defaultDistanceM)
+        filter.cutoffScale = SIMD3(1, 1, Self.depthCutoffScale)
+        state = OSAllocatedUnfairLock(initialState: State(filter: filter))
+    }
+
+    /// The calibrated viewing distance, once known: the reference's speeds
+    /// and 1€ beta are per metre, and a pose unit is this many metres.
+    func setDistance(mm: Float) {
+        state.withLock { s in
+            s.distanceM = mm / 1000
+            s.filter.beta = Self.betaPerMetre * s.distanceM
+        }
+    }
+
+    /// Forget all tracking history (the camera stopped).
+    func reset() {
+        state.withLock { s in
+            s.hasData = false
+            s.inLoss = false
+            s.lostSince = nil
+            s.smoothValid = false
+            s.filter.reset()
+        }
+    }
+
+    /// Treat the next measurement as a face found again: blend to it rather
+    /// than filtering the jump (a recentre moves the zero under the filter).
+    func restart() {
+        state.withLock { s in if s.hasData { s.lostSince = s.lostSince ?? s.lastMeasurement } }
+    }
+
+    /// A face was measured in the frame captured at `time` (host seconds).
+    func measured(_ pose: SIMD3<Float>, at time: Double) {
+        state.withLock { s in
+            if !s.hasData || s.inLoss || s.lostSince != nil {
+                s.filter.reset()
+                s.blendFrom = s.display
+                s.blendStart = time
+                s.smoothValid = false
+            }
+            s.filtered = s.filter(pose, at: time)
+            s.lastMeasurement = time
+            s.hasData = true
+            s.inLoss = false
+            s.lostSince = nil
+        }
+    }
+
+    /// A frame was read but no face was found in it.
+    func noFace(at time: Double) {
+        state.withLock { s in if s.lostSince == nil { s.lostSince = time } }
+    }
+
+    /// The eye to render with at `now` (host seconds), as a viewer.
+    func sample(at now: Double = CACurrentMediaTime()) -> LerpViewer {
+        let out = state.withLock { s -> SIMD3<Float> in
+            var out: SIMD3<Float>
+            if !s.hasData {
+                out = .zero
+            } else if let lostAt = s.lostSince
+                        ?? (now - s.lastMeasurement > Self.stale ? s.lastMeasurement + Self.stale : nil) {
+                if !s.inLoss {
+                    s.inLoss = true
+                    s.holdFrom = s.display
+                }
+                let dt = now - lostAt
+                let home = dt < Self.hold ? 0 : Self.smoothstep(Float((dt - Self.hold) / Self.returning))
+                out = s.holdFrom * (1 - home)
+            } else {
+                var tracked = s.filtered
+                // 0 = head still, 1 = clearly moving: gates prediction and
+                // picks the render smoother's time constant.
+                let v = s.filter.velocity * s.distanceM
+                let speed = simd_length(SIMD3(v.x, v.y, v.z * 0.5))
+                let motion = Self.smoothstep((speed - Self.stillSpeed) / (Self.moveSpeed - Self.stillSpeed))
+                let tau = Self.stillTau + (Self.moveTau - Self.stillTau) * Double(motion)
+                if motion > 0 {
+                    let latency = min(max(now - s.lastMeasurement, 0), Self.maxPredict)
+                    tracked += s.filter.velocity * Float(latency + tau) * motion
+                }
+                if s.smoothValid {
+                    let dt = max(0, now - s.lastSample)
+                    let axy = Float(1 - exp(-dt / max(0.001, tau)))
+                    let az = Float(1 - exp(-dt / max(0.001, tau * Double(2 - motion))))
+                    s.smoothed += (tracked - s.smoothed) * SIMD3(axy, axy, az)
+                } else {
+                    s.smoothed = tracked
+                    s.smoothValid = true
+                }
+                let k = (now - s.blendStart) / Self.recover
+                out = k < 1 ? simd_mix(s.blendFrom, s.smoothed, SIMD3(repeating: Self.smoothstep(Float(k))))
+                            : s.smoothed
+            }
+            s.display = out
+            s.lastSample = now
+            return out
+        }
+        return LerpViewer(x: out.x, y: out.y, z: out.z)
+    }
+
+    private static func smoothstep(_ x: Float) -> Float {
+        let t = simd_clamp(x, 0, 1)
+        return t * t * (3 - 2 * t)
     }
 }
 
@@ -269,8 +434,8 @@ final class HeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
 
-    /// Goes back to `.centered` if frames stop arriving.
-    let viewer = LiveInput<LerpViewer>(idle: .centered, staleAfter: 0.5)
+    /// The eye to render with: sample it once per drawn frame.
+    let pose = HeadPoseFilter()
     private(set) var cameraName = ""
     /// The pose's scale in millimetres, once a face has been seen. Any thread.
     var geometry: ViewingGeometry? { geometryLock.withLock { $0 } }
@@ -300,6 +465,8 @@ final class HeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     /// iOS-only). Mac FaceTime cameras sit around 70° across; an error here
     /// only scales how far the scene moves, which `parallax` tunes anyway.
     private var estimator = HeadPoseEstimator(horizontalFOVDegrees: 70)
+    /// Queue-only: the last pose measured, held while the face is turned away.
+    private var lastPose = SIMD3<Float>(repeating: 0)
     private var screenShortSideMM: Float?
     private let geometryLock = OSAllocatedUnfairLock<ViewingGeometry?>(initialState: nil)
     /// Center Stage as it was before `start` turned it off, to put back.
@@ -360,7 +527,7 @@ final class HeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     func stop() {
         queue.async { [self] in session.stopRunning() }
         restoreCenterStage()
-        viewer.reset()
+        pose.reset()
     }
 
     /// Takes the camera back after a `stop()` without building a second
@@ -373,7 +540,10 @@ final class HeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
 
     /// Wherever the watcher is now becomes the centre.
     func recenter() {
-        queue.async { [self] in estimator.recenter() }
+        queue.async { [self] in
+            estimator.recenter()
+            pose.restart()
+        }
     }
 
     /// Center Stage pans and zooms a crop of the sensor to keep the face
@@ -401,7 +571,12 @@ final class HeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        // On the host clock, which is what `HeadPoseFilter.sample` reads
+        // (CACurrentMediaTime): the latency it predicts across is the gap.
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let time = session.synchronizationClock.map {
+            CMSyncConvertTime(pts, from: $0, to: CMClockGetHostTimeClock()).seconds
+        } ?? CACurrentMediaTime()
         let size = CGSize(width: CVPixelBufferGetWidth(pixels), height: CVPixelBufferGetHeight(pixels))
         estimator.aspect = Float(size.width) / Float(max(1, size.height))
         estimator.mirrored = connection.isVideoMirrored
@@ -422,8 +597,18 @@ final class HeadTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
 
     /// Queue-only.
     private func publish(_ face: FaceSample?, at time: Double) {
-        viewer.publish(estimator.update(face, at: time))
+        switch face.map({ estimator.read($0) }) {
+        case .pose(let measured)?:
+            lastPose = measured
+            pose.measured(measured, at: time)
+        case .turned?:
+            // Still there, looking away: the head has not moved.
+            pose.measured(lastPose, at: time)
+        case nil:
+            pose.noFace(at: time)
+        }
         if let distance = estimator.calibrationDistanceMM {
+            pose.setDistance(mm: distance)
             let geometry = ViewingGeometry(distanceMM: distance, screenShortSideMM: screenShortSideMM)
             geometryLock.withLock { $0 = geometry }
         }

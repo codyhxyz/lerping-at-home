@@ -2,8 +2,8 @@ import AppKit
 import QuartzCore
 import simd
 
-/// `u.viewer` from the pointer, for whenever no camera is seeing a face: no
-/// camera, access refused, the camera paused, or nobody in front of it. The
+/// `u.viewer` from the pointer, for when there is no camera to follow the
+/// head: none attached, access refused, or one that would not start. The
 /// pointer stands in for the head — move it right and the eye moves right — so
 /// a window look still looks round its depth instead of sitting flat.
 ///
@@ -28,13 +28,6 @@ final class PointerViewer {
 
     private var value = SIMD3<Float>(repeating: 0)
     private var stamp: CFTimeInterval = 0
-
-    /// Starts from where the tracked head was, so losing the face hands over
-    /// to the pointer without a jump.
-    func follow(_ viewer: LerpViewer) {
-        value = SIMD3(viewer.offset.x, viewer.offset.y, viewer.offset.z)
-        stamp = CACurrentMediaTime()
-    }
 
     func current(over view: NSView, desktop: Bool) -> LerpViewer {
         let now = CACurrentMediaTime()

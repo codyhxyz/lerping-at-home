@@ -281,8 +281,12 @@ stays put, the eye moves, and each pixel's ray runs from the eye through that
 pixel's own spot on the glass. Nearer things swing against the head, farther
 things follow it, and leaning in widens the view. It is on unless you turn it
 off (the choice is remembered), and the camera runs only while the open look
-declares `parallax`. Whenever the camera sees no face — no camera, access
-refused, nobody in front of it — the pointer stands in for the head: over the
+declares `parallax`. The pose stage is a port of this year's MediaPipe +
+Kooima + 1€ head-coupled pipeline (`HeadPoseFilter`): depth smoothed harder
+than x and y, prediction only while the head is moving, render-rate smoothing
+between camera frames, and on losing the face a 0.6 s hold, then a 1.2 s
+glide to centre. With no camera to use (none, or access refused) the pointer
+stands in for the head: over the
 render, or anywhere with Desktop Mode on, moving it moves the eye, and off the
 render the view eases back to straight on. Everywhere else `u.viewer` is
 exactly 0 — the screensaver, `--snapshot`, the gallery stills.

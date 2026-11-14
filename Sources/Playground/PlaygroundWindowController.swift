@@ -175,7 +175,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// The camera feeding `u.viewer`: running while Track Head is on and the
     /// open look declares `parallax`, and let go for every other look.
     private var headTracker: HeadTracker?
-    /// Steers `u.viewer` whenever the camera is not seeing a face.
+    /// Steers `u.viewer` while there is no camera to follow the head.
     private let pointerViewer = PointerViewer()
     /// Why the camera cannot follow the head — refused, missing, failed — once
     /// that is known. The pointer steers instead; turning Track Head off and on
@@ -1647,8 +1647,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Puts `u.viewer` in step with Track Head and the look on screen. A look
-    /// that declares `parallax` gets the camera (its light on) with the pointer
-    /// standing in whenever no face is seen; any other look ignores the viewer,
+    /// that declares `parallax` gets the camera (its light on), or the pointer
+    /// when there is no camera to have; any other look ignores the viewer,
     /// so the camera is let go and nothing is polled. Called after every
     /// compile, so switching looks switches the camera.
     private func updateViewer() {
@@ -1664,11 +1664,12 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if metalView.viewer == nil {
             metalView.viewer = { [weak self] in
                 guard let self else { return .centered }
-                if let head = self.headTracker?.viewer.fresh {
-                    self.pointerViewer.follow(head)
-                    return head
+                // A lost face is the estimator's to hold, not the pointer's
+                // to take over: the head is still where it was last seen.
+                guard let tracker = self.headTracker else {
+                    return self.pointerViewer.current(over: self.metalView, desktop: self.isDesktopModeOn)
                 }
-                return self.pointerViewer.current(over: self.metalView, desktop: self.isDesktopModeOn)
+                return tracker.pose.sample()
             }
         }
         if headTracker == nil, cameraUnavailable == nil, !askingForCamera { startCamera() }

@@ -2,7 +2,7 @@ import Foundation
 import os
 import QuartzCore
 
-/// The latest value of a live input — system audio, a tracked head — handed
+/// The latest value of a live input — system audio — handed
 /// from the queue that produces it to the render thread, which polls it once
 /// a frame.
 ///
@@ -28,12 +28,8 @@ final class LiveInput<Value: Sendable>: Sendable {
 
     func reset() { state.withLock { $0 = State(value: idle, stamp: 0) } }
 
-    var current: Value { fresh ?? idle }
-
-    /// The latest value, or nil once the producer has gone quiet — so a reader
-    /// can tell "the head is centred" from "no head is being seen".
-    var fresh: Value? {
+    var current: Value {
         let now = CACurrentMediaTime()
-        return state.withLock { now - $0.stamp > staleAfter ? nil : $0.value }
+        return state.withLock { now - $0.stamp > staleAfter ? idle : $0.value }
     }
 }
