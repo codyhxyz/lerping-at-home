@@ -6,6 +6,7 @@ import Metal
 ///   LerpPreview                     open a live preview window
 ///   LerpPreview --list              list discovered shaders
 ///   LerpPreview --params [NAME]     print declared parameters, animations and presets
+///   LerpPreview --nca-selftest      check neural CA replay, growth and wound response
 ///   LerpPreview --animate-selftest  check the `// lerp-animate:` contract
 ///   LerpPreview --critter-selftest  check the critter ledger and vitals (CPU only)
 ///   LerpPreview --snapshot DIR      render every shader to PNG in DIR
@@ -33,6 +34,11 @@ enum PreviewMain {
         // the preview works without installing anything.
         let extraSearch = ShaderLocations.repoSearchURLs()
         GPUTrace.prepare(args)
+
+        if args.contains("--nca-selftest") {
+            NeuralCASelfTest.run()
+            return
+        }
 
         if args.contains("--life-selftest") {
             guard LifeData.selfTest() else { fail("Game of Life rule self-test failed") }

@@ -105,6 +105,7 @@ public enum LerpDataProviders {
         "ink-fluid": { d, _ in InkFluidData(device: d) },
         "life": { d, _ in LifeData(device: d) },
         "maze": { d, _ in MazeData(device: d) },
+        "neural-ca": { d, _ in NeuralCAData(device: d) },
         "neural-field": { d, _ in NeuralFieldData(device: d) },
         "physarum": { d, _ in PhysarumData(device: d) },
         "pipes": { d, _ in PipesData(device: d) },

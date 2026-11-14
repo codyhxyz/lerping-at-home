@@ -1,8 +1,8 @@
 # Growing neural CA: source and implementation notes
 
-Research only: this does **not** implement a look or establish that a model
-heals in Lerping. The integration and the growth, damage/recovery and
-cold/live reproducibility tests remain to be done.
+The `neural-ca` look now ports the planarian model below using ordinary GPU
+arithmetic, not Metal tensor acceleration. Its deterministic replay, growth,
+wound and recovery are checked by `build/LerpPreview --nca-selftest`.
 
 ## Prior art and weights
 
@@ -20,10 +20,10 @@ The sizes and checksums verify the download's structure, not its behavior.
 
 The upstream repository's `LICENSE` is CC BY 4.0; `public/ca.js` separately
 has an Apache 2.0 header. The article labels its text and diagrams CC BY 4.0,
-with exceptions for reused figures. Confirm that the repository license
-covers the model weights and retain appropriate attribution and license text
-before redistributing; no model has been added here. In particular, do not
-assume the JavaScript's license alone covers the model data.
+with exceptions for reused figures. The repository tree at that commit contains no more-specific license for the
+weights; the repository-wide CC BY 4.0 therefore applies to the model. The
+separate Apache 2.0 notice applies to `ca.js`. Both license texts and credit
+are retained in `third_party/growing-ca` and the distributed bundles.
 
 ## Porting constraints
 
@@ -55,3 +55,25 @@ incremental access to the same generation, including backwards scrubs. The
 article's regeneration examples do not establish that a different boundary,
 random mask, wound schedule, precision, or seed works in this port. Measure
 actual GPU cost and memory as well; neither has been measured here.
+
+## Port and measured behavior
+
+The state is 16 float channels on a 96×96 toroidal grid. Two GPU passes
+compute the dense update and apply the pre/post life masks. At step 320 an
+identical, circular wound is applied to all channels. Dropout hashes cell,
+step, seed and epoch; each 640-step epoch starts from the center seed. This
+changes the WebGL renderer's quantized activation representation and random
+stream; it is not a bit-for-bit reproduction. We use scalar Metal arithmetic,
+not a tensor API. Eight double-buffered RGBA32Float planes occupy 2.25 MiB
+(excluding driver overhead). Compilation/allocation failure draws a fallback.
+
+On an Apple M5, seed 0.37, the self-test measured alpha mass 1 at step 0,
+495.15 at 300, 494.99 at 319, 269.50 just after the wound at 320, and
+485.57 at 500. Against an unwounded control the per-cell alpha L1 distance
+was 227.10 immediately and 60.98 after 180 further steps. That demonstrates
+partial recovery on this particular seed, wound, grid, and interval, not
+general regeneration or convergence of all channels. Cold and incremental
+replay and backward scrub matched bit-for-bit across all 16 channels on that
+device. A 500-step cold replay took approximately 94 ms GPU, while the 180
+steps after the wound took 34 ms GPU, including the test readback blit; results
+are device-dependent.

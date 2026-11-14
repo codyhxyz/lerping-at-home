@@ -283,6 +283,8 @@ $(PLAYGROUND_BIN): $(CORE) $(PLAYGROUND) $(MIDI_LIB) $(PLAYGROUND_ICNS) Sources/
 	plutil -replace LerpBuild -string $(LERP_BUILD) $(PLAYGROUND_APP)/Contents/Info.plist
 	cp $(PLAYGROUND_ICNS) $(PLAYGROUND_APP)/Contents/Resources/LerpPlayground.icns
 	cp LICENSE NOTICE.txt $(PLAYGROUND_APP)/Contents/Resources/
+	cp third_party/growing-ca/LICENSE $(PLAYGROUND_APP)/Contents/Resources/NEURAL-CA-CC-BY-4.0.txt
+	cp third_party/growing-ca/APACHE-2.0.txt $(PLAYGROUND_APP)/Contents/Resources/NEURAL-CA-APACHE-2.0.txt
 	rm -rf $(PLAYGROUND_APP)/Contents/Resources/Hands
 	cp -R Sources/Playground/Hands $(PLAYGROUND_APP)/Contents/Resources/Hands
 	cp -R $(MEDIAPIPE)/vendor $(MEDIAPIPE)/models $(PLAYGROUND_APP)/Contents/Resources/Hands/
@@ -520,6 +522,8 @@ saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) $(CRITTER_MODE
 	rm -f $(SAVER_DIR)/Contents/Resources/Critter/*.usdz
 	$(if $(CRITTER_MODELS),cp $(CRITTER_MODELS) $(SAVER_DIR)/Contents/Resources/Critter/)
 	cp LICENSE NOTICE.txt $(SAVER_DIR)/Contents/Resources/
+	cp third_party/growing-ca/LICENSE $(SAVER_DIR)/Contents/Resources/NEURAL-CA-CC-BY-4.0.txt
+	cp third_party/growing-ca/APACHE-2.0.txt $(SAVER_DIR)/Contents/Resources/NEURAL-CA-APACHE-2.0.txt
 	$(BUILD)/LerpPreview --snapshot $(BUILD)/thumb --size 180x116 --time 4 \
 		--shader mesh-gradient >/dev/null
 	cp $(BUILD)/thumb/mesh-gradient.png $(SAVER_DIR)/Contents/Resources/thumbnail@2x.png
@@ -686,6 +690,10 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 	cp -R "$(RELEASE_SAVER)/Contents/Resources/Images" "$(RELEASE_PLAYGROUND)/Contents/Resources/"
 	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_SAVER)/Contents/Resources/"
 	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_PLAYGROUND)/Contents/Resources/"
+	@for app in "$(RELEASE_SAVER)" "$(RELEASE_PLAYGROUND)"; do \
+		cp third_party/growing-ca/LICENSE "$$app/Contents/Resources/NEURAL-CA-CC-BY-4.0.txt"; \
+		cp third_party/growing-ca/APACHE-2.0.txt "$$app/Contents/Resources/NEURAL-CA-APACHE-2.0.txt"; \
+	done
 	# Splat captures published with no licence play on this machine only:
 	# drop them, the looks that draw them, and those looks' stills.
 	@python3 -I scripts/splat-convert.py unlicensed | while read -r look capture; do \
