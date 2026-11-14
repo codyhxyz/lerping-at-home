@@ -97,6 +97,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// it, and for what the dropdown did better and had to be kept.
     /// The selector's button and its ‹ › — see `LookSwitcher`.
     private let switcher = LookSwitcher()
+    private static let switcherWidth: CGFloat = 520
     private lazy var saveButton = PlayerTextButton("Save", prominent: true,
                                                    target: self, action: #selector(saveShader))
     private lazy var revertButton = PlayerTextButton("Revert", prominent: false,
@@ -269,14 +270,18 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         switcher.current.action = #selector(showShaderPicker)
         switcher.current.toolTip = "Shaders (⌘O)"
         switcher.current.identifier = NSUserInterfaceItemIdentifier("shader-picker-button")
-        // The name and preset can both be long, so the switcher gives way
-        // rather than pushing Save and Revert off the bar.
-        switcher.current.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // One width, whatever the name. It used to be sized to the title, so
+        // every click on › moved › under the pointer: a short name pulled it
+        // left, a long one pushed it right. Now it takes the bar's room up to
+        // `switcherWidth` and only a narrower pane makes it give way (before
+        // Save and Revert do). The arrows stay put; the title truncates.
+        switcher.current.setContentHuggingPriority(.init(1), for: .horizontal)
         switcher.current.setContentCompressionResistancePriority(.init(2), for: .horizontal)
-        switcher.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        switcher.setContentCompressionResistancePriority(.init(2), for: .horizontal)
         switcher.widthAnchor.constraint(greaterThanOrEqualToConstant: 230).isActive = true
-        switcher.widthAnchor.constraint(lessThanOrEqualToConstant: 400).isActive = true
+        switcher.widthAnchor.constraint(lessThanOrEqualToConstant: Self.switcherWidth).isActive = true
+        let preferred = switcher.widthAnchor.constraint(equalToConstant: Self.switcherWidth)
+        preferred.priority = .init(740)
+        preferred.isActive = true
 
         // The selector's cards, one step at a time, without opening it — the
         // same ⇧⌘[ / ⇧⌘] the Shader menu carries, so an arrow opens a shader by

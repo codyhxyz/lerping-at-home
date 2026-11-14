@@ -197,23 +197,18 @@ final class StepButton: HoverButton {
 /// glyph for the selector it opens.
 final class CurrentLookButton: HoverButton {
     var look = LookSwitcher.Look(name: "Shader", preset: nil, position: "") {
-        didSet { if look != oldValue { needsDisplay = true; invalidateIntrinsicContentSize() } }
+        didSet { if look != oldValue { needsDisplay = true } }
     }
     var still: NSImage? { didSet { needsDisplay = true } }
     /// A neighbour's name while an arrow is pointed at.
     var peek: String? { didSet { needsDisplay = true } }
 
     private static let thumb = NSSize(width: 22, height: 22)
-    /// Leading inset, thumb, gap — and gap, grid glyph, trailing inset.
-    private static let chrome: CGFloat = 5 + 22 + 8 + 8 + 16 + 9
 
-    /// Wide enough for the name and the resting second line, so the bar gives
-    /// the switcher its words before it gives the slack to the spacer. Sized
-    /// without the hover text, so pointing at an arrow never moves anything.
+    /// No width of its own: the bar gives the switcher a fixed width, so the
+    /// arrows either side never move when the name changes.
     override var intrinsicContentSize: NSSize {
-        let title = (look.name + (look.isEdited ? " •" : "")).size(withAttributes: [.font: Self.titleFont]).width
-        let detail = detailText(peek: nil).size().width
-        return NSSize(width: ceil(Self.chrome + max(title, detail)) + 4, height: NSView.noIntrinsicMetric)
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
     }
     private static let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
     private static let detailFont = NSFont.systemFont(ofSize: 10, weight: .regular)
