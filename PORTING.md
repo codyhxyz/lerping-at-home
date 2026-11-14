@@ -279,9 +279,13 @@ With **Shader › Track Head with Camera** on, the playground follows the
 watcher's face with the Mac's camera and the screen becomes a window: it
 stays put, the eye moves, and each pixel's ray runs from the eye through that
 pixel's own spot on the glass. Nearer things swing against the head, farther
-things follow it, and leaning in widens the view. It is off at every launch,
-and everywhere else `u.viewer` is exactly 0 — the screensaver, `--snapshot`,
-the gallery stills.
+things follow it, and leaning in widens the view. It is on unless you turn it
+off (the choice is remembered), and the camera runs only while the open look
+declares `parallax`. Whenever the camera sees no face — no camera, access
+refused, nobody in front of it — the pointer stands in for the head: over the
+render, or anywhere with Desktop Mode on, moving it moves the eye, and off the
+render the view eases back to straight on. Everywhere else `u.viewer` is
+exactly 0 — the screensaver, `--snapshot`, the gallery stills.
 
 **Shader › Desktop Mode** puts the open look, with its current values, behind
 the desktop icons on every screen, and the head tracker steers it there too.

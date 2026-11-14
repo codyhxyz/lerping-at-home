@@ -130,7 +130,7 @@ public final class LerpMetalView: NSView {
     /// fields existed.
     public var audioLevels: (() -> LerpAudioLevels)?
     /// Polled once per drawn frame for `u.viewer`, the same way. Nil — the
-    /// saver, and the playground until Track Head is on — means `.centered`,
+    /// saver, and the playground on a look without `parallax` — means `.centered`,
     /// which every look renders exactly as it did before the field existed.
     public var viewer: (() -> LerpViewer)?
 

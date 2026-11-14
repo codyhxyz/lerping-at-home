@@ -401,8 +401,9 @@ enum MainMenu {
             // Off at launch. Feeds u.audioLevel/Bass/Mid/Treble; see PORTING.md.
             item("React to System Audio",
                  #selector(PlaygroundWindowController.toggleSystemAudio(_:)), ""),
-            // Off at launch. Feeds u.viewer from the camera, so looks that
-            // declare a `parallax` parameter become a window; see PORTING.md.
+            // On unless turned off (remembered). Feeds u.viewer from the
+            // camera — the pointer when no face is seen — for looks that
+            // declare a `parallax` parameter; see PORTING.md.
             item("Track Head with Camera",
                  #selector(PlaygroundWindowController.toggleHeadTracking(_:)), ""),
             item("Recentre Head", #selector(PlaygroundWindowController.recenterHead(_:)), ""),

@@ -172,9 +172,17 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Off at every launch and never persisted: listening to what the Mac is
     /// playing is something you turn on, each time.
     private var audioTap: AnyObject?
-    /// The camera feeding `u.viewer`, while Shader › Track Head with Camera is
-    /// on. Off at every launch and never persisted, like `audioTap`.
+    /// The camera feeding `u.viewer`: running while Track Head is on and the
+    /// open look declares `parallax`, and let go for every other look.
     private var headTracker: HeadTracker?
+    /// Steers `u.viewer` whenever the camera is not seeing a face.
+    private let pointerViewer = PointerViewer()
+    /// Why the camera cannot follow the head — refused, missing, failed — once
+    /// that is known. The pointer steers instead; turning Track Head off and on
+    /// tries the camera again.
+    private var cameraUnavailable: String?
+    /// The camera question is out: do not ask twice.
+    private var askingForCamera = false
     /// The camera, while Shader › MIDI › Control with Hands is on. Off at every
     /// launch for the same reason as system audio. Its gestures arrive as CCs
     /// through `receive`, exactly like a knob's.
@@ -602,6 +610,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             metalView.setShader(draft)         // cache hit, cannot fail
             compiled = draft
             syncParameters(draft)
+            updateViewer()
             let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
             compileState = .ok(milliseconds: ms)
             firstErrorLine = nil
@@ -1612,9 +1621,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         setStatus(reason ?? "\(input) off", reason == nil ? .info : .error)
     }
 
-    /// The shared start of a camera input: ask once, and say where the switch
-    /// is when the answer was no. Both head tracking and hand control go
-    /// through here, so there is one prompt and one wording for a refusal.
+    /// The start of hand control's camera: ask once, and say where the switch
+    /// is when the answer was no. Head tracking asks in `startCamera`, which
+    /// falls back to the pointer instead of stopping.
     private func withCamera(_ start: @escaping () -> Void) {
         HeadTracker.requestAccess { [weak self] granted in
             guard granted else {
@@ -1628,23 +1637,79 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Head tracking
 
-    @objc func toggleHeadTracking(_ sender: Any?) {
-        if headTracker != nil { return stopHeadTracking(nil) }
-        withCamera { [weak self] in
-            guard let self, self.headTracker == nil else { return }
+    /// Shader › Track Head with Camera. On until turned off, and remembered:
+    /// the window looks (Window Room, Depth Window, Peek, the splats) are flat
+    /// without it. It only *allows* the camera — see `updateViewer`.
+    private static let trackHeadKey = "TrackHead"
+    private var tracksHead: Bool {
+        get { UserDefaults.standard.object(forKey: Self.trackHeadKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: Self.trackHeadKey) }
+    }
+
+    /// Puts `u.viewer` in step with Track Head and the look on screen. A look
+    /// that declares `parallax` gets the camera (its light on) with the pointer
+    /// standing in whenever no face is seen; any other look ignores the viewer,
+    /// so the camera is let go and nothing is polled. Called after every
+    /// compile, so switching looks switches the camera.
+    private func updateViewer() {
+        let wanted = tracksHead && !hidden && LerpViewer.isUsed(by: metalView.parameterValues)
+        guard wanted else {
+            guard metalView.viewer != nil || headTracker != nil else { return }
+            headTracker?.stop()
+            headTracker = nil
+            metalView.viewer = nil
+            if isPaused { metalView.renderOnce() }
+            return refreshInputs()
+        }
+        if metalView.viewer == nil {
+            metalView.viewer = { [weak self] in
+                guard let self else { return .centered }
+                if let head = self.headTracker?.viewer.fresh {
+                    self.pointerViewer.follow(head)
+                    return head
+                }
+                return self.pointerViewer.current(over: self.metalView, desktop: self.isDesktopModeOn)
+            }
+        }
+        if headTracker == nil, cameraUnavailable == nil, !askingForCamera { startCamera() }
+        refreshInputs()
+    }
+
+    private func startCamera() {
+        askingForCamera = true
+        HeadTracker.requestAccess { [weak self] granted in
+            guard let self else { return }
+            self.askingForCamera = false
+            guard granted else {
+                return self.cameraFailed("Camera access is off for LerpPlayground (System Settings › "
+                                         + "Privacy & Security › Camera)")
+            }
+            // The look may have changed while the question was up.
+            guard self.metalView.viewer != nil, self.headTracker == nil else { return }
             let tracker = HeadTracker()
             do {
                 try tracker.start()
             } catch {
-                return self.setStatus("Head tracking unavailable: \(error)", .error)
+                return self.cameraFailed("No head tracking: \(error)")
             }
             self.headTracker = tracker
-            let viewer = tracker.viewer
-            self.metalView.viewer = { viewer.current }
             self.refreshInputs()
-            let ignored = LerpViewer.isUsed(by: self.metalView.parameterValues) ? ""
-                : ". This look ignores it; looks with a `\(LerpViewer.gainParameter)` parameter respond"
-            self.setStatus("Tracking your head with \(tracker.cameraName) (u.viewer)\(ignored)")
+        }
+    }
+
+    private func cameraFailed(_ why: String) {
+        cameraUnavailable = why
+        refreshInputs()
+        setStatus("\(why). The pointer steers the view instead", .error)
+    }
+
+    @objc func toggleHeadTracking(_ sender: Any?) {
+        if tracksHead { return stopHeadTracking(nil) }
+        tracksHead = true
+        cameraUnavailable = nil
+        updateViewer()
+        if !LerpViewer.isUsed(by: metalView.parameterValues) {
+            setStatus("Head tracking on for looks with a `\(LerpViewer.gainParameter)` parameter")
         }
     }
 
@@ -1655,6 +1720,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func stopHeadTracking(_ reason: String?) {
+        tracksHead = false
         headTracker?.stop()
         headTracker = nil
         metalView.viewer = nil
@@ -1747,6 +1813,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
         if let headTracker {
             live[.head] = ("Head", "Head tracking with \(headTracker.cameraName) — click to stop")
+        } else if metalView.viewer != nil {
+            let why = cameraUnavailable ?? "Waiting for the camera"
+            live[.head] = ("Pointer", "\(why); the pointer steers the view — click to stop")
         }
         if hands != nil {
             live[.hands] = ("Hands", "Hand control — click to stop")
@@ -1983,7 +2052,7 @@ extension PlaygroundWindowController: NSMenuItemValidation {
             item.state = audioTap == nil ? .off : .on
             if #available(macOS 14.2, *) { return true } else { return false }
         case #selector(toggleHeadTracking(_:)):
-            item.state = headTracker == nil ? .off : .on
+            item.state = tracksHead ? .on : .off
             return true
         case #selector(recenterHead(_:)): return headTracker != nil
         case #selector(toggleDesktopMode(_:)):

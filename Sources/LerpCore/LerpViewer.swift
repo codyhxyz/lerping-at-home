@@ -20,8 +20,9 @@ import simd
 /// `--snapshot` (without `--viewer`) and the gallery stills never do, and a
 /// centred viewer reproduces the plain camera exactly, so those stay a pure
 /// function of (shader, time, seed, parameters). Only the playground's live
-/// view and its Desktop Mode, with Shader › Track Head on, ever move it — see
-/// `HeadTracker`.
+/// view and its Desktop Mode, with Shader › Track Head on, ever move it — from
+/// the camera (`HeadTracker`), or the pointer when no face is seen
+/// (`PointerViewer`).
 public struct LerpViewer: Equatable, Sendable {
     public var offset: SIMD4<Float>
 
