@@ -26,7 +26,7 @@
 // (the shared kit's lantern, torch and cross models test their cut-out
 // texels), and one bounds test for the trader. A pixel then reads one to
 // three textures at its hit. Measured 10.1 ms at 3456x2234 against maze's
-// 10.2 in the same minute.
+// 10.0 in the same minute.
 //
 // lerp-category: Minecraft
 // lerp-requires: minecraft mobs
@@ -339,7 +339,6 @@ static inline LLHit llMarch(float3 ro, float3 rd, float tLimit, LLW w,
     }
     float2 rs = select(rd.xz, float2(1e-6), abs(rd.xz) < 1e-6);
     float2 inv = 1.0 / rs;
-    float3 inv3 = mcModelInv(rd);
     int2 cell = int2(floor(ro.xz + rd.xz * (t0 + 1e-4)));
     int2 stp = int2(sign(rs));
     float2 tDel = abs(inv);
@@ -407,12 +406,8 @@ static inline LLHit llMarch(float3 ro, float3 rd, float tLimit, LLW w,
             mh.t = tOut + 1e-3;
             bool got;
             if (sKind == 1) {
-                // KIT: models — an oak fence post; the kit has no fences yet, so
-                // it is the kit's box piece with the fence post's own uv.
-                mcModelBoxElem(tiles, MC_OAK_PLANKS, (ro - o) * 16.0, rd, inv3,
-                               float3(6, 0, 6), float3(10, 16, 10), float4(6, 0, 10, 16),
-                               float4(6, 6, 10, 10), float4(6, 6, 10, 10), tm, pxA, 1.0, mh);
-                got = mh.t < tOut + 1e-3;
+                // The game's lamp post: an oak fence post, no arms, a lantern on it.
+                got = mcFence(tiles, MC_OAK_PLANKS, o, 0, ro, rd, tm, mh.t, pxA, mh);
                 McModelHit lh;
                 if (sE > 0.0 && mcLantern(tiles, lanLayer, o + float3(0.0, 1.0, 0.0), false,
                                           ro, rd, tm, mh.t, pxA, lh)) { mh = lh; got = true; }
@@ -503,8 +498,7 @@ static inline float3 llShadeBlock(LLHit H, float3 ro, float3 rd, float3 dRx, flo
         float3 tint = (grass || side) ? mcGrassTint(maps, 0.8, 0.4) : float3(1.0);   // plains
         float3 alb;
         if (side) {
-            // KIT: an anisotropic mcGrassSide; the isotropic one takes the long axis.
-            alb = mcGrassSide(tiles, uv, max(length(gx), length(gy)), tint);
+            alb = mcGrassSideAniso(tiles, uv, gx, gy, tint);
         } else {
             if (turn) {
                 // The game turns these tops a random quarter per block.
