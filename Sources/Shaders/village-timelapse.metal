@@ -1,21 +1,28 @@
 // Village Timelapse — a village on a small island in the ocean, forever being
 // built, in the game's own blocks. For Lerping@Home; every surface is a real
-// block drawn with the game's textures (`lerp-requires: minecraft`).
+// block drawn with the game's textures, and everyone in it one of the game's
+// mobs (`lerp-requires: minecraft mobs`).
 //
 // lerp-category: Minecraft
-// lerp-requires: minecraft
+// lerp-requires: minecraft mobs
 //
 // The island is a three-by-three grid of plots between dirt paths, with an
 // oak fence and lantern at each inner crossroads. Each plot runs its own
 // cycle: a village house (cobblestone footing, log corners, plank walls,
 // glass windows, a door, a stair roof, a torch inside), a stone-brick tower,
 // a wheat farm or a tree goes up one block at a time — course by course, the
-// builder walking round each course and turning back on the next — then
+// work going round each course and turning back on the next — then
 // stands (the wheat ripening through its eight stages), then is mined out
 // from the top down through the ten breaking stages, and something new is
 // started in its place. The nine plots are staggered, so the village is
 // always mostly standing and always somewhere under construction. The block
-// being worked carries the game's thin black selection outline.
+// being worked carries the game's thin black selection outline. The
+// villagers live on the roads, which nothing is ever built on: two walk
+// round the middle plot, and each road out from it belongs to one
+// inhabitant who wanders it end to end, stopping to look about — villagers
+// at their trades, two children running, an iron golem and a stray cat, all
+// the game's mobs on its own models. Lanterns, torches and wheat are the
+// kit's models, and light is the kit's lightmap.
 //
 // Purity: nothing is remembered. Which block exists at time t is decided by
 // comparing that block's place in the build order — a function of its
@@ -382,7 +389,8 @@ static inline bool vtFullBlock(int m) {
     return m != M_STAIRS && m != M_SLAB && m != M_LANTERN && m != M_FENCE && m != M_DOOR
         && m != M_TORCH && m != M_WHEAT && m != M_WATER && m != M_AIR;
 }
-static inline bool vtCutout(int m) { return m == M_LEAVES || m == M_GLASS || m == M_DOOR || m == M_WHEAT; }
+static inline bool vtCutout(int m) { return m == M_LEAVES || m == M_GLASS || m == M_DOOR; }
+static inline bool vtKitModel(int m) { return m == M_LANTERN || m == M_TORCH || m == M_WHEAT; }
 
 // ---------------------------------------------------------------------------
 // Surfaces: which texture a face shows and where.
@@ -442,32 +450,12 @@ static inline VtSurf vtSurface(VtCell v, int3 c, float3 P, float3 n, float now) 
         s.layer = v.w == 1 ? MC_SPRUCE_LEAVES : (v.w == 2 ? MC_BIRCH_LEAVES : MC_OAK_LEAVES);
         s.tint = v.w == 1 ? VT_TINT_SPRUCE : (v.w == 2 ? VT_TINT_BIRCH : VT_TINT_FOLIAGE);
         break;
-    case M_LANTERN: {
-        // The lantern model: a 6×7 body under a 4×2 cap, both cut from the
-        // texture's left column.
-        s.layer = mcFrame(MC_LANTERN, MC_LANTERN_FRAMES, MC_LANTERN_TICKS, now);
-        s.emit = true;
-        float h = ax == 0 ? lp.z : lp.x;
-        bool cap = lp.y > 7.0 / 16.0 + 1e-3;
-        float2 px;
-        if (ax == 1) px = cap ? float2((lp.x - 6.0 / 16.0) * 16.0 + 1.0, (lp.z - 6.0 / 16.0) * 16.0 * 0.5)
-                              : float2((lp.x - 5.0 / 16.0) * 16.0, 9.0 + (lp.z - 5.0 / 16.0) * 16.0);
-        else px = cap ? float2(1.0 + (h - 6.0 / 16.0) * 16.0, (9.0 / 16.0 - lp.y) * 16.0)
-                      : float2((h - 5.0 / 16.0) * 16.0, 2.0 + (7.0 / 16.0 - lp.y) * 16.0);
-        s.uv = px / 16.0;
-        break;
-    }
     case M_DOOR: {
         bool upper = (v.aux & 4) != 0;
         s.layer = v.w == 1 ? (upper ? MC_SPRUCE_DOOR_TOP : MC_SPRUCE_DOOR_BOTTOM) : (upper ? MC_OAK_DOOR_TOP : MC_OAK_DOOR_BOTTOM);
         break;
     }
-    case M_TORCH:   s.layer = MC_TORCH; s.emit = true; break;
     case M_FARMLAND: s.layer = top ? MC_FARMLAND_MOIST : MC_DIRT; break;
-    case M_WHEAT:
-        s.layer = MC_WHEAT_STAGE0 + clamp(v.aux, 0, 7);
-        s.uv = float2(lp.x, 1.0 - lp.y);
-        break;
     case M_WATER:
         s.layer = mcFrame(MC_WATER_STILL, MC_WATER_STILL_FRAMES, MC_WATER_STILL_TICKS, now);
         s.tint = VT_TINT_WATER;
@@ -486,6 +474,9 @@ struct VtHit {
     float3 n;
     int3   c;
     VtCell v;
+    bool   model;     // a kit model (lantern, torch, wheat): its texel is in mcol
+    float4 mcol;
+    float  mshade;
 };
 
 // Ray against a box; the near face's t and normal if it is at or after tMin.
@@ -501,31 +492,12 @@ static inline bool vtBoxN(float3 ro, float3 inv, float3 lo, float3 hi, float tMi
     return true;
 }
 
-// The model inside a cell that is not a whole block: its first face after tc.
-// For wheat, `skip` passes over the first of the two crossed planes.
-static inline bool vtModel(VtCell v, int3 c, float3 ro, float3 rd, float3 inv, float tc, int skip,
+// The model inside a cell that is not a whole block and not one of the kit's
+// small models: its first face after tc.
+static inline bool vtModel(VtCell v, int3 c, float3 ro, float3 rd, float3 inv, float tc,
                            thread float& t, thread float3& n) {
     float3 o = float3(c);
     float best = 1e9; float3 bn = float3(0.0); float tt; float3 nn;
-    if (v.m == M_WHEAT) {
-        // Two crossed planes on the cell's diagonals.
-        float3 q = ro - o;
-        float ta = (q.z - q.x) / (rd.x - rd.z);            // x = z
-        float tb = (1.0 - q.x - q.z) / (rd.x + rd.z);      // x + z = 1
-        float t0 = min(ta, tb), t1 = max(ta, tb);
-        float cand[2] = { t0, t1 };
-        int seen = 0;
-        for (int i = 0; i < 2; ++i) {
-            float ti = cand[i];
-            if (!(ti >= tc - 1e-4) || !isfinite(ti)) continue;
-            float3 p = q + rd * ti;
-            if (any(p < -1e-4) || any(p > 1.0 + 1e-4)) continue;
-            if (seen++ < skip) continue;
-            t = ti; n = float3(0.0, 1.0, 0.0);
-            return true;
-        }
-        return false;
-    }
     float3 lo0, hi0, lo1 = float3(0.0), hi1 = float3(-1.0);
     switch (v.m) {
     case M_STAIRS: {
@@ -537,11 +509,6 @@ static inline bool vtModel(VtCell v, int3 c, float3 ro, float3 rd, float3 inv, f
     }
     case M_SLAB:    lo0 = float3(0.0); hi0 = float3(1.0, 0.5, 1.0); break;
     case M_FENCE:   lo0 = float3(6.0, 0.0, 6.0) / 16.0; hi0 = float3(10.0, 16.0, 10.0) / 16.0; break;
-    case M_TORCH:   lo0 = float3(7.0, 0.0, 7.0) / 16.0; hi0 = float3(9.0, 10.0, 9.0) / 16.0; break;
-    case M_LANTERN:
-        lo0 = float3(5.0, 0.0, 5.0) / 16.0; hi0 = float3(11.0, 7.0, 11.0) / 16.0;
-        lo1 = float3(6.0, 7.0, 6.0) / 16.0; hi1 = float3(10.0, 9.0, 10.0) / 16.0;
-        break;
     case M_WATER:   lo0 = float3(0.0); hi0 = float3(1.0, 14.0 / 16.0, 1.0); break;
     case M_DOOR: {
         // 3/16 thick, against the outer face of its opening.
@@ -563,7 +530,7 @@ static inline bool vtModel(VtCell v, int3 c, float3 ro, float3 rd, float3 inv, f
 
 static inline VtHit vtTrace(float3 ro, float3 rd, float pxAngle, VtWorld W,
                             texture2d_array<float> mcTiles) {
-    VtHit h; h.hit = false; h.t = 1e9;
+    VtHit h; h.hit = false; h.t = 1e9; h.model = false; h.mcol = float4(0.0); h.mshade = 0.0;
     float3 inv = 1.0 / select(rd, float3(1e-6), abs(rd) < 1e-6);
     float3 t1 = (VT_BMIN - ro) * inv, t2 = (VT_BMAX - ro) * inv;
     float3 tn = min(t1, t2), tf = max(t1, t2);
@@ -580,13 +547,26 @@ static inline VtHit vtTrace(float3 ro, float3 rd, float pxAngle, VtWorld W,
     int cutouts = 0;
     for (int i = 0; i < VT_STEPS; ++i) {
         VtCell v = vtCell(c, W);
-        if (v.m != M_AIR) {
+        if (v.m != M_AIR && vtKitModel(v.m)) {
+            // The kit's lantern, torch and crop models, cut-outs included.
+            McModelHit mh;
+            float3 org = float3(c);
+            bool got = v.m == M_LANTERN
+                ? mcLantern(mcTiles, mcFrame(MC_LANTERN, MC_LANTERN_FRAMES, MC_LANTERN_TICKS, W.now), org, false, ro, rd, tc - 1e-4, 1e9, pxAngle, mh)
+                : (v.m == M_TORCH ? mcTorch(mcTiles, MC_TORCH, org, ro, rd, tc - 1e-4, 1e9, pxAngle, mh)
+                                  : mcCrop(mcTiles, MC_WHEAT_STAGE0 + clamp(v.aux, 0, 7), org, ro, rd, tc - 1e-4, 1e9, pxAngle, mh));
+            if (got) {
+                h.hit = true; h.t = mh.t; h.c = c; h.v = v; h.n = mh.n;
+                h.model = true; h.mcol = mh.color; h.mshade = mh.shade;
+                return h;
+            }
+        } else if (v.m != M_AIR) {
             float th = tc; float3 nh = float3(0.0);
             bool got;
             if (vtFullBlock(v.m)) { got = true; nh[axis] = -float(st[axis]); }
-            else got = vtModel(v, c, ro, rd, inv, tc, 0, th, nh);
+            else got = vtModel(v, c, ro, rd, inv, tc, th, nh);
             // See-through texels: sample at the hit and walk on if clear.
-            for (int pass = 0; got && pass < 2; ++pass) {
+            if (got) {
                 if (!vtCutout(v.m) || cutouts >= VT_CUTOUTS) {
                     h.hit = true; h.t = th; h.c = c; h.v = v; h.n = nh;
                     return h;
@@ -597,7 +577,6 @@ static inline VtHit vtTrace(float3 ro, float3 rd, float pxAngle, VtWorld W,
                     h.hit = true; h.t = th; h.c = c; h.v = v; h.n = nh;
                     return h;
                 }
-                got = v.m == M_WHEAT && pass == 0 && vtModel(v, c, ro, rd, inv, tc, 1, th, nh);
             }
         }
         if (tMax.x < tMax.y) {
@@ -622,7 +601,6 @@ struct VtLight {
     float3 sky, fog;
     float3 glow;       // sunrise/sunset colour
     float  glowA;      // and its strength
-    float  darken;     // sky light levels lost to the evening
 };
 
 static inline VtLight vtLighting(float sunParam) {
@@ -632,8 +610,8 @@ static inline VtLight vtLighting(float sunParam) {
     l.sunDir = normalize(float3(cos(e) * cos(az), sin(e), cos(e) * sin(az)));
     float f = sin(e);
     l.bright = clamp(f * 2.0 + 0.5, 0.0, 1.0);
-    l.sky = MC_SKY_DAY * l.bright;
-    l.fog = MC_FOG_DAY * (l.bright * 0.94 + 0.06);
+    l.sky = mcSkyAt(l.bright);
+    l.fog = mcFogAt(l.bright);
     l.glowA = 0.0; l.glow = float3(0.0);
     if (abs(f) <= 0.4) {
         float g = f / 0.4 * 0.5 + 0.5;
@@ -641,7 +619,6 @@ static inline VtLight vtLighting(float sunParam) {
         l.glowA = a * a;
         l.glow = float3(g * 0.3 + 0.7, g * g * 0.7 + 0.2, 0.2);
     }
-    l.darken = (1.0 - l.bright) * 11.0;
     return l;
 }
 
@@ -755,7 +732,6 @@ static inline float3 vtLightAt(float3 Q, int3 qc, VtLight l, float4 src, VtWorld
         if (v.m != M_AIR && v.m != M_LEAVES && v.m != M_GLASS && v.m != M_WHEAT && v.m != M_TORCH) { sky = 12.0; break; }
     }
     sky -= max(VT_SEA - Q.y, 0.0);                     // water takes one level a block
-    float skyB = mcLight(max(sky - l.darken, 0.0));
 
     // Block light falls one level a block (taxicab), from the crossroads
     // lanterns and this plot's own torch or lantern.
@@ -769,14 +745,19 @@ static inline float3 vtLightAt(float3 Q, int3 qc, VtLight l, float4 src, VtWorld
         float3 d = abs(Q - (src.xyz + 0.5));
         lvl = max(lvl, src.w - (d.x + d.y + d.z));
     }
-    float blockB = mcLight(max(lvl, 0.0));
-    float3 light = max(float3(skyB), blockB * float3(1.0, 0.86, 0.68));
-    return max(light, float3(0.05));
+    return mcLightmap(max(lvl, 0.0), max(sky, 0.0), l.bright, 0.0);
 }
 
 static inline float3 vtShade(VtHit h, float3 ro, float3 rd, float pxAngle, VtLight l, VtWorld W,
                              texture2d_array<float> mcTiles, texture2d_array<float> mcMaps) {
     float3 P = ro + rd * h.t;
+    if (h.model) {
+        // Lantern and torch give light 15; wheat takes the light around it.
+        float3 Q = h.v.m == M_WHEAT ? P + float3(0.0, 0.5, 0.0) : P;
+        float3 lm = h.v.m == M_WHEAT ? vtLightAt(Q, int3(floor(Q)), l, vtPlotSource(int3(floor(Q)), W), W)
+                                      : mcLightmap(15.0, 15.0, l.bright, 0.0);
+        return h.mcol.rgb * (h.mshade > 0.5 ? mcFaceShade(h.n) : 1.0) * lm;
+    }
     float fw = h.t * pxAngle / max(abs(dot(rd, h.n)), 0.15);
     VtSurf s = vtSurface(h.v, h.c, P, h.n, W.now);
     float3 grass = mcGrassTint(mcMaps, 0.8, 0.4);       // plains
@@ -805,9 +786,7 @@ static inline float3 vtShade(VtHit h, float3 ro, float3 rd, float pxAngle, VtLig
         float3 Q = P + h.n * 0.5;
         float4 src = vtPlotSource(int3(floor(Q)), W);
         float3 light = vtLightAt(Q, int3(floor(Q)), l, src, W);
-        float shade = h.v.m == M_WHEAT ? 0.9 : mcFaceShade(h.n);
-        float ao = h.v.m == M_WHEAT ? 1.0 : vtAO(h, P, W);
-        col = alb * shade * ao * light;
+        col = alb * mcFaceShade(h.n) * vtAO(h, P, W) * light;
     }
 
     // The selection outline round the block being placed or broken: thin
@@ -821,6 +800,183 @@ static inline float3 vtShade(VtHit h, float3 ro, float3 rd, float pxAngle, VtLig
         col = mix(col, float3(0.0), 0.4 * (1.0 - smoothstep(lw, lw * 1.6, e)));
     }
     return col;
+}
+
+// ---------------------------------------------------------------------------
+// Inhabitants: the game's mobs, from the kit, on the roads. The roads are
+// the two-wide lanes centred on x, z = -4 and 5 and the ring at the town's
+// edge; no plot ever builds on them, so nobody walks through a wall or a
+// block going up. Two villagers walk round the middle plot at one pace, half
+// the loop apart, so they never meet. Each stretch of road from a crossroads
+// out to the ring (a spoke) belongs to one inhabitant, who wanders it end to
+// end and stops at each end to look about. A spoke's ends stop short of the
+// crossroads lantern post and of the town's edge, so no two inhabitants ever
+// share ground. Where everyone is, is a function of the wall clock and seed.
+
+constant int   VT_MOBS = 9;           // 0-1 round the middle, 2 golem, 3-5 villagers, 6-7 children, 8 cat
+constant float VT_LOOP_LEN = 36.0;
+constant float2 VT_LOOP[4] = { float2(-4.0, -4.0), float2(5.0, -4.0), float2(5.0, 5.0), float2(-4.0, 5.0) };
+// Spokes: the road's fixed coordinate, 1 if it runs along x (else along z),
+// and which side of the middle it lies on.
+constant float3 VT_SPOKE[8] = {
+    float3(-4.0, 0.0, -1.0), float3(5.0, 1.0, 1.0), float3(5.0, 0.0, -1.0), float3(-4.0, 1.0, 1.0),
+    float3(-4.0, 0.0, 1.0),  float3(5.0, 1.0, -1.0), float3(5.0, 0.0, 1.0), float3(-4.0, 1.0, -1.0) };
+// Per role (villager, child, iron golem, cat): speed in blocks a second, the
+// pause at each end, reach (how far any part of it comes from the point it
+// turns about, hat brims and swinging arms included), the stride (the pose's
+// speed while walking).
+constant float4 VT_ROLE[4] = {
+    float4(1.0, 4.0, 0.72, 0.4), float4(2.4, 1.2, 0.66, 0.7), float4(0.45, 5.0, 1.0, 0.35), float4(0.7, 6.0, 0.76, 0.5) };
+// And: walk phase per block walked (so feet do not slide), the half-width
+// and height of a box that holds the mob at any heading, and how far ahead
+// of the middle of its length its feet are (a cat's tail is longer than its
+// head: it turns about its middle, or the tail would sweep off the road).
+constant float4 VT_ROLE_B[4] = {
+    float4(5.9, 0.78, 2.10, 0.0), float4(7.0, 0.68, 1.10, 0.0), float4(4.9, 1.58, 2.80, 0.0), float4(11.0, 1.12, 0.66, 0.2) };
+
+struct VtMob {
+    int    role;     // 0 villager, 1 child, 2 iron golem, 3 cat
+    float3 at;       // feet
+    float  head;     // heading: 0 faces +z, pi/2 faces +x
+    float  walked;   // blocks walked, for the stride
+    float  moving;   // 0 standing .. 1 walking
+    float  look;     // head turn while it stands
+};
+
+static inline int vtMobRole(int i) { return i == 2 ? 2 : (i >= 8 ? 3 : (i >= 6 ? 1 : 0)); }
+
+// The middle loop at arc length s.
+static inline float2 vtLoopAt(float s) {
+    s -= VT_LOOP_LEN * floor(s / VT_LOOP_LEN);
+    int side = min(int(s / 9.0), 3);
+    return mix(VT_LOOP[side], VT_LOOP[(side + 1) & 3], (s - float(side) * 9.0) / 9.0);
+}
+
+static inline VtMob vtMobAt(int i, float now, uint sb) {
+    VtMob m;
+    m.role = vtMobRole(i);
+    float4 ra = VT_ROLE[m.role];
+    uint hh = vtPcg(uint(i) * 2654435761u ^ sb);
+    float j0 = float(hh & 0xffffu) * (1.0 / 65536.0), j1 = float(hh >> 16) * (1.0 / 65536.0);
+    if (i < 2) {
+        float s = now * ra.x + (float(i) * 0.5 + float(sb & 1023u) * (1.0 / 1024.0)) * VT_LOOP_LEN;
+        float2 p = vtLoopAt(s);
+        float2 d = vtLoopAt(s + 0.45) - vtLoopAt(s - 0.45);       // corners are walked round
+        m.at = float3(p.x, 1.0, p.y);
+        m.head = atan2(d.x, d.y);
+        m.walked = s; m.moving = 1.0;
+        m.look = 0.6 * sin(now * 0.37 + j0 * 6.3) * smoothstep(0.4, 0.9, sin(now * 0.13 + j1 * 6.3));
+        return m;
+    }
+    // A spoke's ends: the town's edge (the ground past it can stand a block
+    // higher) and the crossroads, where the loop's walkers reach 0.72 from
+    // its centre and the lantern post stands. Nothing reaches past either.
+    float3 sp = VT_SPOKE[(i - 2 + int((sb >> 10) & 7u)) & 7];
+    float R = ra.z, dd = VT_ROLE_B[m.role].w;
+    float a = sp.z < 0.0 ? -13.0 + R : 5.77 + R;
+    float b = sp.z < 0.0 ? -4.77 - R : 14.0 - R;
+    float L = b - a - 2.0 * dd, Tw = L / ra.x, p = ra.y * (0.75 + 0.5 * j0);
+    float P = 2.0 * (Tw + p);
+    float tl = now + j1 * P;
+    float k = floor(tl / P), tau = tl - k * P;
+    float s, q, walked = k * 2.0 * L, back = 0.0, turn = 0.0;
+    bool standing = false;
+    m.moving = 0.0; m.look = 0.0;
+    if (tau < Tw) {
+        q = tau; s = a + 2.0 * dd + ra.x * q; walked += ra.x * q;
+        m.moving = saturate(q / 0.35) * saturate((Tw - q) / 0.35);
+    } else if (tau < Tw + p) {
+        q = tau - Tw; s = b; walked += L; standing = true;
+    } else if (tau < 2.0 * Tw + p) {
+        q = tau - Tw - p; s = b - 2.0 * dd - ra.x * q; walked += L + ra.x * q; back = 1.0;
+        m.moving = saturate(q / 0.35) * saturate((Tw - q) / 0.35);
+    } else {
+        q = tau - 2.0 * Tw - p; s = a; walked += 2.0 * L; back = 1.0; standing = true;
+    }
+    if (standing) {
+        // Standing at an end: look about, then turn round, stepping, to go back.
+        turn = smoothstep(p - 0.7, p - 0.1, q);
+        m.look = 0.9 * sin(q * 1.1 + j0 * 6.3) * saturate(q / 0.5) * saturate((p - 0.8 - q) / 0.5);
+        m.moving = 0.6 * sin(PI * turn);
+        walked += turn;
+    }
+    float lane = m.role >= 2 ? 0.0 : (j1 - 0.5) * 0.24;           // not all on the centre line
+    float fixedC = sp.x + lane;
+    m.at = sp.y > 0.5 ? float3(s, 1.0, fixedC) : float3(fixedC, 1.0, s);
+    float h0 = (sp.y > 0.5 ? 0.5 * PI : 0.0) + PI * back;        // 0 / pi/2: walking toward + along the road
+    m.head = h0 + PI * turn;
+    if (standing) m.at.xz += dd * (float2(sin(m.head), cos(m.head)) - float2(sin(h0), cos(h0)));
+    m.walked = walked;
+    return m;
+}
+
+static inline int vtMobType(int role) {
+    return role == 0 ? MCMOB_VILLAGER : (role == 1 ? MCMOB_VILLAGER_BABY : (role == 2 ? MCMOB_IRON_GOLEM : MCMOB_CAT));
+}
+
+static inline int vtProfession(int k) {
+    switch (k) {
+    case 0:  return MCS_VILLAGER_PROFESSION_FARMER;
+    case 1:  return MCS_VILLAGER_PROFESSION_LIBRARIAN;
+    case 2:  return MCS_VILLAGER_PROFESSION_MASON;
+    case 3:  return -1;                                    // unemployed: the plains robe alone
+    case 4:  return MCS_VILLAGER_PROFESSION_SHEPHERD;
+    case 5:  return MCS_VILLAGER_PROFESSION_TOOLSMITH;
+    case 6:  return MCS_VILLAGER_PROFESSION_CLERIC;
+    default: return MCS_VILLAGER_PROFESSION_NITWIT;
+    }
+}
+
+static inline int vtCatSkin(int k) {
+    switch (k) {
+    case 0:  return MCS_CAT_TABBY;
+    case 1:  return MCS_CAT_BLACK;
+    case 2:  return MCS_CAT_RED;
+    case 3:  return MCS_CAT_SIAMESE;
+    case 4:  return MCS_CAT_BRITISH_SHORTHAIR;
+    case 5:  return MCS_CAT_CALICO;
+    case 6:  return MCS_CAT_PERSIAN;
+    case 7:  return MCS_CAT_RAGDOLL;
+    case 8:  return MCS_CAT_WHITE;
+    case 9:  return MCS_CAT_JELLIE;
+    default: return MCS_CAT_ALL_BLACK;
+    }
+}
+
+static inline MCMOB_Skin vtMobSkin(int i, int role, uint sb) {
+    if (role == 2) return mcMobSkin(MCM_IRON_GOLEM);
+    if (role == 3) return mcMobSkin(vtCatSkin(int((sb >> 13) % 11u)));
+    if (role == 1) return mcMobVillagerSkin(MCS_VILLAGER_BABY, MCS_VILLAGER_BABY_PLAINS, -1, -1);
+    int prof = vtProfession((min(i, 2) + max(i - 3, 0) + int((sb >> 17) & 7u)) & 7);   // five adults, five trades
+    float lv = float(vtPcg(uint(i) ^ (sb * 3u)) & 255u) / 256.0;
+    int level = (prof < 0 || prof == MCS_VILLAGER_PROFESSION_NITWIT) ? -1
+              : (lv < 0.55 ? MCS_VILLAGER_PROFESSION_LEVEL_STONE : (lv < 0.85 ? MCS_VILLAGER_PROFESSION_LEVEL_IRON : MCS_VILLAGER_PROFESSION_LEVEL_GOLD));
+    return mcMobVillagerSkin(MCS_VILLAGER, MCS_VILLAGER_TYPE_PLAINS, prof, level);
+}
+
+// Mob i along the ray, nearer than tMax: its distance, world normal, unlit
+// colour and where its light is read (the game lights a mob as a whole).
+static inline bool vtMobHit(int i, float now, uint sb, float3 ro, float3 rd, float tMax, float pxAngle,
+                            texture2d_array<float> mcSkins, texture2d_array<float> mcMaps,
+                            thread float& tHit, thread float3& nW, thread float3& rgb, thread float3& probe) {
+    VtMob m = vtMobAt(i, now, sb);
+    int type = vtMobType(m.role);
+    float3 lro, lrd;
+    mcMobRay(ro, rd, m.at, m.head, lro, lrd);
+    float2 bb = mcMobBounds(type, lro, lrd);
+    if (!(bb.x < bb.y && bb.x < tMax)) return false;
+    MCMOB_Pose pose = mcMobStill();
+    pose.walk = m.walked * VT_ROLE_B[m.role].x;
+    pose.speed = m.moving * VT_ROLE[m.role].w;
+    pose.yaw = m.look;
+    MCMOB_Skin skin = vtMobSkin(i, m.role, sb);
+    MCMOB_Hit h = mcMobTrace(type, pose, skin, lro, lrd, tMax, mcSkins, mcMaps);
+    if (!(h.t < tMax)) return false;
+    tHit = h.t;
+    nW = mcMobNormal(h.n, m.head);
+    rgb = mcMobColor(type, h, skin, h.t * pxAngle * 16.0, mcSkins, mcMaps).rgb;
+    probe = m.at + float3(0.0, 1.5, 0.0);
+    return true;
 }
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
@@ -863,7 +1019,42 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     VtHit h = vtTrace(ro, rd, pxAngle, W, mcTiles);
     float3 fogC = vtFog(rd, l);
     float3 col;
-    if (h.hit && h.t < tw) {
+
+    // Inhabitants, in front of whatever the march found. Narrow first: one
+    // box round the roads' walking height, then a box round each mob that
+    // holds it at any heading; only the nearest two the ray enters are traced.
+    float tMob = min(h.hit ? h.t : 1e9, tw);
+    float3 mobN = float3(0.0), mobC = float3(0.0), mobQ = float3(0.0);
+    bool mob = false;
+    float3 rinv = 1.0 / select(rd, float3(1e-7), abs(rd) < 1e-7);
+    float3 tb1 = (float3(-13.0, 1.0, -13.0) - ro) * rinv, tb2 = (float3(14.0, 3.9, 14.0) - ro) * rinv;
+    float3 tbn = min(tb1, tb2), tbf = max(tb1, tb2);
+    if (max(max(tbn.x, tbn.y), tbn.z) < min(min(min(tbf.x, tbf.y), tbf.z), tMob)) {
+        int c0 = -1, c1 = -1; float t0 = tMob, t1 = tMob;
+        for (int i = 0; i < VT_MOBS; ++i) {
+            VtMob m = vtMobAt(i, u.time, W.seedBits);
+            float4 rb = VT_ROLE_B[m.role];
+            float3 b1 = (m.at - float3(rb.y, 0.05, rb.y) - ro) * rinv;
+            float3 b2 = (m.at + float3(rb.y, rb.z, rb.y) - ro) * rinv;
+            float3 bn = min(b1, b2), bf = max(b1, b2);
+            float tN = max(max(bn.x, bn.y), bn.z), tF = min(min(bf.x, bf.y), bf.z);
+            if (tN > tF || tF <= 0.0) continue;
+            if (tN < t0) { c1 = c0; t1 = t0; c0 = i; t0 = tN; }
+            else if (tN < t1) { c1 = i; t1 = tN; }
+        }
+        if (c0 >= 0) {
+            float tf; float3 nf, cf, qf;
+            if (vtMobHit(c0, u.time, W.seedBits, ro, rd, tMob, pxAngle, mcSkins, mcMaps, tf, nf, cf, qf)
+                || (c1 >= 0 && vtMobHit(c1, u.time, W.seedBits, ro, rd, tMob, pxAngle, mcSkins, mcMaps, tf, nf, cf, qf))) {
+                tMob = tf; mobN = nf; mobC = cf; mobQ = qf; mob = true;
+            }
+        }
+    }
+
+    if (mob) {
+        col = mobC * mcFaceShade(mobN) * vtLightAt(mobQ, int3(floor(mobQ)), l, float4(0.0), W);
+        col = mix(col, fogC, smoothstep(90.0, 260.0, tMob));
+    } else if (h.hit && h.t < tw) {
         col = vtShade(h, ro, rd, pxAngle, l, W, mcTiles, mcMaps);
         col = mix(col, fogC, smoothstep(90.0, 260.0, h.t));
     } else if (tw < 1e4) {
@@ -871,11 +1062,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         // below — lit by sky light that loses a level a block of depth.
         float3 under;
         if (h.hit) under = vtShade(h, ro, rd, pxAngle, l, W, mcTiles, mcMaps);
-        else under = float3(0.18, 0.18, 0.2) * mcLight(max(3.0 - l.darken, 0.0)) + 0.01;
+        else under = float3(0.18, 0.18, 0.2) * mcLightmap(0.0, 3.0, l.bright, 0.0);
         int frame = mcFrame(MC_WATER_STILL, MC_WATER_STILL_FRAMES, MC_WATER_STILL_TICKS, u.time);
         float4 wt = mcTileAniso(mcTiles, frame, seaUV, dudx, dudy);
-        float skyB = mcLight(max(15.0 - l.darken, 0.0));
-        float3 surf = wt.rgb * MC_WATER_TINT * skyB;
+        float3 surf = wt.rgb * MC_WATER_TINT * mcLightmap(0.0, 15.0, l.bright, 0.0);
         col = mix(under, surf, wt.a);
         col = mix(col, fogC, smoothstep(90.0, 260.0, tw));
     } else {
