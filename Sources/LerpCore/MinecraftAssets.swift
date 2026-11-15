@@ -51,6 +51,30 @@ public enum LerpMinecraft {
 
     public static var isInstalled: Bool { directory() != nil }
 
+    /// `// lerp-requires: minecraft mobs` — the game's mobs on its own box
+    /// models. Their geometry is the game's too, so like the textures it is
+    /// generated on this Mac from the installed copy (`make minecraft`) and
+    /// read from the same folder, never committed. It is some thousands of
+    /// lines of tables, so only a look that asks for it gets it.
+    public static let mobsRequirement = "mobs"
+    public static var hasMobs: Bool {
+        guard let directory = directory() else { return false }
+        return FileManager.default.fileExists(atPath: directory.appendingPathComponent("mobs.metal").path)
+    }
+    nonisolated(unsafe) private static var mobs: String?
+    public static func mobsPrelude() throws -> String {
+        lock.lock()
+        if let mobs { lock.unlock(); return mobs }
+        lock.unlock()
+        let url = try installed().appendingPathComponent("mobs.metal")
+        guard let source = try? String(contentsOf: url, encoding: .utf8) else {
+            throw Failure(message: "Minecraft mob models are not installed; run `make minecraft`")
+        }
+        lock.lock(); defer { lock.unlock() }
+        mobs = source
+        return source
+    }
+
     private static func installed() throws -> URL {
         guard let directory = directory() else {
             throw Failure(message: "Minecraft textures are not installed; run `make minecraft`")

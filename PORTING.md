@@ -573,6 +573,37 @@ shaders here write. The prelude adds, for a shader that requires minecraft:
   model the kit does not have yet. Source and full comments:
   `Sources/LerpCore/MinecraftKit.swift`.
 
+**Mobs.** A look that says `// lerp-requires: minecraft mobs` also gets the
+game's mobs, drawn from their real skins on the game's own box models (the
+geometry is dumped from the installed game by `make minecraft`, so it is
+machine-local like the textures). It must take both `mcSkins` and `mcMaps`.
+A mob stands in its own space: blocks, y up, feet on y = 0, facing +z.
+
+```metal
+float3 lro, lrd;
+mcMobRay(ro, rd, mobPos, heading, lro, lrd);            // heading 0 faces +z, pi/2 faces +x
+float2 b = mcMobBounds(MCMOB_COW, lro, lrd);            // cheap box test first
+if (b.x < b.y && b.x < best) {
+    MCMOB_Pose pose = mcMobStill(); pose.walk = t * 4.0; pose.speed = 0.4;
+    MCMOB_Skin skin = mcMobSkin(MCS_COW_TEMPERATE);
+    MCMOB_Hit h = mcMobTrace(MCMOB_COW, pose, skin, lro, lrd, best, mcSkins, mcMaps);
+    if (h.t < best) {
+        best = h.t;
+        float4 c = mcMobColor(MCMOB_COW, h, skin, h.t * pixelAngle * 16.0, mcSkins, mcMaps);
+        col = c.rgb * mcFaceShade(mcMobNormal(h.n, heading)) + c.rgb * c.a;   // .a is glow (enderman eyes)
+    }
+}
+```
+
+`MCMOB_Pose` has `walk` and `speed` (the game's walk phase and stride; 0.3–0.6
+is a walk), `yaw`, `pitch`, `graze`, `flap`, `wag`. `mcMobVillagerSkin(base,
+biome, profession, level)`, `mcMobSheepSkin(baby, woolly, dye)` and
+`mcMobEndermanSkin()` build the layered skins. The header of
+`~/Library/Application Support/Lerping/Minecraft/mobs.metal` lists every
+`MCMOB_*` type and what is not covered. Testing every mob's bounds for every
+pixel is the real cost (41 box tests a pixel is about 5 ms at Retina size):
+narrow the candidates first, by grid cell or by where the mob is on screen.
+
 Do not hand-build a second copy of anything in the kit. If a look needs a
 model or convention it lacks, add it to the kit so the next look has it too.
 

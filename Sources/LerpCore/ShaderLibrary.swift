@@ -151,6 +151,7 @@ public struct LerpShader: Sendable {
     ///
     ///     // lerp-requires: metal4
     ///     // lerp-requires: minecraft
+    ///     // lerp-requires: minecraft mobs
     public var requirements: [String] {
         var words: [String] = []
         for raw in source.split(separator: "\n", omittingEmptySubsequences: false).prefix(40) {
@@ -180,6 +181,7 @@ public struct LerpShader: Sendable {
                 guard #available(macOS 26.0, *), device.supportsFamily(.metal4) else { return false }
             }
             if word == LerpMinecraft.requirement, !LerpMinecraft.isInstalled { return false }
+            if word == LerpMinecraft.mobsRequirement, !LerpMinecraft.hasMobs { return false }
         }
         return true
     }
@@ -577,6 +579,9 @@ public final class ShaderLibrary: @unchecked Sendable {
             // in place before the look's first frame binds them.
             do {
                 extra += try LerpMinecraft.metalPrelude()
+                if shader.requirements.contains(LerpMinecraft.mobsRequirement) {
+                    extra += try LerpMinecraft.mobsPrelude()
+                }
                 try LerpMinecraft.load(device: device)
             } catch {
                 try fail(shader, 4, "shader '\(shader.name)': \(error.localizedDescription)")
