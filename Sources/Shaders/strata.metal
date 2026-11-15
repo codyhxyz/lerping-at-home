@@ -4,7 +4,7 @@
 // Mac (see the "Minecraft looks" section of PORTING.md).
 //
 // lerp-category: Minecraft
-// lerp-requires: minecraft
+// lerp-requires: minecraft mobs
 //
 // The world is sliced along one vertical plane and the screen is the glass laid
 // against the cut. You drift along it: grass and dirt at the top, then stone
@@ -26,6 +26,7 @@
 // Buried in the rock, one or two to a screen: amethyst geodes sliced through
 // the middle (smooth basalt, calcite, amethyst, budding amethyst with its
 // clusters), a fossil of bone blocks, a cobblestone dungeon with its spawner
+// (a small zombie or skeleton turning inside, from the mob kit)
 // and chests, mineshafts of oak with rails, cobwebs and torches (one running
 // along the glass, one running away from it into the dark), and now and then
 // a cellar under the grass with a chest, barrels and a ladder up to the light.
@@ -77,12 +78,11 @@ constant int M_AIR = 0, M_GRASS = 1, M_DIRT = 2, M_STONE = 3, M_GRANITE = 4, M_D
              M_ORE = 32;   // + ore kind, + 8 when set in deepslate
 
 // --- The hour: the sun is just touching the hills ahead (celestial angle
-// 0.23, a little before the game's sunset), so its fan of orange is up.
-// `day` is the kit's 0 (midnight) .. 1 (noon) for sky, fog and lightmap.
-constant float  ST_DAY    = 0.5;
+// 0.23, a little before the game's sunset), so its fan of orange is up. The
+// kit turns the sun's height into the sky's and the lightmap's `day` and the
+// sunset glow.
 constant float3 ST_SUN    = float3(0.0, 0.1253, 0.9921);     // 7.2 degrees up, straight ahead
-constant float3 ST_DUSK   = float3(0.897, 0.501, 0.2);       // the game's sunset colour, sRGB
-constant float  ST_DUSK_A = 0.78;                            // and its strength at this hour
+static inline float stLDay() { return mcLightDay(ST_SUN.y); }
 constant float  ST_CLOUDS = 136.0;                           // y 192 in the game's heights
 
 
@@ -179,7 +179,6 @@ static inline int stFeature(int3 p, StFeat f) {
         if (abs(q.x) > 4 || q.y < -1 || q.y > 5 || q.z < -1 || q.z > 7) return -1;
         if (abs(q.x) <= 3 && q.y >= 0 && q.y <= 4 && q.z >= 0 && q.z <= 6) {
             if (q.y == 0 && q.x == 0 && q.z == 3) return M_SPAWNER;
-            if (q.y == 0 && ((q.x == 2 && q.z == 5) || (q.x == -3 && q.z == 2))) return M_CHEST;
             return M_AIR;
         }
         float moss = stRnd(p, f.h) + (q.y == -1 ? 0.3 : 0.0);
@@ -247,7 +246,6 @@ static inline int stCellar(int3 p, StCellar c) {
     }
     if (abs(q.x) > 4 || q.y < -1 || q.y > 3 || q.z < -1 || q.z > 5) return -1;
     if (abs(q.x) <= 3 && q.y >= 0 && q.y <= 2 && q.z >= 0 && q.z <= 4) {
-        if (q.y == 0 && q.x == -2 && q.z == 3) return M_CHEST;
         if (q.x == 2 && q.z == 4 && q.y <= 1) return M_BARREL;           // barrels
         return M_AIR;
     }
@@ -300,8 +298,6 @@ static inline int stFeatDepth(int x, int y, StFeat f) {
         if (abs(q.x) > 3 || q.y < 0 || q.y > 4) return 0;
         if (q.y == 0) {
             if (q.x == 0) return 3;
-            if (q.x == 2) return 5;
-            if (q.x == -3) return 2;
         }
         return 7;
     }
@@ -332,7 +328,6 @@ static inline int stCellarDepth(int x, int y, StCellar c) {
     if (q.x == 3 && q.y >= 3 && q.y <= c.top - c.o.y) return 1;          // shaft
     if (abs(q.x) > 4 || q.y < -1 || q.y > 3) return -1000;
     if (abs(q.x) > 3 || q.y < 0 || q.y > 2) return 0;
-    if (q.y == 0 && q.x == -2) return 3;                                  // chest
     if (q.x == 2 && q.y <= 1) return 4;                                   // barrels
     return 5;
 }
@@ -455,8 +450,12 @@ static inline int stMaterial(int3 p, uint s) {
         int c = stCellar(p, stCellarOf(p.x, s));
         if (c > 0) return c;
     }
-    int fm = stFeature(p, stFeatOf(p, s));
+    StFeat ft = stFeatOf(p, s);
+    int fm = stFeature(p, ft);
     if (fm > 0) return fm;
+    // The walk finds the geode's back wall a block nearer, now and then, than
+    // the sphere puts it: that block is still the amethyst lining.
+    if (fm == M_AIR && ft.kind == F_GEODE) return M_AMETHYST;
     if (p.y == H) return M_GRASS;
     // One hash per column and one per 5-block cell carry every choice below
     // (hashes are dear here; see stH4).
@@ -584,31 +583,6 @@ static inline void stGrad(float3 rd, float3 n, int axis, float d, thread float2&
     e1 *= d / c;
     gx = axis == 0 ? e1.zy : (axis == 1 ? e1.xz : e1.xy);
     gy = axis == 0 ? e2.zy : (axis == 1 ? e2.xz : e2.xy);
-}
-
-// A chest, from the game's chest model texture (entity/chest/normal.png):
-// the front is the lid's south strip over the base's, both stored upside
-// down, with the latch on the seam. The model is 14 x 15 pixels of a block;
-// here it fills the block (it stands against rock, so there is nothing to
-// show round it). KIT: a shared chest model would replace this.
-static inline float4 stChest(texture2d_array<float> skins, int axis, float3 n, float2 l, float w) {
-    float2 px;
-    if (axis == 1) {
-        px = float2(14.0 + l.x * 14.0, l.y * 14.0);                 // the lid's top
-    } else {
-        bool front = n.z < -0.5;
-        float cx = l.x * 14.0, cy = (1.0 - l.y) * 15.0;             // pixels in, and down
-        px = float2((front ? 42.0 : 0.0) + cx, cy < 5.0 ? 19.0 - cy : 48.0 - cy);
-        if (front && abs(cx - 7.0) < 1.0 && cy >= 3.0 && cy < 7.0)
-            px = float2(cx - 2.0, cy - 2.0);                        // the latch (its south face)
-    }
-    return mcSkin(skins, MCS_CHEST_NORMAL, px, w);
-}
-
-// The frame of lava_still at `now`. The packed strip is already in the
-// game's playing order (0..19 and back), so this just counts up.
-static inline int stLavaFrame(float now) {
-    return mcFrame(MC_LAVA_STILL, MC_LAVA_STILL_FRAMES, MC_LAVA_STILL_TICKS, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -769,6 +743,12 @@ static inline float stTorchLevel(float3 P, StFeat f) {
     return L;
 }
 
+// The game's number (MC_DIR_*) for an axis direction.
+static inline int stDir(float3 d) {
+    return d.y < -0.5 ? MC_DIR_DOWN : (d.y > 0.5 ? MC_DIR_UP : (d.z < -0.5 ? MC_DIR_NORTH
+         : (d.z > 0.5 ? MC_DIR_SOUTH : (d.x < -0.5 ? MC_DIR_WEST : MC_DIR_EAST))));
+}
+
 // Where a ray is inside the box lo..hi: (enter, leave).
 static inline float2 stBox(float3 ro, float3 rd, float3 lo, float3 hi) {
     float3 inv = 1.0 / select(rd, float3(1e-6), abs(rd) < 1e-6);
@@ -790,7 +770,7 @@ static inline float stLavaLevel(float3 P, uint s) {
 // A ravine runs on, open to the sky, further back than the walk goes: past
 // it, the colour of its sky-lit stone walls (stone.png's mean, x-face shade).
 static inline float3 stRavineFar() {
-    return float3(0.49) * mcLightmap(0.0, 15.0, ST_DAY, 0.0) * 0.6;
+    return float3(0.49) * mcLightmap(0.0, 15.0, stLDay(), 0.0) * 0.6;
 }
 
 // Did a ray that found nothing go down a ravine? Where it stopped, or where
@@ -806,29 +786,18 @@ static inline bool stRavineRay(float3 ro, float3 rd, int3 last, uint s) {
 // The fog colour: the game's at this hour, pulled toward the sunset colour as
 // the camera faces the sun (it is one colour for the whole view, as there).
 static inline float3 stFogColor(float3 fwd) {
-    float2 f = normalize(fwd.xz + float2(0.0, 1e-4));
-    float k = max(dot(f, normalize(ST_SUN.xz)), 0.0) * ST_DUSK_A;
-    return mix(mcFogAt(ST_DAY), mcFromSRGB(ST_DUSK), k);
+    return mcFogToward(mcFogAt(mcSkyDay(ST_SUN.y)), mcSunsetAt(ST_SUN.y), fwd, ST_SUN);
 }
 
 static inline float3 stSky(float3 ro, float3 rd, float3 fogC, float pxAngle, float now,
                            texture2d_array<float> skins, texture2d_array<float> maps) {
     // The sky plane, 16 blocks up, fogged over a 12-chunk render distance.
-    float3 c = rd.y > 0.0 ? mix(mcSkyAt(ST_DAY), fogC, saturate(16.0 / max(rd.y, 1e-3) / 192.0)) : fogC;
+    float skyDay = mcSkyDay(ST_SUN.y);
+    float3 c = rd.y > 0.0 ? mix(mcSkyAt(skyDay), fogC, saturate(16.0 / max(rd.y, 1e-3) / 192.0)) : fogC;
 
-    // KIT: the sunset fan and the fog warmed toward the sun belong beside
-    // mcSkyAt / mcFogAt (cascade asked for the same); stopgap here.
-    // The sunset fan: triangles from the horizon under the sun out to a ring
-    // 120 blocks round, tipped 40 x alpha down on the sun's side, the colour
-    // fading from the centre to nothing at the ring. Solved for this ray in
-    // the sun's frame (the sun is straight ahead, along +z).
-    float beta = 40.0 * ST_DUSK_A / 120.0;
-    float qd = length(float2(rd.x, rd.y / beta));
-    float den = rd.z + (100.0 / 120.0) * qd + rd.y / beta;
-    if (den > 0.0) {
-        float sFan = 100.0 / den * qd / 120.0;
-        c = mix(c, mcFromSRGB(ST_DUSK), ST_DUSK_A * saturate(1.0 - sFan));
-    }
+    // The sunset fan over it.
+    float4 glow = mcSunsetAt(ST_SUN.y);
+    c = mix(c, glow.rgb, mcSunsetFan(rd, ST_SUN, glow));
 
     // The sun: its 32-pixel picture on a quad 30 either side at distance 100,
     // added to the sky.
@@ -852,7 +821,7 @@ static inline float3 stSky(float3 ro, float3 rd, float3 fogC, float pxAngle, flo
         px -= 256.0 * floor(px / 256.0);
         float w = tc * pxAngle / (12.0 * sqrt(rd.y));
         float a = mcMap(maps, MCM_ENVIRONMENT_CLOUDS, px, w).a;
-        float3 cc = mix(float3(ST_DAY * 0.9 + 0.1), fogC, saturate((tc - 120.0) / 480.0));
+        float3 cc = mix(float3(skyDay * 0.9 + 0.1), fogC, saturate((tc - 120.0) / 480.0));
         c = mix(c, cc, a * 0.8 * (1.0 - smoothstep(400.0, 800.0, tc)));
     }
     return c;
@@ -906,14 +875,12 @@ static inline float3 stShade(float3 ro, float3 rd, float pxAngle, uint s, float 
         // --- What the face is.
         float3 alb;
         if (mat == M_LAVA) {
-            alb = mcTileAniso(tiles, stLavaFrame(now), uv, gx, gy).rgb;
+            alb = mcTileAniso(tiles, mcFrame(MC_LAVA_STILL, MC_LAVA_STILL_FRAMES, MC_LAVA_STILL_TICKS, now), uv, gx, gy).rgb;
         } else if (mat == M_GRASS) {
             float3 tint = mcGrassTint(maps, 0.8, 0.4);              // plains
-            if (axis != 1)     alb = mcGrassSide(tiles, uv, fp, tint);
+            if (axis != 1)     alb = mcGrassSideAniso(tiles, uv, gx, gy, tint);
             else if (n.y > 0.) alb = mcTileAniso(tiles, MC_GRASS_BLOCK_TOP, uv, gx, gy).rgb * tint;
             else               alb = mcTileAniso(tiles, MC_DIRT, uv, gx, gy).rgb;
-        } else if (mat == M_CHEST) {
-            alb = stChest(skins, axis, n, l, fp * 15.0).rgb;
         } else {
             // A bone block lying along x turns its side texture on its side.
             bool turn = mat == M_BONE_X && axis != 0;
@@ -922,13 +889,33 @@ static inline float3 stShade(float3 ro, float3 rd, float pxAngle, uint s, float 
             alb = t.rgb;
             if (mat == M_LEAVES) alb *= mcFoliageTint(maps, 0.8, 0.4);
             if (mat == M_SPAWNER && t.a < 0.5) {
-                // Through the cage to its far side, a block further on.
-                // KIT: mobs — the spawner's small spinning mob goes inside the
-                // cage here, between this face and the far one.
+                // Through the cage to its far side, a block further on ...
                 float3 dd = rd / max(abs(dot(rd, n)), 0.2);
                 float2 off = axis == 0 ? float2(dd.z, -dd.y) : (axis == 1 ? dd.xz : float2(dd.x, -dd.y));
                 float4 b = mcTileAniso(tiles, MC_SPAWNER, uv + off, gx, gy);
                 alb = b.a > 0.5 ? b.rgb * 0.5 : float3(0.02, 0.02, 0.03);
+                // ... and in front of it the dungeon's mob, small and turning,
+                // as the game shows it in a spawner (scaled to 0.53125 of a
+                // block over its height; the game also tips it 30 degrees,
+                // which the kit's mob ray cannot). A quarter are skeletons,
+                // the rest zombies; the game's spider is not in the kit.
+                bool skel = ((fa.h >> 26) & 3u) == 0u;
+                int type = skel ? MCMOB_SKELETON : MCMOB_ZOMBIE;
+                const float k = 0.53125 / 1.95;
+                float head = now * 1.2;
+                float3 lro, lrd;
+                mcMobRay(ro, rd, float3(v) + float3(0.5, 0.2, 0.5), head, lro, lrd);
+                lro /= k;
+                float tFar = (h.t + 1.8) / k;
+                float2 mb = mcMobBounds(type, lro, lrd);
+                if (mb.x < mb.y && mb.x < tFar) {
+                    MCMOB_Skin sk = mcMobSkin(skel ? MCS_SKELETON : MCS_ZOMBIE);
+                    MCMOB_Hit mh = mcMobTrace(type, mcMobStill(), sk, lro, lrd, tFar, skins, maps);
+                    if (mh.t < tFar) {
+                        float4 c = mcMobColor(type, mh, sk, mh.t * pxAngle * 16.0, skins, maps);
+                        alb = c.rgb * mcFaceShade(mcMobNormal(mh.n, head)) / mcFaceShade(n);
+                    }
+                }
             }
         }
 
@@ -960,7 +947,7 @@ static inline float3 stShade(float3 ro, float3 rd, float pxAngle, uint s, float 
         float shade = mcFaceShade(n);
 
         if (mat == M_LAVA) {
-            col = alb * mcLightmap(15.0, sky, ST_DAY, 0.0) * shade;
+            col = alb * mcLightmap(15.0, sky, stLDay(), 0.0) * shade;
         } else {
             // Smooth lighting's corners. On the cut face only the blocks
             // standing proud of it can shade it, so only they are looked up.
@@ -975,29 +962,71 @@ static inline float3 stShade(float3 ro, float3 rd, float pxAngle, uint s, float 
             } else {
                 ao = 1.0;   // too far into the dark for it to show
             }
-            col = alb * mcLightmap(blk, sky, ST_DAY, 0.0) * shade * ao;
+            col = alb * mcLightmap(blk, sky, stLDay(), 0.0) * shade * ao;
 
-            // Things on a face that give their own light: a torch (14), glow
-            // lichen on cave walls (7), amethyst clusters (5).
-            // KIT: models — an amethyst cluster is a cross model turned to the
-            // face it grows from; the kit's mcCross only stands upright, so its
-            // picture is laid flat on the budding block until it can turn.
-            float4 e = float4(0.0);
-            float eLevel = 0.0;
-            if (mat == M_BUDDING) {
-                e = mcTileAniso(tiles, MC_AMETHYST_CLUSTER, uv, gx, gy); eLevel = 5.0;
-            } else if (!outdoor && av.z >= 0 && v.y < -4 && fa.kind == F_NONE
-                       && stRnd(av >> 2, s + 40u) < 0.3 && stRnd(v * 2 + int3(n), s + 41u) < 0.5) {
-                e = mcTileAniso(tiles, MC_GLOW_LICHEN, uv, gx, gy); eLevel = 7.0;
+            // Glow lichen (light 7) on the walls of the deeper caves.
+            McModelHit lh;
+            if (!outdoor && av.z >= 0 && v.y < -4 && fa.kind == F_NONE
+                && stRnd(av >> 2, s + 40u) < 0.3 && stRnd(v * 2 + int3(n), s + 41u) < 0.5
+                && mcGlowLichen(tiles, float3(av), 1 << stDir(-n), ro, rd, h.t - 0.05, h.t + 1e-3, pxAngle, lh))
+                col = lh.color.rgb * mcLightmap(max(blk, 7.0), sky, stLDay(), 0.0) * mcFaceShade(lh.n);
+        }
+
+        // The models in the air before the face, the kit's: chests in a
+        // dungeon or cellar, amethyst on a geode's budding blocks, wall
+        // torches and cobwebs in a mineshaft.
+        float tEnd = h.t + 1e-3;
+        McModelHit mh;
+        if (!outdoor && av.z >= 0) {
+            // Chests, latch to the glass. A dungeon has two, a cellar one.
+            int3 ch[2];
+            int nc = 0;
+            if (fa.kind == F_DUNGEON) {
+                ch[0] = fa.o + int3(2, 0, 5); ch[1] = fa.o + int3(-3, 0, 2); nc = 2;
+            } else if (av.y > -12 && av.z <= 4) {
+                StCellar ce = stCellarOf(av.x, s);
+                if (ce.on) { ch[0] = ce.o + int3(-2, 0, 3); nc = 1; }
             }
-            if (e.a > 0.0)
-                col = mix(col, e.rgb * mcLightmap(max(blk, eLevel), sky, ST_DAY, 0.0) * shade, e.a);
+            for (int i = 0; i < nc; ++i) {
+                float2 cb = stBox(ro, rd, float3(ch[i]), float3(ch[i]) + 1.0);
+                if (cb.x < cb.y && cb.x < tEnd
+                    && mcChest(skins, MCS_CHEST_NORMAL, float3(ch[i]), MC_DIR_NORTH, ro, rd, cb.x - 1e-4, tEnd, pxAngle, mh)) {
+                    tEnd = mh.t;
+                    float cs = 15.0 - (float(ch[i].z) + 0.5);
+                    col = mh.color.rgb * mcLightmap(blk, cs, stLDay(), 0.0) * mcFaceShade(mh.n);
+                }
+            }
+        }
+        if (fa.kind == F_GEODE) {
+            // A budding block grows a cluster or a bud from its face toward
+            // the geode's middle. The ray may cross the one on the block it
+            // hit, or on one of that block's neighbours in the face.
+            float3 gc = float3(fa.o) + float3(0.5, 0.5, 0.9 + 0.6 * fract(fa.ph * 3.1));
+            int3 du = axis == 0 ? int3(0, 0, 1) : int3(1, 0, 0);
+            int3 dv = axis == 1 ? int3(0, 0, 1) : int3(0, 1, 0);
+            for (int i = 0; i < 5; ++i) {
+                int3 b = v + (i == 1 ? du : (i == 2 ? -du : (i == 3 ? dv : (i == 4 ? -dv : int3(0)))));
+                if (stFeature(b, fa) != M_BUDDING) continue;
+                float3 w = gc - (float3(b) + 0.5), aw = abs(w);
+                int dir = aw.x > aw.y && aw.x > aw.z ? (w.x > 0.0 ? MC_DIR_EAST : MC_DIR_WEST)
+                        : (aw.y > aw.z ? (w.y > 0.0 ? MC_DIR_UP : MC_DIR_DOWN)
+                                       : (w.z > 0.0 ? MC_DIR_SOUTH : MC_DIR_NORTH));
+                int3 c = b + int3(mcDirVec(dir));
+                if (stFeature(c, fa) != M_AIR) continue;
+                float r = stRnd(b, s + 220u);
+                int layer = r < 0.5 ? MC_AMETHYST_CLUSTER : (r < 0.75 ? MC_LARGE_AMETHYST_BUD : MC_MEDIUM_AMETHYST_BUD);
+                float lv  = r < 0.5 ? 5.0 : (r < 0.75 ? 4.0 : 2.0);
+                float2 cb = stBox(ro, rd, float3(c), float3(c) + 1.0);
+                if (cb.x < cb.y && cb.x < tEnd
+                    && mcCrossFacing(tiles, layer, float3(c), dir, float3(1.0), ro, rd, cb.x - 1e-4, tEnd, pxAngle, mh)) {
+                    tEnd = mh.t;
+                    col = mh.color.rgb * mcLightmap(max(blk, lv), 15.0 - max(float(c.z) + 0.5, 0.0), stLDay(), 0.0);
+                }
+            }
         }
         // The mineshafts' models in the air before the face: wall torches
         // and cobwebs, the kit's.
         if (fa.kind == F_MINE_Z || fa.kind == F_MINE_X) {
-            McModelHit mh;
-            float tEnd = h.t + 1e-3;
             // The torch nearest the face.
             int3 tc;
             int facing;
@@ -1012,7 +1041,7 @@ static inline float3 stShade(float3 ro, float3 rd, float pxAngle, uint s, float 
             if (cb.x < cb.y && cb.x < tEnd
                 && mcWallTorch(tiles, MC_TORCH, float3(tc), facing, ro, rd, cb.x - 1e-4, tEnd, pxAngle, mh)) {
                 tEnd = mh.t;
-                col = mh.color.rgb * mcLightmap(15.0, sky, ST_DAY, 0.0) * (mh.shade > 0.5 ? mcFaceShade(mh.n) : 1.0);
+                col = mh.color.rgb * mcLightmap(15.0, sky, stLDay(), 0.0) * (mh.shade > 0.5 ? mcFaceShade(mh.n) : 1.0);
             }
             // Cobwebs hang in the corners under the timbers: in a Z shaft along
             // both top corners, in an X shaft along the back. The first two
@@ -1037,7 +1066,7 @@ static inline float3 stShade(float3 ro, float3 rd, float pxAngle, uint s, float 
                     if (cr.x < cr.y && cr.x < tEnd
                         && mcCross(tiles, MC_COBWEB, float3(c), float3(1.0), ro, rd, cr.x - 1e-4, tEnd, pxAngle, mh)) {
                         tEnd = mh.t;
-                        col = mh.color.rgb * mcLightmap(blk, sky, ST_DAY, 0.0);
+                        col = mh.color.rgb * mcLightmap(blk, sky, stLDay(), 0.0);
                     }
                 }
             }
@@ -1060,7 +1089,7 @@ static inline float3 stShade(float3 ro, float3 rd, float pxAngle, uint s, float 
         float4 w = mcTileAniso(tiles, mcFrame(MC_WATER_STILL, MC_WATER_STILL_FRAMES, MC_WATER_STILL_TICKS, now),
                                stPic(wl, wa), wgx, wgy);
         float wsky = 15.0 - max(E.z + 0.5 * wn.z + 0.5, 0.0);
-        float3 wc = w.rgb * MC_WATER_TINT * mcLightmap(0.0, wsky, ST_DAY, 0.0) * mcFaceShade(wn);
+        float3 wc = w.rgb * MC_WATER_TINT * mcLightmap(0.0, wsky, stLDay(), 0.0) * mcFaceShade(wn);
         col = mix(col, wc, w.a);
     }
     return col;

@@ -2,7 +2,7 @@
 // Lerping@Home, drawn with Minecraft's own textures (lerp-requires below).
 //
 // lerp-category: Minecraft
-// lerp-requires: minecraft
+// lerp-requires: minecraft mobs
 //
 // A square quarry is cut into a plains meadow in terraces: grass and dirt at
 // the rim, then stone with its pockets of granite, diorite, andesite, gravel
@@ -16,6 +16,8 @@
 // at the bottom. When the spring closes the water drains the way it came, top
 // first, each block thinning a level a tick before it goes. Oaks, short grass
 // and flowers stand on the meadow; water washes the plants off while it runs.
+// A little herd of sheep, cows, pigs or chickens grazes along each side,
+// ambling somewhere new now and then, out of the way of the water.
 //
 // It is all closed form, with no step of the flow stored: a cell's level is
 // how far it sits from where its stream landed on that ledge, and its
@@ -31,8 +33,9 @@
 // smooth-lit corners; skylight losing a level a block under water and under
 // leaves; the lightmap dimming with the time of day; sky, fog and sunset
 // glow; the square sun and the flat cloud layer. Cost is the water walk
-// (CS_WSTEPS cells, each asking every spring slot) plus at most CS_TSQ tree
-// squares of up to CS_TVOX voxels and CS_PSTEPS plant cells; every texture is
+// (CS_WSTEPS cells asked, each asking every spring slot, among CS_WCELLS stepped) plus at most CS_TSQ tree
+// squares, each oak walked by the kit's mcTree (MC_TREE_STEPS blocks at most), CS_NHERD herd boxes and, inside one, up to
+// CS_HERD animals each, and CS_PSTEPS plant cells; every texture is
 // read once at the surface found, except a leaf face's alpha, which decides
 // whether the ray goes on through the canopy.
 //
@@ -55,14 +58,15 @@ constant float CS_P     = 175.0;   // ticks between one slot's springs: never lo
 constant float CS_D     = 95.0;    // ticks a spring runs
 constant float CS_TAIL  = 70.0;    // ticks the last of its water takes to drain
 constant float CS_FOCAL = 1.8;
-constant int   CS_WSTEPS = 12;    // cells a ray walks looking for water, bounded
+constant int   CS_WSTEPS = 12;    // cells a ray asks for water, bounded
+constant int   CS_WCELLS = 40;    // cells it may step through to find them (cheap: over the
+                                  // pit's air a tilted ray crosses many before it is low enough)
 constant int   CS_DRY   = 99;
 constant int   CS_SPREAD = 1;     // blocks a stream widens per ledge
 constant int   CS_TG    = 7;       // one oak at most in each 7x7 square of the meadow
 constant float CS_TREE_P = 0.45;   // the chance a square has one
 constant float CS_TREE_Y = 7.0;    // no treetop is higher
 constant int   CS_TSQ   = 16;      // tree squares a ray walks, bounded (the steep default view crosses 3 or 4)
-constant int   CS_TVOX  = 10;      // voxels a ray walks inside one tree, bounded
 constant int   CS_PSTEPS = 4;      // meadow cells a ray walks for plants, bounded
 constant float CS_CLOUD_Y = 120.0; // the cloud layer, blocks above the meadow
 constant float CS_FOG0  = 72.0;    // linear fog, as the game's render distance
@@ -306,7 +310,7 @@ static inline int csBlock(int3 b, bool topmost, bool topFace, int k, float sk, t
 // ---------------------------------------------------------------------------
 // The meadow: oaks, short grass and flowers.
 
-struct CsTree { int2 c; int h; bool ok; float salt; };
+struct CsTree { int2 c; bool ok; McTree m; };
 
 static inline int csDistI(int v, int lo, int hi) { return max(0, max(lo - v, v - hi)); }
 
@@ -317,8 +321,8 @@ static inline CsTree csTreeIn(int2 g, float sk, int R) {
     float2 gf = float2(g) + sk * 0.37;
     float2 j = hash22(gf * 0.917 + 3.1);
     t.c = g * CS_TG + 2 + int2(j * 2.999);
-    t.h = 4 + int(hash21(gf * 1.37 + 8.0) * 2.999);
-    t.salt = hash21(gf * 2.11 + 0.7) * 61.0;
+    // The kit's oak, grown by the game's rule, its foot log on cell c.
+    t.m = mcTreeGrow(MC_TREE_OAK, float3(float(t.c.x) - 0.5, 0.0, float(t.c.y) - 0.5), hash21(gf * 2.11 + 0.7) * 97.0);
     int m = R - 9, lo = R + 2, hi = R + 4;
     int reach = min(min(csDistI(t.c.x, lo, hi) + csDistI(t.c.y, -m, m),
                         csDistI(t.c.y, lo, hi) + csDistI(t.c.x, -m, m)),
@@ -328,88 +332,142 @@ static inline CsTree csTreeIn(int2 g, float sk, int R) {
     return t;
 }
 
-// The game's small oak, block by block: a trunk of h logs; leaves 5x5 in the
-// two layers about the trunk's top but two, 3x3 in the next, a plus on top;
-// the corners of all but the top layer each kept at even odds.
-// 0 air, 1 log, 2 leaves. d is relative to the trunk's foot.
-static inline int csTreeVox(int3 d, CsTree tr) {
-    if (d.y < 0) return 0;
-    if (d.x == 0 && d.z == 0 && d.y < tr.h) return 1;
-    int ty = d.y - tr.h;
-    if (ty < -3 || ty > 0) return 0;
-    int r = ty >= -1 ? 1 : 2;
-    int ax = abs(d.x), az = abs(d.z);
-    if (max(ax, az) > r) return 0;
-    if (ax == r && az == r) {
-        if (ty == 0) return 0;
-        if (hash21(float2(float(d.x * 3 + d.y * 17), float(d.z * 5 - d.y * 7)) + tr.salt) < 0.5) return 0;
-    }
-    return 2;
-}
-
 static inline float2 csFaceUV(float3 P, float3 n) {
     if (abs(n.y) > 0.5) return fract(P.xz + 0.5);
     float s = abs(n.x) > 0.5 ? P.z : P.x;
     return float2(fract(s + 0.5), 1.0 - fract(P.y));
 }
 
-// The first face of this oak the ray stops at. Leaves are drawn as the game's
-// fancy leaves: every leaf block's faces, inner ones too, cut out by the
-// texture's alpha, so the ray may pass a few before one stops it. `passed`
-// counts the leaf blocks it went through, for the light lost on the way.
-static inline float csTreeHit(float3 ro, float3 rd, float3 inv3, CsTree tr, float tMax, float pxA,
-                              texture2d_array<float> tiles, thread float3& n, thread int& kind,
-                              thread float& passed, thread float4& tex) {
-    float3 lo = float3(float(tr.c.x) - 2.5, 0.0, float(tr.c.y) - 2.5);
-    float3 hi = float3(float(tr.c.x) + 2.5, float(tr.h + 1), float(tr.c.y) + 2.5);
-    float3 t1 = (lo - ro) * inv3, t2 = (hi - ro) * inv3;
-    float3 mn = min(t1, t2), mx = max(t1, t2);
-    float tn = max(max(mn.x, mn.y), mn.z), tf = min(min(mx.x, mx.y), mx.z);
-    if (tn > tf || tf < 0.0 || tn >= tMax) return 1e9;
-    int3 st = int3(rd.x > 0.0 ? 1 : -1, rd.y > 0.0 ? 1 : -1, rd.z > 0.0 ? 1 : -1);
-    float3 nIn = mn.x >= mn.y && mn.x >= mn.z ? float3(-float(st.x), 0.0, 0.0)
-               : (mn.y >= mn.z ? float3(0.0, -float(st.y), 0.0) : float3(0.0, 0.0, -float(st.z)));
-    float t = max(tn, 0.0);
-    float3 P0 = ro + rd * (t + 1e-4);
-    int3 v = int3(int(floor(P0.x + 0.5)), int(floor(P0.y)), int(floor(P0.z + 0.5)));
-    float3 edge = float3(float(v.x) + 0.5 * float(st.x), float(v.y) + (st.y > 0 ? 1.0 : 0.0),
-                         float(v.z) + 0.5 * float(st.z));
-    float3 tM = (edge - ro) * inv3;
-    float3 tD = abs(inv3);
-    int3 base = int3(tr.c.x, 0, tr.c.y);
-    passed = 0.0;
-    for (int i = 0; i < CS_TVOX; ++i) {
-        if (t >= tMax || t > tf) break;
-        int cls = csTreeVox(v - base, tr);
-        if (cls != 0) {
-            float3 P = ro + rd * t;
-            float fw = t * pxA / max(abs(dot(rd, nIn)), 0.1);
-            if (cls == 1) {
-                kind = 1; n = nIn;
-                tex = mcTile(tiles, nIn.y != 0.0 ? MC_OAK_LOG_TOP : MC_OAK_LOG, csFaceUV(P, nIn), fw);
-                return t;
-            }
-            float4 lf = mcTile(tiles, MC_OAK_LEAVES, csFaceUV(P, nIn), fw);
-            if (lf.a > 0.5) { kind = 2; n = nIn; tex = lf; return t; }
-            passed += 1.0;
-        }
-        if (tM.x < tM.y && tM.x < tM.z)  { t = tM.x; tM.x += tD.x; v.x += st.x; nIn = float3(-float(st.x), 0.0, 0.0); }
-        else if (tM.y < tM.z)            { t = tM.y; tM.y += tD.y; v.y += st.y; nIn = float3(0.0, -float(st.y), 0.0); }
-        else                             { t = tM.z; tM.z += tD.z; v.z += st.z; nIn = float3(0.0, 0.0, -float(st.z)); }
-    }
-    return 1e9;
+// Light levels the meadow loses in an oak's shade (the kit's rule).
+static inline float csCanopyShade(float2 P, float sk, int R, thread float& ao) {
+    CsTree tr = csTreeIn(int2(floor((P + 0.5) / float(CS_TG))), sk, R);
+    return tr.ok ? mcTreeShade(tr.m, float3(P.x, 0.0, P.y), ao) : 0.0;
 }
 
-// Light levels the meadow loses in an oak's shade: skylight reaches under
-// the canopy only from the side, a level a block, as smooth lighting blends it.
-static inline float csCanopyShade(float2 P, float sk, int R, thread float& ao) {
-    int2 g = int2(floor((P + 0.5) / float(CS_TG)));
-    CsTree tr = csTreeIn(g, sk, R);
-    if (!tr.ok) return 0.0;
-    float2 d = abs(P - float2(tr.c));
-    float e = max(d.x, d.y);
-    ao *= 0.6 + 0.4 * saturate(e - 0.5);          // the trunk's foot
-    return clamp((2.6 - e) * 1.25, 0.0, 2.0);
+// ---------------------------------------------------------------------------
+// The herds. Two herds graze along each side of the pit, between the rim and
+// the edge of where water can run, which is the meadow the camera sees. Every
+// CS_LEG seconds a herd picks somewhere new along its side: of CS_CAND spots, the
+// first that stays well clear of every spring running during that leg (the
+// spring footprints are as closed-form as the water), else the clearest. So a
+// herd ambles off when a spring opens near it and comes back when it drains.
+// Positions and poses are a pure function of time and seed.
+
+constant float CS_LEG   = 16.0;   // seconds a herd stays at one spot, walking the first part
+constant int   CS_NHERD = 8;      // two a side
+constant int   CS_HERD  = 3;      // animals in a herd, at most
+constant int   CS_CAND  = 6;      // spots a herd considers each leg
+
+// Where the springs are during one leg: the spring each slot runs at its
+// start and at its end (a spring runs longer than a leg, so one that wets
+// the meadow during the leg is running at one of the two), or none.
+struct CsLegSprings { int2 S[8]; bool on[8]; };
+
+static inline CsLegSprings csLegSprings(float e, float off, float speed, float seed, int slots, int R) {
+    CsLegSprings ls;
+    #pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        int jj = j & 3;
+        float T = (e - off + float(j >> 2)) * CS_LEG * speed / CS_TICK;
+        ls.on[j] = false; ls.S[j] = int2(0);
+        if (jj < slots) {
+            CsSpring sp = csSpring(jj, T, slots, R, seed);
+            ls.on[j] = sp.tau <= CS_D + CS_TAIL;
+            ls.S[j] = sp.S;
+        }
+    }
+    return ls;
+}
+
+// Herd h's spot for leg e: on side h & 3, 1.8 to 2.4 blocks back from the
+// rim, the strip of meadow the camera sees. Its animals spread along the side
+// more than across it (0.4 across, and a cow reaches 1.22 from its feet, so
+// none sets foot over the edge at ring R - 0.5).
+static inline float2 csHerdSpot(int h, float e, thread const CsLegSprings& ls, float sk, int R, float2 cam) {
+    int side = h & 3;
+    float2 best = float2(0.0);
+    float bestScore = -1e9;
+    for (int k = 0; k < CS_CAND; ++k) {
+        float2 hh = hash22(float2(e * 1.731 + float(k) * 0.37, float(h) * 5.13 + sk * 0.071));
+        float along = (hh.x * 2.0 - 1.0) * float(R - 6);
+        float out = float(R) + 1.8 + 0.6 * hh.y;
+        float2 P = side == 0 ? float2(out, along) : side == 1 ? float2(along, out)
+                 : side == 2 ? float2(-out, along) : float2(along, -out);
+        float clear = 99.0;
+        #pragma unroll
+        for (int j = 0; j < 8; ++j)
+            if (ls.on[j]) clear = min(clear, abs(P.x - float(ls.S[j].x)) + abs(P.y - float(ls.S[j].y)) - 7.0);
+        // A herd drifts to the sides the camera can see: the strip under it,
+        // on the near side, is out of frame.
+        float score = min(clear, 5.0) - 0.01 * float(k) - 4.0 * saturate(dot(normalize(P), cam) - 0.25);
+        if (score > bestScore) { bestScore = score; best = P; }
+        if (score >= 4.9) break;
+    }
+    return best;
+}
+
+// What herd h is: 0 sheep, 1 cow, 2 pig, 3 chicken, and how many.
+static inline int csHerdKind(int h, float sk, thread int& species) {
+    float a = hash11(float(h) * 3.71 + sk * 0.137 + 0.4);
+    species = a < 0.38 ? 0 : (a < 0.66 ? 1 : (a < 0.84 ? 2 : 3));
+    return 2 + int(hash11(float(h) * 1.93 + sk * 0.211 + 7.7) * 1.999);
+}
+
+struct CsMob {
+    int         type;
+    float3      at;
+    float       heading;   // 0 faces +z, pi/2 faces +x
+    MCMOB_Pose  pose;
+    MCMOB_Skin  skin;
+};
+
+// Animal i of herd h, which walks from spot a (last leg) to spot b (this
+// one): each animal keeps its own place in the herd, starts a little after
+// the others, grazes once there, then lifts its head and looks about.
+static inline CsMob csMobAt(int h, int i, int species, float2 a, float2 b, float e, float f,
+                            float time, float sk) {
+    float2 along = (h & 1) == 0 ? float2(0.0, 1.0) : float2(1.0, 0.0);
+    float2 across = float2(along.y, along.x);
+    CsMob mb;
+    float salt = float(i) * 7.31 + float(h) * 3.13 + sk * 0.29;
+    bool baby = hash11(salt * 1.37 + 0.4) < 0.25;
+    float hd = hash11(salt * 2.91 + 1.7);   // the game's natural fleeces
+    float3 dye = mcFromSRGB(hd > 0.97 ? float3(0.514, 0.329, 0.196)       // brown
+                          : hd > 0.92 ? float3(0.114, 0.114, 0.129)       // black
+                          : hd > 0.87 ? float3(0.278, 0.310, 0.322)       // gray
+                          : hd > 0.82 ? float3(0.616, 0.616, 0.592)       // light gray
+                          : float3(0.976, 1.0, 0.996));                   // white
+    if (species == 0) { mb.type = baby ? MCMOB_SHEEP_BABY : MCMOB_SHEEP; mb.skin = mcMobSheepSkin(baby, true, dye); }
+    else if (species == 1) { mb.type = baby ? MCMOB_COW_BABY : MCMOB_COW;
+                             mb.skin = mcMobSkin(baby ? MCS_COW_TEMPERATE_BABY : MCS_COW_TEMPERATE); }
+    else if (species == 2) { mb.type = baby ? MCMOB_PIG_BABY : MCMOB_PIG;
+                             mb.skin = mcMobSkin(baby ? MCS_PIG_TEMPERATE_BABY : MCS_PIG_TEMPERATE); }
+    else { mb.type = baby ? MCMOB_CHICKEN_BABY : MCMOB_CHICKEN;
+           mb.skin = mcMobSkin(baby ? MCS_CHICKEN_TEMPERATE_BABY : MCS_CHICKEN_TEMPERATE); }
+
+    // Its place in the herd: a slot of a loose ring, shuffled each leg.
+    float ang0 = (float(i) + hash11(salt + (e - 1.0) * 0.913)) * 2.0944;
+    float ang1 = (float(i) + hash11(salt + e * 0.913)) * 2.0944;
+    float2 p0 = a + along * (1.8 * cos(ang0)) + across * (0.4 * sin(ang0));
+    float2 p1 = b + along * (1.8 * cos(ang1)) + across * (0.4 * sin(ang1));
+    float start = 0.04 * float(i) + 0.05 * hash11(salt + e * 1.7);
+    const float W = 0.3;                        // the share of a leg spent walking
+    float u = saturate((f - start) / W);
+    float s = smoothstep(0.0, 1.0, u);
+    float2 d = p1 - p0;
+    float len = length(d);
+    mb.at = float3(mix(p0.x, p1.x, s), 0.0, mix(p0.y, p1.y, s));
+    // It faces where it is going; a short hop just turns it a little.
+    float2 dd = len > 0.3 ? d : float2(sin(salt), cos(salt));
+    mb.heading = atan2(dd.x, dd.y);
+    mb.pose = mcMobStill();
+    mb.pose.walk = s * len * 4.0;
+    mb.pose.speed = 0.5 * sin(3.14159265 * u) * step(0.0, f - start) * step(f, start + W);
+    float g0 = start + W + 0.03;
+    mb.pose.graze = smoothstep(g0, g0 + 0.06, f) * (1.0 - smoothstep(0.78, 0.85, f));
+    mb.pose.yaw = 0.6 * sin(time * 0.45 + salt * 3.0) * smoothstep(0.82, 0.9, f);
+    if (species == 3) mb.pose.graze *= step(0.45, fract(time * 1.3 + salt));   // chickens peck
+    return mb;
 }
 
 // The plant on a meadow cell, if any: its tile, whether it takes the grass
@@ -438,6 +496,7 @@ struct CsEnv {
     float  day;        // the lightmap's time of day, 1 at noon
     float3 sky, fog;   // sky and fog colours
     float4 sunrise;    // the sunset glow, rgb and strength
+    float3 fogLook;    // the fog, warmed toward the sun by the camera's look
     float  bright;     // the sky's brightness
     float3 grass, foliage;
     float  time;
@@ -448,43 +507,28 @@ static inline float3 csLightmap(float level, thread const CsEnv& e) {
     return mcLightmap(0.0, level, e.day, 0.0);
 }
 
-// The time of day from a sun at elevation `el`. The game dims the lightmap
-// (Level.getSkyDarken) and the sky colour by slightly different curves of the
-// same angle; each gets its own. KIT: the sunset glow (the sunrise fan's
-// colour and strength) is not in the kit yet.
-static inline CsEnv csEnv(float el, float3 L, float time, texture2d_array<float> maps) {
+// The time of day from the sun, by the kit: the lightmap and the sky colour
+// dim by different curves of the sun's height, and the sunset glow.
+static inline CsEnv csEnv(float3 L, float3 look, float time, texture2d_array<float> maps) {
     CsEnv e;
     e.L = L;
     e.time = time;
-    float cs = sin(el);                                     // cos of the game's celestial angle
-    e.day = saturate(cs * 2.0 + 0.2);
-    e.bright = saturate(cs * 2.0 + 0.5);
+    e.day = mcLightDay(L.y);
+    e.bright = mcSkyDay(L.y);
     e.sky = mcSkyAt(e.bright);
     e.fog = mcFogAt(e.bright);
-    e.sunrise = float4(0.0);
-    if (abs(cs) <= 0.4) {
-        float f2 = cs / 0.4 * 0.5 + 0.5;
-        float a = 1.0 - (1.0 - sin(f2 * M_PI_F)) * 0.99;
-        e.sunrise = float4(mcFromSRGB(float3(f2 * 0.3 + 0.7, f2 * f2 * 0.7 + 0.2, 0.2)), a * a);
-    }
+    e.sunrise = mcSunsetAt(L.y);
+    e.fogLook = mcFogToward(e.fog, e.sunrise, look, L);
     e.grass = mcGrassTint(maps, 0.8, 0.4);                  // plains
     e.foliage = mcFoliageTint(maps, 0.8, 0.4);
     return e;
 }
 
-// Fog, warmed toward the sun at sunset as the game warms it.
-static inline float3 csFogCol(float3 rd, thread const CsEnv& e) {
-    float toward = saturate(dot(normalize(rd.xz + 1e-6), normalize(e.L.xz + 1e-6)));
-    return mix(e.fog, e.sunrise.rgb, e.sunrise.a * toward);
-}
-
 static inline float3 csSky(float3 ro, float3 rd, float pxA, thread const CsEnv& e,
                            texture2d_array<float> skins, texture2d_array<float> maps) {
-    float3 fogc = csFogCol(rd, e);
-    float3 c = mix(fogc, e.sky, smoothstep(0.0, 0.4, rd.y));
-    // The sunset glow on the sun's side of the horizon.
-    float toward = saturate(dot(normalize(rd.xz + 1e-6), normalize(e.L.xz + 1e-6)));
-    c = mix(c, e.sunrise.rgb, e.sunrise.a * toward * toward * (1.0 - smoothstep(0.0, 0.45, rd.y)));
+    float3 c = mix(e.fogLook, e.sky, smoothstep(0.0, 0.4, rd.y));
+    // The sunset glow: the game's fan over the horizon under the sun.
+    c = mix(c, e.sunrise.rgb, mcSunsetFan(rd, e.L, e.sunrise));
     // The sun: a 30-unit quad 100 away, added to the sky.
     float dl = dot(rd, e.L);
     if (dl > 0.0) {
@@ -492,7 +536,10 @@ static inline float3 csSky(float3 ro, float3 rd, float pxA, thread const CsEnv& 
         float3 e2 = cross(e1, e.L);
         float2 sp = float2(dot(rd, e1), dot(rd, e2)) / dl;
         if (max(abs(sp.x), abs(sp.y)) < 0.3)
-            c += mcSkin(skins, MCS_ENVIRONMENT_CELESTIAL_SUN, (sp / 0.3 * 0.5 + 0.5) * 32.0, pxA * 53.3).rgb;
+            // Kept half a texel inside the 32 px picture, so the crisp blend
+            // at the quad's edge never reaches the empty rest of its 64 px layer.
+            c += mcSkin(skins, MCS_ENVIRONMENT_CELESTIAL_SUN,
+                        clamp((sp / 0.3 * 0.5 + 0.5) * 32.0, 0.5, 31.5), pxA * 53.3).rgb;
     }
     // The flat cloud layer: a pixel of clouds.png is 12 blocks, drifting east.
     if (rd.y > 0.01 && ro.y < CS_CLOUD_Y) {
@@ -603,7 +650,7 @@ static inline float csNested(float3 ro, float3 rd, float2 inv, thread const CsPi
 }
 
 static inline float3 csScene(float3 ro, float3 rd, float pxA, thread const CsPit& p,
-                             float tick, int slots, float seed, thread const CsEnv& e,
+                             float tick, float speed, int slots, float seed, thread const CsEnv& e,
                              texture2d_array<float> mcTiles, texture2d_array<float> mcSkins,
                              texture2d_array<float> mcMaps) {
     float sk = floor(seed * 997.0);
@@ -615,9 +662,11 @@ static inline float3 csScene(float3 ro, float3 rd, float pxA, thread const CsPit
     float tHit = 1e9;
     float3 nHit = float3(0.0, 1.0, 0.0);
     if (rd.y < -1e-4) tHit = csNested(ro, rd, inv, p, 0.0, 0.0, nHit);
-    int kind = 0;                       // 0 ground, 1 log, 2 leaves, 3 plant
+    int kind = 0;                       // 0 ground, 1 log, 2 leaves, 3 plant, 4 animal
     float4 tex = float4(0.0);
     float passed = 0.0;
+    CsMob mob;
+    MCMOB_Hit mobHit;
 
     // The oaks: walk the 7-block squares the ray crosses below the treetops.
     {
@@ -635,9 +684,9 @@ static inline float3 csScene(float3 ro, float3 rd, float pxA, thread const CsPit
             for (int i = 0; i < CS_TSQ; ++i) {
                 CsTree tr = csTreeIn(g, sk, R);
                 if (tr.ok) {
-                    float3 nt; int kd = 0; float ps; float4 tx;
-                    float th = csTreeHit(ro, rd, inv3, tr, tHit, pxA, mcTiles, nt, kd, ps, tx);
-                    if (th < tHit) { tHit = th; nHit = nt; kind = kd; passed = ps; tex = tx; break; }
+                    McModelHit th; float ps;
+                    int kd = mcTree(mcTiles, tr.m, mcTreeLeafTint(MC_TREE_OAK, e.foliage), ro, rd, 0.0, tHit, pxA, th, ps);
+                    if (kd != 0) { tHit = th.t; nHit = th.n; kind = kd; passed = ps; tex = th.color; break; }
                 }
                 float tOut = min(tMax.x, tMax.y);
                 if (tOut > tB) break;
@@ -646,13 +695,64 @@ static inline float3 csScene(float3 ro, float3 rd, float pxA, thread const CsPit
             }
         }
     }
-    // KIT: mobs — a few sheep and cows grazing the meadow would go here, tested
-    // like the oaks: one at most per square, kept beyond the water's reach
-    // (csTreeIn's `reach > 8`), wandering slowly within their square.
     if (tHit > 1e8) return csSky(ro, rd, pxA, e, mcSkins, mcMaps);
 
-    // Plants: walk the meadow cells the ray crosses in the block above the grass.
-    if (kind == 0) {
+    // The herds: only a ray that reaches the meadow below 1.8 blocks, beside
+    // the pit, can meet one; each herd is boxed first, its animals after.
+    {
+        float tA = max((1.8 - ro.y) * inv3.y, 0.0), tB = min(tHit, -ro.y * inv3.y);
+        float2 pa = ro.xz + rd.xz * tA, pb = ro.xz + rd.xz * tB;
+        // Each side's herds keep to a strip: 0.15 to 4.05 blocks out from the
+        // rim's ring R, and within R - 2.95 of the side's middle along it.
+        int sides = 0;
+        if (rd.y < 0.0 && tA < tB) {
+            float r0 = float(R) + 0.15, r1 = float(R) + 4.05, w = float(R) - 2.95;
+            #pragma unroll
+            for (int sd = 0; sd < 4; ++sd) {
+                float2 lo = sd == 0 ? float2(r0, -w) : sd == 1 ? float2(-w, r0) : sd == 2 ? float2(-r1, -w) : float2(-w, -r1);
+                float2 hi = sd == 0 ? float2(r1, w) : sd == 1 ? float2(w, r1) : sd == 2 ? float2(-r0, w) : float2(w, -r0);
+                float2 t1 = (lo - ro.xz) * inv, t2 = (hi - ro.xz) * inv;
+                float2 mn = min(t1, t2), mx = max(t1, t2);
+                if (max(max(mn.x, mn.y), tA) <= min(min(mx.x, mx.y), tB)) sides |= 1 << sd;
+            }
+        }
+        if (sides != 0) {
+            float off = hash11(sk * 0.31 + 0.17);
+            float ph = e.time / CS_LEG + off;
+            float le = floor(ph), lf = ph - le;
+            CsLegSprings sPrev = csLegSprings(le - 1.0, off, speed, seed, slots, R);
+            CsLegSprings sNow  = csLegSprings(le, off, speed, seed, slots, R);
+            // Where the camera stands (its azimuth, as lerpMain orbits it) at each leg's start.
+            float azPrev = seed * TWO_PI + (le - 1.0 - off) * CS_LEG * 0.011;
+            float azNow  = seed * TWO_PI + (le - off) * CS_LEG * 0.011;
+            for (int h = 0; h < CS_NHERD; ++h) {
+                if ((sides & (1 << (h & 3))) == 0) continue;
+                float2 a = csHerdSpot(h, le - 1.0, sPrev, sk, R, float2(cos(azPrev), sin(azPrev)));
+                float2 b = csHerdSpot(h, le, sNow, sk, R, float2(cos(azNow), sin(azNow)));
+                float2 lo = min(a, b) - 3.1, hi = max(a, b) + 3.1;
+                float2 t1 = (lo - ro.xz) * inv, t2 = (hi - ro.xz) * inv;
+                float2 mn = min(t1, t2), mx = max(t1, t2);
+                if (max(max(mn.x, mn.y), tA) > min(min(mx.x, mx.y), tB)) continue;
+                int species;
+                int n = csHerdKind(h, sk, species);
+                for (int i = 0; i < CS_HERD; ++i) {
+                    if (i >= n) break;
+                    CsMob mb = csMobAt(h, i, species, a, b, le, lf, e.time, sk);
+                    float3 lro, lrd;
+                    mcMobRay(ro, rd, mb.at, mb.heading, lro, lrd);
+                    float2 bb = mcMobBounds(mb.type, lro, lrd);
+                    if (bb.x < bb.y && bb.x < tHit) {
+                        MCMOB_Hit hm = mcMobTrace(mb.type, mb.pose, mb.skin, lro, lrd, tHit, mcSkins, mcMaps);
+                        if (hm.t < tHit) { tHit = hm.t; kind = 4; mob = mb; mobHit = hm; }
+                    }
+                }
+            }
+        }
+    }
+
+    // Plants: walk the meadow cells the ray crosses in the block above the
+    // grass, in front of an animal too.
+    if (kind == 0 || kind == 4) {
         float tA = max((1.0 - ro.y) * inv3.y, 0.0), tB = min(tHit, -ro.y * inv3.y);
         if (rd.y < 0.0 && tA < tB) {
             float2 q = ro.xz + rd.xz * tA + 0.5;
@@ -710,7 +810,8 @@ static inline float3 csScene(float3 ro, float3 rd, float pxA, thread const CsPit
         float2 tMax = tShell + (float2(cell) + select(float2(0.0), float2(1.0), rd.xz > 0.0) - q) * inv;
         float tIn = tShell;
         float3 nSide = nShell;
-        for (int i = 0; i < CS_WSTEPS; ++i) {
+        int asked = 0;
+        for (int i = 0; i < CS_WCELLS; ++i) {
             float tOut = min(tMax.x, tMax.y);
             float yOut = ro.y + rd.y * min(tOut, tHit);
             int ring = max(abs(cell.x), abs(cell.y));
@@ -718,6 +819,7 @@ static inline float3 csScene(float3 ro, float3 rd, float pxA, thread const CsPit
             bool lip = t.k >= 1 && ring == t.aUp - 1;
             float band = (lip ? t.Hup : t.H) + 1.0;
             if (yOut < band) {
+                if (++asked > CS_WSTEPS) break;
                 CsWater w = csWaterAt(cell, ring, t, p, tick, slots, seed);
                 if (w.hi > w.lo) {
                     float te = (w.hi - ro.y) / rd.y, tx = (w.lo - ro.y) / rd.y;
@@ -750,12 +852,17 @@ static inline float3 csScene(float3 ro, float3 rd, float pxA, thread const CsPit
         float ao = 1.0;
         if (topmost && tHitT.k == 0) level -= csCanopyShade(P.xz, sk, R, ao);
         col = csGround(P, nHit, cHit, tHitT, topmost, fw, sk, e.grass, mcTiles) * ao;
+    } else if (kind == 4) {
+        // The game lights an entity by the light where it stands; face
+        // shading as for blocks, its normal turned back to the world.
+        float4 c = mcMobColor(mob.type, mobHit, mob.skin, tHit * pxA * 16.0, mcSkins, mcMaps);
+        col = c.rgb * mcFaceShade(mcMobNormal(mobHit.n, mob.heading));
     } else if (kind == 3) {
         col = tex.rgb;                    // tinted by the kit; plants take no face shade
         float ao = 1.0;
         level -= csCanopyShade(P.xz, sk, R, ao);
     } else {
-        col = tex.rgb * (kind == 2 ? e.foliage : float3(1.0)) * mcFaceShade(nHit);
+        col = tex.rgb * mcFaceShade(nHit);       // leaves come tinted from the kit
         level -= kind == 2 ? min(passed, 3.0) : clamp(3.0 - P.y * 0.5, 0.0, 2.0);
         if (passed > 0.0) col *= 0.8;
     }
@@ -769,7 +876,7 @@ static inline float3 csScene(float3 ro, float3 rd, float pxA, thread const CsPit
     }
 
     // The game's linear fog at the end of its render distance.
-    return mix(col, csFogCol(rd, e), saturate((tHit - CS_FOG0) / (CS_FOG1 - CS_FOG0)));
+    return mix(col, e.fogLook, saturate((tHit - CS_FOG0) / (CS_FOG1 - CS_FOG0)));
 }
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
@@ -781,7 +888,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     int slots = clamp(u.springs, 1, 4);
     float tick = u.time * u.speed / CS_TICK;
 
-    float az = u.seed * TWO_PI + u.time * 0.011;
+    float az = u.seed * TWO_PI + u.time * 0.011;   // the herds read this too (csScene)
     float el = 0.82 + 0.04 * sin(u.time * 0.017 + u.seed * 9.0);
     float3 pivot = float3(0.0, pit.H1.y * 0.6, 0.0);
     // Frame the whole pit: a narrow screen stands further back.
@@ -799,7 +906,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float sa = u.seed * 5.1 + 1.3;
     float se = u.sun;
     float3 L = normalize(float3(cos(sa) * cos(se), sin(se), sin(sa) * cos(se)));
-    CsEnv env = csEnv(se, L, u.time, mcMaps);
+    CsEnv env = csEnv(L, fwd, u.time, mcMaps);
 
     float minRes = min(u.resolution.x, u.resolution.y);
     float pxA = 2.0 / (minRes * CS_FOCAL);
@@ -807,7 +914,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 rd = normalize(uv.x * right + uv.y * up + CS_FOCAL * fwd);
 
     // Colours stay in the textures' own encoding and multiply there, as the game's do.
-    float3 col = csScene(ro, rd, pxA, pit, tick, slots, u.seed, env, mcTiles, mcSkins, mcMaps);
+    float3 col = csScene(ro, rd, pxA, pit, tick, u.speed, slots, u.seed, env, mcTiles, mcSkins, mcMaps);
     col = lerpDither(col, pos);
     return half4(half3(col), 1.0h);
 }
