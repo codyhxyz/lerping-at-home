@@ -1,33 +1,37 @@
 // Lantern Hill — a night procession of mushroom-folk up a spiral hill.
-// Original work for Lerping@Home: the hill, the creatures and every texture
-// are procedural and of its own design.
+// Original work for Lerping@Home, drawn with the game's own block textures
+// (lerp-requires: minecraft; see PORTING.md). The walkers are this look's own
+// creatures, not the game's mobs, built from its mushroom and lantern blocks.
 //
 // lerp-category: Minecraft
+// lerp-requires: minecraft
 //
-// Blocky mushroom-folk sprout one by one from a glowing patch of soil at the
-// foot of a terraced hill, each carrying a lantern, and climb the ledge that
-// winds three times round it to the giant mushroom on the summit, where they
-// walk in at its door. The queue moves like a crowd: slow stop-and-go waves
-// run back down the line, so the walkers near the top stand while those
-// further back are still walking, and little ones keep close behind some of
-// the grown ones.
+// Mushroom-folk come up one by one through a patch of mycelium at the foot of
+// a terraced grass hill, each carrying a lantern, and climb the dirt-path
+// ledge that winds three times round it to the giant mushroom on the summit,
+// where they walk in at a glowstone door. The queue moves like a crowd: slow
+// stop-and-go waves run back down the line, so the walkers near the top stand
+// while those further back are still walking, and little ones keep close
+// behind some of the grown ones.
 //
 // Everything is a function of the clock. A walker's place on the path is its
 // slot in the queue plus the wave at its own phase; its height comes from the
 // ledge under it, with a hop at each step up; its legs swing with distance
-// walked, so they stop when it does. The lanterns light the ledge, the bank
-// above it and each other's walkers; the giant mushroom lights the summit.
+// walked, so they stop when it does. Light works as the game's does: fixed
+// shading per face, a little darkening in corners, and block light falling a
+// level a block from each lantern, the shroomlights under the giant cap and
+// the glowstone door, over the moon's sky light.
 //
-// lerp-param: speed        float 0.2 2   = 1   "Walk speed"
-// lerp-param: crowd        float 0.4 1.6 = 1   "Crowd"
-// lerp-param: light        float 0.3 2   = 1   "Brightness"
-// lerp-param: colorLantern color = (1.0, 0.62, 0.26) "Lanterns"
-// lerp-param: yaw          float -180 180 = 0 "Turn"
-// lerp-param: pitch        float -25 35   = 0 "Tilt"
-// lerp-param: magnify      float -1 0.9   = 0 "Zoom"
+// lerp-param: speed    float 0.2 2   = 1   "Walk speed"
+// lerp-param: crowd    float 0.4 1.6 = 1   "Crowd"
+// lerp-param: light    float 0.3 2   = 1   "Brightness"
+// lerp-param: soul     bool          = false "Soul lanterns"
+// lerp-param: yaw      float -180 180 = 0 "Turn"
+// lerp-param: pitch    float -25 35   = 0 "Tilt"
+// lerp-param: magnify  float -1 0.9   = 0 "Zoom"
 //
 // lerp-preset: "Lantern Hill" crowd=1
-// lerp-preset: Glowworms colorLantern=(0.45, 1.0, 0.62), crowd=1.4
+// lerp-preset: "Soul Lanterns" soul=true, crowd=1.4
 // lerp-preset: Stragglers crowd=0.5, speed=0.7
 
 // --- The hill, in blocks. The ledge is an Archimedean spiral: radius
@@ -193,7 +197,7 @@ struct LhHit {
     float3 n;     // local normal
     float3 q;     // hit point, local texel units
     float3 lo;    // the part's low corner
-    int    part;  // 0,1 legs, 2 stalk, 3 cap, 4 cap top, 5 arm, 6 lantern
+    int    part;  // 0,1 legs, 2 stalk, 3 cap, 4 cap top, 5 arm, 6 lantern, 7 lantern cap
 };
 
 static inline void lhPart(float3 o, float3 d, float3 inv, float3 lo, float3 hi, int id,
@@ -211,6 +215,7 @@ static inline void lhPart(float3 o, float3 d, float3 inv, float3 lo, float3 hi, 
 }
 
 // The walker's boxes, in texels: feet at the origin, +z forward, +x right.
+// Its lantern is the game's lantern at half size (body 6x7x6, cap 4x2x4 px).
 static inline bool lhCreature(float3 ro, float3 rd, LhWalker w, int k, thread LhHit& hit) {
     float3 rel = ro - w.p;
     float is = 1.0 / w.sc;
@@ -234,13 +239,16 @@ static inline bool lhCreature(float3 ro, float3 rd, LhWalker w, int k, thread Lh
     lhPart(o, d, inv, float3(-4.0, 14.0 + b, -4.0), float3(4.0, 16.0 + b, 4.0), 4, hit);
     if (k == 0) {
         lhPart(o, d, inv, float3(3.0, 7.0 + b, -1.0), float3(5.0, 9.0 + b, 6.0), 5, hit);
-        lhPart(o, d, inv, float3(2.5, 3.0 + b, 4.5 + w.lz), float3(5.5, 7.0 + b, 7.5 + w.lz), 6, hit);
+        lhPart(o, d, inv, float3(2.5, 2.5 + b, 4.5 + w.lz), float3(5.5, 6.0 + b, 7.5 + w.lz), 6, hit);
+        lhPart(o, d, inv, float3(3.0, 6.0 + b, 5.0 + w.lz), float3(5.0, 7.0 + b, 7.0 + w.lz), 7, hit);
     }
     return hit.t < before;
 }
 
 // ---------------------------------------------------------------------------
-// The giant mushroom on the summit.
+// The giant mushroom on the summit: a stem of mushroom-stem blocks, a stepped
+// cap of mushroom blocks with a hanging rim, shroomlights set in its
+// underside round the stem, and a glowstone door.
 
 static inline void lhBoxW(float3 ro, float3 rd, float3 inv, float3 lo, float3 hi, int id,
                           thread float& t, thread float3& n, thread int& part) {
@@ -254,9 +262,11 @@ static inline void lhBoxW(float3 ro, float3 rd, float3 inv, float3 lo, float3 hi
       : (tn == mn.y ? float3(0.0, -sign(rd.y), 0.0) : float3(0.0, 0.0, -sign(rd.z)));
 }
 
+constant float LH_CAPW = 5.5;
+
 static inline int lhShroom(float3 ro, float3 rd, float3 inv, thread float& t, thread float3& n) {
     int part = -1;
-    const float C = LH_CAPY, W = 5.5;
+    const float C = LH_CAPY, W = LH_CAPW;
     {
         float3 t1 = (float3(-W, LH_TOP - 0.5, -W) - ro) * inv, t2 = (float3(W, C + 2.75, W) - ro) * inv;
         float3 mn = min(t1, t2), mx = max(t1, t2);
@@ -266,7 +276,6 @@ static inline int lhShroom(float3 ro, float3 rd, float3 inv, thread float& t, th
     lhBoxW(ro, rd, inv, float3(-W, C, -W), float3(W, C + 1.0, W), 1, t, n, part);
     lhBoxW(ro, rd, inv, float3(-W + 1.0, C + 1.0, -W + 1.0), float3(W - 1.0, C + 2.0, W - 1.0), 1, t, n, part);
     lhBoxW(ro, rd, inv, float3(-W + 2.5, C + 2.0, -W + 2.5), float3(W - 2.5, C + 2.75, W - 2.5), 1, t, n, part);
-    // A rim hanging from the cap's edge on all four sides.
     lhBoxW(ro, rd, inv, float3(-W, C - 0.5, W - 1.0), float3(W, C, W), 1, t, n, part);
     lhBoxW(ro, rd, inv, float3(-W, C - 0.5, -W), float3(W, C, -W + 1.0), 1, t, n, part);
     lhBoxW(ro, rd, inv, float3(W - 1.0, C - 0.5, -W + 1.0), float3(W, C, W - 1.0), 1, t, n, part);
@@ -275,22 +284,26 @@ static inline int lhShroom(float3 ro, float3 rd, float3 inv, thread float& t, th
 }
 
 // ---------------------------------------------------------------------------
-// Light.
+// Light, the game's way: sky light from the moon, and block light that falls
+// one level a block (Manhattan distance) from each source; the brighter of
+// the two wins, through the game's brightness curve.
+
+constant float LH_SHROOM_IN = 3.5;   // shroomlights fill the cap's underside out to here
 
 struct LhEnv {
-    float3 zen, hor, amb, moon, moonDir, lantern, glowCap, glowSpot, capCol;
-    float  tau, S0, D, time;
+    float3 zen, fog, sky, warm, lantern, grass, moonDir;
+    float  tau, S0, D, time, level;
+    int    capLayer, moonLayer, lanternLayer;
 };
 
-// Where a walker's lantern is, without the parts only its body needs: the
-// light it casts does not care how its legs or the lantern swing.
+// Where a walker's lantern is, without the parts only its body needs.
 static inline bool lhLanternAt(float j, float tau, float D, float lo, float hi, float sNear,
-                               thread float3& L) {
+                               float reach, thread float3& L) {
     if (hash21(float2(j, 11.3)) < 0.12) return false;
     float2 hj = hash22(float2(j, 3.7));
     float s = LH_V * (tau - LH_A * LH_P / TWO_PI * sin(tau * (TWO_PI / LH_P) - j * LH_LAG))
             - (j + hj.x * 0.45) * D;
-    if (s < -1.3 || s > LH_SEND + 0.6 || s < lo || s >= hi || abs(s - sNear) > 3.7) return false;
+    if (s < -1.3 || s > LH_SEND + 0.6 || s < lo || s >= hi || abs(s - sNear) > reach) return false;
     float sc = (0.9 + 0.18 * hj.y) / 16.0;
     if (s < LH_SSP) {
         float ph = lhArcPhi(s);
@@ -301,38 +314,35 @@ static inline bool lhLanternAt(float j, float tau, float D, float lo, float hi, 
         float base = floor(hc);
         float rise = 1.0 - smoothstep(0.0, 0.5, lhArcS((base + 1.0) * TWO_PI / LH_CLIMB) - s);
         float y = s < 0.0 ? s * 1.15 : base + rise;
-        L = float3(r * c, y, r * sn) + float3(f.y * 4.0 + f.x * 6.0, 5.35, -f.x * 4.0 + f.y * 6.0) * sc;
+        L = float3(r * c, y, r * sn) + float3(f.y * 4.0 + f.x * 6.0, 4.5, -f.x * 4.0 + f.y * 6.0) * sc;
     } else {
-        L = float3(LH_REND - (s - LH_SSP) - 6.0 * sc, LH_TOP + 5.35 * sc, 4.0 * sc);
+        L = float3(LH_REND - (s - LH_SSP) - 6.0 * sc, LH_TOP + 4.5 * sc, 4.0 * sc);
     }
     return true;
 }
 
-// Lanterns of walkers within reach of arc length sc. `lo`/`hi` keep each
-// walker to one of the two stretches of path, so none is counted twice.
-static inline float3 lhLanternsNear(float3 P, float3 N, float sc, float lo, float hi, LhEnv E) {
-    float3 acc = float3(0.0);
-    float2 jr = lhSlots(E.S0, sc, 3.2, E.D);
-    for (int q = 0; q < 6; ++q) {
+static inline float lhManhattan(float3 d) { return abs(d.x) + abs(d.y) + abs(d.z); }
+
+// The brightest lantern level at P among walkers near arc length sc.
+static inline float lhLanternsNear(float3 P, float sc, float lo, float hi, float reach, LhEnv E) {
+    float lvl = 0.0;
+    float2 jr = lhSlots(E.S0, sc, reach, E.D);
+    for (int q = 0; q < 8; ++q) {
         float j = jr.x + float(q);
         if (j > jr.y) break;
         float3 L;
-        if (!lhLanternAt(j, E.tau, E.D, lo, hi, sc, L)) continue;
-        L -= P;
-        float d2 = dot(L, L);
-        float d = sqrt(d2);
-        float ndl = dot(N, L / max(d, 1e-3));
-        float fall = 1.0 / (1.0 + 2.2 * d2) * (1.0 - smoothstep(2.0, 3.2, d));
-        acc += E.lantern * 2.2 * fall * saturate(0.25 + 0.75 * ndl);
+        if (!lhLanternAt(j, E.tau, E.D, lo, hi, sc, reach, L)) continue;
+        lvl = max(lvl, E.level - lhManhattan(L - P));
     }
-    return acc;
+    return lvl;
 }
 
-static inline float3 lhLight(float3 P, float3 N, float faceShade, constant LerpUniforms& u, LhEnv E) {
-    float3 l = E.amb * faceShade + E.moon * max(dot(N, E.moonDir), 0.0);
-
-    // Lanterns on the turn of the ledge below this point or the one above,
-    // whichever is within a lantern's reach (on a ledge, only its own).
+// P is the hit nudged half a block into the air in front of the face: the
+// game lights a face by the block it faces.
+static inline float3 lhLight(float3 P, LhEnv E, constant LerpUniforms& u, thread float& lantern) {
+    // Below about this level a lantern is no brighter than the moonlight.
+    const float reach = E.level - 5.0;
+    float lv = 0.0;
     float r = length(P.xz);
     float phi = lhAtan2(P.z, P.x);
     phi += phi < 0.0 ? TWO_PI : 0.0;
@@ -342,218 +352,167 @@ static inline float3 lhLight(float3 P, float3 N, float faceShade, constant LerpU
         float n = fa + float(m);
         float phu = phi + TWO_PI * n;
         if (phu < -0.4 || phu > LH_PHEND + 0.4) continue;
-        float dr = (a - n) * LH_PITCH;
-        float dy = P.y - max(LH_CLIMB * phu / TWO_PI, 0.0) - 0.4;
-        if (dr * dr + dy * dy > 16.0) continue;
-        l += lhLanternsNear(P, N, lhArcS(phu), -2.0, LH_SSP, E);
+        float dr = abs(a - n) * LH_PITCH;
+        float dy = abs(P.y - max(LH_CLIMB * phu / TWO_PI, 0.0) - 0.4);
+        if (dr + dy > reach + 0.5) continue;
+        lv = max(lv, lhLanternsNear(P, lhArcS(phu), -2.0, LH_SSP, reach, E));
     }
-    // ... and on the walk in across the summit.
-    if (P.x > -1.0 && abs(P.z) < 4.5 && r < LH_REND + 3.5 && P.y > LH_TOP - 3.0) {
+    if (P.x > -2.0 && abs(P.z) < reach && r < LH_REND + reach && P.y > LH_TOP - reach) {
         float sc = LH_SSP + (LH_REND - clamp(P.x, LH_STEM, LH_REND));
-        l += lhLanternsNear(P, N, sc, LH_SSP, 1e9, E);
+        lv = max(lv, lhLanternsNear(P, sc, LH_SSP, 1e9, reach, E));
     }
+    lantern = lv;
 
-    // The giant mushroom's gills, and its door.
-    float3 G = float3(0.0, LH_CAPY - 1.2, 0.0) - P;
-    float g2 = dot(G, G);
-    l += E.glowCap * 2.6 / (1.0 + 0.07 * g2) * saturate(0.3 + 0.7 * dot(N, G * rsqrt(g2 + 1e-4)))
-       * saturate(LH_CAPY - 0.2 - P.y);   // nothing above the gills sees them
-    float3 Dd = float3(2.0, 13.0, 0.0) - P;
-    float d2 = dot(Dd, Dd);
-    l += E.glowSpot * 1.2 / (1.0 + 0.6 * d2) * saturate(0.3 + 0.7 * dot(N, Dd * rsqrt(d2 + 1e-4)));
-    return l * u.light;
+    // Shroomlights (15) under the cap: light reaches the cap's top only
+    // round its edge. The glowstone door (15).
+    float3 q = P - clamp(P, float3(-LH_SHROOM_IN, LH_CAPY - 1.0, -LH_SHROOM_IN),
+                            float3(LH_SHROOM_IN, LH_CAPY - 1.0, LH_SHROOM_IN));
+    float ds = lhManhattan(q);
+    if (P.y > LH_CAPY) ds += 2.0 * max(LH_CAPW + 0.5 - max(abs(P.x), abs(P.z)), 0.0);
+    float3 qd = P - clamp(P, float3(LH_STEM + 0.5, LH_TOP + 0.5, -0.5), float3(LH_STEM + 0.5, LH_TOP + 1.5, 0.5));
+    float sum = max(15.0 - ds, 15.0 - lhManhattan(qd));
+
+    float bl = mcLight(lv), bs = mcLight(sum);
+    float3 block = max(E.lantern * bl, E.warm * bs);
+    float3 v = max(E.sky, block);
+    // The game's brightness option, set most of the way to "Bright".
+    float3 iv = 1.0 - v;
+    return mix(v, 1.0 - iv * iv * iv * iv, 0.7) * u.light;
 }
 
 // ---------------------------------------------------------------------------
-// Textures: 16 texels a block, each texel one hashed tone, faded to the
-// face's mean once a texel shrinks under a pixel. `fw` is the footprint.
+// Surfaces. uv on a face, in blocks, with v running down the picture.
 
-static inline float lhFade(float fw, float texel) { return smoothstep(0.35, 1.1, fw / texel); }
+static inline float2 lhFaceUV(float3 P, float3 N) {
+    if (abs(N.y) > 0.5) return P.xz;
+    return float2(abs(N.x) > 0.5 ? P.z : P.x, -P.y);
+}
 
-static inline void lhTerrainTex(float3 P, float3 N, LhCell ci, float fw, float time,
-                                thread float3& alb, thread float3& emit) {
-    emit = float3(0.0);
-    float3 tq = floor((P - N * 0.01) * 16.0);
-    float hv = lhHash3(tq);
-    float ft = lhFade(fw, 1.0 / 16.0);
+static inline float3 lhTerrainTex(texture2d_array<float> T, float3 P, float3 N, LhCell ci, float fw,
+                                  LhEnv E) {
+    float2 uv = lhFaceUV(P, N);
     bool top = N.y > 0.5;
-    float depth = ci.h - P.y;   // below the column's top, for side faces
-
-    const float3 grass = lhLin(float3(0.25, 0.44, 0.17));
-    const float3 dirt  = lhLin(float3(0.43, 0.30, 0.20));
-    const float3 stone = lhLin(float3(0.42, 0.42, 0.44));
-    const float3 path  = lhLin(float3(0.55, 0.47, 0.35));
-    const float3 myc   = lhLin(float3(0.47, 0.39, 0.47));
-
-    float3 base, avg;
+    float depth = ci.h - P.y;     // below the column's top, for side faces
     if (ci.kind == 1) {
-        float edge = depth < 1.0 / 16.0 ? 1.0 : 0.0;
-        if (top || edge > 0.5) {
-            float3 c = path * (0.8 + 0.4 * hv);
-            if (hv > 0.88) c = path * 1.35;
-            if (hv < 0.08) c = path * 0.55;
-            base = c; avg = path;
-        } else {
-            base = dirt * (0.8 + 0.4 * hv); avg = dirt;
-        }
+        if (top) return mcTile(T, MC_DIRT_PATH_TOP, uv, fw).rgb;
+        if (depth < 1.0) return mcTile(T, MC_DIRT_PATH_SIDE, uv, fw).rgb;
+    } else if (ci.kind == 2) {
+        if (top) return mcTile(T, MC_MYCELIUM_TOP, uv, fw).rgb;
+        if (depth < 1.0) return mcTile(T, MC_MYCELIUM_SIDE, uv, fw).rgb;
     } else {
-        float3 topCol = ci.kind == 2 ? myc : grass;
-        // Grass hangs over the side a jagged 2-4 texels.
-        float fringe = (2.0 + floor(3.0 * lhHash3(float3(tq.x, 7.0, tq.z)))) / 16.0;
-        if (top) {
-            base = topCol * (0.78 + 0.44 * hv); avg = topCol;
-            // A few texels of glowing moss (or, on the sprouting patch, spores).
-            float glint = lhHash3(tq + 91.0);
-            if (glint > (ci.kind == 2 ? 0.93 : 0.988)) {
-                float tw = 0.5 + 0.5 * sin(time * 0.8 + glint * 400.0);
-                float3 ec = ci.kind == 2 ? float3(0.75, 0.45, 1.0) : float3(0.3, 1.0, 0.8);
-                emit = ec * (0.35 + 0.65 * tw) * 0.9 * (1.0 - ft);
-                emit += ec * (ci.kind == 2 ? 0.05 : 0.008) * ft;
-            }
-        } else if (depth < fringe) {
-            base = topCol * (0.7 + 0.4 * hv); avg = mix(dirt, topCol, 0.5);
-        } else if (depth < 3.0 + 2.0 * lhHash3(float3(floor(P.x), 3.0, floor(P.z)))) {
-            base = dirt * (0.78 + 0.44 * hv); avg = dirt;
-        } else {
-            float3 c = stone * (0.8 + 0.4 * hv);
-            if (lhHash3(floor(tq / 2.0) + 5.0) > 0.86) c *= 0.6;
-            base = c; avg = stone;
-        }
+        if (top) return mcTile(T, MC_GRASS_BLOCK_TOP, uv, fw).rgb * E.grass;
+        if (depth < 1.0) return mcGrassSide(T, uv, fw, E.grass);
     }
-    alb = mix(base, avg, ft);
+    // Dirt a few blocks down, then stone.
+    float dd = 3.0 + floor(2.0 * hash21(floor(P.xz - N.xz * 0.5) + 3.0));
+    return mcTile(T, depth < dd ? MC_DIRT : MC_STONE, uv, fw).rgb;
 }
 
-static inline void lhCreatureTex(LhHit h, LhWalker w, float fw, float3 capCol, float3 lantern,
-                                 thread float3& alb, thread float3& emit) {
-    emit = float3(0.0);
-    float3 cell = floor(h.q - h.n * 0.5);          // local texel, absolute
-    float3 rc = floor(h.q - h.lo - h.n * 0.5);     // texel within the part
-    float hv = lhHash3(cell + w.id * 37.0);
-    float ft = lhFade(fw, w.sc);
-    const float3 stalk = lhLin(float3(0.86, 0.79, 0.66));
-    float3 base, avg;
-    if (h.part <= 2 || h.part == 5) {
-        float3 c = h.part == 2 ? stalk : stalk * 0.78;
-        base = c * (0.86 + 0.28 * hv); avg = c;
-        // Two dark eyes on the front of the stalk.
-        if (h.part == 2 && h.n.z > 0.5 && rc.y == 4.0 && (rc.x == 1.0 || rc.x == 4.0)) {
-            base = float3(0.01, 0.008, 0.01);
-        }
-        if (h.part == 2 && h.n.z > 0.5 && rc.y == 3.0 && (rc.x == 0.0 || rc.x == 5.0)) {
-            base = mix(base, lhLin(float3(0.95, 0.55, 0.55)), 0.5);   // cheeks
-        }
-    } else if (h.part == 6) {
-        // Lantern: an iron frame round glowing panes.
-        bool frame = rc.y < 0.5 || rc.y > 2.5 ||
-                     (abs(h.n.x) > 0.5 ? (rc.z < 0.5 || rc.z > 1.5) : (rc.x < 0.5 || rc.x > 1.5));
-        base = frame ? float3(0.04, 0.035, 0.03) : float3(0.2);
-        avg = float3(0.08);
-        emit = frame ? float3(0.0) : lantern * 3.2;
-        emit = mix(emit, lantern * 1.4, ft);
-    } else {
-        if (h.n.y < -0.5) {
-            // Gills under the cap.
-            float g = abs(cell.x) > abs(cell.z) ? cell.z : cell.x;
-            base = lhLin(float3(0.62, 0.52, 0.44)) * (fmod(abs(g), 2.0) < 0.5 ? 0.7 : 1.0);
-            avg = lhLin(float3(0.62, 0.52, 0.44)) * 0.85;
-        } else {
-            base = capCol * (0.82 + 0.36 * hv);
-            float spot = max(step(0.74, lhHash3(floor(cell / 2.0) + w.id * 11.0)),
-                             step(0.95, hv));
-            base = mix(base, lhLin(float3(0.93, 0.9, 0.84)), spot);
-            avg = mix(capCol, lhLin(float3(0.93, 0.9, 0.84)), 0.28);
-        }
+// Returns the colour; `lit` = 0 for surfaces that glow by their own light.
+static inline float3 lhCreatureTex(texture2d_array<float> T, LhHit h, LhWalker w, float fw,
+                                   LhEnv E, thread float& lit) {
+    lit = 1.0;
+    float tw = fw / (16.0 * w.sc);          // footprint in tile uv
+    float3 rel = h.q - h.lo;
+    if (h.part == 6 || h.part == 7) {
+        // The lantern block's own picture: body sides from (0,2)-(6,9) and
+        // its ends from (0,9)-(6,15); the cap's sides (0,0)-(4,2), ends (0,10)-(4,14).
+        float3 px = rel * 2.0;
+        bool body = h.part == 6;
+        float wdt = body ? 6.0 : 4.0, hgt = body ? 7.0 : 2.0;
+        float2 t;
+        if (abs(h.n.y) > 0.5) t = float2(px.x, px.z) + float2(0.0, body ? 9.0 : 10.0);
+        else t = float2(abs(h.n.x) > 0.5 ? px.z : px.x, (body ? 2.0 : 0.0) + hgt - px.y);
+        t.x = clamp(t.x, 0.02, wdt - 0.02);
+        lit = 0.0;
+        return mcTile(T, E.lanternLayer, t / 16.0, tw * 2.0).rgb;
     }
-    alb = mix(base, avg, ft);
+    float2 uv = lhFaceUV(rel, h.n) / 16.0;
+    if (h.part == 3 || h.part == 4) {
+        if (h.n.y < -0.5) return mcTile(T, MC_MUSHROOM_BLOCK_INSIDE, uv, tw).rgb;
+        int cap = hash21(float2(w.id, 9.1)) < 0.3 ? (E.capLayer == MC_RED_MUSHROOM_BLOCK
+                     ? MC_BROWN_MUSHROOM_BLOCK : MC_RED_MUSHROOM_BLOCK) : E.capLayer;
+        return mcTile(T, cap, uv + w.id * 7.0, tw).rgb;
+    }
+    float3 c = mcTile(T, MC_MUSHROOM_STEM, uv, tw).rgb;
+    if (h.part != 2) return c * 0.85;
+    // Two dark eyes on the front of the stalk (this creature's own face).
+    float3 cell = floor(rel - h.n * 0.5);
+    if (h.n.z > 0.5 && cell.y == 4.0 && (cell.x == 1.0 || cell.x == 4.0)) c = float3(0.06, 0.05, 0.05);
+    return c;
 }
 
-static inline void lhShroomTex(float3 P, float3 N, int part, float fw, LhEnv E,
-                               thread float3& alb, thread float3& emit) {
-    emit = float3(0.0);
-    float3 tq = floor((P - N * 0.01) * 16.0);
-    float hv = lhHash3(tq + 13.0);
-    float ft = lhFade(fw, 1.0 / 16.0);
+static inline float3 lhShroomTex(texture2d_array<float> T, float3 P, float3 N, int part, float fw,
+                                 LhEnv E, thread float& lit) {
+    lit = 1.0;
+    float2 uv = lhFaceUV(P, N);
     if (part == 0) {
-        const float3 stem = lhLin(float3(0.8, 0.75, 0.66));
-        float streak = lhHash3(float3(tq.x + tq.z * 3.0, 1.0, 0.0));
-        alb = mix(stem * (0.8 + 0.2 * streak + 0.15 * hv), stem * 0.92, ft);
-        // The door, on the side the path comes in: an arched opening full of light.
-        if (N.x > 0.5) {
-            float2 d = float2(abs(P.z), P.y - LH_TOP);
-            float2 dq = (floor(d * 16.0) + 0.5) / 16.0;
-            bool door = dq.x < 0.62 && (dq.y < 1.1 || length(float2(dq.x, dq.y - 1.1)) < 0.62);
-            bool trim = !door && dq.x < 0.75 && (dq.y < 1.1 || length(float2(dq.x, dq.y - 1.1)) < 0.75);
-            if (door) { alb = float3(0.05); emit = E.glowSpot * (2.4 + 0.5 * hv); }
-            if (trim) alb = lhLin(float3(0.35, 0.24, 0.16));
+        if (N.x > 0.5 && abs(P.z) < 0.5 && P.y < LH_TOP + 2.0) {
+            lit = 0.0;   // the door: glowstone, two blocks tall
+            return mcTile(T, MC_GLOWSTONE, uv, fw).rgb;
         }
-    } else {
-        if (N.y < -0.5) {
-            // Glowing gills.
-            float g = abs(tq.x) > abs(tq.z) ? tq.z : tq.x;
-            float stripe = fmod(abs(g), 3.0) < 0.5 ? 0.45 : 1.0;
-            alb = float3(0.1);
-            emit = E.glowCap * mix(stripe * (0.8 + 0.4 * hv), 0.82, ft) * 1.6;
-        } else {
-            float3 c = E.capCol * (0.82 + 0.36 * hv);
-            // Luminous spots, 3 texels across.
-            float3 sq = floor(tq / 4.0);
-            float sp = lhHash3(sq + 71.0);
-            bool spot = sp > 0.86;
-            alb = mix(spot ? float3(0.3) : c, E.capCol * 0.9, ft);
-            if (spot) emit = E.glowSpot * (0.45 + 0.15 * sin(E.time * 0.6 + sp * 50.0)) * (1.0 - 0.8 * ft);
-            emit += E.capCol * 0.12;   // the whole cap glows faintly
-            emit += E.glowSpot * 0.025 * ft;
-        }
+        return mcTile(T, MC_MUSHROOM_STEM, uv, fw).rgb;
     }
+    if (N.y < -0.5) {
+        if (max(abs(P.x), abs(P.z)) < LH_SHROOM_IN && P.y > LH_CAPY - 0.1) {
+            lit = 0.0;
+            return mcTile(T, MC_SHROOMLIGHT, uv, fw).rgb;
+        }
+        return mcTile(T, MC_MUSHROOM_BLOCK_INSIDE, uv, fw).rgb;
+    }
+    return mcTile(T, E.capLayer, uv, fw).rgb;
 }
 
 // ---------------------------------------------------------------------------
-// Sky.
+// Sky: the night's colour, square stars, the moon's own picture (drawn on
+// black, so added), and the flat cloud layer from clouds.png.
 
-static inline float3 lhSky(float3 rd, LhEnv E, float pxAngle) {
+constant float LH_CLOUD_Y = 46.0;
+
+static inline float3 lhSky(float3 ro, float3 rd, LhEnv E, float pxAngle,
+                           texture2d_array<float> S, texture2d_array<float> M) {
     float y = rd.y;
-    float3 col = mix(E.hor, E.zen, sqrt(saturate(y * 1.2)));
-    if (y < 0.0) col = E.hor * 0.85;
+    float3 col = mix(E.fog, E.zen, smoothstep(-0.02, 0.35, y));
     if (y > 0.03) {
-        // Square stars on a grid over the sky dome.
         float2 q = rd.xz / (y + 0.3) * 90.0;
         float2 c = floor(q), f = q - c;
         float hs = hash21(c + 7.3);
         if (hs > 0.985) {
-            float sz = 0.18 + 0.15 * fract(hs * 91.0);
-            float cell = 90.0 * pxAngle / (y + 0.3);   // a pixel in grid units
+            float sz = 0.15 + 0.12 * fract(hs * 91.0);
+            float cell = 90.0 * pxAngle / (y + 0.3);
             float2 e = abs(f - 0.5);
             float on = 1.0 - smoothstep(sz - cell * 0.5, sz + cell * 0.5, max(e.x, e.y));
-            float tw = 0.7 + 0.3 * sin(E.time * (0.6 + hs) + hs * 100.0);
-            col += float3(0.8, 0.85, 1.0) * on * tw * 0.5 * smoothstep(0.03, 0.2, y)
-                 * min(1.0, (2.0 * sz) / max(cell, 1e-4));
+            col += float3(0.75) * on * smoothstep(0.03, 0.2, y) * min(1.0, (2.0 * sz) / max(cell, 1e-4));
         }
     }
-    // A square moon of 8 x 8 texels.
     float3 m = E.moonDir;
     float3 mu = normalize(cross(float3(0.0, 1.0, 0.0), m));
     float3 mv = cross(m, mu);
     float dm = dot(rd, m);
     if (dm > 0.0) {
         float2 pm = float2(dot(rd, mu), dot(rd, mv)) / dm;
-        const float MS = 0.05;
-        float2 a = abs(pm);
-        if (max(a.x, a.y) < MS) {
-            float2 tq = floor((pm + MS) / (2.0 * MS) * 8.0);
-            float hv = hash21(tq + 3.1);
-            float crater = hv > 0.78 ? 0.78 : 1.0;
-            col = float3(0.85, 0.88, 0.95) * crater * (0.9 + 0.1 * hv);
-        } else {
-            float dd = max(a.x, a.y) - MS;
-            col += E.moon * 0.35 * exp(-dd * 30.0);
+        const float MS = 0.065;
+        if (max(abs(pm.x), abs(pm.y)) < MS) {
+            float2 px = (float2(pm.x, -pm.y) / MS * 0.5 + 0.5) * 32.0;
+            col += mcSkin(S, E.moonLayer, px, pxAngle / (2.0 * MS) * 32.0).rgb;
         }
+    }
+    if (y > 0.0) {
+        float t = (LH_CLOUD_Y - ro.y) / y;
+        float2 cp = ro.xz + rd.xz * t + float2(E.time * 0.6, 0.0);
+        float2 px = glmod2(cp / 12.0, 256.0);
+        float4 cl = mcMap(M, MCM_ENVIRONMENT_CLOUDS, px, t * pxAngle / max(y, 0.05) / 12.0);
+        float fade = exp(-t * 0.006);
+        col = mix(col, E.fog * 2.4 + float3(0.02), cl.a * 0.8 * fade);
     }
     return col;
 }
 
 // ---------------------------------------------------------------------------
 
-static inline float3 lhScene(float3 ro, float3 rd, float pxAngle, constant LerpUniforms& u, LhEnv E) {
+static inline float3 lhScene(float3 ro, float3 rd, float pxAngle, constant LerpUniforms& u, LhEnv E,
+                             texture2d_array<float> T, texture2d_array<float> S,
+                             texture2d_array<float> M) {
     float3 rdg = select(rd, float3(1e-6), abs(rd) < 1e-6);
     float3 inv = 1.0 / rdg;
 
@@ -569,7 +528,6 @@ static inline float3 lhScene(float3 ro, float3 rd, float pxAngle, constant LerpU
     int bestK = 0;
     float3 glow = float3(0.0);
 
-    // The giant mushroom.
     float tS = 1e9;
     float3 nS = float3(0.0);
     int sPart = lhShroom(ro, rd, inv, tS, nS);
@@ -580,8 +538,6 @@ static inline float3 lhScene(float3 ro, float3 rd, float pxAngle, constant LerpU
     float3 mn = min(t1, t2), mx = max(t1, t2);
     float tIn = max(max(mn.x, mn.y), max(mn.z, 0.0)), tOut = min(min(mx.x, mx.y), mx.z);
     bool terrainHit = false;
-    // Flat ground outside the hill's box is met by the plane below; don't let
-    // the march start under it.
     float tGround = rd.y < 0.0 ? -ro.y / rd.y : 1e9;
     if (tIn < tOut && tIn < tGround) {
         float t = tIn + 1e-4;
@@ -615,7 +571,6 @@ static inline float3 lhScene(float3 ro, float3 rd, float pxAngle, constant LerpU
             } else if (yX < ci.h) {
                 tHit = (ci.h - ro.y) / rdg.y;
             }
-            // Walkers whose slots reach this column.
             if (ci.s > -1e8) {
                 float2 jr = lhSlots(E.S0, ci.s, 1.3, E.D);
                 for (int q = 0; q < 5; ++q) {
@@ -636,7 +591,7 @@ static inline float3 lhScene(float3 ro, float3 rd, float pxAngle, constant LerpU
                                 float3 dv = ro + rd * tc - L;
                                 float d2 = dot(dv, dv);
                                 float s2 = max(0.012, (tc * pxAngle) * (tc * pxAngle) * 4.0);
-                                glow += E.lantern * (0.5 * exp(-d2 / s2) + 0.05 * exp(-d2 * 3.0));
+                                glow += E.lantern * (0.3 * exp(-d2 / s2) + 0.025 * exp(-d2 * 3.0));
                             }
                         }
                     }
@@ -667,72 +622,61 @@ static inline float3 lhScene(float3 ro, float3 rd, float pxAngle, constant LerpU
     float3 col;
     float3 P = ro + rd * tBest;
     if (what == 0) {
-        col = lhSky(rd, E, pxAngle);
+        col = lhSky(ro, rd, E, pxAngle, S, M);
     } else {
-        float3 alb, emit, N;
-        float face, ao = 1.0;
+        float3 alb, N;
+        float lit = 1.0, ao = 1.0;
         if (what == 2) {
             LhWalker w = lhWalker(bestJ, bestK, E.tau, E.D, 0.0, 1e9);
             N = w.R * wh.n.x + float3(0.0, wh.n.y, 0.0) + w.F * wh.n.z;
             float cosi = max(abs(dot(rd, N)), 0.15);
-            float pick = fract(w.id * 7.31 + floor(u.seed * 6.0) / 6.0);
-            const float3 caps[6] = { float3(0.66, 0.13, 0.09), float3(0.55, 0.33, 0.15),
-                                     float3(0.40, 0.20, 0.55), float3(0.13, 0.42, 0.44),
-                                     float3(0.72, 0.60, 0.40), float3(0.78, 0.34, 0.44) };
-            float3 capCol = lhLin(caps[int(pick * 6.0) % 6]);
-            lhCreatureTex(wh, w, tBest * pxAngle / cosi, capCol, E.lantern, alb, emit);
-            face = wh.n.y > 0.5 ? 1.0 : (wh.n.y < -0.5 ? 0.45 : (abs(wh.n.x) > 0.5 ? 0.8 : 0.65));
-            ao = wh.part <= 1 ? 0.75 : (wh.part == 3 && wh.n.y < -0.5 ? 0.6 : 1.0);
-            if (w.s < 0.0) emit += lhLin(float3(0.7, 0.45, 1.0)) * 0.15 * saturate(-P.y * 3.0 + 0.5);
+            alb = lhCreatureTex(T, wh, w, tBest * pxAngle / cosi, E, lit);
+            ao = wh.part <= 1 ? 0.8 : 1.0;
         } else if (what == 3) {
             N = nS;
             float cosi = max(abs(dot(rd, N)), 0.15);
-            lhShroomTex(P, N, sPart, tBest * pxAngle / cosi, E, alb, emit);
-            face = N.y > 0.5 ? 1.0 : (N.y < -0.5 ? 0.45 : (abs(N.x) > 0.5 ? 0.8 : 0.65));
+            alb = lhShroomTex(T, P, N, sPart, tBest * pxAngle / cosi, E, lit);
         } else {
             N = nW;
             float cosi = max(abs(dot(rd, N)), 0.08);
-            lhTerrainTex(P, N, hitInfo, tBest * pxAngle / cosi, E.time, alb, emit);
-            face = N.y > 0.5 ? 1.0 : (abs(N.x) > 0.5 ? 0.8 : 0.65);
+            alb = lhTerrainTex(T, P, N, hitInfo, tBest * pxAngle / cosi, E);
             if (what == 1) {
+                // Smooth lighting's darkening where a face meets a taller neighbour.
                 if (N.y > 0.5) {
-                    // Shade the edges of a top face that meet a taller neighbour.
                     float2 f = P.xz - float2(hitCell);
                     float h = hitInfo.h;
-                    // Only the two neighbours on the near sides of the face are asked.
                     int2 sx = int2(f.x < 0.5 ? -1 : 1, 0), sz = int2(0, f.y < 0.5 ? -1 : 1);
                     float ex = f.x < 0.5 ? f.x : 1.0 - f.x, ez = f.y < 0.5 ? f.y : 1.0 - f.y;
-                    if (lhCell(hitCell + sx).h > h) ao *= mix(0.55, 1.0, smoothstep(0.0, 0.55, ex));
-                    if (lhCell(hitCell + sz).h > h) ao *= mix(0.55, 1.0, smoothstep(0.0, 0.55, ez));
+                    if (lhCell(hitCell + sx).h > h) ao *= mix(0.6, 1.0, smoothstep(0.0, 0.5, ex));
+                    if (lhCell(hitCell + sz).h > h) ao *= mix(0.6, 1.0, smoothstep(0.0, 0.5, ez));
                 } else {
-                    // ... and the foot of a side face, where it meets the ground.
                     int2 nb = hitCell + int2(int(N.x), int(N.z));
                     float hn = lhCell(nb).h;
-                    ao *= mix(0.5, 1.0, smoothstep(0.0, 0.7, P.y - hn));
+                    ao *= mix(0.6, 1.0, smoothstep(0.0, 0.5, P.y - hn));
                 }
             }
         }
-        float3 lit = lhLight(P + N * 0.02, N, face, u, E);
-        col = alb * lit * ao + emit;
-
-        // Fade into the night past the hill.
+        float shade = mcFaceShade(N);
+        if (lit > 0.5) {
+            float lantern;
+            float3 L = lhLight(P + N * 0.5, E, u, lantern);
+            col = alb * shade * ao * L;
+        } else {
+            col = alb * shade;
+        }
+        // Fog past the hill, as the game's distance fog.
         float camD = length(ro.xz);
-        float fog = 1.0 - exp(-max(tBest - camD + 8.0, 0.0) * 0.022);
-        col = mix(col, E.hor * 0.7, fog);
-    }
-
-    // A soft halo round the summit.
-    float3 gc = float3(0.0, LH_CAPY - 1.0, 0.0) - ro;
-    float tc = dot(gc, rd);
-    if (tc > 0.0) {
-        float3 dv = ro + rd * min(tc, tBest) - float3(0.0, LH_CAPY - 1.0, 0.0);
-        col += E.glowCap * 0.05 / (1.0 + 0.05 * dot(dv, dv));
+        float fog = smoothstep(camD - 6.0, camD + 40.0, tBest);
+        col = mix(col, E.fog, fog);
     }
     col += glow;
     return col;
 }
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
+                        texture2d_array<float> mcTiles [[texture(8)]],
+                        texture2d_array<float> mcSkins [[texture(10)]],
+                        texture2d_array<float> mcMaps  [[texture(11)]]) {
     // Frame by the geometric mean of the sides, so a tall screen and a wide
     // one both keep the whole hill without a sea of empty ground or sky.
     float meanRes = sqrt(u.resolution.x * u.resolution.y);
@@ -743,27 +687,26 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     E.tau = u.time * u.speed + u.seed * 700.0;
     E.S0 = LH_V * E.tau;
     E.D = 3.3 / u.crowd;
-    E.lantern = lhLin(u.colorLantern.rgb);
-
-    // Three nights, by seed.
-    int night = int(u.seed * 3.0) % 3;
-    float seedB = fract(u.seed * 7.13);
-    if (night == 0) {        // indigo
-        E.zen = float3(0.004, 0.006, 0.022); E.hor = float3(0.030, 0.045, 0.095);
-        E.capCol = lhLin(float3(0.62, 0.12, 0.16));
-        E.glowCap = lhLin(float3(1.0, 0.62, 0.42)) * 0.9; E.glowSpot = lhLin(float3(1.0, 0.85, 0.55));
-    } else if (night == 1) { // violet
-        E.zen = float3(0.012, 0.005, 0.025); E.hor = float3(0.052, 0.026, 0.060);
-        E.capCol = lhLin(float3(0.30, 0.18, 0.55));
-        E.glowCap = lhLin(float3(0.75, 0.6, 1.0)) * 0.9; E.glowSpot = lhLin(float3(0.7, 1.0, 0.9));
-    } else {                 // teal
-        E.zen = float3(0.002, 0.010, 0.014); E.hor = float3(0.012, 0.045, 0.052);
-        E.capCol = lhLin(float3(0.10, 0.35, 0.40));
-        E.glowCap = lhLin(float3(0.5, 1.0, 0.85)) * 0.8; E.glowSpot = lhLin(float3(0.85, 1.0, 0.6));
-    }
-    E.amb = E.hor * 0.8 + float3(0.004, 0.006, 0.014);
-    E.moon = float3(0.05, 0.06, 0.085);
-    float ma = seedB * TWO_PI;
+    // Carried lanterns light a little less far than a placed one (level 15),
+    // so each walker keeps its own pool; soul lanterns are the game's 10.
+    bool soul = u.soul != 0;
+    E.level = soul ? 10.0 : 11.0;
+    E.lanternLayer = soul ? mcFrame(MC_SOUL_LANTERN, MC_SOUL_LANTERN_FRAMES, MC_SOUL_LANTERN_TICKS, u.time)
+                          : mcFrame(MC_LANTERN, MC_LANTERN_FRAMES, MC_LANTERN_TICKS, u.time);
+    E.warm = float3(1.0, 0.9, 0.74);
+    E.lantern = soul ? float3(0.62, 0.9, 1.0) : E.warm;
+    E.grass = mcGrassTint(mcMaps, 0.8, 0.4);
+    // Night, as the game draws it: a dark blue sky and fog, moonlit sky light.
+    E.zen = mcFromSRGB(float3(0.010, 0.012, 0.030));
+    E.fog = mcFromSRGB(float3(0.035, 0.045, 0.085));
+    E.sky = float3(0.075, 0.085, 0.14);
+    E.capLayer = fract(u.seed * 3.7) < 0.6 ? MC_RED_MUSHROOM_BLOCK : MC_BROWN_MUSHROOM_BLOCK;
+    const int moons[8] = { MCS_ENVIRONMENT_CELESTIAL_MOON_FULL_MOON, MCS_ENVIRONMENT_CELESTIAL_MOON_WANING_GIBBOUS,
+                           MCS_ENVIRONMENT_CELESTIAL_MOON_THIRD_QUARTER, MCS_ENVIRONMENT_CELESTIAL_MOON_WANING_CRESCENT,
+                           MCS_ENVIRONMENT_CELESTIAL_MOON_NEW_MOON, MCS_ENVIRONMENT_CELESTIAL_MOON_WAXING_CRESCENT,
+                           MCS_ENVIRONMENT_CELESTIAL_MOON_FIRST_QUARTER, MCS_ENVIRONMENT_CELESTIAL_MOON_WAXING_GIBBOUS };
+    E.moonLayer = moons[int(u.seed * 8.0) & 7];
+    float ma = fract(u.seed * 7.13) * TWO_PI;
     E.moonDir = normalize(float3(cos(ma), 0.75, sin(ma)));
 
     // A slow orbit round the hill, drifting nearer and higher and back.
@@ -786,10 +729,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
 
     float2 uv = (2.0 * float2(pos.x, u.resolution.y - pos.y) - u.resolution) / meanRes;
     float3 rd = normalize(uv.x * right + uv.y * up + LH_FOCAL * fwd);
-    float3 col = lhScene(ro, rd, pxAngle, u, E);
+    float3 col = lhScene(ro, rd, pxAngle, u, E, mcTiles, mcSkins, mcMaps);
 
-    col = col / (1.0 + col * 0.6);
-    col = pow(max(col, 0.0), 1.0 / 2.2);
-    col = lerpDither(col, pos);
+    col = lerpDither(saturate(col), pos);
     return half4(half3(col), 1.0h);
 }
