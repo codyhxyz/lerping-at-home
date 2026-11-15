@@ -705,17 +705,16 @@ static inline float4 bnAlbedo(int mat, int face, int biome, bool cap, int y, uin
                        if (!cap) tint = mcFromSRGB(float3(0x61, 0x99, 0x61) / 255.0); break;
     default:           layer = face == 1 ? MC_CACTUS_SIDE : face == 0 ? MC_CACTUS_TOP : MC_CACTUS_BOTTOM; break;
     }
+    if (grass && face == 1) {
+        // The bank's grass side, seen edge-on as often as not.
+        float2 cl = bnClimate(biome);
+        return float4(mcGrassSideAniso(mcTiles, uv, dx, dy, mcGrassTint(mcMaps, cl.x, cl.y)), 1.0);
+    }
     float4 c = mcTileAniso(mcTiles, layer, uv, dx, dy);
     c.rgb *= tint;
-    if (grass && face != 2) {
+    if (grass && face == 0) {
         float2 cl = bnClimate(biome);
-        float3 g = mcGrassTint(mcMaps, cl.x, cl.y);
-        if (face == 0) c.rgb *= g;
-        else {
-            // KIT: mcGrassSide with uv derivatives (banks are seen edge-on here).
-            float4 o = mcTileAniso(mcTiles, MC_GRASS_BLOCK_SIDE_OVERLAY, uv, dx, dy);
-            c.rgb = mix(c.rgb, o.rgb * g, o.a);
-        }
+        c.rgb *= mcGrassTint(mcMaps, cl.x, cl.y);
     }
     return c;
 }
