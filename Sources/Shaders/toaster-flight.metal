@@ -86,7 +86,6 @@ static inline float ttHash2(int2 c, uint salt) {
 struct TtSky {
     float3 sky, fog;       // overhead colour and fog / horizon colour
     float3 cloud;          // cloud colour before face shading
-    float skyLight;        // brightness of sky light on things
     float stars;           // star brightness
     float day;
     float3 L;              // towards the moon (or the sun by day)
@@ -216,14 +215,6 @@ struct TtSurf {
     float3 col;              // lit colour
 };
 
-// KIT: the game's Brightness option, applied after the light curve (50%, the
-// default, lifts a value v towards 1 - (1 - v)^4 halfway). mcLight is the raw
-// curve; every look lit at night will want this.
-static inline float ttBright(float v) {
-    float g = 1.0 - (1.0 - v) * (1.0 - v) * (1.0 - v) * (1.0 - v);
-    return mix(v, g, 0.5);
-}
-
 // The game's item lighting: two fixed lights and an ambient.
 static inline float ttItemShade(float3 n) {
     const float3 l0 = normalize(float3(0.2, 1.0, -0.7));
@@ -247,8 +238,9 @@ static bool ttCell(int3 c, float3 oq, float3 d, TtFlock fl, float pxA, float3 rd
 
     // Sky light at night, and a lit block's own light (13 in the block,
     // 12 in the air at its faces), warm as the game's block light is.
-    float3 skyL = float3(0.78, 0.84, 1.0) * ttBright(sky.skyLight);
-    float3 blockL = float3(1.0, 0.93, 0.82) * ttBright(mcLight(12.0));
+    // The game's lightmap: open sky above (sky light 15), and a lit block's
+    // own light, 13 in the block and 12 in the air at its faces.
+    float3 blockLit = mcLightmap(12.0, 15.0, sky.day, 0.0);
 
     if (isBread) {
         float3 o = (oq - cc) * TT_ITEM;
@@ -270,7 +262,7 @@ static bool ttCell(int3 c, float3 oq, float3 d, TtFlock fl, float pxA, float3 rd
         float3 nF = float3(ca * nrm.x - sa * nrm.y, sa * nrm.x + ca * nrm.y, nrm.z);
         float3 nW = nF.x * fl.F + nF.y * fl.U + nF.z * fl.S;
         // Bread flies among the smokers and catches some of their light.
-        float3 light = max(skyL, blockL * 0.8);
+        float3 light = mcLightmap(10.0, 15.0, sky.day, 0.0);
         s.t = tW;
         s.col = tex.rgb * light * ttItemShade(nW);
         return true;
@@ -299,7 +291,7 @@ static bool ttCell(int3 c, float3 oq, float3 d, TtFlock fl, float pxA, float3 rd
     float tW = hit.t / TT_TEX;
     float fp = tW * pxA;
     float3 nW = hit.n.x * fl.F + hit.n.y * fl.U + hit.n.z * fl.S;
-    float3 light = max(skyL, blockL);
+    float3 light = blockLit;
     float3 col;
     if (hit.part == 0) {
         // Smoker most often; now and then a furnace or a blast furnace.
@@ -437,8 +429,11 @@ static float3 ttScene(float3 ro, float3 rd, float pxA, TtSky sky, TtFlock fl,
     TtSurf s;
     float tMax = min(tc, TT_FAR);
     if (ttFlockTrace(ro, rd, tMax, fl, pxA, sky, tx, s)) {
-        float fog = smoothstep(TT_FAR * 0.45, TT_FAR, s.t);
-        col = mix(s.col, sky.fog, fog);
+        // Far flyers fade into whatever is behind them (the cloud layer is
+        // fogged on its own, longer scale), so none turns into a dark
+        // silhouette against lit clouds.
+        float fade = smoothstep(TT_FAR * 0.55, TT_FAR, s.t);
+        col = mix(s.col, col, fade);
     }
     return col;
 }
@@ -467,10 +462,9 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float b = u.daylight;
     TtSky sky;
     sky.day = b;
-    sky.sky = MC_SKY_DAY * max(b, 0.03);
-    sky.fog = MC_FOG_DAY * (b * 0.94 + 0.06);
-    sky.cloud = float3(0.86, 0.9, 1.0) * (b * 0.85 + 0.15) + float3(0.14, 0.1, 0.0) * b;
-    sky.skyLight = mix(0.2, 1.0, b);
+    sky.sky = mcSkyAt(b);
+    sky.fog = mcFogAt(b);
+    sky.cloud = mcLightmap(0.0, 15.0, b, 0.0);   // white, lit as a sky-lit face
     sky.stars = saturate(1.0 - 2.0 * b) * 0.9;
     float mAz = -0.40 + 0.12 * (fract(u.seed * 7.31) - 0.5);
     sky.L = normalize(float3(sin(mAz), 0.33, cos(mAz)));

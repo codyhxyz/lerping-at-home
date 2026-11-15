@@ -185,23 +185,7 @@ static float lvLavaDistance(texture2d<float> tr, float2 cell, LvWorld w) {
     return 10.0;
 }
 
-// The game's lightmap for block light alone (the Nether has no sky light):
-// the level's brightness lifted by the dimension's ambient light, the warm
-// block-light colour, then the default brightness setting's gamma lift.
-// KIT: stopgap for a shared lightmap helper (block light colour, dimension
-// ambient, brightness-setting gamma); see KIT-REQUESTS.md.
-static inline float3 lvLightmap(float level) {
-    float g = mcLight(level);
-    float b = g + 0.1 * (1.0 - g);                       // Nether ambient light 0.1
-    float3 c = float3(b, b * ((b * 0.6 + 0.4) * 0.6 + 0.4), b * (b * b * 0.6 + 0.4));
-    float3 lifted = 1.0 - pow(1.0 - saturate(c), 4.0);
-    c = mix(c, lifted, 0.5);                              // brightness: "Moody" 0 .. "Bright" 1
-    return saturate(mix(c, float3(0.75), 0.04));
-}
-
-// The game's basalt deltas fog, which is also all the Nether has for a sky.
-// KIT: per-biome fog colours would belong beside MC_FOG_DAY.
-constant float3 LV_FOG_SRGB = float3(104.0, 95.0, 112.0) / 255.0;   // #685F70
+// The basalt deltas' fog is also all the Nether has for a sky.
 constant float  LV_FOG_NEAR = 18.0;
 
 static inline float lvFog(float t) {
@@ -310,7 +294,7 @@ fragment half4 lerpMain(float4 pos [[position]],
     float3 rd = normalize(uv.x * right + uv.y * up + focal * fwd);
     float pxAngle = 2.0 / (focal * tallness * min(u.resolution.x, u.resolution.y));
 
-    float3 fogCol = mcFromSRGB(LV_FOG_SRGB);
+    float3 fogCol = MC_FOG_BASALT_DELTAS;
     float3 col = fogCol;
 
     // --- Heightfield DDA, from where the ray drops below the tallest column.
@@ -462,7 +446,7 @@ fragment half4 lerpMain(float4 pos [[position]],
             float d = lvLavaDistance(trail, air.xz, w) + max(0.0, air.y - lavaY);
             level = max(0.0, 15.0 - d);
         }
-        col = tex * mcFaceShade(n) * lvLightmap(level) * (bright ? 1.0 : ao);
+        col = tex * mcFaceShade(n) * mcLightmap(level, 0.0, 0.0, 0.1) * (bright ? 1.0 : ao);
         col = mix(col, fogCol, lvFog(tHit));
     }
     float4 pops = lvEmbers(trail, mcSkins, ro, rd, right, up, hit ? tHit : LV_FAR, T, w, pxAngle);

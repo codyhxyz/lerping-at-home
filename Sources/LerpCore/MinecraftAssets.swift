@@ -269,7 +269,8 @@ public enum LerpMinecraft {
     }
 
     // Sky and fog through the day, as the game dims them: `day` 1 at noon, 0
-    // at midnight. Night is a very dark blue, not black.
+    // at midnight. As in the game, the sky itself goes black at night and the
+    // fog at the horizon stays a very dark blue.
     static inline float3 mcSkyAt(float day) { return MC_SKY_DAY * saturate(day); }
     static inline float3 mcFogAt(float day) {
         float d = saturate(day);
