@@ -2,7 +2,7 @@
 // textures (bound from the copy installed on this Mac; see PORTING.md).
 //
 // lerp-category: Minecraft
-// lerp-requires: minecraft
+// lerp-requires: minecraft mobs
 //
 // The screen is a picture plane in cabinet oblique: one block is 16×16 texels
 // on top and 16×16 on its south face, and a block one level higher sits one
@@ -38,12 +38,15 @@
 // a cut-out candidate (a leaf face: one read(); wheat, plants and the torch
 // are the kit's models, mcCrop, mcCross and mcTorch, handed this projection
 // as a parallel ray, which sample their own); everything else is sampled
-// once, at the hit. At 3456×2234 the opening (t = 6) costs a little under
-// `maze`; a screen packed with houses and wheat about 10% over it.
+// once, at the hit. At 3456×2234 the opening (t = 6) costs about 5% over
+// `maze` (10.9 against 10.4 ms), a field with five animals about 13% over.
 //
-// The grazing animals (sheep, cows, pigs, chickens) wait on the shared mob
-// kit: owMobAt keeps their positions and poses, and lerpMain marks where they
-// are drawn (KIT: mobs).
+// Sheep, cows, pigs and chickens wander and graze over the grass: the shared
+// mob kit's models and skins, walking and grazing in the kit's poses, traced
+// along the same parallel ray. A pixel tests at most three of them (its own
+// cell column), each only past a cheap screen-position reject and the kit's
+// bounds box. Having the kit's tracer in the shader at all costs about 1 ms
+// even where no animal stands (measured; moving it out of line did not help).
 //
 // lerp-param: blocks    float 10 32     = 22   "Blocks tall"
 // lerp-param: speed     float 0 1.5     = 0.4  "Pan speed"
@@ -576,17 +579,27 @@ static inline bool owPackSolid(uint q, int Y) {
     return ((q >> 15) & 1u) == 1u && Y >= int((q >> 5) & 31u) && Y < int((q >> 10) & 31u);
 }
 // ---------------------------------------------------------------------------
-// Animals. One may live in each 12×12 cell, strolling east and west around
-// its spot, stopping to graze. Positions and poses only; the drawing is the
-// shared mob kit's (KIT: mobs, in lerpMain).
+// Animals: the game's sheep, cows, pigs and chickens, drawn by the shared mob
+// kit. One may live in each 12×12 cell, strolling east and west around its
+// spot and stopping to graze. Cold variants live in the snow and warm ones
+// where it is hot, as the game picks them; sheep take the game's wool colours
+// in its proportions, and a few of each are babies.
 
-struct OwMob { int kind; float3 o; float dir; float graze; float step; };
+struct OwMob { int type; float3 o; float dir; MCMOB_Pose pose; MCMOB_Skin skin; };
+
+// The kit's bounds for these mobs reach 1.22 blocks along the body, 0.69
+// across it and 1.81 up, for every pose; the quick rejects below use that.
+constant float OW_MOB_LEN = 1.25, OW_MOB_WIDE = 0.7, OW_MOB_TALL = 1.85;
 
 static bool owMobAt(int2 cell, float t, float2 w, thread OwMob& mb) {
     float hr = hash21(float2(cell) + 0.37);
-    if (hr > 0.42) return false;
-    uint h = uint(hr * 4294967040.0 / 0.42);
+    if (hr > 0.7) return false;
+    uint h = uint(hr * 4294967040.0 / 0.7);
     int2 a = cell * 12 + int2(5 + int((h >> 3) % 3u), 3 + int((h >> 11) % 6u));
+    // Cheap rejects first: it strolls at most 3 blocks either side of its spot.
+    if (abs(w.x - (float(a.x) + 0.5)) > 3.1 + OW_MOB_LEN) return false;
+    float zc = float(a.y) + 0.5;
+    if (w.y < zc - OW_MOB_WIDE + 5.0 || w.y > zc + OW_MOB_WIDE + OW_MOB_TALL + 10.0) return false;
     float T = t * 0.9 + owU(owHash(h + 1u)) * 400.0;
     float seg = floor(T / 9.0), ft = T - seg * 9.0;
     float x0 = (hash21(float2(seg, hr * 97.0)) - 0.5) * 6.0;
@@ -594,10 +607,10 @@ static bool owMobAt(int2 cell, float t, float2 w, thread OwMob& mb) {
     float k = smoothstep(0.0, 4.0, ft);
     float x = float(a.x) + 0.5 + mix(x0, x1, k);
     x = floor(x * 16.0 + 0.5) / 16.0;
-    if (abs(w.x - x) > 0.9) return false;
-    float z = float(a.y) + 0.25;
-    // Quick reject on the screen line before any noise: feet at y in [5, 10].
-    if (w.y < z + 4.5 || w.y > z + 12.5) return false;
+    if (abs(w.x - x) > OW_MOB_LEN) return false;
+    float z = float(a.y) + 0.5;                   // the body's centre line
+    // Quick reject on the screen line before any noise: feet at y in [5, 10).
+    if (w.y < z - OW_MOB_WIDE + 5.0 || w.y > z + OW_MOB_WIDE + OW_MOB_TALL + 10.0) return false;
     float2 fa = float2(a) + 0.5;
     float ha = owBaseH(fa);
     if (ha < 5.0 || ha >= 10.0) return false;
@@ -607,17 +620,80 @@ static bool owMobAt(int2 cell, float t, float2 w, thread OwMob& mb) {
     if (bi == OW_DESERT || bi == OW_MOUNT) return false;
     OwVil v = owVillage(a);
     if (v.on == 1 && length(fa - v.c) < v.R + 6.0) return false;
-    float hx = owBaseH(float2(x, z + 0.25));
+    float hx = owBaseH(float2(x, z));
     float g = floor(hx);
     if (g <= float(OW_W)) return false;
-    mb.kind = bi == OW_SNOWY ? 0 : int((h >> 19) % 4u);
-    if (bi == OW_FOREST && mb.kind == 1) mb.kind = 2;
+    // 0 sheep, 1 cow, 2 pig, 3 chicken; woods have pigs where plains have cows.
+    int kind = int((h >> 19) % 4u);
+    if (bi == OW_FOREST && kind == 1) kind = 2;
+    bool cold = bi == OW_SNOWY, warm = !cold && cl.x > 0.56;
+    bool baby = ((h >> 23) % 9u) == 0u;
+    uint r = owHash(h + 7u) % 1000u;
+    if (kind == 0) {
+        // White 81.8%, light grey, grey and black 5% each, brown 3%, pink 0.2%.
+        float3 dye = r < 818u ? float3(0xF9, 0xFF, 0xFE) : r < 868u ? float3(0x9D, 0x9D, 0x97) :
+                     r < 918u ? float3(0x47, 0x4F, 0x52) : r < 968u ? float3(0x1D, 0x1D, 0x21) :
+                     r < 998u ? float3(0x83, 0x54, 0x32) : float3(0xF3, 0x8B, 0xAA);
+        mb.type = baby ? MCMOB_SHEEP_BABY : MCMOB_SHEEP;
+        mb.skin = mcMobSheepSkin(baby, true, mcFromSRGB(dye / 255.0));
+    } else if (kind == 1) {
+        mb.type = cold ? (baby ? MCMOB_COW_COLD_BABY : MCMOB_COW_COLD)
+                : warm ? (baby ? MCMOB_COW_WARM_BABY : MCMOB_COW_WARM)
+                       : (baby ? MCMOB_COW_BABY : MCMOB_COW);
+        mb.skin = mcMobSkin(cold ? (baby ? MCS_COW_COLD_BABY : MCS_COW_COLD)
+                          : warm ? (baby ? MCS_COW_WARM_BABY : MCS_COW_WARM)
+                                 : (baby ? MCS_COW_TEMPERATE_BABY : MCS_COW_TEMPERATE));
+    } else if (kind == 2) {
+        mb.type = baby ? MCMOB_PIG_BABY : (cold ? MCMOB_PIG_COLD : MCMOB_PIG);
+        mb.skin = mcMobSkin(cold ? (baby ? MCS_PIG_COLD_BABY : MCS_PIG_COLD)
+                          : warm ? (baby ? MCS_PIG_WARM_BABY : MCS_PIG_WARM)
+                                 : (baby ? MCS_PIG_TEMPERATE_BABY : MCS_PIG_TEMPERATE));
+    } else {
+        mb.type = baby ? MCMOB_CHICKEN_BABY : (cold ? MCMOB_CHICKEN_COLD : MCMOB_CHICKEN);
+        mb.skin = mcMobSkin(cold ? (baby ? MCS_CHICKEN_COLD_BABY : MCS_CHICKEN_COLD)
+                          : warm ? (baby ? MCS_CHICKEN_WARM_BABY : MCS_CHICKEN_WARM)
+                                 : (baby ? MCS_CHICKEN_TEMPERATE_BABY : MCS_CHICKEN_TEMPERATE));
+    }
     mb.dir = (x1 - x0) >= 0.0 ? 1.0 : -1.0;
     bool walking = ft < 4.0 && abs(x1 - x0) > 0.2;
-    mb.graze = (!walking && fract(ft * 0.23 + owU(h)) < 0.55) ? 1.0 : 0.0;
-    mb.step = walking ? floor(fract(T * 2.2) * 2.0) : 0.0;
+    float gp = fract(ft * 0.23 + owU(h));
+    mb.pose = mcMobStill();
+    // The walk phase advances with the distance covered, as the game's does.
+    mb.pose.walk = (seg * 3.0 + abs(x1 - x0) * k) * 4.0;
+    mb.pose.speed = walking ? 0.5 * sin(PI * saturate(ft / 4.0)) : 0.0;
+    mb.pose.graze = walking ? 0.0 : smoothstep(0.0, 0.08, gp) * (1.0 - smoothstep(0.47, 0.55, gp));
     mb.o = float3(x, g, z);
     return true;
+}
+
+// The nearest animal on this pixel's line in front of the terrain hit (world z
+// hz), lit; false if none.
+static bool owMobs(float2 w, float hz, float t, float fp, float day,
+                   texture2d_array<float> mcSkins, texture2d_array<float> mcMaps, thread float3& col) {
+    const float3 rd = float3(0.0, -0.70710678, 0.70710678);
+    bool hit = false;
+    float zFar = hz;
+    int cx = int(floor(w.x / 12.0));
+    int cz0 = int(floor((w.y - (10.0 + OW_MOB_TALL + OW_MOB_WIDE) - 8.5) / 12.0));
+    int cz1 = int(floor((w.y - (5.0 - OW_MOB_WIDE) - 3.5) / 12.0));
+    for (int cz = cz0; cz <= cz1; cz++) {
+        OwMob m;
+        if (!owMobAt(int2(cx, cz), t, w, m)) continue;
+        float3 ro = float3(w.x, w.y - (m.o.z - 3.0), m.o.z - 3.0);
+        float tMax = (zFar - ro.z) * 1.41421356;
+        float heading = m.dir > 0.0 ? 0.5 * PI : -0.5 * PI;
+        float3 lro, lrd;
+        mcMobRay(ro, rd, m.o, heading, lro, lrd);
+        float2 b = mcMobBounds(m.type, lro, lrd);
+        if (!(b.x < b.y && b.x < tMax)) continue;
+        MCMOB_Hit mh = mcMobTrace(m.type, m.pose, m.skin, lro, lrd, tMax, mcSkins, mcMaps);
+        if (!(mh.t < tMax)) continue;
+        zFar = ro.z + mh.t * 0.70710678;
+        float4 c = mcMobColor(m.type, mh, m.skin, fp * 16.0, mcSkins, mcMaps);
+        col = c.rgb * mcFaceShade(mcMobNormal(mh.n, heading)) * mcLightmap(0.0, 15.0, day, 0.0) + c.rgb * c.a;
+        hit = true;
+    }
+    return hit;
 }
 
 // ---------------------------------------------------------------------------
@@ -641,6 +717,7 @@ static inline int owCover(uint S, int Yair) {
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
                         texture2d_array<float> mcTiles [[texture(8)]],
+                        texture2d_array<float> mcSkins [[texture(10)]],
                         texture2d_array<float> mcMaps  [[texture(11)]]) {
     float2 res = u.resolution;
     float t = u.time;
@@ -885,17 +962,16 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float day = saturate(2.0 * e + 0.2);           // the game's sky darkening, from the sun's height
 
     // --- Animals in front of the hit?
-    // KIT: mobs — sheep, cows, pigs and chickens wander and graze here, from
-    // the game's skins on its box models, once the shared mob kit lands. One
-    // may live in each 12×12-block cell; owMobAt gives each one's kind (0
-    // sheep, 1 cow, 2 pig, 3 chicken), feet position o (o.z is the body's
-    // south edge, the body runs along x), facing dir (+1 east, -1 west),
-    // graze (head down) and step (walking leg phase). Only this pixel's own
-    // cell column can hold one, and two cells cover the depths: test the
-    // kit's mob against the line z + y = w.y at x = w.x for each, keep the
-    // nearest face in front of hz, light it with mcLightmap(0, 15, day, 0)
-    // times mcFaceShade, and give it the game's round shadow on the ground.
-    bool mobHit = false;
+    // A mob roams x in [2.5, 10.5] of its 12-wide cell and reaches 1.25 either
+    // side, so only this pixel's own cell column can hold one; its centre line
+    // z lies 3.5 to 8.5 into its cell, and the line meets it for z in
+    // [w.y - 12.6, w.y - 4.3], which is two cells, or now and then three. Each
+    // is handed to the kit as the parallel ray of this projection, from 3
+    // blocks south of it, and only up to the terrain's hit.
+    float3 mobCol = float3(0.0);
+    bool mobHit = owMobs(w, hz, t, fp, day, mcSkins, mcMaps, mobCol);
+    // KIT: mobs — the game's round shadow under each mob (misc/shadow.png) is
+    // not in the kit or the packed textures yet; requested in KIT-REQUESTS.md.
 
     // --- Shade the hit.
     float3 P = float3(w.x, w.y - hz, hz);
@@ -994,7 +1070,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         float3 tint = hc.biome == OW_SNOWY ? mcFromSRGB(float3(0x3D, 0x57, 0xD6) / 255.0) : MC_WATER_TINT;
         col = mix(col, wt.rgb * tint * mcLightmap(blkLv, 15.0, day, 0.0), wt.a);
     }
-    (void)mobHit;
+    if (mobHit) col = mobCol;
 
     // The cloud layer above it all: its tops, and the south sides of its edges.
     if (u.clouds > 0.0) {
