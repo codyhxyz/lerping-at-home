@@ -1,28 +1,52 @@
-// Little Planet — a walk across a block world, photographed as a stereographic
-// "little planet" panorama. Original work for Lerping@Home.
+// Little Planet — a walk across a Minecraft world, photographed as a
+// stereographic "little planet" panorama. Original work for Lerping@Home.
 //
 // lerp-category: Minecraft
+// lerp-requires: minecraft
 //
 // The camera stands four blocks above a dirt path and looks
 // straight down; every direction round it, the whole sphere of view, is folded
 // onto the screen by a stereographic projection. The ground underfoot sits in
 // the middle at full size, the horizon closes into a circle, and everything
 // that stands up off the ground (trees, hills, cacti) bristles outward from
-// the rim into a sky of square block clouds with a square sun. As the walk goes
-// on the path keeps running through the middle of the disc, the planet rolls
-// towards you and turns as the path bends, and the land changes under it:
-// meadow and oak wood, lakes, snowy spruce tundra, desert.
+// the rim into the game's sky, its square sun and its flat cloud layer. As the
+// walk goes on the path keeps running through the middle of the disc, the
+// planet rolls towards you and turns as the path bends, and the land changes
+// under it: plains with oak and birch, lakes, snowy spruce country, desert.
 // The walk is lined with trees on a grassy bank: from an eye this low they
-// are what stands up out of the rim, and every walk sets out in meadow.
+// are what stands up out of the rim, and every walk sets out in plains.
+//
+// The projection is the only unusual thing here; what it projects is the
+// ordinary game. Every face is a block's own texture from the installed copy
+// of Minecraft: grass tops and leaves grey and tinted from the biome
+// colormaps, the grass block's side with its tinted fringe, dirt path (a
+// sixteenth lower than the grass, as in the game), dirt, stone, sand,
+// sandstone, snow, oak, birch and spruce logs and leaves, cactus, and still
+// water animated and tinted over its lake bed. Leaves are cut out by their
+// alpha, so the sky and the branches behind show through them; short grass,
+// ferns, flowers and dead bushes stand on the ground as the game's crossed
+// planes. Light is the game's: fixed shading by face, smooth-lighting corners,
+// one light level lost under a canopy and one per block of water, and no sun
+// shading at all. The sky is the game's sky and fog colours, its sunrise
+// band, its sun texture, and clouds.png laid out twelve blocks a texel.
 //
 // The world is a heightmap of whole blocks plus trees, traced column by column
 // (a 2D walk of the grid), a 7×7 cell at a time: a cell the ray clears is
 // crossed in one step, and everything irregular is done once per cell so the
-// per-column work is the same for every pixel. Past about 22 blocks (more for
-// a higher eye) the land is drawn flat, its colour read from the same world,
-// fading into the haze, so the disc stays whole. Textures are 16 texels a
-// face, sharp-bilinear so texel edges stay hard near the eye without crawling,
-// and fade to each face's mean colour as they fall below a pixel.
+// per-column work is the same for every pixel. Past about 22 blocks (16 for
+// rays climbing into the sky; more for a higher eye) the land is drawn flat,
+// textured from the same world, fading into the fog, so the disc stays whole.
+//
+// Cost (about 1.2× `maze`). The march dominates, so nothing is added per
+// column step: textures are sampled only at the hit, and even a hash there
+// showed up (the path's ragged edge is a few-op dither instead). The cut-out
+// leaves are the next cost: a ray that meets a leaf on a clear texel walks the
+// crown's own voxels (at most 6 steps, one texture fetch and no world lookups
+// each); leaving the crown downward it is traced on once, on a quarter of the
+// step budget, and upward it is sky. Then shading: smooth lighting looks up
+// the nearer neighbour on each axis only, and plants are found after a ground
+// hit by stepping back over at most two columns the ray crossed in the block
+// of air above it.
 //
 // "Rabbit hole" turns the camera to look straight up instead: the sky becomes
 // the hole in the middle and the land closes round it from the edges.
@@ -44,28 +68,18 @@
 
 constant float LP_SEA   = 32.0;    // y of the water surface
 constant float LP_FAR   = 22.0;    // draw distance, blocks, at and below the horizon
-constant float LP_FAR_UP = 20.0;   // ... and for rays climbing into the sky
+constant float LP_FAR_UP = 16.0;   // ... and for rays climbing into the sky
 constant int   LP_STEPS = 31;      // column steps for a primary ray (covers LP_FAR diagonally)
 constant float LP_TOP   = LP_SEA + 28.5;   // nothing solid above this (land 20.3, tree 8)
 constant float LP_CLOUD = LP_SEA + 70.0;   // cloud layer
 constant float LP_TREE_CELL = 7.0;
 constant float LP_TREE_MAX = 8.0;     // tallest tree, ground to crown
 
-// Materials.
-constant int M_GRASS = 0, M_GRASS_SIDE = 1, M_DIRT = 2, M_STONE = 3, M_SAND = 4,
-             M_SNOW = 5, M_SNOW_SIDE = 6, M_PATH = 7, M_WATER = 8, M_LOG = 9,
-             M_LEAVES = 11, M_SPRUCE = 12, M_CACTUS = 13,
-             M_CACTUS_TOP = 14, M_SNOW_LEAVES = 15, M_SANDSTONE = 16;
-
 struct LpWorld {
     float2 off;     // seed's offset into the noise
     float2 ph;      // path phases
     float  c0;      // where the climate wave starts
 };
-
-// Colours below are linear: each is an sRGB-ish design value raised to 2.2
-// ahead of time, so no pixel pays a pow() for a constant.
-
 
 // --- The path: a meandering line along +x. ---------------------------------
 
@@ -108,18 +122,6 @@ static inline float4 lpPathKnot(float x, LpWorld w) {
     return float4(zd.x, rsqrt(1.0 + zd.y * zd.y), lpPathYz(x, zd.x, w), lpTempAt(x, w));
 }
 
-// valueNoise with its four lattice hashes kept between calls (the clouds use
-// it). Same values as valueNoise, bit for bit.
-static inline float lpVNc(float2 st, thread float2& key, thread float4& hh) {
-    float2 i = floor(st), f = fract(st);
-    if (any(i != key)) {
-        key = i;
-        hh = float4(hash21(i), hash21(i + float2(1.0, 0.0)), hash21(i + float2(0.0, 1.0)), hash21(i + float2(1.0, 1.0)));
-    }
-    float2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hh.x, hh.y, u.x), mix(hh.z, hh.w, u.x), u.y);
-}
-
 // --- Terrain. ---------------------------------------------------------------
 
 struct LpCol {
@@ -127,6 +129,7 @@ struct LpCol {
     float G;      // top of what a ray stops on: H, or the water surface
     float temp;   // 0 cold .. 1 hot
     float pd;     // distance to the path's centre line
+    bool  path;   // a dirt path block (its top a sixteenth below H)
 };
 
 // The world is read a 7×7 cell at a time, and everything irregular happens
@@ -202,6 +205,12 @@ static inline LpCol lpColumnN(float2 cell, float4 path, float n1, float n2) {
     }
     r.H = floor(e);
     r.G = max(r.H, LP_SEA);
+    // The walk is dirt path, a sixteenth lower than the grass as in the game,
+    // its edge ragged column by column. (Never under water: it is a causeway.)
+    // This runs at every step of the march, so the ragged edge is a few-op
+    // dither (golden-ratio steps, broken up by a product term), not a hash.
+    r.path = r.pd < 1.55 + 0.25 * fract(dot(cell, float2(0.618034, 0.381966)) + cell.x * cell.y * 0.0731);
+    if (r.path) r.G = r.H - 0.0625;
     return r;
 }
 
@@ -232,7 +241,7 @@ struct LpTree {
     float2 trunk;   // column of the trunk
     float  base;    // ground top at the trunk
     float  height;  // trunk height
-    int    kind;    // 0 none, 1 oak, 2 spruce, 3 cactus
+    int    kind;    // 0 none, 1 oak, 2 spruce, 3 cactus, 4 birch
     float  h;       // per-tree hash
 };
 
@@ -264,6 +273,7 @@ static inline LpTree lpTreeIn(float2 tcell, LpCell c, LpWorld w) {
     float h2 = fract(h * 13.7 + 0.31);
     if (hot) { t.kind = 3; t.height = 2.0 + floor(h2 * 2.5); }
     else if (cold || (col.H > LP_SEA + 9.0 && h2 < 0.5)) { t.kind = 2; t.height = 5.0 + floor(h2 * 2.5); }
+    else if (fract(h * 7.3 + 0.17) < 0.3) { t.kind = 4; t.height = 5.0 + floor(h2 * 2.0); }
     else { t.kind = 1; t.height = 4.0 + floor(h2 * 2.0); }
     return t;
 }
@@ -281,7 +291,7 @@ static inline float2 lpTreeSpan(LpTree t, float2 cell, thread float& logTop) {
         logTop = 1e9;
         return float2(hb, top);
     }
-    if (t.kind == 1) {   // oak: a 5×5 skirt two deep, a 3×3 layer, a cross on top
+    if (t.kind == 1 || t.kind == 4) {   // oak and birch: a 5×5 skirt two deep, a 3×3 layer, a cross on top
         if (cheb == 0.0) { logTop = top; return float2(hb, top + 2.0); }
         if (cheb == 1.0) return float2(top - 2.0, man == 1.0 ? top + 2.0 : top + 1.0);
         if (cheb == 2.0) {
@@ -345,12 +355,12 @@ static inline bool lpRayBox(float3 ro, float3 ri, float3 lo, float3 hi, float t0
     return max(max(tn.x, tn.y), max(tn.z, t0)) <= min(min(tf.x, tf.y), min(tf.z, t1));
 }
 
-// Does the ray touch the tree (its trunk, or its crown: oak leaves start two
-// below the trunk top, spruce two above the ground) within [t0, t1]?
+// Does the ray touch the tree (its trunk, or its crown: oak and birch leaves
+// start two below the trunk top, spruce two above the ground) within [t0, t1]?
 static inline bool lpTreeBox(LpTree t, float3 ro, float3 ri, float t0, float t1) {
     if (t.kind == 0) return false;
     float crown = t.base + t.height + 2.0;
-    float leaf = t.kind == 1 ? t.base + t.height - 2.0 : t.base + 2.0;
+    float leaf = t.kind == 2 ? t.base + 2.0 : t.base + t.height - 2.0;
     float r = t.kind == 3 ? 0.0 : 2.0;
     return lpRayBox(ro, ri, float3(t.trunk.x, t.base, t.trunk.y), float3(t.trunk.x + 1.0, crown, t.trunk.y + 1.0), t0, t1)
         || lpRayBox(ro, ri, float3(t.trunk.x - r, leaf, t.trunk.y - r), float3(t.trunk.x + r + 1.0, crown, t.trunk.y + r + 1.0), t0, t1);
@@ -463,195 +473,318 @@ static inline LpHit lpTrace(float3 ro, float3 rd, float tFar, int steps, LpWorld
     return hit;
 }
 
-// --- Textures: 16×16 texels a face. `ti` is an integer texel coordinate
-// (x along the face, y counted down from the top of the block). ------------
+// --- What a column is made of. ------------------------------------------------
 
-static inline float lpTone(float2 ti, float salt) { return hash21(ti * 1.13 + salt * 7.31 + 0.5); }
+struct LpBiome { bool hot, cold, beach, high, peak; };
 
-static inline float3 lpTexel(int mat, float2 ti, float salt, float fringe, float3 grassCol) {
-    float2 tw = glmod2(ti, 16.0);
-    float r = lpTone(tw, float(mat) + salt);
-    float q = floor(r * 4.0) / 3.0;            // four tones
-    switch (mat) {
-    case M_GRASS: {
-        float3 c = grassCol * (0.80 + 0.30 * q);
-        // a few flowers: a 2×2 blot on some blocks
-        if (salt > 0.93) {
-            float2 fc = floor(float2(fract(salt * 37.0), fract(salt * 53.0)) * 10.0) + 3.0;
-            if (all(tw >= fc) && all(tw < fc + 2.0))
-                c = fract(salt * 71.0) < 0.5 ? float3(0.71762, 0.03575, 0.01774) : float3(0.89329, 0.66370, 0.04737);
+static inline LpBiome lpBiomeAt(LpCol col, float2 cell) {
+    LpBiome b;
+    float tp = col.temp + 0.04 * (hash21(cell + 0.37) - 0.5);   // ragged biome edges
+    b.hot = tp > 0.65;
+    b.cold = tp < 0.36;
+    b.high = col.H > LP_SEA + 12.0 + 2.0 * hash21(cell + 1.3);
+    b.peak = col.H > LP_SEA + 17.0 + 2.0 * hash21(cell + 2.9);
+    b.beach = col.H <= LP_SEA + 1.0 && !col.path;
+    return b;
+}
+
+constant int K_GRASS = 0, K_PATH = 1, K_SNOW = 2, K_STONE = 3, K_SAND = 4, K_WATER = 5;
+
+static inline int lpTopKind(LpCol col, LpBiome b) {
+    if (col.G > col.H) return K_WATER;
+    if (col.path) return K_PATH;
+    if (b.peak) return K_SNOW;
+    if (b.high) return K_STONE;
+    if (b.hot || b.beach) return K_SAND;
+    if (b.cold) return K_SNOW;
+    return K_GRASS;
+}
+
+static inline int lpTopLayer(int kind) {
+    switch (kind) {
+    case K_PATH:  return MC_DIRT_PATH_TOP;
+    case K_SNOW:  return MC_SNOW;
+    case K_STONE: return MC_STONE;
+    case K_SAND:  return MC_SAND;
+    default:      return MC_GRASS_BLOCK_TOP;
+    }
+}
+
+// The walk's climate (0 cold .. 1 hot) as the game's biome temperature and
+// downfall: plains (0.8, 0.4) where every walk sets out, a wetter, deeper
+// green toward the taiga, dry savanna-yellow toward the desert.
+static inline float2 lpClimate(float tp) {
+    float u = saturate((tp - 0.36) / 0.29) - 0.5;
+    return float2(0.8 + 0.7 * u, 0.4 - 0.5 * u);
+}
+static inline float3 lpGrassTint(texture2d_array<float> maps, float tp) {
+    float2 c = lpClimate(tp);
+    return mcGrassTint(maps, c.x, c.y);
+}
+
+// Face coordinates, 0..1 across a face, as the game lays its textures: tops
+// by x and z, sides with the picture's top row at the top of the block.
+static inline float2 lpFaceUV(float3 p, float3 n) {
+    if (abs(n.y) > 0.5) return fract(p.xz);
+    float u = abs(n.x) > 0.5 ? fract(p.z) : fract(p.x);
+    if (n.x > 0.5 || n.z < -0.5) u = 1.0 - u;
+    return float2(u, fract(-p.y));
+}
+
+// The game turns each grass top one of four ways.
+static inline float2 lpTurn(float2 uv, float r) {
+    int k = int(r * 4.0) & 3;
+    if (k == 1) return float2(1.0 - uv.y, uv.x);
+    if (k == 2) return 1.0 - uv;
+    if (k == 3) return float2(uv.y, 1.0 - uv.x);
+    return uv;
+}
+
+// A lake: still water, tinted, over a bed that loses a light level a block.
+static inline float3 lpWater(texture2d_array<float> tiles, float2 uv, float fp, float time,
+                             float depth, float2 bedCell, float2 bedUV, float bedFp, float day) {
+    float r = hash21(bedCell + 4.4);
+    int bed = depth < 1.5 ? MC_SAND : (r < 0.4 ? MC_GRAVEL : (r < 0.8 ? MC_DIRT : MC_CLAY));
+    // Lit relative to the surface, which the caller lights at full sky light.
+    float3 bedLit = mcLightmap(0.0, 15.0 - depth, day, 0.0) / mcLightmap(0.0, 15.0, day, 0.0);
+    float3 floorC = mcTile(tiles, bed, bedUV, bedFp).rgb * bedLit;
+    float4 wt = mcTile(tiles, mcFrame(MC_WATER_STILL, MC_WATER_STILL_FRAMES, MC_WATER_STILL_TICKS, time),
+                       uv, fp);
+    return mix(floorC, wt.rgb * MC_WATER_TINT, wt.a);
+}
+
+// A top face of the land (not water).
+static inline float3 lpTopColor(texture2d_array<float> tiles, int kind, float2 cell, float2 uv,
+                                float fp, float3 grassTint) {
+    if (kind == K_GRASS) uv = lpTurn(uv, hash21(cell * 0.917 + 0.2));
+    float3 c = mcTile(tiles, lpTopLayer(kind), uv, fp).rgb;
+    return kind == K_GRASS ? c * grassTint : c;
+}
+
+// --- Trees. -------------------------------------------------------------------
+
+static inline int lpLeafLayer(int kind) {
+    return kind == 2 ? MC_SPRUCE_LEAVES : (kind == 4 ? MC_BIRCH_LEAVES : MC_OAK_LEAVES);
+}
+static inline int lpLogLayer(int kind, bool end) {
+    if (kind == 2) return end ? MC_SPRUCE_LOG_TOP : MC_SPRUCE_LOG;
+    if (kind == 4) return end ? MC_BIRCH_LOG_TOP : MC_BIRCH_LOG;
+    return end ? MC_OAK_LOG_TOP : MC_OAK_LOG;
+}
+// Spruce and birch leaves have fixed colours in the game; oak takes the
+// biome's foliage colormap.
+static inline float3 lpLeafTint(texture2d_array<float> maps, int kind, float tp) {
+    if (kind == 2) return float3(0.4300, 0.5943, 0.4015);   // mcFromSRGB(#619961)
+    if (kind == 4) return float3(0.5333, 0.6505, 0.3725);   // mcFromSRGB(#80A755)
+    float2 c = lpClimate(tp);
+    return mcFoliageTint(maps, c.x, c.y);
+}
+
+// A ray has met a leaf face at t (normal n). Leaves are cut out by their
+// texture's alpha, so walk the tree's voxels from there: each leaf face it
+// enters is sampled, and a log stops it. Leaving the crown hands the ray back
+// to the trace (returns 2, t where it left): sideways or over the top, or
+// down below base + 2, under every leaf of either shape, where only the trunk
+// and the ground are left and the trace already knows both. 0: a leaf, 1: a
+// log, with t, n and the voxel `v` updated. A third leaf face behind two
+// clear texels (one ray in seven) is deep in the crown: it ends the walk as a
+// leaf, which the shading then draws at the texture's mean colour (`deep`).
+static inline int lpLeafWalk(LpTree tr, float3 ro, float3 rd, float pxA, texture2d_array<float> tiles,
+                             thread float& t, thread float3& n, thread float3& v, thread float& logTop,
+                             thread bool& deep, thread float3& texel) {
+    int layer = lpLeafLayer(tr.kind);
+    float3 rdg = select(rd, float3(1e-6), abs(rd) < 1e-6);
+    float3 inv = 1.0 / rdg, s = sign(rdg);
+    float3 p = ro + rd * t;
+    v = floor(p - n * 0.5);
+    float3 tMax = (v + step(0.0, rdg) - ro) * inv;
+    float3 tD = abs(inv);
+    float crown = tr.base + tr.height + 2.0;
+    bool leaf = true;
+    int clear = 0;
+    deep = false;
+    for (int i = 0; i < 6; ++i) {
+        if (leaf) {
+            if (clear == 2) { deep = true; return 0; }   // (counted from the first)
+            float fp = t * pxA / max(abs(dot(rd, n)), 0.1);
+            float4 c = mcTile(tiles, layer, lpFaceUV(p, n), fp);
+            texel = c.rgb;
+            if (c.a > 0.5) return 0;
+            ++clear;
         }
-        return c;
+        if (tMax.x < tMax.y && tMax.x < tMax.z) { t = tMax.x; tMax.x += tD.x; v.x += s.x; n = float3(-s.x, 0.0, 0.0); }
+        else if (tMax.y < tMax.z)               { t = tMax.y; tMax.y += tD.y; v.y += s.y; n = float3(0.0, -s.y, 0.0); }
+        else                                    { t = tMax.z; tMax.z += tD.z; v.z += s.z; n = float3(0.0, 0.0, -s.z); }
+        p = ro + rd * t;
+        float2 d = abs(v.xz - tr.trunk);
+        if (max(d.x, d.y) > 2.0 || v.y < tr.base + 2.0 || v.y >= crown) return 2;
+        float2 span = lpTreeSpan(tr, v.xz, logTop);
+        leaf = v.y >= span.x && v.y < span.y;
+        if (leaf && v.y < logTop) return 1;
     }
-    case M_GRASS_SIDE:
-    case M_SNOW_SIDE: {
-        float drip = 2.0 + floor(hash21(float2(tw.x, 3.3) + salt) * 2.6);
-        if (tw.y < drip && fringe > 0.5)
-            return mat == M_SNOW_SIDE ? float3(0.83240, 0.87273, 0.93519) * (0.9 + 0.1 * q)
-                                      : grassCol * (0.75 + 0.3 * q);
-        return float3(0.18994, 0.08724, 0.03575) * (0.78 + 0.3 * q);
-    }
-    case M_DIRT:      return float3(0.18994, 0.08724, 0.03575) * (0.78 + 0.3 * q);
-    case M_STONE: {
-        float3 c = float3(0.21764, 0.21764, 0.22733) * (0.84 + 0.22 * q);
-        if (r > 0.9) c *= 0.7;
-        return c;
-    }
-    case M_SAND:      return float3(0.71762, 0.59536, 0.27926) * (0.9 + 0.13 * q);
-    case M_SANDSTONE: return float3(0.61207, 0.45626, 0.19894) * ((glmod(tw.y, 16.0) < 3.0 ? 1.05 : 0.9) + 0.06 * q);
-    case M_SNOW:      return float3(0.85244, 0.89329, 0.95653) * (0.93 + 0.07 * q);
-    case M_PATH:      return float3(0.32504, 0.21764, 0.09317) * (0.78 + 0.32 * q);
-    case M_WATER:     return float3(0.02899, 0.11899, 0.48544) * (0.85 + 0.2 * q);
-    case M_LOG: {
-        float stripe = hash21(float2(tw.x, 1.7) + salt);
-        float3 c = float3(0.13321, 0.07074, 0.02590) * (0.75 + 0.3 * stripe) * (0.92 + 0.12 * q);
-        return c;
-    }
-    case M_LEAVES: {
-        float3 c = grassCol * float3(0.62, 0.8, 0.62) * (0.65 + 0.45 * q);
-        if (r < 0.18) c *= 0.45;       // gaps
-        return c;
-    }
-    case M_SPRUCE: {
-        float3 c = float3(0.02899, 0.08724, 0.04330) * (0.7 + 0.4 * q);
-        if (r < 0.2) c *= 0.5;
-        return c;
-    }
-    case M_SNOW_LEAVES: return float3(0.79311, 0.85244, 0.93519) * (0.88 + 0.12 * q);
-    case M_CACTUS: {
-        float3 c = float3(0.07074, 0.23725, 0.02899) * (fmod(tw.x, 4.0) < 1.0 ? 0.7 : 1.0) * (0.9 + 0.12 * q);
-        if (r > 0.94) c = float3(0.69939, 0.69939, 0.38762);
-        return c;
-    }
-    default: {    // cactus top
-        float2 d = abs(tw - 7.5);
-        return float3(0.10565, 0.30168, 0.04330) * (max(d.x, d.y) > 5.5 ? 0.75 : 1.0) * (0.9 + 0.12 * q);
-    }
-    }
+    return 2;
 }
 
-// Each face's mean, which the texture becomes once a texel is under a pixel.
-static inline float3 lpMean(int mat, float fringe, float3 grassCol) {
-    switch (mat) {
-    case M_GRASS:      return grassCol * 0.95;
-    case M_GRASS_SIDE: return fringe > 0.5 ? mix(float3(0.18994, 0.08724, 0.03575) * 0.93, grassCol * 0.9, 0.17)
-                                           : float3(0.18994, 0.08724, 0.03575) * 0.93;
-    case M_SNOW_SIDE:  return fringe > 0.5 ? mix(float3(0.18994, 0.08724, 0.03575) * 0.93, float3(0.83240, 0.87273, 0.93519), 0.17)
-                                           : float3(0.18994, 0.08724, 0.03575) * 0.93;
-    case M_DIRT:       return float3(0.18994, 0.08724, 0.03575) * 0.93;
-    case M_STONE:      return float3(0.21764, 0.21764, 0.22733) * 0.92;
-    case M_SAND:       return float3(0.71762, 0.59536, 0.27926) * 0.96;
-    case M_SANDSTONE:  return float3(0.61207, 0.45626, 0.19894) * 0.95;
-    case M_SNOW:       return float3(0.85244, 0.89329, 0.95653) * 0.96;
-    case M_PATH:       return float3(0.32504, 0.21764, 0.09317) * 0.94;
-    case M_WATER:      return float3(0.02899, 0.11899, 0.48544) * 0.95;
-    case M_LOG:        return float3(0.13321, 0.07074, 0.02590) * 0.95;
-    case M_LEAVES:     return grassCol * float3(0.62, 0.8, 0.62) * 0.75;
-    case M_SPRUCE:     return float3(0.02899, 0.08724, 0.04330) * 0.8;
-    case M_SNOW_LEAVES:return float3(0.79311, 0.85244, 0.93519) * 0.94;
-    case M_CACTUS:     return float3(0.07074, 0.23725, 0.02899) * 0.9;
-    default:           return float3(0.10565, 0.30168, 0.04330) * 0.9;
+// --- Plants: the game's crossed planes (the kit's mcCross), one block tall. -----
+
+// The plant on a column's top, or -1: short grass, ferns toward the taiga,
+// the plains' flowers, dead bushes in the desert. `tinted`: takes the grass
+// colour.
+static inline int lpPlantLayer(float r, int kind, LpBiome b, float tp, thread bool& tinted) {
+    tinted = false;
+    if (kind == K_GRASS) {
+        if (r < 0.2) { tinted = true; return (tp < 0.42 && fract(r * 31.7) < 0.6) ? MC_FERN : MC_SHORT_GRASS; }
+        if (r < 0.235) {
+            switch (int(fract(r * 517.3) * 6.0)) {
+            case 0:  return MC_POPPY;
+            case 1:  return MC_DANDELION;
+            case 2:  return MC_OXEYE_DAISY;
+            case 3:  return MC_CORNFLOWER;
+            case 4:  return MC_AZURE_BLUET;
+            default: return MC_RED_TULIP;
+            }
+        }
+    } else if (kind == K_SAND && b.hot && r < 0.03) {
+        return MC_DEAD_BUSH;
     }
+    return -1;
+}
+constant float LP_PLANT_P = 0.235;   // the most any column carries a plant
+
+// Plants in the block of air above a ground hit: step back over the columns
+// the ray crossed since it came down through the top of that block (at most
+// two: near the middle, where plants are big, the rays are steep), and take
+// the nearest plant it touches. Only columns level with the
+// hit can hold one the ray reaches. Returns (rgb, t), t = 1e9 for none.
+static inline float4 lpPlants(LpHit h, float3 ro, float3 rd, float pxA, LpWorld w,
+                              texture2d_array<float> tiles, float3 grassTint) {
+    float4 best = float4(0.0, 0.0, 0.0, 1e9);
+    float G = h.col.G;
+    float t1 = (G + 1.0 - ro.y) / rd.y;
+    float tMin = max(t1 - 0.01, 0.0);    // just above where the ray comes down into the block
+    float2 rd2 = select(rd.xz, float2(1e-6), abs(rd.xz) < 1e-6);
+    float2 inv = 1.0 / rd2, stp = sign(rd2);
+    float2 cell = h.cell;
+    for (int i = 0; i < 2; ++i) {
+        float r = hash21(cell * 1.17 + 31.7);
+        if (r < LP_PLANT_P) {
+            LpCol col = all(cell == h.cell) ? h.col : lpColumnNear(cell, h.cc, w);
+            if (col.G == G) {
+                LpBiome b = lpBiomeAt(col, cell);
+                bool tinted;
+                int layer = lpPlantLayer(r, lpTopKind(col, b), b, col.temp, tinted);
+                McModelHit mh;
+                if (layer >= 0 && mcCross(tiles, layer, float3(cell.x, G, cell.y), tinted ? grassTint : float3(1.0),
+                                          ro, rd, tMin, best.w, pxA, mh))
+                    best = float4(mh.color.rgb, mh.t);
+            }
+        }
+        // back across the face the ray came in by
+        float2 tb = (cell + select(float2(1.0), float2(0.0), rd2 > 0.0) - ro.xz) * inv;
+        if (max(tb.x, tb.y) <= t1) break;
+        if (tb.x > tb.y) cell.x -= stp.x; else cell.y -= stp.y;
+    }
+    return best;
 }
 
-// Sharp bilinear: hard texel edges up close, an even blend at a pixel's width,
-// the mean once a texel is smaller than a pixel.
-static inline float3 lpSample(int mat, float2 tc, float fwT, float salt, float fringe, float3 grassCol) {
-    if (fwT >= 1.3) return lpMean(mat, fringe, grassCol);
-    float2 b = floor(tc - 0.5), f = fract(tc - 0.5);
-    float2 s = saturate((f - 0.5) / max(fwT, 1e-3) + 0.5);
-    float3 c;
-    if (all(s == round(s))) {
-        c = lpTexel(mat, b + s, salt, fringe, grassCol);   // inside one texel
-    } else {
-        float3 c00 = lpTexel(mat, b, salt, fringe, grassCol);
-        float3 c10 = lpTexel(mat, b + float2(1, 0), salt, fringe, grassCol);
-        float3 c01 = lpTexel(mat, b + float2(0, 1), salt, fringe, grassCol);
-        float3 c11 = lpTexel(mat, b + float2(1, 1), salt, fringe, grassCol);
-        c = mix(mix(c00, c10, s.x), mix(c01, c11, s.x), s.y);
-    }
-    return mix(c, lpMean(mat, fringe, grassCol), smoothstep(0.45, 1.3, fwT));
-}
-
-// --- Sky. -------------------------------------------------------------------
+// --- Sky: the game's colours, sunrise band, sun and clouds. ---------------------
 
 struct LpSky {
     float3 L;        // towards the sun
-    float3 sunCol;
-    float3 zenith, horizon, glow;
-    float3 amb;      // skylight on a face that sees the whole sky
-    float3 cloud;
+    float2 sunH;     // the sun's compass direction
+    float  day;      // the game's sky brightness, 1 by day, falling at dusk
+    float3 lit;      // the lightmap at full sky light
+    float3 sky;      // overhead
+    float3 fog;      // toward the horizon
+    float4 rise;     // sunrise colour and strength
 };
 
 static inline LpSky lpSkyFor(float hour, float az) {
     LpSky s;
     float el = mix(0.12, 1.1, hour);               // radians above the horizon
-    s.L = normalize(float3(cos(az) * cos(el), sin(el), sin(az) * cos(el)));
-    float warm = 1.0 - smoothstep(0.04, 0.4, hour);
-    warm *= warm;
-    s.sunCol = mix(float3(1.0, 0.95, 0.86), float3(1.0, 0.66, 0.38), warm) * mix(1.7, 2.1, hour);
-    s.zenith  = mix(float3(0.00500, 0.02590, 0.17261), float3(0.01540, 0.02899, 0.14830), warm);
-    s.horizon = mix(float3(0.26841, 0.42807, 0.68142), float3(0.71762, 0.34935, 0.19894), warm);
-    s.glow    = mix(float3(1.0, 0.95, 0.85), float3(1.0, 0.55, 0.25), warm);
-    // Skylight takes a little of the sky's own colour: cool shade under a
-    // warm low sun.
-    float3 skyAvg = 0.5 * (s.horizon + float3(0.04737, 0.14830, 0.53105));
-    s.amb   = mix(float3(1.0), skyAvg / dot(skyAvg, float3(0.3, 0.55, 0.15)), 0.35) * mix(0.55, 0.46, warm);
-    s.cloud = mix(mix(s.horizon, float3(1.0), 0.75), mix(s.horizon, s.glow, 0.45) * 1.15, warm);
+    s.sunH = float2(cos(az), sin(az));
+    s.L = float3(s.sunH.x * cos(el), sin(el), s.sunH.y * cos(el));
+    // The game's sky brightness from the sun's height, and its sky and fog
+    // colours (plains), the fog pulled a little toward the sky as at a
+    // twelve-chunk render distance.
+    float f = sin(el);
+    s.day = saturate(f * 2.0 + 0.5);
+    s.lit = mcLightmap(0.0, 15.0, s.day, 0.0);
+    s.sky = mcSkyAt(s.day);
+    s.fog = mix(mcFogAt(s.day), s.sky, 0.146);
+    // The sunrise band, the game's formula, for a sun within 0.4 of the horizon.
+    s.rise = float4(0.0);
+    if (f < 0.4) {
+        float g = f / 0.4 * 0.5 + 0.5;
+        float a = 1.0 - (1.0 - sin(g * PI)) * 0.99;
+        s.rise = float4(mcFromSRGB(float3(g * 0.3 + 0.7, g * g * 0.7 + 0.2, 0.2)), a * a);
+    }
     return s;
 }
 
+// Fog colour seen along rd: the sunrise tints the half of it facing the sun.
+static inline float3 lpFogCol(float3 rd, LpSky s) {
+    float2 hd = rd.xz * rsqrt(max(dot(rd.xz, rd.xz), 1e-8));
+    float d = max(dot(hd, s.sunH), 0.0) * s.rise.a;
+    return mix(s.fog, s.rise.rgb, d);
+}
+
 static inline float3 lpSkyColor(float3 rd, LpSky s) {
-    float h = saturate(rd.y);
-    float3 c = mix(s.horizon, s.zenith, sqrt(sqrt(h)));
-    float g = max(dot(rd, s.L), 0.0);
-    float g2 = g * g, g8 = g2 * g2 * g2 * g2;
-    c += s.glow * (0.18 * g2 * g2 * g2 + 0.25 * g8 * g8 * g8 * g8 * g8);
-    // below the horizon (seen past the draw distance): the haze darkens a little
-    if (rd.y < 0.0) c = mix(s.horizon, s.horizon * 0.8, saturate(-rd.y * 3.0));
+    float h = max(rd.y, 0.0);
+    float k = saturate(h / 0.45);
+    float3 c = mix(lpFogCol(rd, s), s.sky, k * (2.0 - k));
+    if (s.rise.a > 0.0) {
+        float2 hd = rd.xz * rsqrt(max(dot(rd.xz, rd.xz), 1e-8));
+        float d = max(dot(hd, s.sunH), 0.0);
+        c = mix(c, s.rise.rgb, s.rise.a * d * d * (1.0 - smoothstep(0.0, 0.5, h)));
+    }
     return c;
 }
 
-// The square sun, aligned to the horizon.
-static inline float3 lpSun(float3 rd, LpSky s, float pxA) {
+// The sun: sun.png on a square thirty units wide at a hundred, as the game
+// draws it, added to the sky.
+static inline float3 lpSun(texture2d_array<float> skins, float3 rd, LpSky s, float pxA) {
+    const float R = 0.15;
+    float d = dot(rd, s.L);
+    if (d <= 0.5) return float3(0.0);
     float3 ex = normalize(cross(float3(0.0, 1.0, 0.0), s.L));
     float3 ey = cross(s.L, ex);
-    float d = dot(rd, s.L);
-    if (d <= 0.0) return float3(0.0);
     float2 q = float2(dot(rd, ex), dot(rd, ey)) / d;
-    float e = max(abs(q.x), abs(q.y)) - 0.055;
-    float m = 1.0 - smoothstep(-pxA, pxA, e);
-    return s.sunCol * 2.2 * m;
+    if (any(abs(q) >= R)) return float3(0.0);
+    float2 px = (q / R * 0.5 + 0.5) * MCS_ENVIRONMENT_CELESTIAL_SUN_SIZE;
+    float wpx = pxA / d / (2.0 * R) * MCS_ENVIRONMENT_CELESTIAL_SUN_SIZE.x;
+    return mcSkin(skins, MCS_ENVIRONMENT_CELESTIAL_SUN, px, wpx).rgb;
 }
 
-// Square clouds: a slab LP_CLOUD_T thick, cut into 12-block cells, drifting.
+// The game's cloud layer: clouds.png, one texel a 12-block cell, 4 blocks
+// thick, drifting.
 constant float LP_CLOUD_S = 12.0;
 constant float LP_CLOUD_T = 4.0;
 
-static inline float lpCloudAt(float2 cc, float s0, thread float2& key, thread float4& hh) {
-    float n = lpVNc(cc * 0.33 + s0 * 13.0, key, hh);
-    return step(0.72, n);
+static inline bool lpCloudAt(texture2d_array<float> maps, float2 cc, float2 o) {
+    return mcMap(maps, MCM_ENVIRONMENT_CLOUDS, glmod2(cc + o, 256.0) + 0.5, 0.0).a > 0.5;
 }
 
 // Seen from below: the bottom face of the cell overhead, or else the first
-// side face the ray meets on its way up through the slab. Returns (shade, alpha).
-static inline float2 lpClouds(float3 ro, float3 rd, float time, float s0, float pxA) {
+// side face the ray meets on its way up through the slab. Returns (face
+// shade, alpha): the game's 0.7 under, 0.9 and 0.8 on the sides, 0.8 opaque.
+static inline float2 lpClouds(texture2d_array<float> maps, float3 ro, float3 rd, float time, float s0, float pxA) {
     if (rd.y <= 0.01) return float2(0.0);
     float tB = (LP_CLOUD - ro.y) / rd.y;
-    float fade = 0.9 * (1.0 - smoothstep(150.0, 460.0, tB));
+    float fade = 0.8 * (1.0 - smoothstep(150.0, 460.0, tB));
     if (fade <= 0.0) return float2(0.0);
-    float2 wind = float2(time * 0.9, time * 0.3);
-    float2 ck = float2(1e9); float4 chh = float4(0.0);
+    float2 o = floor(float2(fract(s0 * 7.7), fract(s0 * 3.1)) * 256.0);
+    float2 wind = float2(time * 0.6, 0.0);
     float2 q = (ro.xz + rd.xz * tB + wind) / LP_CLOUD_S;
     float2 cc = floor(q), f = q - cc;
-    if (lpCloudAt(cc, s0, ck, chh) > 0.5) {
-        // Soften the bottom face's edge against the footprint, where it meets sky.
+    if (lpCloudAt(maps, cc, o)) {
+        // Antialias the bottom face's edge where it meets sky.
         float fw = tB * pxA / max(rd.y, 0.05) / LP_CLOUD_S;
         float2 de = min(f, 1.0 - f);
         float2 so = select(float2(-1.0), float2(1.0), f > 0.5);
-        float ex = lpCloudAt(cc + float2(so.x, 0.0), s0, ck, chh) > 0.5 ? 1.0 : smoothstep(0.0, fw, de.x);
-        float ez = lpCloudAt(cc + float2(0.0, so.y), s0, ck, chh) > 0.5 ? 1.0 : smoothstep(0.0, fw, de.y);
-        return float2(0.84, fade * min(mix(0.5, 1.0, ex), mix(0.5, 1.0, ez)));
+        float ex = lpCloudAt(maps, cc + float2(so.x, 0.0), o) ? 1.0 : smoothstep(0.0, fw, de.x);
+        float ez = lpCloudAt(maps, cc + float2(0.0, so.y), o) ? 1.0 : smoothstep(0.0, fw, de.y);
+        return float2(0.7, fade * min(saturate(ex * 2.0), saturate(ez * 2.0)));
     }
     float tTop = (LP_CLOUD + LP_CLOUD_T - ro.y) / rd.y;
     float2 d = select(rd.xz, float2(1e-6), abs(rd.xz) < 1e-6) / LP_CLOUD_S;
@@ -663,169 +796,167 @@ static inline float2 lpClouds(float3 ro, float3 rd, float time, float s0, float 
         if (tc > tTop) break;
         bool xs = tMax.x < tMax.y;
         if (xs) { tMax.x += tDelta.x; cc.x += stp.x; } else { tMax.y += tDelta.y; cc.y += stp.y; }
-        if (lpCloudAt(cc, s0, ck, chh) > 0.5) return float2(xs ? 0.97 : 0.9, fade);
+        if (lpCloudAt(maps, cc, o)) return float2(xs ? 0.9 : 0.8, fade);
     }
     return float2(0.0);
 }
 
-// --- Shading a hit. -----------------------------------------------------------
-
-static inline float3 lpGrassCol(float tp) {
-    float3 g = mix(float3(0.11899, 0.32504, 0.04330), float3(0.10565, 0.27926, 0.11899), smoothstep(0.45, 0.33, tp));
-    return mix(g, float3(0.27926, 0.34935, 0.05163), smoothstep(0.55, 0.64, tp));
-}
+// --- Shading a hit. -------------------------------------------------------------
 
 // Past the traced reach, the land is drawn flat: the ray meets a plane just
-// above the sea and takes the colour of whatever top face the world has
-// there, lit like one, in its own haze. Everything traced fades into this
-// rather than into sky, so the disc stays whole out to the horizon while
-// the trace stays short.
-static inline float3 lpFarLand(float3 ro, float3 rd, LpSky sky, LpWorld w, float far) {
+// above the sea and takes the top face the world has there, lit like one,
+// fading into the fog. Everything traced fades into this rather than into
+// sky, so the disc stays whole out to the horizon while the trace stays short.
+static inline float3 lpFarLand(float3 ro, float3 rd, LpSky sky, LpWorld w, float far, float pxA,
+                               float time, texture2d_array<float> tiles, texture2d_array<float> maps) {
     float3 skyC = lpSkyColor(rd, sky);
     if (rd.y >= -1e-4) return skyC;
     float tP = (LP_SEA + 1.0 - ro.y) / rd.y;
-    float2 cell = floor(ro.xz + rd.xz * tP);
+    float3 hp = ro + rd * tP;
+    float2 cell = floor(hp.xz);
     // One column, read directly: no cell to build for a single lookup.
     float2 p = cell + 0.5;
     float2 zd = lpPathZD(p.x, w);
     float4 path = float4(zd.x, rsqrt(1.0 + zd.y * zd.y), 0.0, lpTempAt(p.x, w));
     path.z = LP_SEA + 4.0;   // the path's height barely shows this far out
     LpCol col = lpColumnN(cell, path, valueNoise(lpSt1(p, w)), valueNoise(lpSt2(p, w)));
-    float H = col.H, tp = col.temp;
-    float3 alb;
-    bool water = col.G > H;
-    if (water)                          alb = float3(0.02896, 0.11899, 0.48557) * (exp(-0.22 * (col.G - H)) * 0.8 + 0.2);
-    else if (col.pd < 1.6)              alb = float3(0.30, 0.20, 0.087);
-    else if (H > LP_SEA + 17.0)         alb = float3(0.80, 0.85, 0.92);
-    else if (H > LP_SEA + 12.0)         alb = float3(0.20, 0.20, 0.21);
-    else if (tp > 0.65 || H <= LP_SEA + 1.0) alb = float3(0.69, 0.58, 0.27);
-    else if (tp < 0.36)                 alb = float3(0.80, 0.85, 0.92);
-    else                                alb = lpGrassCol(tp) * 0.95;
-    float3 c = alb * (sky.amb + sky.sunCol * sky.L.y * 0.55);
-    if (water) c = mix(c, lpSkyColor(reflect(rd, float3(0.0, 1.0, 0.0)), sky), 0.15 + 0.6 * pow(1.0 - saturate(-rd.y), 4.0));
-    return mix(c, skyC, smoothstep(far * 0.5, far * 3.0, tP));
+    float fp = tP * pxA / max(-rd.y, 0.1);
+    int kind = lpTopKind(col, lpBiomeAt(col, cell));
+    float3 c = kind == K_WATER
+        ? lpWater(tiles, fract(hp.xz), fp, time, col.G - col.H, cell, fract(hp.xz), fp, sky.day)
+        : lpTopColor(tiles, kind, cell, fract(hp.xz), fp, lpGrassTint(maps, col.temp));
+    c *= sky.lit;
+    return mix(c, lpFogCol(rd, sky), smoothstep(far * 0.5, far * 3.0, tP));
 }
 
-static inline float lpVertexAO(float s1, float s2, float sc) {
-    float occ = (s1 > 0.5 && s2 > 0.5) ? 3.0 : s1 + s2 + sc;
-    return 1.0 - 0.17 * occ;
+// Smooth lighting at a corner: the game's 0.2 a solid neighbour, a corner
+// boxed in on both sides as dark as it gets.
+static inline float lpVertexAO(float s1, float s2) {
+    float occ = (s1 > 0.5 && s2 > 0.5) ? 3.0 : s1 + s2;
+    return 1.0 - 0.2 * occ;
 }
 
 static inline float3 lpShade(LpHit h, float3 ro, float3 rd, float pxA, float far, LpSky sky, LpWorld w,
-                             float time) {
+                             float time, texture2d_array<float> tiles, texture2d_array<float> maps,
+                             bool deepLeaf, bool walked, float3 leafTexel) {
     float3 p = ro + rd * h.t;
     float3 n = h.n;
-    float fw = h.t * pxA / max(abs(dot(rd, n)), 0.1);
-    float fwT = fw * 16.0;
-
-    // Biome colour of grass and leaves.
-    float tp = h.col.temp + 0.04 * (hash21(h.cell + 0.37) - 0.5);   // ragged biome edges
-    float3 grassCol = lpGrassCol(tp);
-    bool cold = tp < 0.36, hot = tp > 0.65;
-
-    // Face coordinates: (along, down) in blocks.
-    float2 fc;
+    float fp = h.t * pxA / max(abs(dot(rd, n)), 0.1);
+    // Fog: the traced world fades into the flat far land (or, above the
+    // horizon, the sky) of its own direction. Above the horizon it holds off
+    // longer: that is the silhouette. Smooth lighting and plants are left out
+    // where it has mostly taken over.
+    float fog = smoothstep(far * (rd.y > 0.0 ? 0.8 : 0.5), far, h.t);
+    if (deepLeaf) fp = 1.0;     // the texture's mean
     bool top = n.y > 0.5, bottom = n.y < -0.5;
-    if (top || bottom) fc = p.xz;
-    else if (abs(n.x) > 0.5) fc = float2(p.z * -n.x, -p.y);
-    else fc = float2(p.x * n.z, -p.y);
-    float blockY = top ? floor(p.y - 0.5) : (bottom ? floor(p.y + 0.5) : floor(p.y));
-    float salt = hash21(h.cell * 0.917 + blockY * 3.1 + 0.2);
+    float2 uv = lpFaceUV(p, n);
+    float tp = h.col.temp;
+    LpBiome b = lpBiomeAt(h.col, h.cell);
+    float ao = 1.0;
+    float3 lit = sky.lit;
+    float4 plant = float4(0.0, 0.0, 0.0, 1e9);
+    LpCell cc = h.cc;
+    float2 clim = lpClimate(tp);
 
-    int mat;
-    float fringe = 0.0;
-    float waterDepth = 0.0;
+    // Choose the face's texture first and sample it once below: a SIMD group
+    // that straddles tops, sides and leaves then waits on one fetch, not on
+    // one per kind of face.
+    int layer = MC_DIRT;
+    float3 tint = float3(1.0);
+    bool grassSide = false, water = false, oakTint = false, grassTop = false;
     if (h.what == 1) {
-        // A trunk shows only on its sides; leaves and cactus cap everything.
-        bool trunk = p.y < h.logTop - 1e-3;
-        if (h.tree.kind == 3) mat = top ? M_CACTUS_TOP : M_CACTUS;
-        else if (trunk) mat = M_LOG;
-        else if (h.tree.kind == 2) mat = (top && cold) ? M_SNOW_LEAVES : M_SPRUCE;
-        else mat = M_LEAVES;
-    } else {
-        float H = h.col.H;
-        bool water = h.col.G > H && p.y > H - 1e-3 && top;
-        float depth = h.col.H - p.y;    // below the column's own top (sides)
-        bool path = h.col.pd < 1.55 + 0.25 * hash21(h.cell + 9.1);
-        bool high = H > LP_SEA + 12.0 + 2.0 * hash21(h.cell + 1.3);
-        bool peak = H > LP_SEA + 17.0 + 2.0 * hash21(h.cell + 2.9);
-        bool beach = H <= LP_SEA + 1.0 && !path;
-        if (water) { mat = M_WATER; waterDepth = h.col.G - H; }
-        else if (top) {
-            if (path) mat = M_PATH;
-            else if (peak) mat = M_SNOW;
-            else if (high) mat = M_STONE;
-            else if (hot || beach) mat = M_SAND;
-            else if (cold) mat = M_SNOW;
-            else mat = M_GRASS;
+        LpTree tr = h.tree;
+        float vy = floor(p.y - n.y * 0.5);
+        if (tr.kind == 3) {
+            // The cactus model is inset a texel; its texture's clear border is that inset.
+            uv = clamp(uv, 1.0 / 16.0, 15.0 / 16.0);
+            layer = top ? MC_CACTUS_TOP : MC_CACTUS_SIDE;
+        } else if (vy < h.logTop) {
+            layer = lpLogLayer(tr.kind, top || bottom);
         } else {
-            if (hot || beach) mat = depth < 3.0 ? M_SAND : M_SANDSTONE;
-            else if (high || depth > 3.5) mat = M_STONE;
-            else if (path) mat = M_DIRT;
-            else if (peak || cold) mat = M_SNOW_SIDE;
-            else mat = M_GRASS_SIDE;
-            fringe = depth < 1.0 ? 1.0 : 0.0;
-            if (peak && depth < 1.0) mat = M_SNOW_SIDE;
+            float lt;
+            float2 span = lpTreeSpan(tr, h.cell, lt);
+            if (top && tr.kind == 2 && b.cold && p.y > span.y - 0.5) {
+                layer = MC_SNOW;                                  // snow lies on the crown
+                walked = false;
+            } else {
+                layer = lpLeafLayer(tr.kind);
+                oakTint = tr.kind != 2 && tr.kind != 4;
+                tint = oakTint ? float3(1.0) : lpLeafTint(maps, tr.kind, tp);
+            }
+        }
+    } else {
+        float H = h.col.H, G = h.col.G;
+        int kind = lpTopKind(h.col, b);
+        if (top) {
+            water = kind == K_WATER;
+            if (fog < 0.7) {
+            layer = lpTopLayer(kind);
+            if (kind == K_GRASS) { grassTop = true; uv = lpTurn(uv, hash21(h.cell * 0.917 + 0.2)); }
+            // Smooth lighting: a step up beside the face darkens its corners.
+            // Only the nearer neighbour on each axis is looked up: the far
+            // one's corners fade out across the face toward this point, and
+            // a trench one block wide is all that it would change.
+            float2 f = fract(p.xz);
+            float2 sn = select(float2(-1.0), float2(1.0), f > 0.5);
+            float ox = lpColumnNear(h.cell + float2(sn.x, 0.0), cc, w).G > G + 0.5 ? 1.0 : 0.0;
+            float oz = lpColumnNear(h.cell + float2(0.0, sn.y), cc, w).G > G + 0.5 ? 1.0 : 0.0;
+            float sx0 = sn.x < 0.0 ? ox : 0.0, sx1 = sn.x > 0.0 ? ox : 0.0;
+            float sz0 = sn.y < 0.0 ? oz : 0.0, sz1 = sn.y > 0.0 ? oz : 0.0;
+            ao = mix(mix(lpVertexAO(sx0, sz0), lpVertexAO(sx1, sz0), f.x),
+                     mix(lpVertexAO(sx0, sz1), lpVertexAO(sx1, sz1), f.x), f.y);
+            // Under a crown the sky's light is one level down.
+            float lt;
+            float2 span = lpTreeSpan(h.tree, h.cell, lt);
+            if (span.y > span.x && span.x > p.y) lit = mcLightmap(0.0, 14.0, sky.day, 0.0);
+            }
+        } else {
+            float depth = H - p.y;    // below the column's top
+            if (b.hot || b.beach)           layer = depth < 3.0 ? MC_SAND : MC_SANDSTONE;
+            else if (b.peak && depth < 1.0) layer = MC_SNOW;
+            else if (b.high || depth > 3.5) layer = MC_STONE;
+            else if (depth >= 1.0)          layer = MC_DIRT;
+            else if (h.col.path)            layer = MC_DIRT_PATH_SIDE;
+            else if (b.cold)                layer = MC_GRASS_BLOCK_SNOW;
+            else                            grassSide = true;
+            // Smooth lighting at the foot of a step.
+            if (fog < 0.7) {
+                float Gf = lpColumnNear(h.cell + n.xz, cc, w).G;
+                ao = mix(0.6, 1.0, saturate(p.y - Gf));
+            }
         }
     }
 
-    // Grass tops get one of four rotations per block, so the tiling breaks up.
-    float2 tc = fc * 16.0;
-    if (top && mat == M_GRASS) {
-        float2 bl = floor(fc), f = (fc - bl) * 16.0;
-        int rot = int(salt * 4.0) & 3;
-        if (rot == 1) f = float2(16.0 - f.y, f.x);
-        else if (rot == 2) f = 16.0 - f;
-        else if (rot == 3) f = float2(f.y, 16.0 - f.x);
-        tc = bl * 16.0 + f;
+    // The biome colour: the grass colormap, or the foliage one for oak leaves.
+    float3 grassTint = oakTint ? mcFoliageTint(maps, clim.x, clim.y) : mcGrassTint(maps, clim.x, clim.y);
+    if (oakTint || grassTop) tint = grassTint;
+    float3 alb;
+    if (water) {
+        // The lake bed where the ray would reach it.
+        float depth = h.col.G - h.col.H;
+        float3 pb = p + rd * (depth / max(-rd.y, 0.05));
+        alb = lpWater(tiles, uv, fp, time, depth, floor(pb.xz), fract(pb.xz),
+                      (h.t + depth) * pxA / max(-rd.y, 0.1), sky.day);
+    } else if (grassSide) {
+        alb = mcGrassSide(tiles, uv, fp, grassTint);
+    } else {
+        // A leaf the walk stopped on is already sampled.
+        alb = (walked ? leafTexel : mcTile(tiles, layer, uv, fp).rgb) * tint;
     }
-    float3 alb = lpSample(mat, tc, fwT, salt, fringe, grassCol);
-    LpCell cc = h.cc;
+    if (h.what == 0 && top && (grassTop || layer == MC_SAND) && h.t * pxA * 16.0 < 1.5 && fog < 0.7)
+        plant = lpPlants(h, ro, rd, pxA, w, tiles, grassTint);
 
-    // Light: the classic per-face shading, the sun, and dark inside corners.
-    float face = top ? 1.0 : (bottom ? 0.5 : (abs(n.x) > 0.5 ? 0.8 : 0.66));
-    float ao = 1.0;
-    if (top && h.what == 0) {
-        float G = h.col.G;
-        float2 c = h.cell;
-        float sx0 = lpColumnNear(c + float2(-1, 0), cc, w).G > G ? 1.0 : 0.0;
-        float sx1 = lpColumnNear(c + float2( 1, 0), cc, w).G > G ? 1.0 : 0.0;
-        float sz0 = lpColumnNear(c + float2(0, -1), cc, w).G > G ? 1.0 : 0.0;
-        float sz1 = lpColumnNear(c + float2(0,  1), cc, w).G > G ? 1.0 : 0.0;
-        float2 f = fract(p.xz);
-        float a00 = lpVertexAO(sx0, sz0, 0.0), a10 = lpVertexAO(sx1, sz0, 0.0);
-        float a01 = lpVertexAO(sx0, sz1, 0.0), a11 = lpVertexAO(sx1, sz1, 0.0);
-        ao = mix(mix(a00, a10, f.x), mix(a01, a11, f.x), f.y);
-    } else if (!top && !bottom && h.what == 0) {
-        float2 cf = h.cell + n.xz;
-        float Gf = lpColumnNear(cf, cc, w).G;
-        ao = mix(0.62, 1.0, smoothstep(0.0, 1.0, p.y - Gf));
-    }
+    float3 col = alb * (mcFaceShade(n) * ao) * lit;
+    if (plant.w < 1e9) col = plant.rgb * lit;
 
-    float sunN = max(dot(n, sky.L), 0.0);
-    float3 light = sky.amb * face * ao + sky.sunCol * sunN * 0.55 * mix(0.85, 1.0, ao);
-    float3 col = alb * light;
-
-    if (mat == M_WATER) {
-        // Water: depth darkens it, the sky shows in it at a glance.
-        col *= exp(-0.22 * waterDepth) * 0.8 + 0.2;
-        float fres = pow(1.0 - saturate(-rd.y), 4.0);
-        col = mix(col, lpSkyColor(reflect(rd, n), sky), 0.15 + 0.6 * fres);
-        // slow texel ripples
-        float2 tw = floor(tc);
-        float rip = hash21(tw + floor(time * 0.6 + hash21(tw) * 3.0));
-        col *= 1.0 + 0.08 * (rip - 0.5) * (1.0 - smoothstep(0.45, 1.3, fwT));
-    }
-
-    // Draw distance: the traced world fades into the flat far land (or, above
-    // the horizon, the sky) of its own direction.
-    // Above the horizon the haze holds off longer: that is the silhouette.
-    float fog = smoothstep(far * (rd.y > 0.0 ? 0.8 : 0.5), far, h.t);
-    if (fog > 0.0) col = mix(col, lpFarLand(ro, rd, sky, w, far), fog);
+    if (fog > 0.0) col = mix(col, lpFarLand(ro, rd, sky, w, far, pxA, time, tiles, maps), fog);
     return col;
 }
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
+                        texture2d_array<float> mcTiles [[texture(8)]],
+                        texture2d_array<float> mcSkins [[texture(10)]],
+                        texture2d_array<float> mcMaps  [[texture(11)]]) {
     float seed = u.seed;
     LpWorld w;
     // A whole number of 7-block cells, so the noise lattices stay on the cell grid.
@@ -859,8 +990,6 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // Angle a pixel subtends here.
     float pxA = 2.0 * k / (1.0 + r2) * (2.0 / minRes);
 
-    LpSky sky = lpSkyFor(u.hour, seed * TWO_PI + 0.9);
-
     // A ray climbing into the sky rises slowly and crosses dozens of empty
     // columns before it clears the tallest tree, and in this projection such
     // rays fill most of the screen. So above the horizon the reach shortens
@@ -874,20 +1003,48 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // before the haze, so the reach (and the step budget) grow with it.
     float reach = max(1.0, (u.altitude + 1.0) / 6.0);
     far *= reach;
-    LpHit h = lpTrace(ro, rd, far, int(float(LP_STEPS) * reach), w);
-    float3 col;
-    if (h.what >= 0) {
-        col = lpShade(h, ro, rd, pxA, far, sky, w, u.time);
-    } else {
-        col = lpFarLand(ro, rd, sky, w, far);
-        col += lpSun(rd, sky, pxA);
-        float2 cl = lpClouds(ro, rd, u.time, seed, pxA);
-        col = mix(col, sky.cloud * cl.x, cl.y);
+    int steps = int(float(LP_STEPS) * reach);
+
+    // Trace; a ray that slips through a leaf's clear texels and out of the
+    // crown is traced on from where it left, once, on a quarter of the
+    // budget, when it is going down onto the ground just under the crown. One
+    // going up is out past the crown into the sky: in this projection the
+    // crowns stand out of the rim against it.
+    LpHit h;
+    float t0 = 0.0;
+    bool deepLeaf = false, walked = false;
+    float3 leafTexel = float3(0.0);
+    for (int pass = 0; pass < 2; ++pass) {
+        h = lpTrace(ro + rd * t0, rd, far - t0, pass == 0 ? steps : steps / 4, w);
+        if (h.what < 0) break;
+        h.t += t0;
+        if (h.what != 1 || h.tree.kind == 3) break;
+        float3 p = ro + rd * h.t;
+        if (floor(p.y - h.n.y * 0.5) < h.logTop) break;      // a log
+        if (pass == 1) { deepLeaf = true; break; }            // a second crown: its mean colour
+        float3 v;
+        float lt = h.logTop;
+        int r = lpLeafWalk(h.tree, ro, rd, pxA, mcTiles, h.t, h.n, v, lt, deepLeaf, leafTexel);
+        walked = r == 0 && !deepLeaf;
+        if (r < 2) { h.cell = v.xz; h.logTop = lt; break; }
+        h.what = -1;
+        if (rd.y > 0.0) break;      // out past the crown into the sky
+        t0 = h.t + 1e-3;
     }
 
-    // Gentle shoulder, display gamma.
-    col = col / (1.0 + col * 0.3);
-    col = pow(max(col, 0.0), 1.0 / 2.2);
+    LpSky sky = lpSkyFor(u.hour, seed * TWO_PI + 0.9);
+    float3 col;
+    if (h.what >= 0) {
+        col = lpShade(h, ro, rd, pxA, far, sky, w, u.time, mcTiles, mcMaps, deepLeaf, walked, leafTexel);
+    } else {
+        col = lpFarLand(ro, rd, sky, w, far, pxA, u.time, mcTiles, mcMaps);
+        col += lpSun(mcSkins, rd, sky, pxA);
+        float2 cl = lpClouds(mcMaps, ro, rd, u.time, seed, pxA);
+        float cb = sky.day;
+        col = mix(col, float3(cb * 0.9 + 0.1, cb * 0.9 + 0.1, cb * 0.85 + 0.15) * cl.x, cl.y);
+    }
+
+    // The textures and the game's colours are already display values.
     col = lerpDither(col, pos);
     return half4(half3(col), 1.0h);
 }
