@@ -113,6 +113,27 @@ func constantName(_ relative: String, dropping root: String, full: Bool = false)
     return String(joined.map { $0.isLetter || $0.isNumber ? $0 : "_" })
 }
 
+/// A strip's animation, from its `.mcmeta`: ticks per frame, and the order the
+/// frames play in when the file lists one (lava plays 0…19 and back, so its
+/// 20 pictures become 38 layers in playing order, and a look just counts up).
+func animation(of relative: String, in root: URL, frames: Int) -> (order: [Int], ticks: Int) {
+    var ticks = 1
+    var order = Array(0..<frames)
+    if let data = try? Data(contentsOf: root.appendingPathComponent(relative + ".mcmeta")),
+       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let animation = json["animation"] as? [String: Any] {
+        if let frametime = animation["frametime"] as? Int { ticks = max(1, frametime) }
+        if let listed = animation["frames"] as? [Any] {
+            let indices = listed.compactMap { entry -> Int? in
+                if let i = entry as? Int { return i }
+                return (entry as? [String: Any])?["index"] as? Int
+            }
+            if !indices.isEmpty, indices.allSatisfy({ $0 >= 0 && $0 < frames }) { order = indices }
+        }
+    }
+    return (order, ticks)
+}
+
 let args = CommandLine.arguments
 guard args.count == 4 else { fail("usage: MinecraftAtlas <textures dir> <out dir> <source label>") }
 let root = URL(fileURLWithPath: args[1]).standardizedFileURL
@@ -160,13 +181,8 @@ for relative in files {
     let folder = String(relative.prefix { $0 != "/" })
 
     if folder == "block", w == tile, h % tile == 0 {
-        let frames = h / tile
-        var ticks = 1
-        let meta = root.appendingPathComponent(relative + ".mcmeta")
-        if let data = try? Data(contentsOf: meta),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let animation = json["animation"] as? [String: Any],
-           let frametime = animation["frametime"] as? Int { ticks = max(1, frametime) }
+        let (order, ticks) = animation(of: relative, in: root, frames: h / tile)
+        let frames = order.count
         let name = uniqueName("MC_", relative, dropping: "block")
         var lines = ["constant int \(name) = \(tileCount);"]
         if frames > 1 {
@@ -174,7 +190,7 @@ for relative in files {
             lines.append("constant int \(name)_TICKS = \(ticks);")
         }
         declare(name, lines, "tiles[\(tileCount)]  \(relative)" + (frames > 1 ? "  \(frames) frames, \(ticks) ticks each" : ""))
-        for f in 0..<frames { tiles.append(contentsOf: layer(picture, top: f * tile, w: tile, h: tile, size: tile)) }
+        for f in order { tiles.append(contentsOf: layer(picture, top: f * tile, w: tile, h: tile, size: tile)) }
         tileCount += frames
     } else if folder == "item", w == tile, h == tile {
         let name = uniqueName("MC_ITEM_", relative, dropping: "item")
@@ -185,19 +201,15 @@ for relative in files {
               FileManager.default.fileExists(atPath: root.appendingPathComponent(relative + ".mcmeta").path) {
         // An animated strip that is not a 16 px tile (flowing water and lava
         // are 32 px wide): one skin layer per frame.
-        let frames = h / w
-        var ticks = 1
-        if let data = try? Data(contentsOf: root.appendingPathComponent(relative + ".mcmeta")),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let animation = json["animation"] as? [String: Any],
-           let frametime = animation["frametime"] as? Int { ticks = max(1, frametime) }
+        let (order, ticks) = animation(of: relative, in: root, frames: h / w)
+        let frames = order.count
         let name = uniqueName("MCS_", relative, dropping: "entity")
         declare(name, ["constant int \(name) = \(skinCount);",
                        "constant float2 \(name)_SIZE = float2(\(w), \(w));",
                        "constant int \(name)_FRAMES = \(frames);",
                        "constant int \(name)_TICKS = \(ticks);"],
                 "skins[\(skinCount)]  \(relative)  \(w)x\(w)  \(frames) frames, \(ticks) ticks each")
-        for f in 0..<frames { skins.append(contentsOf: layer(picture, top: f * w, w: w, h: w, size: skin)) }
+        for f in order { skins.append(contentsOf: layer(picture, top: f * w, w: w, h: w, size: skin)) }
         skinCount += frames
     } else if w <= skin, h <= skin {
         let name = uniqueName("MCS_", relative, dropping: "entity")

@@ -605,13 +605,10 @@ static inline float4 stChest(texture2d_array<float> skins, int axis, float3 n, f
     return mcSkin(skins, MCS_CHEST_NORMAL, px, w);
 }
 
-// The frame of lava_still at `now`.
-// KIT: mcFrame plays a strip straight through, but lava_still.png.mcmeta
-// plays 0..19 and back down (ping-pong), so this steps the game's own order.
+// The frame of lava_still at `now`. The packed strip is already in the
+// game's playing order (0..19 and back), so this just counts up.
 static inline int stLavaFrame(float now) {
-    int n = 2 * MC_LAVA_STILL_FRAMES - 2;
-    int f = int(glmod(floor(now * 20.0 / float(MC_LAVA_STILL_TICKS)), float(n)));
-    return MC_LAVA_STILL + (f < MC_LAVA_STILL_FRAMES ? f : n - f);
+    return mcFrame(MC_LAVA_STILL, MC_LAVA_STILL_FRAMES, MC_LAVA_STILL_TICKS, now);
 }
 
 // ---------------------------------------------------------------------------
