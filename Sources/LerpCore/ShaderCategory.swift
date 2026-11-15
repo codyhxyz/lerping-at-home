@@ -17,7 +17,7 @@ public enum LerpShaderCategory {
     /// In the order the selector shows them: places first, then the
     /// photographed captures, then the abstract kinds from most to least
     /// structured.
-    public static let shelves = ["Scenes", "Splats", "Fractals", "Simulations",
+    public static let shelves = ["Scenes", "Blocks", "Splats", "Fractals", "Simulations",
                                  "Abstract", "Gradients", "Patterns"]
     public static let other = "Other"
 
