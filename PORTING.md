@@ -553,7 +553,11 @@ shaders here write. The prelude adds, for a shader that requires minecraft:
   addressed in the picture's own pixels, `w` the screen pixel's width in them.
 - The game's conventions, so every look agrees: `mcFaceShade(normal)` (top 1,
   bottom 0.5, z faces 0.8, x faces 0.6), `mcLight(level)` (brightness of light
-  level 0…15), `mcGrassTint` / `mcFoliageTint(mcMaps, temperature, downfall)`,
+  level 0…15), `mcLightmap(blockLevel, skyLevel, day, ambient)` (the game's
+  whole lightmap: warm block light, sky light that blues as it dims, the
+  dimension's ambient, the Brightness option; multiply the texture by it),
+  `mcBright(colour)` (the Brightness option alone), `mcSkyAt(day)` /
+  `mcFogAt(day)` and the `MC_FOG_*` Nether and End fogs, `mcGrassTint` / `mcFoliageTint(mcMaps, temperature, downfall)`,
   `mcGrassSide(mcTiles, uv, footprint, tint)`, `mcFromSRGB(colour)` for a
   colour quoted from the game, and `MC_WATER_TINT`, `MC_SKY_DAY`, `MC_FOG_DAY`.
 

@@ -244,6 +244,45 @@ public enum LerpMinecraft {
         return b / (4.0 - 3.0 * b);
     }
 
+    // The game's Brightness option at its default (50%), which it applies to
+    // everything it lights. Without it a night comes out far darker than the
+    // game shows it.
+    static inline float3 mcBright(float3 v) {
+        float3 c = saturate(v);
+        return mix(c, 1.0 - pow(1.0 - c, float3(4.0)), 0.5);
+    }
+
+    // The game's lightmap: what a face's texture is multiplied by, from the
+    // block-light and sky-light levels (0..15) of the air in front of it.
+    // Block light is warm, sky light goes blue as it dims. `day` is 1 at noon
+    // and 0 at midnight; `ambient` is the dimension's own light, 0 in the
+    // Overworld and 0.1 in the Nether. The Brightness option is included, so
+    // do not apply mcBright on top.
+    static inline float3 mcLightmap(float blockLevel, float skyLevel, float day, float ambient) {
+        float darken = mix(0.2, 1.0, saturate(day));
+        float sky = mix(mcLight(skyLevel), 1.0, ambient) * (darken * 0.95 + 0.05);
+        float blk = mix(mcLight(blockLevel), 1.0, ambient) * 1.5;
+        float3 c = float3(blk, blk * ((blk * 0.6 + 0.4) * 0.6 + 0.4), blk * (blk * blk * 0.6 + 0.4));
+        c += mix(float3(darken, darken, 1.0), float3(1.0), 0.35) * sky;
+        c = mcBright(mix(c, float3(0.75), 0.04));
+        return saturate(mix(c, float3(0.75), 0.04));
+    }
+
+    // Sky and fog through the day, as the game dims them: `day` 1 at noon, 0
+    // at midnight. Night is a very dark blue, not black.
+    static inline float3 mcSkyAt(float day) { return MC_SKY_DAY * saturate(day); }
+    static inline float3 mcFogAt(float day) {
+        float d = saturate(day);
+        return MC_FOG_DAY * float3(d * 0.94 + 0.06, d * 0.94 + 0.06, d * 0.91 + 0.09);
+    }
+    // Fog elsewhere. The Nether has no sky: its fog is everything beyond the blocks.
+    constant float3 MC_FOG_NETHER_WASTES    = float3(0.1816, 0.0443, 0.0381);   // #330808
+    constant float3 MC_FOG_BASALT_DELTAS    = float3(0.4019, 0.3738, 0.4343);   // #685F70
+    constant float3 MC_FOG_SOUL_SAND_VALLEY = float3(0.1526, 0.2746, 0.2693);   // #1B4745
+    constant float3 MC_FOG_CRIMSON_FOREST   = float3(0.1806, 0.0256, 0.0189);   // #330303
+    constant float3 MC_FOG_WARPED_FOREST    = float3(0.0916, 0.0234, 0.0978);   // #1A051A
+    constant float3 MC_FOG_END              = float3(0.6076, 0.5068, 0.6194);   // #A080A0
+
     // Biome tint for grass and for leaves, from the game's colormaps.
     // Plains are temperature 0.8, downfall 0.4; desert 2.0 (clamped), 0;
     // taiga 0.25, 0.8; jungle 0.95, 0.9; swamp 0.8, 0.9.
