@@ -1,39 +1,37 @@
-// Piston Clock — a wall clock built out of blocks, telling the Mac's time.
-// Original work for Lerping@Home. The idea is the redstone display people
-// build in block worlds: every pixel of the digits is a block on a piston,
-// and the time is written by pushing blocks out of a wall and pulling them
-// back in. All art here is procedural; nothing is taken from any game.
+// Piston Clock — a redstone piston display built in Minecraft, telling the
+// Mac's time. Every pixel of the digits is a block on a sticky piston, the
+// seconds are a ring of redstone lamps, and the whole machine stands on a
+// smooth-stone plinth in an ordinary overworld field.
 //
 // lerp-category: Minecraft
+// lerp-requires: minecraft
 // lerp-data: clock
 //
+// - Drawn with the game's own textures (bound at runtime from the copy
+//   installed on this Mac; see PORTING.md, "Minecraft looks"): pistons
+//   (side, inner face, the extended head and arm), redstone lamps lit and
+//   unlit, redstone dust, the masonry, lanterns, grass, logs and leaves, the
+//   sun, the moon's phases and the cloud layer.
 // - The time is real (`lerp-data: clock`): hours and minutes in pistoned
-//   blocks, 3×5 a digit. When the minute turns, the blocks that change slide
-//   out or back in a ripple that runs left to right, a column every
-//   redstone tick or so. Blocks that are off sit one deep in the wall, so a
-//   digit's unused cells show as shadowed pits — the ghost of an 8.
-// - Seconds are a ring of sixty lamps round the wall's edge, lit one a second
-//   clockwise from the top, drained in a sweep as the minute turns. The colon
-//   is two lamps breathing once a second. Two lanterns on the plinth's front
-//   corners give the night a warm key light.
-// - The sky follows the same clock: a square sun by day, a square moon and
-//   blocky stars at night, warm light at dawn and dusk, a deck of flat cube
-//   clouds drifting over. Stills (gallery, snapshots) are midnight, 12:00.
-// - Every frame is a pure function of (time, seed, parameters, hour at time
-//   0). The camera swings slowly round the clock; drag to turn, pinch to zoom.
-// - Seed picks the masonry (stone brick, sandstone, dark tile, red brick),
-//   the land (meadow, snow, dry grass), the hills and trees, and where the
-//   camera's swing starts.
-// - Texels: 16 a face, read with a sharpened four-tap so they stay crisp up
-//   close and soften, then fade to the face's mean, at distance.
-// - GPU cost: about 11 ms a frame at 3456×2234 (night and day). The clock
-//   is walked cell by cell only inside its own box (at most 56 cells, a few
-//   in practice); the ground is walked in 8×8 patches, crossed whole when the
-//   ray is above their hills (bounded by the noise's lattice corners) and
-//   their tree's box, and column by column (at most 96) only where it is not.
-//   Flat patches are hit as a plane. Then one shadow ray through the same
-//   code, eight neighbour reads for corner shading (skipped on open ground
-//   and the open wall face), four texel reads.
+//   blocks, 3×5 a digit (in 12-hour time the leading digit can only be a
+//   1, so it is built as a single column, as a player would build it). When the minute turns, a signal runs along the dust
+//   on the plinth and the blocks that change slide out or back behind it,
+//   a column every redstone tick or so. Blocks that are off sit two deep in
+//   the wall, where less light reaches them. The ring of sixty lamps lights one a second clockwise from the
+//   top and goes dark in a sweep as the minute turns; the colon blinks.
+// - Lit the way the game lights: fixed face shading, smooth-lighting corner
+//   occlusion, sky light and block light (lamps and lanterns, level 15,
+//   falling one a block), the game's lightmap colours, sky and fog colours,
+//   sunrise glow, square sun and moon crossing east to west on the hour.
+//   Stills (gallery, snapshots) are midnight, 12:00.
+// - Seed picks the masonry (blackstone and quartz, dark oak and sandstone,
+//   deepslate and gold, nether brick and birch), the biome (plains, snowy plains
+//   with spruce, savanna with acacia), hills, trees, the moon's phase and
+//   where the camera's slow swing starts. Drag to turn, pinch to zoom.
+// - GPU cost: the clock is walked cell by cell only inside its own box; the
+//   ground in 8×8 patches, crossed whole where the ray is above their hills
+//   and tree, column by column only where it is not. No shadow rays (the
+//   game casts none). Texture reads happen once, at the hit.
 //
 // lerp-param: clock    float -1 24   = -1    "Hour (-1 = now)"
 // lerp-param: hour24   bool          = false "24-hour"
@@ -42,11 +40,10 @@
 // lerp-param: pitch    float -12 40  = 0     "Tilt"
 // lerp-param: magnify  float -1 0.8  = 0     "Zoom"
 //
-// lerp-preset: "Oak and Sandstone" masonry=2
-// lerp-preset: "Dark Tile" masonry=3
+// lerp-preset: "Dark Oak and Sandstone" masonry=2
+// lerp-preset: "Deepslate and Gold" masonry=3
 
 constant int   PC_STEPS        = 96;    // ground columns a view ray may cross
-constant int   PC_SHADOW_STEPS = 40;    // and a shadow ray
 constant float PC_FOCAL        = 1.9;
 constant float PC_TOP          = 18.0;   // nothing solid at or above this y
 constant float PC_RANGE        = 60.0;   // fog is total by here
@@ -66,7 +63,9 @@ constant int PC_DIGIT  = 10;  // a pushed block
 constant int PC_ROD    = 11;  // a piston arm
 constant int PC_PATH   = 12;
 constant int PC_TRIM   = 13;  // pillars and coping
-constant int PC_LANTERN = 14; // the two lanterns on the plinth corners
+constant int PC_LANTERN = 14; // the two lanterns on the plinth corners (a model)
+constant int PC_PISTON = 15;  // a sticky piston's base, behind each display pixel
+constant int PC_HEAD   = 16;  // an extended piston's head
 
 // 3×5 seven-segment glyphs, bit (row*3 + col), row 0 at the top, col 0 left.
 constant uint PC_GLYPH[10] = { 31599u, 18724u, 29671u, 31207u, 18925u,
@@ -79,6 +78,7 @@ struct PcScene {
     float salt;       // terrain / tree seed
     int   biome;      // 0 meadow, 1 snow, 2 dry grass
     int   masonry;    // 1..4
+    bool  h24;        // 24-hour: the leading digit is a full 3×5 digit
 };
 
 // ---------------------------------------------------------------------------
@@ -101,19 +101,20 @@ static inline int pcDigitAt(int x, thread int& cx) {
     return (x < 0 ? 0 : 2) + q / 4;
 }
 
-// Face position of the pushed block in display column (x, y): +1 out, -1 in.
+// Face position of the pushed block in display column (x, y): +1 out, -2 in.
 // Returns -9 when (x, y) is not a display cell.
 static inline float pcCellF(int x, int y, thread const PcScene& S) {
     if (y < 3 || y > 7) return -9.0;
     int cx;
     int k = pcDigitAt(x, cx);
     if (k < 0) return -9.0;
+    if (k == 0 && !S.h24 && cx != 2) return -9.0;   // 12-hour: the leading 1 is one column
     int r = 7 - y;
     int b = r * 3 + cx;
     uint mp = k == 0 ? S.prev.x : (k == 1 ? S.prev.y : (k == 2 ? S.prev.z : S.prev.w));
     uint mn = k == 0 ? S.now.x  : (k == 1 ? S.now.y  : (k == 2 ? S.now.z  : S.now.w));
-    float a = ((mp >> b) & 1u) ? 1.0 : -1.0;
-    float c = ((mn >> b) & 1u) ? 1.0 : -1.0;
+    float a = ((mp >> b) & 1u) ? 1.0 : -2.0;
+    float c = ((mn >> b) & 1u) ? 1.0 : -2.0;
     if (a == c) return c;
     float col = float(x + 8);                 // 0 at the left edge
     float d = 0.075 * col + 0.05 * float(r);
@@ -121,12 +122,11 @@ static inline float pcCellF(int x, int y, thread const PcScene& S) {
     return mix(a, c, p);
 }
 
-// Seconds lamp k (0 at top centre, clockwise): lit at second k, drained in a
-// sweep as the minute turns.
-static inline float pcLampB(float k, float s) {
-    float rise  = saturate((s - k) / 0.3);
-    float drain = 1.0 - saturate((s - 0.013 * k - 0.05) / 0.22);
-    return max(rise, drain);
+// Seconds lamp k (0 at top centre, clockwise): on from second k, switched off
+// in a sweep (a tick or so a lamp) as the minute turns. Lamps switch, they
+// do not fade.
+static inline bool pcLampOn(int k, float s) {
+    return s >= float(k) || s < 0.05 + 0.013 * float(k);
 }
 
 static inline int pcRingIndex(int x, int y) {
@@ -136,15 +136,23 @@ static inline int pcRingIndex(int x, int y) {
     return 42 + (y - 2);                        // x == -11
 }
 
-static inline float pcColonB(float s) {
-    return 0.45 + 0.55 * (0.5 + 0.5 * cos(TWO_PI * s));
+// The lamp cell holding ring index k.
+static inline int2 pcRingCell(int k) {
+    if (k <= 11) return int2(k, 9);
+    if (k <= 18) return int2(11, 8 - (k - 12));
+    if (k <= 41) return int2(11 - (k - 19), 1);
+    if (k <= 48) return int2(-11, 2 + (k - 42));
+    return int2(k - 60, 9);
 }
+
+// The colon: two lamps on for a second, off for a second.
+static inline bool pcColonOn(float s) { return glmod(s, 2.0) < 1.0; }
 
 // ---------------------------------------------------------------------------
 // The world: the clock (a known box, walked cell by cell only inside it) on
 // ground that is a heightfield with trees (walked column by column).
 
-constant float3 PC_CLO = float3(-13.0, 0.0, -7.0);   // the clock's cell bounds
+constant float3 PC_CLO = float3(-13.0, 0.0, -8.0);   // the clock's cell bounds
 constant float3 PC_CHI = float3( 14.0, 11.0, 2.0);   // nothing solid at y >= 11
 
 static inline float pcAmp(float2 p) {
@@ -223,12 +231,13 @@ static int pcClockBlock(int3 c, thread const PcScene& S) {
     if ((c.x == -13 || c.x == 13) && c.z == 1 && c.y <= 2)
         return c.y == 1 ? PC_TRIM : PC_LANTERN;
     int ax = c.x;
-    bool pillar = (ax == -12 || ax == 12) && c.z >= -6 && c.z <= 0 && c.y <= 10;
+    bool pillar = (ax == -12 || ax == 12) && c.z >= -7 && c.z <= 0 && c.y <= 10;
     if (pillar) return PC_TRIM;
-    if (c.y == 10 && ax >= -11 && ax <= 11 && c.z >= -6 && c.z <= -1) return PC_TRIM;
-    if (ax >= -11 && ax <= 11 && c.y >= 1 && c.y <= 9 && c.z >= -5 && c.z <= 0) {
+    if (c.y == 10 && ax >= -11 && ax <= 11 && c.z >= -7 && c.z <= -1) return PC_TRIM;
+    if (ax >= -11 && ax <= 11 && c.y >= 1 && c.y <= 9 && c.z >= -6 && c.z <= 0) {
         bool disp = pcCellF(ax, c.y, S) > -5.0;
-        if (disp && c.z >= -2) return PC_DISP;
+        if (disp && c.z >= -3) return PC_DISP;
+        if (disp && c.z == -4) return PC_PISTON;
         if (c.z == 0) return PC_AIR;
         if (c.z == -1) {
             if (ax == -11 || ax == 11 || c.y == 1 || c.y == 9) return PC_LAMP;
@@ -240,7 +249,7 @@ static int pcClockBlock(int3 c, thread const PcScene& S) {
 }
 
 static inline bool pcInClockBox(int3 c) {
-    return c.x >= -13 && c.x <= 13 && c.y >= 0 && c.y <= 10 && c.z >= -7 && c.z <= 1;
+    return c.x >= -13 && c.x <= 13 && c.y >= 0 && c.y <= 10 && c.z >= -8 && c.z <= 1;
 }
 
 // True when every column within one of c is flat ground at height 0 with no
@@ -260,7 +269,7 @@ static inline bool pcFlatAround(int2 c) {
 static inline bool pcSolidForAO(int3 c, thread const PcScene& S,
                                 thread PcNoiseCache& nc, thread PcTree& T) {
     if (c.y >= int(PC_TOP)) return false;
-    if (pcInClockBox(c)) { int m = pcClockBlock(c, S); return m != PC_AIR && m != PC_DISP; }
+    if (pcInClockBox(c)) { int m = pcClockBlock(c, S); return m != PC_AIR && m != PC_DISP && m != PC_LANTERN; }
     float2 pc = float2(c.xz) + float2(-0.5, 0.5);
     float amp = pcAmp(pc);
     int h = amp * 14.0 < 1.0 ? 0 : pcGroundHC(pc, amp, S.salt, nc);
@@ -281,12 +290,13 @@ struct PcHit {
     float3 n;
     int3   cell;
     int    mat;
-    float  f;      // the pushed block's face position, for PC_DIGIT / PC_ROD
+    float  f;      // the pushed block's face position, for PC_DIGIT / PC_HEAD / PC_ROD
+    int    part;   // lantern: 0 body, 1 cap
 };
 
 static inline PcHit pcMiss() {
     PcHit h;
-    h.t = 1e9; h.mat = PC_AIR; h.n = float3(0.0, 1.0, 0.0); h.cell = int3(0); h.f = 0.0;
+    h.t = 1e9; h.mat = PC_AIR; h.n = float3(0.0, 1.0, 0.0); h.cell = int3(0); h.f = 0.0; h.part = 0;
     return h;
 }
 
@@ -324,17 +334,34 @@ static PcHit pcClockTrace(float3 ro, float3 rd, float3 inv, float tMax, thread c
         int m = pcClockBlock(cell, S);
         float tExit = min(min(tNext.x, tNext.y), tNext.z);
         if (m == PC_DISP) {
+            // The pushed block, the piston head behind it and the arm.
             float f = pcCellF(cell.x, cell.y, S);
-            float3 lo = float3(cell.x, cell.y, f - 1.0), hi = float3(cell.x + 1, cell.y + 1, f);
-            float tb; float3 nb;
-            if (pcBox(ro, inv, lo, hi, tb, nb) && tb <= tExit + 1e-4) {
-                h.t = tb; h.n = nb; h.cell = cell; h.mat = PC_DIGIT; h.f = f; return h;
+            float3 c0 = float3(cell);
+            float best = tExit + 1e-4; float tb; float3 nb; int hm = PC_AIR;
+            if (pcBox(ro, inv, float3(c0.xy, f - 1.0), float3(c0.xy + 1.0, f), tb, nb) && tb <= best) {
+                best = tb; h.n = nb; hm = PC_DIGIT;
             }
-            float3 rlo = float3(cell.x + 0.34, cell.y + 0.34, -2.0);
-            float3 rhi = float3(cell.x + 0.66, cell.y + 0.66, f - 1.0);
-            if (f > -0.98 && pcBox(ro, inv, rlo, rhi, tb, nb) && tb <= tExit + 1e-4) {
-                h.t = tb; h.n = nb; h.cell = cell; h.mat = PC_ROD; h.f = f; return h;
+            if (f > -1.75) {
+                if (pcBox(ro, inv, float3(c0.xy, f - 1.25), float3(c0.xy + 1.0, f - 1.0), tb, nb) && tb <= best) {
+                    best = tb; h.n = nb; hm = PC_HEAD;
+                }
+                if (pcBox(ro, inv, float3(c0.xy + 0.375, -3.0), float3(c0.xy + 0.625, f - 1.25), tb, nb) && tb <= best) {
+                    best = tb; h.n = nb; hm = PC_ROD;
+                }
             }
+            if (hm != PC_AIR) { h.t = best; h.cell = cell; h.mat = hm; h.f = f; return h; }
+        } else if (m == PC_LANTERN) {
+            // KIT: models — the lantern (body 6×7×6 px, cap 4×2×4 px), written
+            // out here until the shared small-model kit lands.
+            float3 c0 = float3(cell);
+            float best = tExit + 1e-4; float tb; float3 nb; int part = -1;
+            if (pcBox(ro, inv, c0 + float3(5, 0, 5) / 16.0, c0 + float3(11, 7, 11) / 16.0, tb, nb) && tb <= best) {
+                best = tb; h.n = nb; part = 0;
+            }
+            if (pcBox(ro, inv, c0 + float3(6, 7, 6) / 16.0, c0 + float3(10, 9, 10) / 16.0, tb, nb) && tb <= best) {
+                best = tb; h.n = nb; part = 1;
+            }
+            if (part >= 0) { h.t = best; h.cell = cell; h.mat = PC_LANTERN; h.part = part; return h; }
         } else if (m != PC_AIR) {
             h.t = tCur; h.n = n; h.cell = cell; h.mat = m; return h;
         }
@@ -508,353 +535,201 @@ static inline float pcRangeT(float3 ro, float3 rd, float R) {
 }
 
 // ---------------------------------------------------------------------------
-// Texels. Each returns a colour for integer texel t (0..15, y up) of a face.
-// `side` is 0 for a top face, 1 for a side, 2 for a bottom.
+// The game's blocks.
 
-static inline float pcN(int2 t, float salt) { return hash21(float2(t) + salt * 31.7); }
+struct PcStyle { int wall, digitSide, digitTop, trimSide, trimTop; };
 
-static float3 pcMasonryTex(int style, int2 t, float salt) {
-    float n = pcN(t, salt);
-    if (style == 2) {                       // dark oak boards
-        int plank = t.y / 4;
-        float tone = 0.85 + 0.3 * hash21(float2(float(plank), salt * 3.0));
-        bool seam = (t.y % 4 == 0) || (t.x == ((plank * 7 + 5) & 15));
-        float grain = (hash21(float2(float(t.y), floor(float(t.x) / 3.0)) + salt) > 0.7) ? 0.85 : 1.0;
-        return float3(0.25, 0.16, 0.09) * tone * grain * (seam ? 0.6 : 1.0) * (0.92 + 0.14 * n);
+static PcStyle pcStyle(int m) {
+    PcStyle st;
+    if (m == 2) {          // dark oak planks, sandstone pixels, stripped dark oak trim
+        st.wall = MC_DARK_OAK_PLANKS; st.digitSide = MC_SANDSTONE; st.digitTop = MC_SANDSTONE_TOP;
+        st.trimSide = MC_STRIPPED_DARK_OAK_LOG; st.trimTop = MC_STRIPPED_DARK_OAK_LOG_TOP;
+    } else if (m == 3) {   // deepslate tiles, gold pixels, polished deepslate trim
+        st.wall = MC_DEEPSLATE_TILES; st.digitSide = MC_GOLD_BLOCK; st.digitTop = MC_GOLD_BLOCK;
+        st.trimSide = MC_POLISHED_DEEPSLATE; st.trimTop = MC_POLISHED_DEEPSLATE;
+    } else if (m == 4) {   // nether bricks, birch plank pixels, stone brick trim
+        st.wall = MC_NETHER_BRICKS; st.digitSide = MC_BIRCH_PLANKS; st.digitTop = MC_BIRCH_PLANKS;
+        st.trimSide = MC_STONE_BRICKS; st.trimTop = MC_STONE_BRICKS;
+    } else {               // polished blackstone bricks, quartz pixels, stone brick trim
+        st.wall = MC_POLISHED_BLACKSTONE_BRICKS; st.digitSide = MC_QUARTZ_BLOCK_SIDE; st.digitTop = MC_QUARTZ_BLOCK_TOP;
+        st.trimSide = MC_STONE_BRICKS; st.trimTop = MC_STONE_BRICKS;
     }
-    if (style == 3) {                       // dark tile, 4×4
-        float3 base = float3(0.20, 0.21, 0.25);
-        bool grout = (t.x % 4 == 0) || (t.y % 4 == 0);
-        float tileTone = 0.85 + 0.3 * hash21(float2(t / 4) + salt * 5.1);
-        return grout ? base * 0.55 : base * tileTone * (0.92 + 0.14 * n);
-    }
-    if (style == 4) {                       // dark red brick, 8×4 with offsets
-        int row = t.y / 4;
-        int bx = (t.x + (row & 1) * 4) & 7;
-        bool mortar = (t.y % 4 == 0) || bx == 0;
-        float tone = 0.8 + 0.4 * hash21(float2(float(row), float((t.x + (row & 1) * 4) / 8)) + salt * 2.3);
-        return mortar ? float3(0.11, 0.06, 0.06) * (0.9 + 0.2 * n)
-                      : float3(0.30, 0.12, 0.11) * tone * (0.88 + 0.2 * n);
-    }
-    // dark stone brick, two courses of 8
-    int row = t.y / 8;
-    int bx = (t.x + (row & 1) * 8) & 15;
-    bool mortar = (t.y % 8 == 0) || bx == 0;
-    float3 base = float3(0.19, 0.19, 0.21);
-    if (mortar) return base * 0.55 * (0.9 + 0.15 * n);
-    float edge = (t.y % 8 == 7) ? 1.12 : ((t.y % 8 == 1) ? 0.9 : 1.0);
-    float crack = (n > 0.93) ? 0.75 : 1.0;
-    return base * edge * crack * (0.86 + 0.26 * n);
+    return st;
 }
 
-static float3 pcDigitTex(int style, int2 t, float salt) {
-    float n = pcN(t, salt);
-    float bev = 1.0;
-    if (t.x == 0 || t.y == 15) bev = 1.12;
-    if (t.x == 15 || t.y == 0) bev = 0.82;
-    bool inner = (t.x == 2 || t.x == 13 || t.y == 2 || t.y == 13) && t.x >= 2 && t.x <= 13 && t.y >= 2 && t.y <= 13;
-    if (style == 2) {        // smooth sandstone on dark oak
-        float3 b = float3(0.86, 0.76, 0.54);
-        float band = (t.y <= 1) ? 0.84 : (t.y >= 14 ? 1.06 : 1.0);
-        return b * band * bev * (0.95 + 0.08 * n);
-    }
-    if (style == 3) {        // gold on dark tile
-        float3 b = float3(0.93, 0.72, 0.26);
-        if ((t.x + t.y) % 7 == 0 && t.x > 2 && t.y > 2) b *= 1.18;
-        return b * bev * (inner ? 0.88 : 1.0) * (0.94 + 0.08 * n);
-    }
-    if (style == 4) {        // pale birch planks on dark brick
-        int plank = t.y / 4;
-        float tone = 0.9 + 0.16 * hash21(float2(float(plank), salt));
-        bool seam = (t.y % 4 == 0) || (t.x == ((plank * 5 + 3) & 15));
-        return float3(0.86, 0.80, 0.64) * tone * (seam ? 0.78 : 1.0) * (0.95 + 0.07 * n);
-    }
-    // quartz-white on dark stone brick
-    float3 b = float3(0.90, 0.88, 0.84);
-    return b * bev * (inner ? 0.93 : 1.0) * (0.96 + 0.06 * n);
+// Texture axes of a face: u to the right as you face it, v downward (the
+// picture's rows), so side faces stand upright and tops have north up.
+static inline void pcFaceAxes(float3 n, thread float3& U, thread float3& V) {
+    if (n.y > 0.5)       { U = float3(1, 0, 0);  V = float3(0, 0, 1); }
+    else if (n.y < -0.5) { U = float3(1, 0, 0);  V = float3(0, 0, -1); }
+    else if (n.z > 0.5)  { U = float3(1, 0, 0);  V = float3(0, -1, 0); }
+    else if (n.z < -0.5) { U = float3(-1, 0, 0); V = float3(0, -1, 0); }
+    else if (n.x > 0.5)  { U = float3(0, 0, -1); V = float3(0, -1, 0); }
+    else                 { U = float3(0, 0, 1);  V = float3(0, -1, 0); }
 }
 
-static float3 pcLampTex(int2 t, float b, float salt) {
-    float n = pcN(t, salt);
-    bool frame = t.x == 0 || t.x == 15 || t.y == 0 || t.y == 15;
-    bool bar = (t.x == 5 || t.x == 10 || t.y == 5 || t.y == 10);
-    float3 off = frame ? float3(0.22, 0.14, 0.09) : (bar ? float3(0.30, 0.19, 0.11) : float3(0.40, 0.27, 0.15));
-    off *= 0.85 + 0.25 * n;
-    float2 cc = abs(float2(t) - 7.5);
-    float core = 1.0 - saturate(max(cc.x, cc.y) / 8.0);
-    float3 on = frame ? float3(0.55, 0.30, 0.12)
-                      : (bar ? float3(0.85, 0.52, 0.20) : float3(1.0, 0.80, 0.45) * (0.8 + 0.35 * core));
-    on *= 0.88 + 0.2 * n;
-    return mix(off, on, b);
+// Redstone dust's colour at power 0..15, as the game computes it (sRGB).
+static inline float3 pcDustColour(float power) {
+    float f = power / 15.0;
+    float3 c = float3(f * 0.6 + (f > 0.0 ? 0.4 : 0.3),
+                      saturate(f * f * 0.7 - 0.5),
+                      saturate(f * f * 0.6 - 0.7));
+    return mcFromSRGB(c);
 }
 
-static float3 pcTexel(int mat, int side, int2 t, float salt, float lampB,
-                      int masonry, int biome) {
-    t = t & 15;
-    float n = pcN(t, salt);
-    switch (mat) {
-        case PC_WALL:   return pcMasonryTex(masonry, t, salt);
-        case PC_DIGIT:  return pcDigitTex(masonry, t, salt);
-        case PC_LAMP:
-        case PC_COLON:  return pcLampTex(t, lampB, salt);
-        case PC_LANTERN: {
-            bool frame = t.x <= 1 || t.x >= 14 || t.y <= 1 || t.y >= 14;
-            bool bar = t.x == 7 || t.x == 8;
-            if (frame || (bar && side == 1)) return float3(0.16, 0.16, 0.18) * (0.8 + 0.4 * n);
-            float2 cc = abs(float2(t) - 7.5);
-            float core = 1.0 - saturate(length(cc) / 8.0);
-            return float3(1.0, 0.74, 0.40) * (0.75 + 0.45 * core) * (0.9 + 0.15 * n);
-        }
-        case PC_TRIM: {
-            // Smooth slab stone: a border and a quiet face.
-            bool border = t.x == 0 || t.x == 15 || t.y == 0 || t.y == 15;
-            float3 b = (masonry == 2) ? float3(0.50, 0.38, 0.24)
-                     : (masonry == 3) ? float3(0.40, 0.41, 0.45)
-                     : (masonry == 4) ? float3(0.46, 0.40, 0.36)
-                                      : float3(0.46, 0.46, 0.48);
-            return b * (border ? 0.82 : 1.0) * (0.95 + 0.08 * n);
-        }
-        case PC_PLINTH: {
-            bool border = t.y == 0 || t.y == 15 || t.x == 0 || t.x == 15;
-            bool mid = side == 1 && (t.y == 7 || t.y == 8);
-            float3 b = float3(0.55, 0.55, 0.56);
-            return b * (border ? 0.8 : (mid ? 0.88 : 1.0)) * (0.92 + 0.12 * n);
-        }
-        case PC_ROD: {
-            float3 b = float3(0.58, 0.47, 0.30);
-            return b * ((t.x % 4 == 0) ? 0.8 : 1.0) * (0.9 + 0.15 * n);
-        }
-        case PC_LOG: {
-            if (side != 1) {
-                float2 cc = abs(float2(t) - 7.5);
-                float ring = max(cc.x, cc.y);
-                bool bark = ring > 6.0;
-                bool line = !bark && (int(ring) % 3 == 1);
-                return bark ? float3(0.30, 0.22, 0.13) * (0.9 + 0.2 * n)
-                            : float3(0.66, 0.52, 0.32) * (line ? 0.82 : 1.0) * (0.92 + 0.1 * n);
-            }
-            bool groove = hash21(float2(float(t.x), salt)) > 0.6;
-            return float3(0.33, 0.25, 0.15) * (groove ? 0.7 : 1.0) * (0.85 + 0.25 * n);
-        }
-        case PC_LEAVES: {
-            float3 b = biome == 2 ? float3(0.30, 0.42, 0.14) : float3(0.17, 0.38, 0.13);
-            if (n < 0.2) return b * 0.45;
-            return b * (0.75 + 0.45 * n);
-        }
-        case PC_PATH: {
-            float3 b = float3(0.52, 0.47, 0.40);
-            if (side == 1 && t.y >= 14) b = float3(0.55, 0.50, 0.42);
-            return b * (0.78 + 0.4 * n * n);
-        }
-        default: break;
-    }
-    float3 dirt = float3(0.42, 0.29, 0.19) * (0.8 + 0.35 * n);
-    if (n > 0.9) dirt *= 0.7;
-    float3 top = biome == 1 ? float3(0.90, 0.93, 0.97) * (0.93 + 0.08 * n)
-               : biome == 2 ? float3(0.62, 0.62, 0.30) * (0.82 + 0.3 * n)
-                            : float3(0.33, 0.55, 0.22) * (0.8 + 0.35 * n);
-    if (mat == PC_DIRT) return dirt;
-    if (side == 0) return top;
-    if (side == 2) return dirt;
-    int fringe = 13 - int(pcN(int2(t.x, 99), salt) * 2.5);
-    return t.y >= fringe ? top * 0.92 : dirt;
+// Power on the dust line along the plinth's front at column x: the signal
+// that runs out at the turn of the minute, ahead of the pistons.
+static inline float pcDustPower(int x, float s) {
+    float t0 = 0.075 * float(x + 8) - 0.1;
+    return (s >= t0 && s < t0 + 1.2) ? 15.0 : 0.0;
 }
 
-static inline float3 pcMean(int mat, float lampB, int masonry, int biome, int side) {
-    switch (mat) {
-        case PC_WALL:
-            return masonry == 2 ? float3(0.22, 0.14, 0.08) : masonry == 3 ? float3(0.19, 0.20, 0.24)
-                 : masonry == 4 ? float3(0.24, 0.10, 0.09) : float3(0.18, 0.18, 0.20);
-        case PC_DIGIT:
-            return masonry == 2 ? float3(0.85, 0.75, 0.53) : masonry == 3 ? float3(0.92, 0.71, 0.26)
-                 : masonry == 4 ? float3(0.82, 0.77, 0.61) : float3(0.89, 0.87, 0.83);
-        case PC_LAMP: case PC_COLON:
-            return mix(float3(0.36, 0.24, 0.13), float3(0.92, 0.70, 0.38), lampB);
-        case PC_TRIM:
-            return masonry == 2 ? float3(0.49, 0.37, 0.23) : masonry == 3 ? float3(0.39, 0.40, 0.44)
-                 : masonry == 4 ? float3(0.45, 0.39, 0.35) : float3(0.45, 0.45, 0.47);
-        case PC_PLINTH: return float3(0.53, 0.53, 0.54);
-        case PC_LANTERN: return float3(0.62, 0.46, 0.27);
-        case PC_ROD:    return float3(0.55, 0.45, 0.29);
-        case PC_LOG:    return side == 1 ? float3(0.31, 0.24, 0.14) : float3(0.55, 0.43, 0.27);
-        case PC_LEAVES: return biome == 2 ? float3(0.29, 0.40, 0.14) : float3(0.16, 0.36, 0.12);
-        case PC_PATH:   return float3(0.47, 0.43, 0.36);
-        default: break;
+// ---------------------------------------------------------------------------
+// Light, as the game does it: sky light and block light levels 0..15.
+
+static inline float pcL1(float3 a, float3 b) { float3 d = abs(a - b); return d.x + d.y + d.z; }
+
+// Block light at the air cell in front of a face, from lit lamps and the
+// lanterns: 15 at a source, one level less per block.
+static float pcBlockLevel(float3 sp, float s) {
+    float lvl = 0.0;
+    lvl = max(lvl, 15.0 - pcL1(sp, float3(-12.5, 2.25, 1.5)));
+    lvl = max(lvl, 15.0 - pcL1(sp, float3( 13.5, 2.25, 1.5)));
+    if (pcColonOn(s)) {
+        lvl = max(lvl, 15.0 - pcL1(sp, float3(0.5, 4.5, -0.5)));
+        lvl = max(lvl, 15.0 - pcL1(sp, float3(0.5, 6.5, -0.5)));
     }
-    float3 dirt = float3(0.42, 0.29, 0.19);
-    float3 top = biome == 1 ? float3(0.88, 0.91, 0.95) : biome == 2 ? float3(0.60, 0.60, 0.29)
-                            : float3(0.33, 0.55, 0.22);
-    if (mat == PC_DIRT || side == 2) return dirt;
-    return side == 0 ? top : mix(dirt, top, 0.2);
+    // The ring: its nearest lamp, and the ends of the run that is lit.
+    int2 q = int2(clamp(floor(sp.xy), float2(-11.0, 1.0), float2(11.0, 9.0)));
+    if (q.x > -11 && q.x < 11 && q.y > 1 && q.y < 9) {
+        int dl = q.x + 11, dr = 11 - q.x, db = q.y - 1, dt = 9 - q.y;
+        int m = min(min(dl, dr), min(db, dt));
+        if (m == dl) q.x = -11; else if (m == dr) q.x = 11; else if (m == db) q.y = 1; else q.y = 9;
+    }
+    int kn = pcRingIndex(q.x, q.y);
+    int kl = int(floor(s));
+    int kc[3] = { kn, 0, min(kl, 59) };
+    for (int i = 0; i < 3; ++i) {
+        if (!pcLampOn(kc[i], s)) continue;
+        int2 c = pcRingCell(kc[i]);
+        lvl = max(lvl, 15.0 - pcL1(sp, float3(float(c.x) + 0.5, float(c.y) + 0.5, -0.5)));
+    }
+    return clamp(lvl, 0.0, 15.0);
 }
 
 // ---------------------------------------------------------------------------
 // Sky.
 
-struct PcLight {
-    float3 dir;       // toward the sun or moon
-    float3 col;       // its light
-    float3 amb;       // sky light
-    float3 zenith, horizon;
-    float  day;       // 0 night .. 1 day
-    float  dusk;      // warm-horizon weight
-    float  isSun;
+struct PcSky {
+    float3 sun;       // toward the sun (east +x to west -x, through the zenith)
+    float  alt;       // its elevation, sine
+    float  dayF;      // the game's sky brightness, 0..1
+    float3 sky, fog;
+    float  fan;       // sunrise / sunset glow strength
+    float3 fanCol;
 };
 
-static PcLight pcLight(float hour, float rise, float set) {
-    PcLight L;
-    float alt, phase;
-    bool up = hour >= rise && hour <= set;
-    if (up) {
-        phase = (hour - rise) / (set - rise);
-        alt = sin(PI * phase);
+static PcSky pcSkyState(float hour, float rise, float set) {
+    PcSky K;
+    float a;
+    if (hour >= rise && hour <= set) {
+        a = PI * (hour - rise) / (set - rise);
     } else {
         float night = 24.0 - (set - rise);
-        phase = glmod(hour - set, 24.0) / night;
-        alt = -sin(PI * phase);
+        a = PI + PI * glmod(hour - set, 24.0) / night;
     }
-    float day = smoothstep(-0.12, 0.25, alt);
-    float dusk = (1.0 - smoothstep(0.05, 0.4, abs(alt))) ;
-    float a = PI * phase;
-    // East (+x) to west across the clock's front, a little to its right.
-    float3 d = normalize(float3(cos(a), 0.12 + 0.95 * sin(a), 0.62));
-    float ca = cos(0.45), sa = sin(0.45);
-    d.xz = float2(ca * d.x - sa * d.z, sa * d.x + ca * d.z);
-    L.dir = d;
-    L.isSun = up ? 1.0 : 0.0;
-    float3 sunCol = mix(float3(1.0, 0.55, 0.28), float3(1.0, 0.94, 0.84), smoothstep(0.05, 0.45, alt));
-    float3 moonCol = float3(0.42, 0.52, 0.78);
-    L.col = up ? sunCol * (0.25 + 0.95 * smoothstep(0.0, 0.3, alt))
-               : moonCol * smoothstep(0.0, 0.25, -alt);
-    L.amb = mix(float3(0.05, 0.06, 0.10), float3(0.30, 0.37, 0.48), day);
-    L.zenith  = mix(float3(0.006, 0.010, 0.030), float3(0.25, 0.45, 0.80), day);
-    L.horizon = mix(float3(0.030, 0.040, 0.075), float3(0.62, 0.74, 0.88), day);
-    L.horizon = mix(L.horizon, float3(0.85, 0.45, 0.25), dusk * 0.75);
-    L.zenith  = mix(L.zenith, float3(0.20, 0.20, 0.38), dusk * 0.5);
-    L.day = day;
-    L.dusk = dusk;
-    return L;
+    K.sun = float3(cos(a), sin(a), 0.0);
+    K.alt = K.sun.y;
+    K.dayF = saturate(K.alt * 2.0 + 0.5);
+    K.sky = mcSkyAt(K.dayF);
+    K.fog = mcFogAt(K.dayF);
+    K.fan = 0.0; K.fanCol = float3(0.0);
+    if (abs(K.alt) <= 0.4) {
+        float g = K.alt / 0.4 * 0.5 + 0.5;
+        float al = 1.0 - (1.0 - sin(g * PI)) * 0.99;
+        K.fan = al * al;
+        K.fanCol = mcFromSRGB(float3(g * 0.3 + 0.7, g * g * 0.7 + 0.2, 0.2));
+    }
+    return K;
 }
 
-static float3 pcSkyBase(float3 rd, thread const PcLight& L) {
-    float h = saturate(rd.y * 1.6 + 0.05);
-    return mix(L.horizon, L.zenith, sqrt(h));
+// The sunrise glow leaning over the horizon on the sun's side.
+static inline float pcFanWeight(float3 rd, thread const PcSky& K) {
+    if (K.fan <= 0.0) return 0.0;
+    float side = K.sun.x >= 0.0 ? 1.0 : -1.0;
+    float2 h = normalize(rd.xz + float2(1e-5, 0.0));
+    float toward = saturate(h.x * side);
+    return K.fan * toward * toward * (1.0 - smoothstep(-0.05, 0.5, rd.y));
 }
 
-static float3 pcSky(float3 ro, float3 rd, thread const PcLight& L, float time, float px) {
-    float3 col = pcSkyBase(rd, L);
+static float3 pcSky(float3 ro, float3 rd, thread const PcSky& K, float time, float px, int moonPhase,
+                    texture2d_array<float> mcSkins, texture2d_array<float> mcMaps) {
+    float3 col = mix(K.fog, K.sky, smoothstep(0.0, 0.3, rd.y));
+    col = mix(col, K.fanCol, pcFanWeight(rd, K));
 
-    // Stars: square points on a slowly turning dome.
-    if (L.day < 0.9 && rd.y > 0.0) {
+    // Stars: small squares on a turning dome, brighter as the night deepens.
+    float starB = saturate(0.25 - K.alt * 2.0) * 0.5;
+    if (starB > 0.0 && rd.y > 0.0) {
         float3 r = rd;
         float a = time * 0.0015;
         r.xz = float2(cos(a) * r.x - sin(a) * r.z, sin(a) * r.x + cos(a) * r.z);
         float2 sp = r.xz / (r.y + 0.35) * 70.0;
         float2 ci = floor(sp);
-        float hs = hash21(ci + 7.7);
-        if (hs > 0.985) {
-            float2 fo = sp - ci;
-            float sz = 0.18 + 0.2 * hash21(ci + 1.3);
-            float2 dd = abs(fo - 0.5);
+        if (hash21(ci + 7.7) > 0.985) {
+            float2 dd = abs(sp - ci - 0.5);
+            float sz = 0.15 + 0.15 * hash21(ci + 1.3);
             float w = 70.0 * px * 0.7 + 0.02;
             float m = 1.0 - smoothstep(sz - w, sz + w, max(dd.x, dd.y));
-            col += m * (1.0 - L.day) * 0.7 * smoothstep(0.0, 0.25, rd.y) * float3(0.85, 0.9, 1.0);
+            col += m * starB * smoothstep(0.0, 0.2, rd.y);
         }
     }
 
-    // The square sun or moon.
-    float3 Ld = L.dir;
-    float cd = dot(rd, Ld);
-    if (cd > 0.0) {
-        float3 t1 = normalize(cross(float3(0.0, 1.0, 0.0), Ld));
-        float3 t2 = cross(Ld, t1);
-        float2 q = float2(dot(rd, t1), dot(rd, t2)) / cd;
-        float size = L.isSun > 0.5 ? 0.075 : 0.055;
-        float e = max(abs(q.x), abs(q.y));
-        float w = px * 1.2;
-        float disc = 1.0 - smoothstep(size - w, size + w, e);
-        if (L.isSun > 0.5) {
-            col += disc * float3(1.6, 1.45, 1.1) * smoothstep(-0.05, 0.05, Ld.y);
-            col += float3(1.0, 0.7, 0.4) * 0.25 * pow(saturate(cd), 40.0) * smoothstep(-0.05, 0.05, Ld.y);
-        } else {
-            int2 mt = int2(floor((q / size * 0.5 + 0.5) * 8.0));
-            float crater = hash21(float2(mt) + 4.0) > 0.7 ? 0.78 : 1.0;
-            col = mix(col, float3(0.86, 0.88, 0.95) * crater, disc * smoothstep(-0.05, 0.05, Ld.y));
-            col += float3(0.25, 0.3, 0.45) * 0.12 * pow(saturate(cd), 30.0);
-        }
+    // Sun and moon: the game's square textures, added to the sky.
+    float3 axisZ = float3(0.0, 0.0, 1.0);
+    for (int i = 0; i < 2; ++i) {
+        float3 d = i == 0 ? K.sun : -K.sun;
+        float cd = dot(rd, d);
+        if (cd <= 0.0) continue;
+        float3 t2 = cross(d, axisZ);
+        float2 q = float2(dot(rd, axisZ), dot(rd, t2)) / cd;
+        float half_ = i == 0 ? 0.15 : 0.10;
+        if (max(abs(q.x), abs(q.y)) >= half_) continue;
+        float2 pix = (q / (2.0 * half_) + 0.5) * 32.0;
+        int layer = i == 0 ? MCS_ENVIRONMENT_CELESTIAL_SUN : moonPhase;
+        float w = px / (2.0 * half_) * 32.0;
+        float4 c = mcSkin(mcSkins, layer, pix, w);
+        col += c.rgb * c.a * smoothstep(-0.03, 0.03, rd.y);
     }
 
-    // A deck of flat, square-edged clouds.
-    if (rd.y > 0.02) {
-        float tc = (34.0 - ro.y) / rd.y;
-        float2 cp = ro.xz + rd.xz * tc + float2(time * 0.35, time * 0.08);
-        float2 cell = floor(cp / 6.0);
-        float cv = valueNoise(cell * 0.23 + 11.0) * 0.7 + hash21(cell) * 0.3;
-        float cover = step(0.6, cv);
-        float fade = 1.0 - smoothstep(90.0, 260.0, tc);
-        float3 cc = mix(float3(0.10, 0.11, 0.16), float3(0.97, 0.97, 0.98), L.day);
-        cc = mix(cc, float3(1.0, 0.72, 0.55), L.dusk * 0.5);
-        col = mix(col, cc, cover * fade * 0.85);
+    // The cloud layer: clouds.png, a texel to 12 blocks, drifting east.
+    if (rd.y > 0.01) {
+        float tc = (120.0 - ro.y) / rd.y;
+        float2 cp = ro.xz + rd.xz * tc - float2(time * 0.6, 0.0);
+        float2 pix = glmod2(cp / 12.0, 256.0);
+        float w = tc * px / 12.0 / max(rd.y, 0.15);
+        float4 c = mcMap(mcMaps, MCM_ENVIRONMENT_CLOUDS, pix, w);
+        float3 cc = mix(float3(0.08, 0.08, 0.11), float3(1.0), K.dayF);
+        cc = mix(cc, K.fanCol, 0.4 * K.fan);
+        float fade = 1.0 - smoothstep(300.0, 900.0, tc);
+        col = mix(col, cc, 0.8 * c.a * fade);
     }
     return col;
 }
 
-// ---------------------------------------------------------------------------
-// Light from the lamps.
-
-static float pcRingParam(float2 q) {
-    if (q.y >= 9.5 - 1e-3) return q.x >= 0.0 ? q.x : 60.0 + q.x;
-    if (q.x >= 11.5 - 1e-3) return 21.0 - q.y;
-    if (q.y <= 1.5 + 1e-3) return 31.0 - q.x;
-    return 40.0 + q.y;
-}
-
-static float3 pcLampLight(float3 p, float3 n, float s) {
-    const float2 lo = float2(-10.5, 1.5), hi = float2(11.5, 9.5);
-    float2 q = clamp(p.xy, lo, hi);
-    if (all(q == p.xy)) {
-        float dl = p.x - lo.x, dr = hi.x - p.x, db = p.y - lo.y, dt = hi.y - p.y;
-        float m = min(min(dl, dr), min(db, dt));
-        if (m == dl) q.x = lo.x; else if (m == dr) q.x = hi.x; else if (m == db) q.y = lo.y; else q.y = hi.y;
-    }
-    float up = pcRingParam(q) - 0.5;
-    float k0 = floor(up);
-    float fr = up - k0;
-    float b = mix(pcLampB(glmod(k0, 60.0), s), pcLampB(glmod(k0 + 1.0, 60.0), s), fr);
-    float3 v = float3(q, 0.45) - p;
-    float d2 = dot(v, v);
-    float ndl = saturate((dot(n, v * rsqrt(d2)) + 0.35) / 1.35);
-    float3 lampCol = float3(1.0, 0.62, 0.28);
-    float3 res = lampCol * b * ndl * 2.2 / (1.0 + 1.1 * d2);
-
-    // The lanterns.
-    for (int i = 0; i < 2; ++i) {
-        float3 lv = float3(i == 0 ? -12.5 : 13.5, 2.5, 1.5) - p;
-        float l2 = dot(lv, lv);
-        float ln = saturate((dot(n, lv * rsqrt(l2)) + 0.2) / 1.2);
-        res += float3(1.0, 0.66, 0.34) * ln * 3.0 / (1.0 + 0.55 * l2);
-    }
-
-    // The colon.
-    float cb = pcColonB(s);
-    for (int i = 0; i < 2; ++i) {
-        float3 cv = float3(0.5, i == 0 ? 4.5 : 6.5, 0.45) - p;
-        float c2 = dot(cv, cv);
-        float cn = saturate((dot(n, cv * rsqrt(c2)) + 0.35) / 1.35);
-        res += lampCol * cb * cn * 0.9 / (1.0 + 1.6 * c2);
-    }
-    return res;
-}
-
-// ---------------------------------------------------------------------------
-
 static inline float pcVertexAO(bool s1, bool s2, bool c) {
-    return (s1 && s2) ? 0.0 : (3.0 - float(s1) - float(s2) - float(c)) / 3.0;
+    // The game's smooth lighting: each solid neighbour counts 0.2 of open air.
+    bool cc = c || (s1 && s2);
+    return (1.0 + (s1 ? 0.2 : 1.0) + (s2 ? 0.2 : 1.0) + (cc ? 0.2 : 1.0)) * 0.25;
 }
+
+// ---------------------------------------------------------------------------
 
 fragment half4 lerpMain(float4 pos [[position]],
                         constant LerpUniforms& u [[buffer(0)]],
-                        constant LerpClock& clock [[buffer(1)]]) {
+                        constant LerpClock& clock [[buffer(1)]],
+                        texture2d_array<float> mcTiles [[texture(8)]],
+                        texture2d_array<float> mcSkins [[texture(10)]],
+                        texture2d_array<float> mcMaps  [[texture(11)]]) {
     float2 uv = lerpUV(pos, u.resolution);
     float minRes = min(u.resolution.x, u.resolution.y);
     float xExt = u.resolution.x / minRes;
@@ -867,15 +742,27 @@ fragment half4 lerpMain(float4 pos [[position]],
 
     PcScene S;
     S.sec = daySec - 60.0 * float(minute);
+    S.h24 = h24;
     S.now = pcDigits(minute, h24);
     S.prev = pcDigits((minute + 1439) % 1440, h24);
     float sh = fract(u.seed * 7.31 + 0.13);
     S.salt = floor(u.seed * 977.0) * 0.731;
     S.biome = int(fract(u.seed * 3.71 + 0.4) * 3.0);
-    if (S.biome == 2 && fract(u.seed * 13.3) < 0.5) S.biome = 0;   // meadow most often
+    if (S.biome == 2 && fract(u.seed * 13.3) < 0.5) S.biome = 0;   // plains most often
     S.masonry = u.masonry > 0 ? u.masonry : 1 + int(sh * 4.0);
+    PcStyle st = pcStyle(S.masonry);
+    int moonPhase = MCS_ENVIRONMENT_CELESTIAL_MOON_FULL_MOON;
+    {
+        int ph = int(fract(u.seed * 5.17 + 0.3) * 8.0);
+        if (ph == 1) moonPhase = MCS_ENVIRONMENT_CELESTIAL_MOON_WANING_GIBBOUS;
+        else if (ph == 2) moonPhase = MCS_ENVIRONMENT_CELESTIAL_MOON_THIRD_QUARTER;
+        else if (ph == 3) moonPhase = MCS_ENVIRONMENT_CELESTIAL_MOON_WANING_CRESCENT;
+        else if (ph == 4) moonPhase = MCS_ENVIRONMENT_CELESTIAL_MOON_WAXING_CRESCENT;
+        else if (ph == 5) moonPhase = MCS_ENVIRONMENT_CELESTIAL_MOON_FIRST_QUARTER;
+        else if (ph == 6) moonPhase = MCS_ENVIRONMENT_CELESTIAL_MOON_WAXING_GIBBOUS;
+    }
 
-    PcLight L = pcLight(hour, clock.sunrise, clock.sunset);
+    PcSky K = pcSkyState(hour, clock.sunrise, clock.sunset);
 
     // --- The camera: a slow swing round the clock.
     float tc = u.time + u.seed * 1777.0;
@@ -889,102 +776,139 @@ fragment half4 lerpMain(float4 pos [[position]],
     float3 right = normalize(cross(fwd, upHint));
     lerpOrbit(u.yaw, u.pitch, u.magnify, pivot, upHint, ro, right, fwd);
     float3 up = cross(right, fwd);
-    float3 rd = normalize(uv.x * right + uv.y * up + PC_FOCAL * fwd);
+    float3 dU = uv.x * right + uv.y * up + PC_FOCAL * fwd;    // unnormalised ray
+    float3 rd = normalize(dU);
     float px = 2.0 / (PC_FOCAL * minRes);   // radians a pixel
 
     float time = u.time + u.seed * 500.0;
     float3 col;
-    // One trace routine runs twice — the view ray, then (for a lit face) the
-    // shadow ray toward the sun or moon — from a loop the compiler cannot
-    // unroll, so its code exists once.
-    PcHit h = pcMiss();
-    float shadow = 0.0;
-    {
-        float3 o = ro, d = rd;
-        float tm = pcRangeT(ro, rd, PC_RANGE + 2.0);
-        int steps = PC_STEPS;
-        int passes = 2 + int(u.seed > 4.0);
-        for (int pass = 0; pass < passes; ++pass) {
-            PcHit r = pcTrace(o, d, tm, steps, S);
-            if (pass > 0) { shadow = r.mat == PC_AIR ? 1.0 : 0.0; break; }
-            h = r;
-            if (h.mat == PC_AIR) break;
-            float3 hp = ro + rd * h.t;
-            if (dot(h.n, L.dir) <= 0.0 || max(L.col.r, L.col.b) <= 0.005) break;
-            if (smoothstep(24.0, PC_RANGE, length(hp.xz - float2(0.5, 0.0))) > 0.97) break;
-            o = hp + h.n * 2e-3; d = L.dir; tm = 40.0; steps = PC_SHADOW_STEPS;
-        }
-    }
+    PcHit h = pcTrace(ro, rd, pcRangeT(ro, rd, PC_RANGE + 2.0), PC_STEPS, S);
 
     float3 hitP = ro + rd * min(h.t, 1e4);
     float fogAt = smoothstep(24.0, PC_RANGE, length(hitP.xz - float2(0.5, 0.0)));
+    float3 fogCol = mix(K.fog, K.fanCol, pcFanWeight(rd, K));
     if (h.mat == PC_AIR) {
-        col = pcSky(ro, rd, L, time, px);
+        col = pcSky(ro, rd, K, time, px, moonPhase, mcSkins, mcMaps);
     } else if (fogAt > 0.985) {
-        col = pcSkyBase(rd, L);     // all but lost in the fog: skip the shading
+        col = fogCol;     // all but lost in the fog: skip the shading
     } else {
         float3 p = hitP;
         float3 n = h.n;
 
-        // Face coordinates: u across, v up (or along z on tops).
+        // Ray differentials: how far the hit moves across one screen pixel.
+        float dn = dot(dU, n);
+        float tP = dot(p - ro, n) / dn;
+        float3 ddx = right * (2.0 / minRes), ddy = up * (2.0 / minRes);
+        float3 dpdx = tP * (ddx - dU * (dot(ddx, n) / dn));
+        float3 dpdy = tP * (ddy - dU * (dot(ddy, n) / dn));
+
+        float3 U, V;
+        pcFaceAxes(n, U, V);
         float3 lp = p;
-        if (h.mat == PC_DIGIT) lp.z -= h.f;
-        float2 fuv;
-        int side;
-        if (abs(n.y) > 0.5) { fuv = float2(lp.x, lp.z * -n.y); side = n.y > 0.0 ? 0 : 2; }
-        else if (abs(n.x) > 0.5) { fuv = float2(lp.z * n.x, lp.y); side = 1; }
-        else { fuv = float2(-lp.x * n.z, lp.y); side = 1; }
+        if (h.mat == PC_DIGIT) lp.z -= h.f;            // the block's own frame
+        float2 fuv = float2(dot(lp, U), dot(lp, V));
+        float2 gx = float2(dot(dpdx, U), dot(dpdx, V)), gy = float2(dot(dpdy, U), dot(dpdy, V));
+        float foot = max(length(dpdx), length(dpdy));
+        bool top = n.y > 0.5, bottom = n.y < -0.5;
 
-        // Lamp state for this block.
-        float lampB = 0.0;
-        if (h.mat == PC_LAMP) lampB = pcLampB(float(pcRingIndex(h.cell.x, h.cell.y)), S.sec);
-        else if (h.mat == PC_COLON) lampB = pcColonB(S.sec);
-
-        float salt = hash21(float2(h.cell.xz) + float(h.cell.y) * 3.7 + float(h.mat));
-        int texMat = h.mat;
-        // Logs: rings on top/bottom.
-        // Texel footprint, in texels.
-        float ndv = max(abs(dot(n, rd)), 0.2);
-        float w = 16.0 * h.t * px / ndv;
-        float2 tcd = fuv * 16.0 - 0.5;
-        float2 i0 = floor(tcd);
-        float2 fr = tcd - i0;
-        float2 a = saturate((fr - 0.5) / max(w, 1e-3) + 0.5);
-        int2 ti = int2(i0);
-        // Four taps through one copy of the texel code (the loop count is
-        // opaque to the compiler, which keeps it from unrolling).
-        float3 alb = float3(0.0);
-        int taps = w >= 3.0 ? 0 : 4 + int(u.seed > 4.0);   // past 3 texels the mean stands alone
-        for (int k = 0; k < taps; ++k) {
-            int2 o = int2(k & 1, k >> 1);
-            float2 wt = select(1.0 - a, a, bool2(o != 0));
-            alb += wt.x * wt.y * pcTexel(texMat, side, ti + o, salt, lampB, S.masonry, S.biome);
+        float3 alb;
+        int layer = MC_STONE;
+        float3 tint = float3(1.0);
+        bool special = false;
+        float3 grassTint = mcGrassTint(mcMaps, S.biome == 2 ? 1.0 : (S.biome == 1 ? 0.0 : 0.8),
+                                       S.biome == 2 ? 0.0 : (S.biome == 1 ? 0.5 : 0.4));
+        switch (h.mat) {
+            case PC_WALL:   layer = st.wall; break;
+            case PC_DIGIT:  layer = (top || bottom) ? st.digitTop : st.digitSide; break;
+            case PC_TRIM:   layer = (top || bottom) ? st.trimTop : st.trimSide; break;
+            case PC_PLINTH: layer = MC_SMOOTH_STONE; break;
+            case PC_LAMP:
+                layer = pcLampOn(pcRingIndex(h.cell.x, h.cell.y), S.sec) ? MC_REDSTONE_LAMP_ON : MC_REDSTONE_LAMP; break;
+            case PC_COLON:
+                layer = pcColonOn(S.sec) ? MC_REDSTONE_LAMP_ON : MC_REDSTONE_LAMP; break;
+            case PC_PISTON: layer = n.z > 0.5 ? MC_PISTON_INNER : MC_PISTON_SIDE; break;
+            case PC_HEAD: {
+                // The head: piston_top on its faces, piston_side's rim on its edges.
+                if (abs(n.z) > 0.5) { layer = MC_PISTON_TOP; break; }
+                float along = abs(n.x) > 0.5 ? -p.y : p.x;
+                fuv = float2(along, (h.f - 1.0) - p.z);
+                float2 ax = abs(n.x) > 0.5 ? float2(-dpdx.y, -dpdx.z) : float2(dpdx.x, -dpdx.z);
+                float2 ay = abs(n.x) > 0.5 ? float2(-dpdy.y, -dpdy.z) : float2(dpdy.x, -dpdy.z);
+                gx = ax; gy = ay;
+                layer = MC_PISTON_SIDE; break;
+            }
+            case PC_ROD: {
+                // The arm: piston_side's top four rows run along its length.
+                float across = abs(n.x) > 0.5 ? fract(p.y) - 0.375 : fract(p.x) - 0.375;
+                fuv = float2(p.z, across);
+                float2 ax = float2(dpdx.z, abs(n.x) > 0.5 ? dpdx.y : dpdx.x);
+                float2 ay = float2(dpdy.z, abs(n.x) > 0.5 ? dpdy.y : dpdy.x);
+                gx = ax; gy = ay;
+                layer = MC_PISTON_SIDE; break;
+            }
+            case PC_LANTERN: {
+                // KIT: models — the lantern's texture layout (body sides from
+                // pixel (0,2), ends from (0,9); cap sides from (1,0), ends (1,10)).
+                float3 bl = h.part == 0 ? float3(5, 0, 5) : float3(6, 7, 6);
+                float3 bh = h.part == 0 ? float3(11, 7, 11) : float3(10, 9, 10);
+                float3 q = (p - float3(h.cell)) * 16.0;
+                float uMin = min(dot(bl, U), dot(bh, U)), vMin = min(dot(bl, V), dot(bh, V));
+                float2 qp = float2(dot(q, U) - uMin, dot(q, V) - vMin);
+                float2 org = h.part == 0 ? ((top || bottom) ? float2(0, 9) : float2(0, 2))
+                                         : ((top || bottom) ? float2(1, 10) : float2(1, 0));
+                float2 lim = h.part == 0 ? ((top || bottom) ? float2(6, 6) : float2(6, 7))
+                                         : ((top || bottom) ? float2(4, 4) : float2(4, 2));
+                fuv = (org + clamp(qp, float2(0.01), lim - 0.01)) / 16.0;
+                layer = mcFrame(MC_LANTERN, MC_LANTERN_FRAMES, MC_LANTERN_TICKS, u.time);
+                break;
+            }
+            case PC_PATH:   layer = top ? MC_DIRT_PATH_TOP : (bottom ? MC_DIRT : MC_DIRT_PATH_SIDE); break;
+            case PC_DIRT:   layer = MC_DIRT; break;
+            case PC_LOG: {
+                bool end = top || bottom;
+                layer = S.biome == 1 ? (end ? MC_SPRUCE_LOG_TOP : MC_SPRUCE_LOG)
+                      : S.biome == 2 ? (end ? MC_ACACIA_LOG_TOP : MC_ACACIA_LOG)
+                                     : (end ? MC_OAK_LOG_TOP : MC_OAK_LOG);
+                break;
+            }
+            case PC_LEAVES: {
+                layer = S.biome == 1 ? MC_SPRUCE_LEAVES : (S.biome == 2 ? MC_ACACIA_LEAVES : MC_OAK_LEAVES);
+                tint = S.biome == 1 ? mcFromSRGB(float3(0x61, 0x99, 0x61) / 255.0)
+                     : mcFoliageTint(mcMaps, S.biome == 2 ? 1.0 : 0.8, S.biome == 2 ? 0.0 : 0.4);
+                break;
+            }
+            default: {   // grass block (snowy in snowy plains)
+                special = true;
+                if (bottom) alb = mcTileAniso(mcTiles, MC_DIRT, fuv, gx, gy).rgb;
+                else if (S.biome == 1) alb = mcTileAniso(mcTiles, top ? MC_SNOW : MC_GRASS_BLOCK_SNOW, fuv, gx, gy).rgb;
+                else if (top) alb = mcTileAniso(mcTiles, MC_GRASS_BLOCK_TOP, fuv, gx, gy).rgb * grassTint;
+                else alb = mcGrassSide(mcTiles, fuv, foot, grassTint);
+                break;
+            }
         }
-        alb = mix(alb, pcMean(texMat, lampB, S.masonry, S.biome, side), smoothstep(0.7, 3.0, w));
+        if (!special) {
+            float4 tx = mcTileAniso(mcTiles, layer, fuv, gx, gy);
+            // Leaves as the game's "fast" setting draws them: opaque.
+            alb = (h.mat == PC_LEAVES) ? mix(float3(0.06, 0.09, 0.04), tx.rgb, tx.a) * tint : tx.rgb * tint;
+        }
 
-        // Corner shading.
+        // Redstone dust along the front of the plinth.
+        if (h.mat == PC_PLINTH && top && h.cell.z == 1 && h.cell.x >= -11 && h.cell.x <= 11) {
+            float4 d = mcTileAniso(mcTiles, MC_REDSTONE_DUST_LINE0, float2(fuv.y, fuv.x), float2(gx.y, gx.x), float2(gy.y, gy.x));
+            alb = mix(alb, d.rgb * pcDustColour(pcDustPower(h.cell.x, S.sec)), d.a);
+        }
+
+        // Smooth lighting: corner occlusion from the cells beside the face.
         float ao = 1.0;
-        float hole = 1.0;     // light that reaches into a piston's hole
-        if (h.mat == PC_DIGIT || h.mat == PC_ROD) {
-            float2 e = abs(fract(fuv) - 0.5);
-            float edge = 0.5 - max(e.x, e.y);
-            float depth = saturate(-p.z);
-            hole = 1.0 - 0.88 * smoothstep(0.0, 0.9, depth);
-            if (n.z > 0.5) ao = 1.0 - 0.5 * depth * (1.0 - smoothstep(0.0, 0.4, edge));
-            else           ao = mix(0.6, 1.0, saturate((p.z + 0.05) * 1.6));
-        } else if (n.y > 0.5 && h.cell.y == -1 && pcFlatAround(h.cell.xz)) {
-            ao = 1.0;   // open ground with nothing standing within a block
-        } else if (n.z > 0.5 && h.cell.z == -1 && abs(h.cell.x) <= 10 && h.cell.y >= 2 && h.cell.y <= 8) {
-            ao = 1.0;   // the wall's face inside the lamp ring: only piston columns
-                        // (counted open) stand in front of it
-        } else {
+        bool open = (n.y > 0.5 && h.cell.y == -1 && pcFlatAround(h.cell.xz))
+                 || (n.z > 0.5 && h.mat == PC_WALL && abs(h.cell.x) <= 10 && h.cell.y >= 2 && h.cell.y <= 8);
+        if (!open && h.mat != PC_LANTERN && h.mat != PC_ROD && h.mat != PC_HEAD) {
             int3 ni = int3(n);
-            int3 ac = h.cell + ni;
+            int3 ac = int3(floor(p + n * 0.5));
             int3 t1 = abs(ni.x) == 1 ? int3(0, 0, 1) : int3(1, 0, 0);
             int3 t2 = abs(ni.y) == 1 ? int3(0, 0, 1) : int3(0, 1, 0);
             PcNoiseCache nc; nc.cell = int2(-99999);
             PcTree T; T.patch = int2(-99999); T.has = false;
-            // Neighbours in order: +t1, -t1, +t2, -t2, then the four corners.
             uint solid = 0u;
             int nAO = 8 + int(u.seed > 4.0);
             for (int k = 0; k < nAO; ++k) {
@@ -994,32 +918,25 @@ fragment half4 lerpMain(float4 pos [[position]],
             }
             bool sA = solid & 1u, sB = solid & 2u, sC = solid & 4u, sD = solid & 8u;
             bool cAC = solid & 16u, cBC = solid & 32u, cAD = solid & 64u, cBD = solid & 128u;
-            float3 fp = p - float3(h.cell);
-            float g1 = dot(fp, float3(t1)), g2 = dot(fp, float3(t2));
+            float g1 = fract(dot(p, float3(t1))), g2 = fract(dot(p, float3(t2)));
             float v00 = pcVertexAO(sB, sD, cBD), v10 = pcVertexAO(sA, sD, cAD);
             float v01 = pcVertexAO(sB, sC, cBC), v11 = pcVertexAO(sA, sC, cAC);
             ao = mix(mix(v00, v10, g1), mix(v01, v11, g1), g2);
-            ao = 0.45 + 0.55 * ao;
         }
 
-        // Flat face shading, as block worlds do it.
-        float faceShade = n.y > 0.5 ? 1.0 : (n.y < -0.5 ? 0.55 : (abs(n.x) > 0.5 ? 0.72 : 0.86));
+        // Light levels at the air in front of the face.
+        float3 sp = p + n * 0.5;
+        float skyLevel = 15.0;
+        if (sp.z < 0.0 && sp.y > 3.0 && sp.y < 8.0 && abs(sp.x - 0.5) < 9.0)
+            skyLevel = 15.0 - ceil(-sp.z);                 // down a piston's hole
+        float blockLevel = pcBlockLevel(sp, S.sec);
+        float3 light = mcLightmap(blockLevel, skyLevel, K.dayF, 0.0);
+        col = alb * mcFaceShade(n) * ao * light;
 
-        float ndl = saturate(dot(n, L.dir));
-        float3 light = L.amb * ao * faceShade + L.col * ndl * shadow * mix(1.0, faceShade, 0.4);
-        light += pcLampLight(p, n, S.sec) * mix(1.0, ao, 0.6);
-        col = alb * light * hole;
-        if (h.mat == PC_LANTERN) col = alb * (1.1 + 0.3 * light);
-        if (h.mat == PC_LAMP || h.mat == PC_COLON) col += alb * lampB * 1.25;
-
-        // Short view distance, measured from the clock.
-        float fd = length(p.xz - float2(0.5, 0.0));
-        float fog = smoothstep(24.0, PC_RANGE, fd);
-        col = mix(col, pcSkyBase(rd, L), fog);
+        // Fog, measured from the clock: a short view distance.
+        col = mix(col, fogCol, fogAt);
     }
 
-    col = max(col, 0.0);
-    col = col / (1.0 + 0.25 * max(col.r, max(col.g, col.b)));   // soft shoulder for the lit lamps
     col = lerpDither(col, pos);
     return half4(half3(col), 1.0h);
 }
