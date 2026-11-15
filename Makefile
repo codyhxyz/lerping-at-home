@@ -401,6 +401,10 @@ minecraft:
 	swiftc -O -o $(BUILD)/MinecraftAtlas scripts/minecraft-atlas.swift
 	$(BUILD)/MinecraftAtlas $(MINECRAFT_SRC)/assets/minecraft/textures "$(MINECRAFT_OUT)" \
 		"$$(basename "$(MINECRAFT_JAR)")$(if $(MINECRAFT_PACK), + $$(basename "$(MINECRAFT_PACK)"))"
+	# The mobs: their box models, dumped from the same installed game, for looks
+	# that say `lerp-requires: minecraft mobs`. Needs the launcher's Java and
+	# python3 with numpy and Pillow; says which is missing if one is.
+	scripts/minecraft-mobs/build.sh "$(MINECRAFT_JAR)" $(MINECRAFT_SRC)/assets/minecraft/textures "$(MINECRAFT_OUT)"
 
 # `make depth-window IMAGE=photo.jpg NAME=beach` — a depth-window look of your
 # own photo. Depth Anything V2 Small (Apple's Core ML conversion, Apache-2.0)

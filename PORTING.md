@@ -573,6 +573,23 @@ shaders here write. The prelude adds, for a shader that requires minecraft:
   model the kit does not have yet. Source and full comments:
   `Sources/LerpCore/MinecraftKit.swift`.
 
+- More of the kit, same calling style (source and comments in
+  `MinecraftKit.swift`):
+  - Low sun: `mcSkyDay(sunY)`, `mcLightDay(sunY)`, `mcSunsetAt(sunY)`,
+    `mcSunsetFan(rd, sun, glow)` and `mcFogToward(fog, glow, look, sun)`, the
+    game's sunrise fan and the fog warmed toward the sun.
+  - `mcGrassSideAniso(tiles, uv, duvdx, duvdy, tint)` for a bank seen at a slant.
+  - `mcCrossFacing` (amethyst clusters and buds on any of six faces),
+    `mcFacePlate`, `mcGlowLichen`, `mcVine`; directions are `MC_DIR_DOWN…EAST`.
+  - `mcChest(skins, layer, origin, facing, …)`, by skin (normal, trapped, ender).
+  - `mcFence(tiles, planksLayer, origin, arms, …)`; with `mcLantern` one block
+    up it is the game's lamp post.
+  - Small trees: `mcTreeGrow(kind, origin, seed)` (`MC_TREE_OAK`, `BIRCH`,
+    `SPRUCE`, grown by the game's rule), `mcTree(…)` (logs, and leaves cut out
+    by their alpha) and `mcTreeShade` for the sky light a canopy takes off the
+    ground. The look decides where trees stand and calls in when a ray
+    enters `mcTreeBounds`.
+
 **Mobs.** A look that says `// lerp-requires: minecraft mobs` also gets the
 game's mobs, drawn from their real skins on the game's own box models (the
 geometry is dumped from the installed game by `make minecraft`, so it is
