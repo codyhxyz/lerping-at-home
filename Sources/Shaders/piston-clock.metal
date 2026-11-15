@@ -4,7 +4,7 @@
 // and the time is written by pushing blocks out of a wall and pulling them
 // back in. All art here is procedural; nothing is taken from any game.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 // lerp-data: clock
 //
 // - The time is real (`lerp-data: clock`): hours and minutes in pistoned

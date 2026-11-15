@@ -232,7 +232,7 @@ define STAGE_DMG
 		-srcfolder "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
 endef
 
-.PHONY: splats images depth-window photo-window photo-window-setup all preview playground playground-build saver saver-build midi-deps \
+.PHONY: splats images minecraft depth-window photo-window photo-window-setup all preview playground playground-build saver saver-build midi-deps \
         verify-rotation pulse uninstall-pulse \
         install install-example install-playground uninstall-playground package dmg release clean \
         FORCE
@@ -373,6 +373,34 @@ $(IMAGES_STAMP): scripts/depth-window-default.swift
 	swiftc -O -o $(BUILD)/DepthWindowDefault scripts/depth-window-default.swift
 	$(BUILD)/DepthWindowDefault $(IMAGES_OUT)
 	@touch $@
+
+# Minecraft's own textures, for the looks that say `// lerp-requires: minecraft`
+# (Sources/LerpCore/MinecraftAssets.swift). They are Mojang's, so nothing here
+# is in the repo, in build/ bundles or in a release: this unpacks them from the
+# game installed on this Mac and packs them into the user's Lerping folder,
+# which the saver, the playground and the preview all read. Until it has been
+# run, those looks are simply absent.
+#   make minecraft                                  newest installed version
+#   make minecraft MINECRAFT_JAR=/path/to/1.21.jar  a particular one
+#   make minecraft MINECRAFT_PACK=/path/to/pack.zip a 16x resource pack laid over it
+MINECRAFT_JAR  ?= $(shell ls -t "$(HOME)/Library/Application Support/minecraft/versions"/*/*.jar 2>/dev/null | grep -v -i -E 'fabric|forge|quilt|optifine' | head -1)
+MINECRAFT_PACK ?=
+MINECRAFT_OUT  ?= $(HOME)/Library/Application Support/Lerping/Minecraft
+MINECRAFT_SRC  := $(BUILD)/minecraft-src
+
+minecraft:
+	@test -f "$(MINECRAFT_JAR)" || { echo "make minecraft: no Minecraft client jar found; pass MINECRAFT_JAR=/path/to/version.jar" >&2; exit 1; }
+	rm -rf $(MINECRAFT_SRC)
+	@mkdir -p $(MINECRAFT_SRC)
+	unzip -o -q "$(MINECRAFT_JAR)" 'assets/minecraft/textures/*' -d $(MINECRAFT_SRC)
+	@if [ -n "$(MINECRAFT_PACK)" ]; then \
+		test -f "$(MINECRAFT_PACK)" || { echo "make minecraft: no such pack: $(MINECRAFT_PACK)" >&2; exit 1; }; \
+		echo unzip -o -q "$(MINECRAFT_PACK)" over the game\'s textures; \
+		unzip -o -q "$(MINECRAFT_PACK)" 'assets/minecraft/textures/*' -d $(MINECRAFT_SRC); \
+	fi
+	swiftc -O -o $(BUILD)/MinecraftAtlas scripts/minecraft-atlas.swift
+	$(BUILD)/MinecraftAtlas $(MINECRAFT_SRC)/assets/minecraft/textures "$(MINECRAFT_OUT)" \
+		"$$(basename "$(MINECRAFT_JAR)")$(if $(MINECRAFT_PACK), + $$(basename "$(MINECRAFT_PACK)"))"
 
 # `make depth-window IMAGE=photo.jpg NAME=beach` — a depth-window look of your
 # own photo. Depth Anything V2 Small (Apple's Core ML conversion, Apache-2.0)

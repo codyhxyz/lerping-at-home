@@ -19,7 +19,7 @@
 // Light does not route round hills (no flood fill), which a fragment shader
 // cannot afford; at this camera height it does not read.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // lerp-param: speed        float 0.25 3 = 1    "Walk speed"
 // lerp-param: spacing      int 9 16     = 9    "Lantern spacing"

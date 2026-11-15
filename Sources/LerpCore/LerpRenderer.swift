@@ -124,6 +124,7 @@ public final class LerpRenderer {
             encoder.setFragmentBytes(&u, length: headerSize, index: 0)
         }
         data?.bind(to: encoder, uniforms: uniforms, params: params)
+        LerpMinecraft.bindIfLoaded(to: encoder, device: device)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
         return commandBuffer

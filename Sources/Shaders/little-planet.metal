@@ -1,7 +1,7 @@
 // Little Planet — a walk across a block world, photographed as a stereographic
 // "little planet" panorama. Original work for Lerping@Home.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // The camera stands four blocks above a dirt path and looks
 // straight down; every direction round it, the whole sphere of view, is folded

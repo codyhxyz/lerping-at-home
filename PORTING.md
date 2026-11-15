@@ -495,6 +495,74 @@ worked example of binding a tensor through the classic render encoder: the
 tensor sits in an argument buffer (its `gpuResourceID`) bound with
 `setFragmentBuffer`, plus `useResource`.
 
+## Minecraft looks
+
+A look on the Minecraft shelf draws with the game's own textures. It says so
+on one of its first 40 lines and takes the texture arrays it reads:
+
+```metal
+// lerp-category: Minecraft
+// lerp-requires: minecraft
+
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
+                        texture2d_array<float> mcTiles [[texture(8)]],    // block faces, 16x16
+                        texture2d_array<float> mcItems [[texture(9)]],    // items, 16x16
+                        texture2d_array<float> mcSkins [[texture(10)]],   // mobs, particles, sun, moon: 64x64
+                        texture2d_array<float> mcMaps  [[texture(11)]])   // clouds, colormaps, rain: 256x256
+```
+
+Declare only the arrays you use. They sit at texture 8 and up, beside
+whatever `// lerp-data:` provider the look has, which keeps buffer and texture
+indices 1 and up (`hedge-maze` walks `maze` and reads tiles).
+
+The textures are Mojang's, so they are not in this repo and never in a
+release. `make minecraft` unpacks them from the game installed on this Mac
+(`MINECRAFT_JAR=` picks a version, `MINECRAFT_PACK=` lays a 16× resource pack
+over it) into `~/Library/Application Support/Lerping/Minecraft`. A Mac that
+has not run it has no Minecraft looks: `lerp-requires: minecraft` hides them,
+as `metal4` hides `neural-field`. Do not draw a stand-in texture when one is
+missing; there is no such case.
+
+**Finding a texture.** `~/Library/Application Support/Lerping/Minecraft/atlas.txt`
+lists every constant with its source file, size and frame count. Grep it; do
+not guess names.
+
+| Constant | Array | From |
+|---|---|---|
+| `MC_STONE`, `MC_OAK_LOG_TOP`, … | `mcTiles` | `block/*.png`; an animated strip is one layer per frame, with `MC_X_FRAMES` and `MC_X_TICKS` |
+| `MC_ITEM_DIAMOND_SWORD`, … | `mcItems` | `item/*.png` |
+| `MCS_PIG_TEMPERATE`, `MCS_PARTICLE_FLAME`, `MCS_ENVIRONMENT_CELESTIAL_SUN`, `MCS_BLOCK_WATER_FLOW`, … | `mcSkins` | anything else up to 64 px, unscaled in the layer's top-left corner, with `MCS_X_SIZE` in pixels |
+| `MCM_ENVIRONMENT_CLOUDS`, `MCM_COLORMAP_GRASS`, … | `mcMaps` | anything up to 256 px, with `MCM_X_SIZE` |
+
+To see a texture, Read the PNG itself under `build/minecraft-src/assets/minecraft/textures/`
+(mob skins are unwrapped box layouts; look before you map one).
+
+**Sampling.** Pixels are Display P3 with straight alpha, already in the space
+shaders here write. The prelude adds, for a shader that requires minecraft:
+
+- `mcTile(mcTiles, layer, uv, footprint)`: a block face. `uv` is 0…1 across
+  the face and repeats; `uv.y = 0` is the top row of the picture, so on a side
+  face pass `1 - fract(y)`. `footprint` is the width of one screen pixel at the
+  hit, in blocks. Texels are hard-edged up close, blend over exactly one pixel
+  at their edges, and mip-filter once they are smaller than a pixel, so nothing
+  shimmers. `mcTileAniso` takes the uv change per screen pixel instead, for a
+  floor running to the horizon.
+- `mcFrame(MC_WATER_STILL, MC_WATER_STILL_FRAMES, MC_WATER_STILL_TICKS, u.time)`:
+  the frame of an animated tile.
+- `mcSkin(mcSkins, layer, pixel, w)` and `mcMap(mcMaps, layer, pixel, w)`:
+  addressed in the picture's own pixels, `w` the screen pixel's width in them.
+- The game's conventions, so every look agrees: `mcFaceShade(normal)` (top 1,
+  bottom 0.5, z faces 0.8, x faces 0.6), `mcLight(level)` (brightness of light
+  level 0…15), `mcGrassTint` / `mcFoliageTint(mcMaps, temperature, downfall)`,
+  `mcGrassSide(mcTiles, uv, footprint, tint)`, `mcFromSRGB(colour)` for a
+  colour quoted from the game, and `MC_WATER_TINT`, `MC_SKY_DAY`, `MC_FOG_DAY`.
+
+Several textures are grey and take a tint in the game: grass tops, leaves,
+vines, water. The sun and moon are drawn on black and added to the sky.
+Leaves, glass and plants carry their shape in alpha.
+
+Read `Sources/LerpCore/MinecraftAssets.swift` for the exact helper source.
+
 ## House style
 
 - **Ambience**: this runs as a screensaver. Slow the original's time scale

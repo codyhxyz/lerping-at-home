@@ -146,24 +146,40 @@ public struct LerpShader: Sendable {
         return settings
     }
 
-    /// Whether this machine can run the shader, from an optional comment among
-    /// its first lines:
+    /// What the shader says it needs beyond a Metal GPU, from optional comments
+    /// among its first lines, lower-cased:
     ///
     ///     // lerp-requires: metal4
-    ///
-    /// `metal4` means macOS 26+ on a GPU in the `.metal4` family — what Metal 4
-    /// tensors and shader ML need. `ShaderLibrary.discover()` leaves out a
-    /// shader that answers false, so on an older system it is simply absent
-    /// from the rotation, the gallery and the pickers rather than present as a
-    /// compile error. A file with no such line, or a requirement this build
-    /// does not know, is always supported: an unrecognised word must not make a
-    /// custom shader vanish without explanation.
-    public func isSupported(on device: MTLDevice) -> Bool {
+    ///     // lerp-requires: minecraft
+    public var requirements: [String] {
+        var words: [String] = []
         for raw in source.split(separator: "\n", omittingEmptySubsequences: false).prefix(40) {
             guard let value = LerpParamParser.directiveBody(raw, "lerp-requires:") else { continue }
-            guard value.lowercased() == "metal4" else { return true }
-            if #available(macOS 26.0, *) { return device.supportsFamily(.metal4) }
-            return false
+            words += value.lowercased().split { $0 == " " || $0 == "," }.map(String.init)
+        }
+        return words
+    }
+
+    /// Whether the shader draws with Minecraft's textures (`MinecraftAssets.swift`).
+    public var requiresMinecraft: Bool { requirements.contains(LerpMinecraft.requirement) }
+
+    /// Whether this machine can run the shader.
+    ///
+    /// `metal4` means macOS 26+ on a GPU in the `.metal4` family — what Metal 4
+    /// tensors and shader ML need. `minecraft` means `make minecraft` has
+    /// packed the game's textures on this Mac. `ShaderLibrary.discover()`
+    /// leaves out a shader that answers false, so where it cannot run it is
+    /// simply absent from the rotation, the gallery and the pickers rather
+    /// than present as a compile error. A file with no such line, or a
+    /// requirement this build does not know, is always supported: an
+    /// unrecognised word must not make a custom shader vanish without
+    /// explanation.
+    public func isSupported(on device: MTLDevice) -> Bool {
+        for word in requirements {
+            if word == "metal4" {
+                guard #available(macOS 26.0, *), device.supportsFamily(.metal4) else { return false }
+            }
+            if word == LerpMinecraft.requirement, !LerpMinecraft.isInstalled { return false }
         }
         return true
     }
@@ -555,8 +571,18 @@ public final class ShaderLibrary: @unchecked Sendable {
                 + "\n          // lerp-animate: NAME LOW HIGH [period=SECONDS]")
         }
 
-        let prelude = LerpPrelude.source(parameters: shader.parameters,
-                                         extra: try dataProvider(for: shader)?.metalPrelude ?? "")
+        var extra = try dataProvider(for: shader)?.metalPrelude ?? ""
+        if shader.requiresMinecraft {
+            // Loaded here, on whichever queue is compiling, so the arrays are
+            // in place before the look's first frame binds them.
+            do {
+                extra += try LerpMinecraft.metalPrelude()
+                try LerpMinecraft.load(device: device)
+            } catch {
+                try fail(shader, 4, "shader '\(shader.name)': \(error.localizedDescription)")
+            }
+        }
+        let prelude = LerpPrelude.source(parameters: shader.parameters, extra: extra)
         let pipeline: MTLRenderPipelineState
         do {
             pipeline = try compiler.pipeline(source: prelude + shader.source,

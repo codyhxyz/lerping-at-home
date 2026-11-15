@@ -1,7 +1,7 @@
 // Block Weather — the sky over a block world, keeping the Mac's hours.
 // Original work for Lerping@Home; every texture, cloud and disc is procedural.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 // lerp-data: clock
 //
 // You stand on a grassy knoll above a valley lake. Overhead a deck of flat

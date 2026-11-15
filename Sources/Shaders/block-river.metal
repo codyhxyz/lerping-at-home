@@ -7,7 +7,7 @@
 // straight out of the water. All art is procedural and written for this file:
 // no textures, characters or artwork from any game.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // How it is built:
 //   - the world is a heightfield of whole blocks plus one floating span per

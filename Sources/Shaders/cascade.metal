@@ -3,7 +3,7 @@
 // games. Every texture and rule here is written from scratch; nothing is
 // taken from any game's art.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // A square quarry is cut into a grass plain in terraces, through beds of
 // rock that band its walls, late in the day. Springs open on the plain near the rim one after another.

@@ -5,7 +5,7 @@
 // sandbox games is the vocabulary: unit cubes, 16×16 texel faces, a cut
 // chunk's cross-section.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // On top: a cottage with a lamp by its door, a few trees, a spring-fed pond
 // and the stream it feeds, which runs to one cut edge and pours off it as a

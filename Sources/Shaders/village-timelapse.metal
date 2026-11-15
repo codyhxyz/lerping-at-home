@@ -2,7 +2,7 @@
 // being built. Original work for Lerping@Home; every block, texture and
 // building is procedural.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // The island is laid out as a three-by-three grid of plots between dirt
 // roads. Each plot runs its own cycle: a house, a stone watchtower or a tree

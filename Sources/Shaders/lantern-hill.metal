@@ -2,7 +2,7 @@
 // Original work for Lerping@Home: the hill, the creatures and every texture
 // are procedural and of its own design.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // Blocky mushroom-folk sprout one by one from a glowing patch of soil at the
 // foot of a terraced hill, each carrying a lantern, and climb the ledge that

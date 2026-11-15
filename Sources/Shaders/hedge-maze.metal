@@ -4,7 +4,7 @@
 // for this file; no code, textures or artwork from the original screensaver
 // or from any block game.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 // lerp-data: maze
 //
 // The same walk as `maze` — a perfect maze solved hand-on-the-wall, carved and

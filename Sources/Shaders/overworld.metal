@@ -5,7 +5,7 @@
 // adventure maps were: no perspective, just tops and the south faces under
 // them.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // The screen is a picture plane in cabinet oblique: one block is 16×16 texels
 // on top and 16×16 on its south face, and a block one level higher sits one

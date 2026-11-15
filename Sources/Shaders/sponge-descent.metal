@@ -48,7 +48,7 @@
 // within a hole darker, and the light steps down one level of the sponge at
 // a time, the way block-world light steps down a block at a time.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // lerp-param: speed    float 0.25 3  = 1     "Speed"
 // lerp-param: detail   float 4 12    = 6     "Detail"

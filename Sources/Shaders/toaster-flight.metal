@@ -4,7 +4,7 @@
 // formation of winged toasters, and slices of toast, flying down and across
 // the screen forever.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // What it becomes when the world is made of cubes: the toasters are box
 // models with pixel textures (chrome in banded grey texels, or the odd

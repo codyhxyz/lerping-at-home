@@ -24,7 +24,7 @@
 // texels a face, sharp up close and box-filtered to the pixel footprint
 // further out, so nothing crawls while the camera moves.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 // lerp-data: physarum
 //
 // lerp-param: speed    float 0 40      = 6    "Steps/sec"

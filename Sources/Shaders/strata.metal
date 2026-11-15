@@ -3,7 +3,7 @@
 // procedural and written for this file; no texture data or artwork from any
 // game. It is a homage to the block-world idea of a ground you can dig into.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // The world is sliced along one vertical plane and the screen is the glass laid
 // against the cut. You drift along it: grass and topsoil at the top, then

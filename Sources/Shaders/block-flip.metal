@@ -27,7 +27,7 @@
 // onto the board behind) and lets each pixel be drawn exactly by a short
 // walk through the cells under it.
 //
-// lerp-category: Blocks
+// lerp-category: Minecraft
 //
 // lerp-param: rows    float 10 48   = 22  "Rows of blocks"
 // lerp-param: speed   float 0.25 3  = 1   "Speed"
