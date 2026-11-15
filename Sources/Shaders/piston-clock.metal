@@ -291,12 +291,13 @@ struct PcHit {
     int3   cell;
     int    mat;
     float  f;      // the pushed block's face position, for PC_DIGIT / PC_HEAD / PC_ROD
-    int    part;   // lantern: 0 body, 1 cap
+    float4 mcol;   // lantern: the shared model's texel and
+    float  mshade; // whether the game face-shades it
 };
 
 static inline PcHit pcMiss() {
     PcHit h;
-    h.t = 1e9; h.mat = PC_AIR; h.n = float3(0.0, 1.0, 0.0); h.cell = int3(0); h.f = 0.0; h.part = 0;
+    h.t = 1e9; h.mat = PC_AIR; h.n = float3(0.0, 1.0, 0.0); h.cell = int3(0); h.f = 0.0; h.mcol = float4(0.0); h.mshade = 1.0;
     return h;
 }
 
@@ -314,7 +315,8 @@ static inline bool pcBox(float3 ro, float3 inv, float3 lo, float3 hi,
 }
 
 // Cell walk confined to the clock's box.
-static PcHit pcClockTrace(float3 ro, float3 rd, float3 inv, float tMax, thread const PcScene& S) {
+static PcHit pcClockTrace(float3 ro, float3 rd, float3 inv, float tMax, thread const PcScene& S,
+                          texture2d_array<float> mcTiles, int lanternLayer, float pxA) {
     PcHit h = pcMiss();
     float tIn; float3 n;
     if (!pcBox(ro, inv, PC_CLO, PC_CHI, tIn, n) || tIn > tMax) return h;
@@ -351,17 +353,12 @@ static PcHit pcClockTrace(float3 ro, float3 rd, float3 inv, float tMax, thread c
             }
             if (hm != PC_AIR) { h.t = best; h.cell = cell; h.mat = hm; h.f = f; return h; }
         } else if (m == PC_LANTERN) {
-            // KIT: models — the lantern (body 6×7×6 px, cap 4×2×4 px), written
-            // out here until the shared small-model kit lands.
-            float3 c0 = float3(cell);
-            float best = tExit + 1e-4; float tb; float3 nb; int part = -1;
-            if (pcBox(ro, inv, c0 + float3(5, 0, 5) / 16.0, c0 + float3(11, 7, 11) / 16.0, tb, nb) && tb <= best) {
-                best = tb; h.n = nb; part = 0;
+            // The game's standing lantern, from the shared model kit.
+            McModelHit mh;
+            if (mcLantern(mcTiles, lanternLayer, float3(cell), false, ro, rd, tCur - 1e-3, tExit + 1e-4, pxA, mh)) {
+                h.t = mh.t; h.n = mh.n; h.cell = cell; h.mat = PC_LANTERN;
+                h.mcol = mh.color; h.mshade = mh.shade; return h;
             }
-            if (pcBox(ro, inv, c0 + float3(6, 7, 6) / 16.0, c0 + float3(10, 9, 10) / 16.0, tb, nb) && tb <= best) {
-                best = tb; h.n = nb; part = 1;
-            }
-            if (part >= 0) { h.t = best; h.cell = cell; h.mat = PC_LANTERN; h.part = part; return h; }
         } else if (m != PC_AIR) {
             h.t = tCur; h.n = n; h.cell = cell; h.mat = m; return h;
         }
@@ -518,10 +515,11 @@ static PcHit pcTerrainTrace(float3 ro, float3 rd, float3 inv, float tMax, int st
     return h;
 }
 
-static PcHit pcTrace(float3 ro, float3 rd, float tMax, int steps, thread const PcScene& S) {
+static PcHit pcTrace(float3 ro, float3 rd, float tMax, int steps, thread const PcScene& S,
+                     texture2d_array<float> mcTiles, int lanternLayer, float pxA) {
     float3 sd = select(rd, float3(1e-6), abs(rd) < 1e-6);
     float3 inv = 1.0 / sd;
-    PcHit hc = pcClockTrace(ro, sd, inv, tMax, S);
+    PcHit hc = pcClockTrace(ro, sd, inv, tMax, S, mcTiles, lanternLayer, pxA);
     PcHit ht = pcTerrainTrace(ro, sd, inv, min(tMax, hc.t), steps, S);
     return ht.t < hc.t ? ht : hc;
 }
@@ -782,7 +780,8 @@ fragment half4 lerpMain(float4 pos [[position]],
 
     float time = u.time + u.seed * 500.0;
     float3 col;
-    PcHit h = pcTrace(ro, rd, pcRangeT(ro, rd, PC_RANGE + 2.0), PC_STEPS, S);
+    int lanternLayer = mcFrame(MC_LANTERN, MC_LANTERN_FRAMES, MC_LANTERN_TICKS, u.time);
+    PcHit h = pcTrace(ro, rd, pcRangeT(ro, rd, PC_RANGE + 2.0), PC_STEPS, S, mcTiles, lanternLayer, px);
 
     float3 hitP = ro + rd * min(h.t, 1e4);
     float fogAt = smoothstep(24.0, PC_RANGE, length(hitP.xz - float2(0.5, 0.0)));
@@ -846,22 +845,7 @@ fragment half4 lerpMain(float4 pos [[position]],
                 gx = ax; gy = ay;
                 layer = MC_PISTON_SIDE; break;
             }
-            case PC_LANTERN: {
-                // KIT: models — the lantern's texture layout (body sides from
-                // pixel (0,2), ends from (0,9); cap sides from (1,0), ends (1,10)).
-                float3 bl = h.part == 0 ? float3(5, 0, 5) : float3(6, 7, 6);
-                float3 bh = h.part == 0 ? float3(11, 7, 11) : float3(10, 9, 10);
-                float3 q = (p - float3(h.cell)) * 16.0;
-                float uMin = min(dot(bl, U), dot(bh, U)), vMin = min(dot(bl, V), dot(bh, V));
-                float2 qp = float2(dot(q, U) - uMin, dot(q, V) - vMin);
-                float2 org = h.part == 0 ? ((top || bottom) ? float2(0, 9) : float2(0, 2))
-                                         : ((top || bottom) ? float2(1, 10) : float2(1, 0));
-                float2 lim = h.part == 0 ? ((top || bottom) ? float2(6, 6) : float2(6, 7))
-                                         : ((top || bottom) ? float2(4, 4) : float2(4, 2));
-                fuv = (org + clamp(qp, float2(0.01), lim - 0.01)) / 16.0;
-                layer = mcFrame(MC_LANTERN, MC_LANTERN_FRAMES, MC_LANTERN_TICKS, u.time);
-                break;
-            }
+            case PC_LANTERN: special = true; alb = h.mcol.rgb; break;   // textured by the kit
             case PC_PATH:   layer = top ? MC_DIRT_PATH_TOP : (bottom ? MC_DIRT : MC_DIRT_PATH_SIDE); break;
             case PC_DIRT:   layer = MC_DIRT; break;
             case PC_LOG: {
@@ -931,7 +915,7 @@ fragment half4 lerpMain(float4 pos [[position]],
             skyLevel = 15.0 - ceil(-sp.z);                 // down a piston's hole
         float blockLevel = pcBlockLevel(sp, S.sec);
         float3 light = mcLightmap(blockLevel, skyLevel, K.dayF, 0.0);
-        col = alb * mcFaceShade(n) * ao * light;
+        col = alb * (h.mshade > 0.5 ? mcFaceShade(n) : 1.0) * ao * light;
 
         // Fog, measured from the clock: a short view distance.
         col = mix(col, fogCol, fogAt);

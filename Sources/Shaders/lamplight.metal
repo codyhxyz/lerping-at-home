@@ -1,7 +1,7 @@
 // Lamplight — original work for Lerping@Home, not a port.
 //
-// A Minecraft night. A lamplighter walks a winding dirt path across a grassy
-// block landscape carrying a lantern. Each lantern post he passes (an oak
+// A Minecraft night. A lamplighter, the game's wandering trader, walks a
+// winding dirt path across a grassy block landscape carrying a lantern. Each lantern post he passes (an oak
 // fence post with a lantern set on it) kindles, and its light spreads the way
 // the game spreads light: outwards one block and one level at a time, fifteen
 // levels down to nothing. So every pool of light is a stepped diamond, the
@@ -24,11 +24,12 @@
 // Cost: the march walks at most LL_COLS columns with a few tests each and
 // samples no texture, except inside the one column that holds a small model
 // (the shared kit's lantern, torch and cross models test their cut-out
-// texels). A pixel then reads one to three textures at its hit. Measured
-// 12.2 ms at 3456x2234 against maze's 12.5 in the same minute.
+// texels), and one bounds test for the trader. A pixel then reads one to
+// three textures at its hit. Measured 10.1 ms at 3456x2234 against maze's
+// 10.2 in the same minute.
 //
 // lerp-category: Minecraft
-// lerp-requires: minecraft
+// lerp-requires: minecraft mobs
 //
 // lerp-param: speed        float 0.25 3 = 1    "Walk speed"
 // lerp-param: spacing      int 9 16     = 9    "Lantern spacing"
@@ -50,8 +51,8 @@ constant int   LL_WILDR = 16;       // wild light lattice
 constant float LL_WALK  = 0.6;      // walker speed, blocks per (speed-scaled) second
 constant float LL_RING  = 0.7;      // seconds per level as a road lantern kindles
 constant float LL_FOCAL = 2.4;
-constant float LL_FOG0  = 40.0;     // the game's render-distance fog, linear
-constant float LL_FOG1  = 58.0;
+constant float LL_FOG0  = 33.0;     // the game's render-distance fog, linear
+constant float LL_FOG1  = 48.0;
 constant float LL_CLOUD_Y = 136.0;  // the cloud layer, ~130 blocks over the ground as in the game
 constant float LL_WALKER_L = 11.0;  // the carried lantern's level (lantern 15; kept lower so the road ahead stays dark)
 
@@ -524,13 +525,11 @@ static inline float3 llShadeBlock(LLHit H, float3 ro, float3 rd, float3 dRx, flo
 // ---------------------------------------------------------------------------
 // The lamplighter.
 //
-// KIT: mobs — he is to be a wandering trader (MCS_WANDERING_TRADER on the
-// villager box model, 0.9375 scale) holding the lantern below in his crossed
-// arms. His hook, all in world space with the scene's local x:
-//   position  K.W (feet, on the road's surface), heading K.f (unit, level),
-//   walk phase K.stride (radians: legs swing as cos(stride)), and the
-//   carried lantern's centre `lamp`, which is also his light source.
-// Until the mob kit lands only the lantern he carries is drawn.
+// The wandering trader from the shared mob kit: the villager model with his
+// own skin, walking (legs swing as cos(stride)) with his arms crossed, as the
+// game draws villagers. K.W is his feet on the road, K.f his heading. The kit
+// has no held items, so the lantern he carries in his crossed arms is drawn
+// here, and it is also his light source.
 
 struct LLWalker { float3 W; float3 f; float3 s; float stride; };
 
@@ -614,7 +613,7 @@ static inline float llFog(float t) { return saturate((t - LL_FOG0) / (LL_FOG1 - 
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
                         texture2d_array<float> mcTiles [[texture(8)]],
-                        texture2d_array<float> mcSkins [[texture(10)]],
+                        texture2d_array<float> mcSkins [[texture(10)]],   // moon and the trader
                         texture2d_array<float> mcMaps  [[texture(11)]]) {
     LLW w;
     w.T = u.time * u.speed + u.seed * 3000.0 + 40.0;
@@ -648,11 +647,12 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     K.stride = xw * 2.6;
     float3 lamp = llCarriedBase(K) + float3(0.0, 0.2, 0.0);
 
-    // Camera: high and to one side, keeping pace, the road crossing the frame.
+    // Camera: high and to one side, keeping pace, the road crossing the frame,
+    // near enough that the trader reads as a figure.
     float zt = 3.5 * sin(xw * 0.043 + w.ph1);
     float3 target = float3(lx + 1.5, 7.0, zt);
     float sway = 0.12 * sin(w.T * 0.011 + u.seed * 6.0);
-    float3 off = float3(0.0, 23.0, -18.0);
+    float3 off = float3(0.0, 18.4, -14.4);
     off.xz = rotate(off.xz, sway);
     float3 ro = target + off;
     float3 upHint = float3(0.0, 1.0, 0.0);
@@ -693,16 +693,35 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         ? mcFrame(MC_SOUL_LANTERN, MC_SOUL_LANTERN_FRAMES, MC_SOUL_LANTERN_TICKS, u.time)
         : mcFrame(MC_LANTERN, MC_LANTERN_FRAMES, MC_LANTERN_TICKS, u.time);
     McModelHit cw;
-    bool wHit = llCarriedHit(ro, rd, K, lanLayer, pxA, mcTiles, cw);
-    float tW = wHit ? cw.t : 1e9;
+    bool lanHit = llCarriedHit(ro, rd, K, lanLayer, pxA, mcTiles, cw);
+    float tLan = lanHit ? cw.t : 1e9;
+    // The trader: one mob, so one bounds test a pixel.
+    float heading = atan2(K.f.x, K.f.z);
+    MCMOB_Skin skin = mcMobSkin(MCS_WANDERING_TRADER);
+    MCMOB_Hit mh; mh.t = INFINITY;
+    {
+        float3 lro, lrd;
+        mcMobRay(ro, rd, K.W, heading, lro, lrd);
+        float2 bb = mcMobBounds(MCMOB_VILLAGER, lro, lrd);
+        if (bb.x < bb.y && bb.x < tLan) {
+            MCMOB_Pose pose = mcMobStill();
+            pose.walk = K.stride / 0.6662;
+            pose.speed = 0.5;
+            mh = mcMobTrace(MCMOB_VILLAGER, pose, skin, lro, lrd, tLan, mcSkins, mcMaps);
+        }
+    }
+    bool mobHit = mh.t < tLan;
+    bool wHit = lanHit || mobHit;
+    float tW = mobHit ? mh.t : tLan;
     float tLim = wHit ? tW : LL_FOG1;
     LLNoiseCache mLow = llCache(), mRoad = llCache();
     LLHit H = llMarch(ro, rd, tLim, w, mLow, mRoad, mcTiles, lanLayer, pxA);
     bool walkerFront = wHit && tW <= H.t;
     float tSolid = walkerFront ? tW : H.t;
 
-    // What this pixel shows (0 sky, 1 water, 2 the carried lantern, 3 a
-    // block) and the air cell its light is read from.
+    // What this pixel shows (0 sky, 1 water, 2 the trader or his lantern, 3 a
+    // block) and the air cell its light is read from: for him, as the game
+    // lights a mob, the cell at his eyes.
     int show = H.tw < tSolid ? 1 : (walkerFront ? 2 : (H.t < 1e8 ? 3 : 0));
     float3 Pw = ro + rd * H.tw, a;
     float2 rp = float2(0.0);
@@ -713,7 +732,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         a = float3(floor(Pw.x) + 0.5, float(LL_WATER) - 0.5, floor(Pw.z) + 0.5);
         tEnd = H.tw;
     } else if (show == 2) {
-        a = floor(lamp) + 0.5;
+        a = mobHit ? floor(K.W + float3(0.0, 1.6, 0.0)) + 0.5 : floor(lamp) + 0.5;
     } else if (show == 3) {
         float3 P = ro + rd * H.t;
         bool small = H.mat == LM_MODEL;
@@ -784,7 +803,12 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         col += llSky(rr, Pw, sp, mcSkins, mcMaps) * 0.6 + L.rhalo * 0.6;
         col = mix(col, fogC, llFog(H.tw));
     } else if (show == 2) {
-        col = cw.color.rgb * mcFaceShade(cw.n) * lm;
+        if (mobHit) {
+            float4 c = mcMobColor(MCMOB_VILLAGER, mh, skin, mh.t * pxA * 16.0, mcSkins, mcMaps);
+            col = c.rgb * mcFaceShade(mcMobNormal(mh.n, heading)) * lm;
+        } else {
+            col = cw.color.rgb * mcFaceShade(cw.n) * lm;
+        }
         col = mix(col, fogC, llFog(tW));
     } else if (show == 3) {
         col = llShadeBlock(H, ro, rd, dRx, dRy, pxA, w, lm, u.time, mcTiles, mcMaps);
