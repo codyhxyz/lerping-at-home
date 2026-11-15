@@ -68,29 +68,31 @@ struct DwBiome {
     int    tree;        // 0 none, 1 broadleaf, 2 conifer, 3 cactus
     float  density;     // trees per tree cell
     float  amp;         // terrain relief
-    float3 skyTop, skyHor, skyLow;
-    float3 sunDir, sunCol, amb;
+    float3 skyTop, skyHor, skyLow;   // skyTop: the game's sky at this hour (linear); skyHor: the
+                                     // sunset glow toward a low sun; skyLow: the Nether's lava glow
+    float3 sunDir, sunCol, fog;      // fog: the game's fog at this hour (linear)
     float3 clim;        // temperature, downfall: the grass and foliage colormaps
-    float3 skyL;        // sky light on a top face (the game's face shading does the rest)
+    float3 light;       // the game's lightmap inputs: time of day (1 noon, 0 midnight),
+                        // the dimension's ambient, the sky-light level
     float3 spare;
-    float  stars, sunSize, moon, lamp;   // lamp: the portals' own glow
+    float  stars, sunSize, moon, spare2;
 };
 
 // The six worlds, in one table every caller reads (a switch here was
 // inlined at every call site).
 constant DwBiome DW_BIOMES[6] = {
     // plains at golden hour, sun low ahead
-    { 0, B_GRASS, B_DIRT, 1, 0.55, 8.0, float3(0.0394, 0.1190, 0.4009), float3(0.8933, 0.4563, 0.1989), float3(0.3494, 0.2373, 0.1726), float3(-0.7791, 0.2397, 0.5793), float3(2.4000, 1.7280, 1.0800), float3(0.1305, 0.1536, 0.2510), float3(0.8, 0.4, 0.0), float3(1.15, 0.95, 0.78), float3(0.0), 0.0, 0.035, 0.0, 0.25 },
+    { 0, B_GRASS, B_DIRT, 1, 0.55, 8.0, float3(0.1258, 0.2217, 0.6076), float3(0.8933, 0.4563, 0.1989), float3(0.3494, 0.2373, 0.1726), float3(-0.7791, 0.2397, 0.5793), float3(2.4000, 1.7280, 1.0800), float3(0.3513, 0.4412, 0.6810), float3(0.8, 0.4, 0.0), float3(0.75, 0.0, 15.0), float3(0.0), 0.0, 0.035, 0.0, 0.25 },
     // snowy taiga under the stars and the moon
-    { 0, B_SNOW, B_DIRT, 2, 0.6, 11.0, float3(0.0001, 0.0003, 0.0029), float3(0.0078, 0.0203, 0.0707), float3(0.0029, 0.0063, 0.0203), float3(0.6291, 0.4566, 0.6291), float3(0.2100, 0.2688, 0.4200), float3(0.0092, 0.0155, 0.0392), float3(0.0, 0.4, 0.0), float3(0.10, 0.13, 0.24), float3(0.0), 1.0, 0.05, 1.0, 1.2 },
+    { 0, B_SNOW, B_DIRT, 2, 0.6, 11.0, float3(0.0000, 0.0000, 0.0000), float3(0.0078, 0.0203, 0.0707), float3(0.0029, 0.0063, 0.0203), float3(0.6291, 0.4566, 0.6291), float3(0.2100, 0.2688, 0.4200), float3(0.0012, 0.0014, 0.0049), float3(0.0, 0.4, 0.0), float3(0.0, 0.0, 15.0), float3(0.0), 1.0, 0.05, 1.0, 1.2 },
     // desert at dusk
-    { 0, B_SAND, B_SANDSTONE, 3, 0.4, 6.0, float3(0.0177, 0.0154, 0.1190), float3(0.8524, 0.2373, 0.1190), float3(0.4009, 0.1483, 0.1056), float3(0.7841, 0.2614, 0.5629), float3(2.3000, 1.3340, 0.8280), float3(0.1747, 0.0994, 0.1342), float3(2.0, 0.0, 0.0), float3(1.00, 0.72, 0.60), float3(0.0), 0.0, 0.045, 0.0, 0.5 },
+    { 0, B_SAND, B_SANDSTONE, 3, 0.4, 6.0, float3(0.0397, 0.0685, 0.1727), float3(0.8524, 0.2373, 0.1190), float3(0.4009, 0.1483, 0.1056), float3(0.7841, 0.2614, 0.5629), float3(2.3000, 1.3340, 0.8280), float3(0.1185, 0.1461, 0.2275), float3(2.0, 0.0, 0.0), float3(0.45, 0.0, 15.0), float3(0.0), 0.0, 0.045, 0.0, 0.5 },
     // an ocean of small islands at blue hour
-    { 1, B_GRASS, B_DIRT, 1, 0.5, 0.0, float3(0.0063, 0.0230, 0.1190), float3(0.7176, 0.3494, 0.4563), float3(0.1483, 0.1332, 0.2684), float3(-0.6191, 0.0999, 0.7789), float3(1.7000, 1.0540, 0.9860), float3(0.1088, 0.1187, 0.2427), float3(0.5, 0.5, 0.0), float3(0.75, 0.62, 0.75), float3(0.0), 0.0, 0.04, 0.0, 0.7 },
+    { 1, B_GRASS, B_DIRT, 1, 0.5, 0.0, float3(0.0227, 0.0390, 0.0969), float3(0.7176, 0.3494, 0.4563), float3(0.1483, 0.1332, 0.2684), float3(-0.6191, 0.0999, 0.7789), float3(1.7000, 1.0540, 0.9860), float3(0.0724, 0.0890, 0.1421), float3(0.5, 0.5, 0.0), float3(0.35, 0.0, 15.0), float3(0.0), 0.0, 0.04, 0.0, 0.7 },
     // the End: end stone islands and chorus in the void
-    { 2, B_GRASS, B_DIRT, 4, 0.6, 0.0, float3(0.0008, 0.0002, 0.0063), float3(0.0707, 0.0203, 0.1483), float3(0.0004, 0.0002, 0.0029), float3(-0.5515, 0.3810, 0.7420), float3(0.7410, 0.6840, 0.9500), float3(0.0552, 0.0381, 0.1460), float3(0.5, 0.5, 0.0), float3(0.42, 0.36, 0.55), float3(0.0), 0.0, 0.0, 0.0, 1.1 },
+    { 2, B_GRASS, B_DIRT, 4, 0.6, 0.0, float3(0.0052, 0.0035, 0.0054), float3(0.0707, 0.0203, 0.1483), float3(0.0004, 0.0002, 0.0029), float3(-0.5515, 0.3810, 0.7420), float3(0.7410, 0.6840, 0.9500), float3(0.0052, 0.0035, 0.0054), float3(0.5, 0.5, 0.0), float3(0.55, 0.0, 15.0), float3(0.0), 0.0, 0.0, 0.0, 1.1 },
     // the Nether: a fortress bridge under the netherrack roof, lava below
-    { 3, B_GRASS, B_DIRT, 1, 0.5, 0.0, float3(0.0300, 0.0040, 0.0030), float3(0.0600, 0.0080, 0.0050), float3(0.1600, 0.0350, 0.0100), float3(0.3015, -0.9045, 0.3015), float3(1.8000, 0.7500, 0.2000), float3(0.1600, 0.0800, 0.0600), float3(2.0, 0.0, 0.0), float3(0.55, 0.36, 0.28), float3(0.0), 0.0, 0.0, 0.0, 0.6 },
+    { 3, B_GRASS, B_DIRT, 1, 0.5, 0.0, float3(0.0236, 0.0011, 0.0008), float3(0.0600, 0.0080, 0.0050), float3(0.1600, 0.0350, 0.0100), float3(0.3015, -0.9045, 0.3015), float3(1.8000, 0.7500, 0.2000), float3(0.0236, 0.0011, 0.0008), float3(2.0, 0.0, 0.0), float3(1.0, 0.1, 0.0), float3(0.0), 0.0, 0.0, 0.0, 0.6 },
 };
 
 static inline constant DwBiome& dwBiome(int i) { return DW_BIOMES[i]; }
@@ -697,10 +699,29 @@ static inline float dwPortal(float3 ro, float3 rd, thread const DwWorld& W, int 
 static inline float dwVis(float d) { return 1.0 - smoothstep(DW_FOG0, DW_FOG1, d); }
 
 // Fog and the sky behind it, in one world's palette.
+// A colour as the game puts it on screen, in this look's linear light (the
+// inverse of the tone curve and gamma lerpMain ends with), so a face lit by
+// the game's lightmap comes out on screen as the game's own colour.
+static inline float3 dwLin(float3 d) {
+    float3 x = min(pow(saturate(d), float3(2.2)), float3(0.95));
+    return x / (1.0 - 0.35 * x);
+}
+
+// Sky and fog: the game's, by time of day; toward a low sun the fog takes
+// the sunset's colour, as the game's does. The Nether and the End have only
+// their fog.
 static inline float3 dwSkyBase(constant DwBiome& b, float3 rd) {
-    float g = b.mode == 3 ? -rd.y : rd.y;
-    float3 c = g > 0.0 ? mix(b.skyHor, b.skyTop, pow(saturate(g), 0.55))
-                       : mix(b.skyHor, b.skyLow, pow(saturate(-g * 2.5), 0.6));
+    // (skyTop and fog are mcSkyAt / mcFogAt of the world's hour, and the
+    // Nether's and the End's fogs, through dwLin, worked out ahead.)
+    if (b.mode == 3) return mix(b.fog, b.skyLow, pow(saturate(-rd.y * 1.5), 0.8));
+    if (b.mode == 2) return b.fog;
+    float3 top = b.skyTop, fog = b.fog;
+    float toward = max(dot(normalize(rd.xz + 1e-5), normalize(b.sunDir.xz)), 0.0);
+    float sunset = b.moon > 0.5 ? 0.0 : 1.0 - smoothstep(0.1, 0.45, b.sunDir.y);
+    fog = mix(fog, b.skyHor, sunset * toward * toward * (1.0 - saturate(abs(rd.y) * 2.5)));
+    float g = rd.y;
+    float3 c = g > 0.0 ? mix(fog, top, pow(saturate(g), 0.55))
+                       : mix(fog, fog * 0.55, pow(saturate(-g * 2.5), 0.6));
     float sd = max(dot(rd, b.sunDir), 0.0);
     c += b.sunCol * (0.05 * pow(sd, 4.0) + 0.12 * pow(sd, 32.0)) * (b.moon > 0.5 ? 0.5 : 1.0);
     return c;
@@ -754,24 +775,23 @@ static inline float3 dwSky(constant DwBiome& b, float3 ro, float3 rd, float pxA,
         if (fade > 0.0) {
             float2 pc = (ro.xz + rd.xz * tc + float2(now * 0.6, 0.0) + off) / 6.0;
             float cl = mcMap(maps, MCM_ENVIRONMENT_CLOUDS, glmod2(pc, 256.0), tc * pxA / 6.0).a;
-            float3 lit = mix(b.skyHor, float3(1.0), 0.5) * (b.moon > 0.5 ? 0.1 : 1.0);
+            float3 lit = dwLin(float3(0.12 + 0.88 * b.light.x));   // the game's clouds dim with the day
             c = mix(c, lit, 0.62 * fade * cl);
         }
     }
     return c;
 }
 
-// The portals' own glow (a nether portal gives light 11), from the middle of
-// each opening.
-static inline float3 dwGlow(float3 P, float3 n, thread const DwWorld& W, float k) {
-    float3 acc = float3(0.0);
+// The portals' own light: a nether portal gives block light 11, one level
+// less for each block away from its opening.
+static inline float dwPortalLevel(float3 P, thread const DwWorld& W) {
+    float lv = 0.0;
     for (int d = 0; d < 2; ++d) {
-        float3 L = float3(d == 0 ? W.cxA : W.cxB, 3.0, d == 0 ? 0.5 : DW_D + 0.5) - P;
-        float r2 = dot(L, L);
-        float lam = saturate(dot(n, L * rsqrt(max(r2, 1e-4))) * 0.75 + 0.25);
-        acc += lam / (1.0 + r2 * 0.2);
+        float3 q = abs(P - float3(d == 0 ? W.cxA : W.cxB, 3.0, d == 0 ? 0.5 : DW_D + 0.5));
+        float3 e = max(q - float3(DW_HALF_W, 3.0, 0.5), 0.0);
+        lv = max(lv, 11.0 - floor(e.x + e.y + e.z + 0.5));
     }
-    return acc * float3(0.55, 0.22, 1.0) * k * 1.6;
+    return max(lv, 0.0);
 }
 
 // The other worlds' light, coming through the openings: the next world's sun
@@ -800,7 +820,7 @@ static inline float3 dwSpill(float3 P, float3 n, thread const DwWorld& W) {
         float r2 = dot(C, C);
         float3 Cn = C * rsqrt(max(r2, 1e-4));
         float k = max(dot(n, Cn), 0.0) * max(Cn.z * side, 0.0);
-        acc += mix(ob.skyHor, ob.skyTop, 0.3) * k * 45.0 / (PI * (r2 + 8.0));
+        acc += mix(ob.fog, ob.skyTop, 0.3) * k * 45.0 / (PI * (r2 + 8.0));
     }
     return acc;
 }
@@ -844,11 +864,12 @@ static inline float3 dwShade(thread const DwHit& H, float3 ro, float3 rd, float 
         float4 o = mcTile(tiles, over, uv, fw);
         c = mix(c, o.rgb * otint, o.a);
     }
-    float3 alb = pow(c, float3(2.2));
-    if (glow) return alb * 1.6;
+    if (glow) return dwLin(c);                  // glowstone: full bright
 
-    float3 light = b.skyL * mcFaceShade(n) + dwGlow(P, n, W, b.lamp) + dwSpill(P, n, W);
-    float3 col = alb * light;
+    // The game's light: texture × face shade × lightmap. On top of it, the
+    // next world's light falling through the opening.
+    float3 lm = mcLightmap(dwPortalLevel(P, W), b.light.z, b.light.x, b.light.y);
+    float3 col = dwLin(c * mcFaceShade(n) * lm) + pow(c, float3(2.2)) * dwSpill(P, n, W);
     if (id == B_WATER) {
         float3 R = reflect(rd, n);
         float fres = 0.08 + 0.92 * pow(1.0 - abs(dot(rd, n)), 5.0);
@@ -954,7 +975,7 @@ static inline float3 dwScene(float3 ro, float3 rd, float pxAngle, int w0, float 
             int fr = mcFrame(MC_NETHER_PORTAL, MC_NETHER_PORTAL_FRAMES, MC_NETHER_PORTAL_TICKS, now);
             float4 pt = mcTile(tiles, fr, puv, tP * pxAngle / max(abs(rd.z), 0.2));
             float a = 0.28 * pt.a;
-            acc += R * a * pow(pt.rgb, float3(2.2)) * 1.4;
+            acc += R * a * dwLin(pt.rgb);
             R *= 1.0 - a;
         }
         segT = tP; segE = e1 * DW_THROUGH;
@@ -980,7 +1001,7 @@ static inline float3 dwScene(float3 ro, float3 rd, float pxAngle, int w0, float 
             float tl = (DW_LAVA - ro.y) * inv3.y;
             float3 L = ro + rd * tl;
             int fr = mcFrame(MC_LAVA_STILL, MC_LAVA_STILL_FRAMES, MC_LAVA_STILL_TICKS, now);
-            acc += R * pow(mcTile(tiles, fr, fract(L.xz), tl * pxAngle / max(-rd.y, 0.12)).rgb, float3(2.2)) * 1.5;
+            acc += R * dwLin(mcTile(tiles, fr, fract(L.xz), tl * pxAngle / max(-rd.y, 0.12)).rgb);
         } else {
             acc += R * dwSky(dwBiome(W.bi), roW, rd, pxAngle, now, W.off, skins, maps);
         }
