@@ -1,33 +1,34 @@
-// Block Flip — original work for Lerping@Home, not a port.
+// Block Flip — original work for Lerping@Home, not a port. Drawn with the
+// game's own block textures (`lerp-requires: minecraft`); nothing hand-drawn.
 //
-// A kinetic wall of blocks. Each block is two slabs glued back to back, the
-// front one dyed for the picture on show and the back one for the picture
-// to come. Every fifteen seconds or so a wave runs across the wall — out
-// from a point, in towards one, round like a clock hand, row by row like a
-// typewriter, as a scattered dissolve or along a wandering noise front —
-// and each block it reaches lifts out, flips over and settles to the depth
-// the new picture asks of it. The wall is a bas-relief as well as a
-// picture: bright blocks stand proud, grout and backgrounds sit back, so it
-// reads as a sculpture of cubes rather than a flat mosaic.
+// A kinetic wall of dyed blocks. Each block is two slabs back to back, the
+// front one the block of the picture on show and the back one the block of
+// the picture to come. Every fifteen seconds or so a wave runs across the
+// wall — out from a point, in towards one, round like a clock hand, row by
+// row like a typewriter, as a scattered dissolve or along a wandering noise
+// front — and each block it reaches lifts out, flips over and settles to the
+// depth the new picture asks of it. The wall is a bas-relief as well as a
+// picture: bright blocks stand proud, grout and backgrounds sit back.
 //
 // The pictures are the library's Abstract, Gradients and Patterns shelves
-// redrawn with nothing but blocks: an ordered-dithered gradient stepped like
-// terrain, concentric rings as a ziggurat, halftone dots of raised blocks, a
-// spiral, a Voronoi mosaic with sunken grout, stacked sine waves, a field of
-// lamp blocks with pulses of light running through it (each lamp rising as
-// it lights), and glazed tiles whose quarter-circle motifs join across the
-// joints into Truchet meanders. Each picture takes one of eight dye ramps
-// and is dyed into wool, concrete or terracotta: 16×16-texel procedural
-// textures, faded to their average as a texel drops under a pixel so nothing
-// crawls when the camera drifts.
+// rebuilt the way players build pixel art: an ordered-dithered gradient
+// stepped like terrain, concentric rings as a ziggurat, halftone dots of
+// raised blocks, a spiral, a Voronoi mosaic with sunken black grout, stacked
+// sine waves — each in wool, concrete, concrete powder or terracotta in one
+// of eight ramps of the game's sixteen dyes — plus rings of glazed
+// terracotta laid in 2×2 pinwheels, and a field of redstone lamps that switch
+// on (and push forward) as pulses run out through it. The board behind is
+// polished blackstone. Shading is the game's: 1 / 0.8 / 0.6 / 0.5 by face,
+// darkened in the corners, lit lamps full bright.
 //
 // The flips alternate between turning about the vertical and the horizontal,
 // and a block shrinks as it turns so that its corners never leave its own
-// cell. That keeps the mechanism honest (a turning block opens a dark gap
-// onto the board behind) and lets each pixel be drawn exactly by a short
-// walk through the cells under it.
+// cell. That opens a dark gap onto the board behind a turning block, and
+// lets each pixel be drawn exactly by a short walk through the cells under
+// it.
 //
 // lerp-category: Minecraft
+// lerp-requires: minecraft
 //
 // lerp-param: rows    float 10 48   = 22  "Rows of blocks"
 // lerp-param: speed   float 0.25 3  = 1   "Speed"
@@ -50,27 +51,43 @@ constant int   MF_STEPS   = 7;      // cells walked per ray
 constant int   MF_SAMPLES = 4;      // rotated-grid supersampling
 
 // ---------------------------------------------------------------------------
-// Dyes and ramps. Sixteen dyes of my own mixing; each ramp runs dark to light.
+// Dyes and blocks. The game's sixteen dyes, in this file's order: white,
+// light grey, grey, black, brown, red, orange, yellow, lime, green, cyan,
+// light blue, blue, purple, magenta, pink. Each picture is built in one of
+// the dyed blocks the game has in all sixteen.
 
-constant float3 MF_DYES[16] = {
-    float3(0.86, 0.86, 0.83),  // 0 white
-    float3(0.55, 0.55, 0.52),  // 1 light grey
-    float3(0.24, 0.26, 0.28),  // 2 grey
-    float3(0.07, 0.07, 0.09),  // 3 black
-    float3(0.42, 0.27, 0.16),  // 4 brown
-    float3(0.62, 0.17, 0.15),  // 5 red
-    float3(0.90, 0.46, 0.10),  // 6 orange
-    float3(0.96, 0.77, 0.20),  // 7 yellow
-    float3(0.45, 0.70, 0.11),  // 8 lime
-    float3(0.30, 0.40, 0.13),  // 9 green
-    float3(0.09, 0.52, 0.56),  // 10 cyan
-    float3(0.25, 0.64, 0.85),  // 11 light blue
-    float3(0.20, 0.22, 0.58),  // 12 blue
-    float3(0.44, 0.18, 0.62),  // 13 purple
-    float3(0.74, 0.27, 0.70),  // 14 magenta
-    float3(0.93, 0.56, 0.66),  // 15 pink
+constant int MF_WOOL = 0, MF_CONCRETE = 1, MF_POWDER = 2, MF_TERRACOTTA = 3, MF_GLAZED = 4,
+             MF_LAMP = 5;
+
+constant int MF_BLOCKS[80] = {
+    // wool
+    MC_WHITE_WOOL, MC_LIGHT_GRAY_WOOL, MC_GRAY_WOOL, MC_BLACK_WOOL,
+    MC_BROWN_WOOL, MC_RED_WOOL, MC_ORANGE_WOOL, MC_YELLOW_WOOL,
+    MC_LIME_WOOL, MC_GREEN_WOOL, MC_CYAN_WOOL, MC_LIGHT_BLUE_WOOL,
+    MC_BLUE_WOOL, MC_PURPLE_WOOL, MC_MAGENTA_WOOL, MC_PINK_WOOL,
+    // concrete
+    MC_WHITE_CONCRETE, MC_LIGHT_GRAY_CONCRETE, MC_GRAY_CONCRETE, MC_BLACK_CONCRETE,
+    MC_BROWN_CONCRETE, MC_RED_CONCRETE, MC_ORANGE_CONCRETE, MC_YELLOW_CONCRETE,
+    MC_LIME_CONCRETE, MC_GREEN_CONCRETE, MC_CYAN_CONCRETE, MC_LIGHT_BLUE_CONCRETE,
+    MC_BLUE_CONCRETE, MC_PURPLE_CONCRETE, MC_MAGENTA_CONCRETE, MC_PINK_CONCRETE,
+    // concrete powder
+    MC_WHITE_CONCRETE_POWDER, MC_LIGHT_GRAY_CONCRETE_POWDER, MC_GRAY_CONCRETE_POWDER, MC_BLACK_CONCRETE_POWDER,
+    MC_BROWN_CONCRETE_POWDER, MC_RED_CONCRETE_POWDER, MC_ORANGE_CONCRETE_POWDER, MC_YELLOW_CONCRETE_POWDER,
+    MC_LIME_CONCRETE_POWDER, MC_GREEN_CONCRETE_POWDER, MC_CYAN_CONCRETE_POWDER, MC_LIGHT_BLUE_CONCRETE_POWDER,
+    MC_BLUE_CONCRETE_POWDER, MC_PURPLE_CONCRETE_POWDER, MC_MAGENTA_CONCRETE_POWDER, MC_PINK_CONCRETE_POWDER,
+    // terracotta
+    MC_WHITE_TERRACOTTA, MC_LIGHT_GRAY_TERRACOTTA, MC_GRAY_TERRACOTTA, MC_BLACK_TERRACOTTA,
+    MC_BROWN_TERRACOTTA, MC_RED_TERRACOTTA, MC_ORANGE_TERRACOTTA, MC_YELLOW_TERRACOTTA,
+    MC_LIME_TERRACOTTA, MC_GREEN_TERRACOTTA, MC_CYAN_TERRACOTTA, MC_LIGHT_BLUE_TERRACOTTA,
+    MC_BLUE_TERRACOTTA, MC_PURPLE_TERRACOTTA, MC_MAGENTA_TERRACOTTA, MC_PINK_TERRACOTTA,
+    // glazed terracotta
+    MC_WHITE_GLAZED_TERRACOTTA, MC_LIGHT_GRAY_GLAZED_TERRACOTTA, MC_GRAY_GLAZED_TERRACOTTA, MC_BLACK_GLAZED_TERRACOTTA,
+    MC_BROWN_GLAZED_TERRACOTTA, MC_RED_GLAZED_TERRACOTTA, MC_ORANGE_GLAZED_TERRACOTTA, MC_YELLOW_GLAZED_TERRACOTTA,
+    MC_LIME_GLAZED_TERRACOTTA, MC_GREEN_GLAZED_TERRACOTTA, MC_CYAN_GLAZED_TERRACOTTA, MC_LIGHT_BLUE_GLAZED_TERRACOTTA,
+    MC_BLUE_GLAZED_TERRACOTTA, MC_PURPLE_GLAZED_TERRACOTTA, MC_MAGENTA_GLAZED_TERRACOTTA, MC_PINK_GLAZED_TERRACOTTA,
 };
 
+// Ramps of dyes, dark to light.
 constant int MF_RAMPS[40] = {
     3, 13, 14,  6,  7,   // dusk
     3, 12, 10, 11,  0,   // tide
@@ -89,9 +106,8 @@ constant float MF_BAYER[16] = {
     15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0,
 };
 
-static inline float3 mfDye(int ramp, int i) {
-    float3 c = MF_DYES[MF_RAMPS[ramp * 5 + clamp(i, 0, 4)]];
-    return pow(c, float3(2.2));
+static inline int mfBlock(int fam, int ramp, int i) {
+    return MF_BLOCKS[fam * 16 + MF_RAMPS[ramp * 5 + clamp(i, 0, 4)]];
 }
 
 // An integer hash for anything laid out on the grid (cells, texels): the
@@ -141,7 +157,7 @@ static inline MfPicParams mfParams(float m, float salt, float2 ext) {
     pp.h3 = mfHash(m, 3.0, salt); pp.h4 = mfHash(m, 4.0, salt);
     pp.prog = int(glmod(m * 3.0 + floor(salt * 8.0), 8.0));
     pp.ramp = int(glmod(m * 5.0 + floor(fract(salt * 7.3) * 8.0), 8.0));
-    pp.mat = int(pp.h4 * 2.999);
+    pp.mat = int(pp.h4 * 3.999);   // wool, concrete, powder or terracotta
     pp.C = (float2(pp.h1, pp.h2) - 0.5) * ext * 1.1;
     return pp;
 }
@@ -199,29 +215,23 @@ static inline float mfDelay(float2 cell, MfCtx c) {
 // proud the block stands. Texel detail (lamps, glazed tiles) comes later.
 
 struct MfPic {
-    float3 alb;
-    float  hgt;     // 0..1 of the relief
-    int    mat;     // 0 wool, 1 concrete, 2 terracotta, 3 lamp, 4 glazed tile
-    int    ramp;
-    float  glow;    // lamp brightness
-    float3 lampCol;
-    float  flip;    // glazed tile orientation
+    int   layer;    // the block's texture in mcTiles
+    float hgt;      // 0..1 of the relief
+    float rot;      // quarter turns of the face (glazed terracotta)
+    bool  lit;      // a lit redstone lamp: full bright, whatever the shading
 };
 
 static MfPic mfPic(float m, float2 cell, MfCtx c) {
     float2 P = (cell + 0.5) / c.half_;
     MfPicParams pp = m == c.k ? c.pa : c.pb;
     float h1 = pp.h1, h2 = pp.h2, h3 = pp.h3, h4 = pp.h4;
-    int prog = pp.prog, ramp = pp.ramp;
+    int prog = pp.prog, ramp = pp.ramp, fam = pp.mat;
     float bay = MF_BAYER[int(glmod(cell.x, 4.0)) + 4 * int(glmod(cell.y, 4.0))];
     float2 C = pp.C;
 
     MfPic s;
-    s.mat = pp.mat;
-    s.ramp = ramp;
-    s.glow = 0.0;
-    s.lampCol = float3(0.0);
-    s.flip = 0.0;
+    s.rot = 0.0;
+    s.lit = false;
     int idx = 0;            // ramp entry, also the relief step
     switch (prog) {
     case 0: {   // dithered gradient, stepped like terrain
@@ -259,7 +269,7 @@ static MfPic mfPic(float m, float2 cell, MfCtx c) {
         s.hgt = float(idx - 1) / 3.0;
         break;
     }
-    case 4: {   // Voronoi mosaic with sunken grout
+    case 4: {   // Voronoi mosaic with sunken black grout
         float g = 1.6 + 0.9 * h3;
         float2 q = P * g + h1 * 17.0;
         float2 iq = floor(q);
@@ -288,85 +298,44 @@ static MfPic mfPic(float m, float2 cell, MfCtx c) {
         s.hgt = float(idx - 1) / 3.0;
         break;
     }
-    case 6: {   // lamp blocks, pulses of light running out from a point
+    case 6: {   // redstone lamps, rings of them switching on as a pulse runs out
         float ph = length(P - C) * 5.0 - c.tt * 1.1 + h3 * 6.0;
         float b = pow(0.5 + 0.5 * cos(ph), 4.0);
-        s.glow = b;
-        s.lampCol = mix(float3(1.0, 0.62, 0.26), mfDye(ramp, 3) * 1.6 + 0.08, 0.35 * h4);
-        s.mat = 3;
+        s.lit = b > 0.3;
+        s.layer = s.lit ? MC_REDSTONE_LAMP_ON : MC_REDSTONE_LAMP;
         s.hgt = 0.6 * b;
+        return s;
+    }
+    default: {  // glazed terracotta, laid in 2×2 pinwheels, in rings of colour
+        float2 grp = floor(cell * 0.5);
+        float w = 0.16 + 0.10 * h3;
+        float2 G = (grp * 2.0 + 1.0) / c.half_;
+        int k = int(glmod(floor(length(G - C) / w) + floor(h4 * 6.0), 6.0));
+        idx = k < 4 ? k + 1 : 7 - k;
+        // Which quarter turn each of the four takes: two different pinwheels.
+        int q = int(glmod(cell.x, 2.0)) + 2 * int(glmod(cell.y, 2.0));
+        const float spinA[4] = { 0.0, 1.0, 3.0, 2.0 };
+        const float spinB[4] = { 2.0, 3.0, 1.0, 0.0 };
+        s.rot = h2 > 0.5 ? spinA[q] : spinB[q];
+        s.hgt = float(idx - 1) / 6.0;
+        fam = MF_GLAZED;
         break;
     }
-    default: {  // glazed tiles
-        s.flip = mfIHash(cell, m * 13.0 + 5.0 + floor(c.salt * 100.0)) > 0.5 ? 1.0 : 0.0;
-        s.mat = 4;
-        idx = 1;
-        s.hgt = 0.2;
-        break;
     }
-    }
-    s.alb = mfDye(ramp, idx);
-    // Terracotta: the same ramp fired earthy.
-    if (s.mat == 2) s.alb = mix(s.alb, float3(0.20, 0.10, 0.06), 0.35) * 0.9;
+    s.layer = mfBlock(fam, ramp, idx);
     return s;
 }
 
-// The face of a block: the picture's dye with its material's texels, or the
-// lamp and glazed-tile motifs. `fp` is texels per pixel; every pattern fades
-// to its own average as it climbs past one. `front` is false for the slabs'
-// edges, which show the dye and grain but no motif.
-static float3 mfFace(MfPic pic, float2 uv, float2 cell, float face, float fp, bool front,
-                     thread float3& emit) {
-    float2 tc = floor(uv * 16.0);
-    float2 e = min(tc, 15.0 - tc);
-    float rimD = min(e.x, e.y);
-    float n = mfIHash(cell * 16.0 + tc, face) - 0.5;
-    float fade = smoothstep(0.6, 1.6, fp);
-    emit = float3(0.0);
-
-    if (pic.mat == 3) {     // lamp: iron frame, amber glass, a filament diamond
-        float glass = (front && rimD >= 2.0) ? 1.0 : 0.0;
-        float2 dc = abs(tc + 0.5 - 8.0);
-        float fil = (dc.x + dc.y < 5.0 && dc.x + dc.y > 2.0) ? 1.0 : 0.0;
-        float3 alb = glass > 0.0 ? float3(0.010, 0.005, 0.003) * (0.8 + 0.8 * n)
-                                 : float3(0.030, 0.028, 0.028) * (rimD < 1.0 ? 0.6 : 1.0 + n);
-        float3 em = glass * pic.lampCol * pic.glow * (0.40 + 0.35 * n + 0.8 * fil);
-        float gArea = front ? 144.0 / 256.0 : 0.0;
-        float3 avgA = mix(float3(0.028), float3(0.010, 0.005, 0.003), gArea);
-        float3 avgE = pic.lampCol * pic.glow * gArea * (0.40 + 0.8 * 32.0 / 144.0);
-        emit = mix(em, avgE, fade);
-        if (!front) emit += pic.lampCol * pic.glow * 0.05;
-        return mix(alb, avgA, fade);
-    }
-    if (pic.mat == 4) {     // glazed tile: quarter arcs that meet into meanders
-        float3 bg = mfDye(pic.ramp, 1), arc = mfDye(pic.ramp, 3), line = mfDye(pic.ramp, 4);
-        float3 col = bg;
-        if (front) {
-            float2 t = tc + 0.5;
-            if (pic.flip > 0.0) t.x = 16.0 - t.x;
-            float d = min(abs(length(t) - 8.0), abs(length(t - 16.0) - 8.0));
-            col = d < 0.9 ? line : (d < 3.2 ? arc : bg);
-            float2 ce = min(t, 16.0 - t);
-            if (length(ce) < 2.6 && d > 3.2) col = mfDye(pic.ramp, 2);
-            col = mix(col, bg * 0.45 + arc * 0.40 + line * 0.15, fade);
-        }
-        return col * (1.0 + 0.06 * n * (1.0 - fade));
-    }
-    bool rim = rimD < 1.0;
-    float v, mean;
-    if (pic.mat == 0) {         // wool: fuzz plus clumps two texels across
-        float clump = mfIHash(cell * 8.0 + floor(tc * 0.5), face + 20.0) - 0.5;
-        v = 1.0 + 0.20 * n + 0.16 * clump + (rim ? -0.16 : 0.0);
-        mean = 1.0 - 0.16 * 60.0 / 256.0;
-    } else if (pic.mat == 1) {  // concrete: nearly flat
-        v = 1.0 + 0.08 * n + (rim ? -0.09 : 0.0);
-        mean = 1.0 - 0.09 * 60.0 / 256.0;
-    } else {                    // terracotta: mottled
-        float mot = valueNoise(tc * 0.4 + cell * 7.1 + face * 2.0) - 0.5;
-        v = 1.0 + 0.12 * n + 0.24 * mot + (rim ? -0.12 : 0.0);
-        mean = 1.0 - 0.12 * 60.0 / 256.0;
-    }
-    return pic.alb * mix(v, mean, fade);
+// The face of a block: its real texture, upright in the orientation it rests
+// in (uv 0..1, v up), turned for glazed terracotta. `fp` is the width of a
+// screen pixel on the face, in faces.
+static float3 mfFace(MfPic pic, float2 uv, float fp, texture2d_array<float> mcTiles) {
+    float2 t = float2(uv.x, 1.0 - uv.y);
+    int r = int(pic.rot);
+    if (r == 1) t = float2(t.y, 1.0 - t.x);
+    else if (r == 2) t = 1.0 - t;
+    else if (r == 3) t = float2(1.0 - t.y, t.x);
+    return mcTile(mcTiles, pic.layer, t, fp).rgb;
 }
 
 // ---------------------------------------------------------------------------
@@ -401,8 +370,6 @@ static MfPose mfPoseAt(float2 cell, MfCtx c) {
     o.axisX = glmod(c.k, 2.0);
     return o;
 }
-
-static inline bool mfMoving(MfPose o) { return o.p > 0.0 && o.p < 1.0; }
 
 // World to the block's own frame (and back, with the transpose).
 static inline float3 mfToLocal(float3 w, MfPose o) {
@@ -448,17 +415,19 @@ struct MfHit { float3 col; bool edge; float ao; };
 // the dark with distance, the way a short view distance does.
 // `aoIn` < 0 works out occlusion and the edge test; otherwise the pixel's
 // first sample already did, and its occlusion is reused.
-static MfHit mfScene(float3 ro, float3 rd, float pxAngle, MfCtx c, float aoIn, thread float& tOut);
+static MfHit mfScene(float3 ro, float3 rd, float pxAngle, MfCtx c, float aoIn,
+                     texture2d_array<float> mcTiles, thread float& tOut);
 
-static MfHit mfScene(float3 ro, float3 rd, float pxAngle, MfCtx c, float aoIn) {
+static MfHit mfScene(float3 ro, float3 rd, float pxAngle, MfCtx c, float aoIn,
+                     texture2d_array<float> mcTiles) {
     float t;
-    MfHit r = mfScene(ro, rd, pxAngle, c, aoIn, t);
-    r.col = mix(r.col, float3(0.012, 0.011, 0.014), smoothstep(0.55, 1.0, t / c.fog));
+    MfHit r = mfScene(ro, rd, pxAngle, c, aoIn, mcTiles, t);
+    r.col = mix(r.col, MC_FOG_DAY, smoothstep(0.55, 1.0, t / c.fog));
     return r;
 }
 
-static MfHit mfScene(float3 ro, float3 rd, float pxAngle, MfCtx c, float aoIn, thread float& tOut) {
-    const float3 L = normalize(float3(-0.45, 0.55, 0.70));
+static MfHit mfScene(float3 ro, float3 rd, float pxAngle, MfCtx c, float aoIn,
+                     texture2d_array<float> mcTiles, thread float& tOut) {
     MfHit res;
     float zTop = 0.5 + c.relief + (c.lt < MF_SPREAD + MF_TURN ? MF_POP : 0.0) + 0.01;
     float rz = min(rd.z, -1e-3);
@@ -505,12 +474,13 @@ static MfHit mfScene(float3 ro, float3 rd, float pxAngle, MfCtx c, float aoIn, t
     if (full) { nb[0] = mfPoseAt(cell + nd[0], c); nb[1] = mfPoseAt(cell + nd[1], c); }
 
     if (!hit) {
-        // The board behind: near black, with a faint grid of the cells. It
-        // only shows through a flipping block, so it is always near an edge.
-        float2 g = abs(fract(P.xy) - 0.5);
-        float line = smoothstep(0.47, 0.5, max(g.x, g.y));
+        // The board behind: polished blackstone, deep in the blocks' shade.
+        // It only shows through a flipping block, so it is always near an
+        // edge.
         res.ao = full ? mfOcclusion(P, float3(0, 0, 1), cell, nb, nd) : aoIn;
-        res.col = float3(0.018, 0.017, 0.02) * (1.0 - 0.5 * line) * res.ao;
+        float fpB = tHit * pxAngle / max(abs(rd.z), 0.2);
+        float3 tex = mcTile(mcTiles, MC_POLISHED_BLACKSTONE, float2(fract(P.x), 1.0 - fract(P.y)), fpB).rgb;
+        res.col = tex * 0.8 * 0.45 * res.ao;
         res.edge = true;
         return res;
     }
@@ -535,27 +505,20 @@ static MfHit mfScene(float3 ro, float3 rd, float pxAngle, MfCtx c, float aoIn, t
         uv = pl.xz / h * 0.5 + 0.5;
     }
     uv = clamp(uv, 0.0, 0.9999);
-    // Grain is keyed by picture, not by face, so it does not change when a
-    // picture that came in on a back slab becomes the next flip's front.
-    float face = bigFace ? glmod(m, 61.0)
-                         : 100.0 + (abs(nl.x) > 0.5 ? 0.0 : 1.0) + (nl.x + nl.y > 0.0 ? 2.0 : 0.0);
 
+    // One screen pixel on this face, in blocks and in faces (a turning block
+    // is smaller than one).
     float pxWorld = tHit * pxAngle / max(abs(dot(n, rd)), 0.2);
-    float fp = pxWorld / (2.0 * h / 16.0);
+    float3 tex = mfFace(pic, uv, pxWorld / (2.0 * h), mcTiles);
 
-    float3 emit;
-    float3 alb = mfFace(pic, uv, cell, face, fp, bigFace, emit);
-
-    float diff = max(dot(n, L), 0.0);
+    // The game's fixed shading by face (top 1, bottom 0.5, z 0.8, x 0.6),
+    // blended by the normal while a block turns, and its smooth-lighting
+    // darkening in corners. A lit lamp is full bright.
+    float3 n2 = n * n;
+    float shade = n2.x * 0.6 + n2.z * 0.8 + n2.y * (n.y > 0.0 ? 1.0 : 0.5);
     float ao = full ? mfOcclusion(P, n, cell, nb, nd) : aoIn;
     res.ao = ao;
-    float3 col = alb * (0.38 + 0.62 * diff) * ao;
-    if (pic.mat == 4 && bigFace) {
-        float3 hv = normalize(L - rd);
-        col += 0.10 * pow(max(dot(n, hv), 0.0), 40.0) * ao;
-    }
-    col += emit * (0.6 + 0.4 * ao);
-    res.col = col;
+    res.col = pic.lit ? tex : tex * shade * ao;
 
     // Edge test. A point near its own face's border can have a silhouette
     // inside the pixel; so can a point a taller (or flipping) neighbour's
@@ -577,7 +540,8 @@ static MfHit mfScene(float3 ro, float3 rd, float pxAngle, MfCtx c, float aoIn, t
     return res;
 }
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
+                        texture2d_array<float> mcTiles [[texture(8)]]) {
     float minRes = min(u.resolution.x, u.resolution.y);
     float half_ = 0.5 * u.rows;
 
@@ -614,19 +578,17 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     const float2 grid[4] = { float2(0.125, 0.375), float2(0.375, -0.125),
                              float2(-0.125, -0.375), float2(-0.375, 0.125) };
     float2 uv0 = lerpUV(float4(pos.xy + grid[0], 0.0, 1.0), u.resolution);
-    MfHit first = mfScene(ro, normalize(uv0.x * right + uv0.y * up + MF_FOCAL * fwd), pxAngle, c, -1.0);
+    MfHit first = mfScene(ro, normalize(uv0.x * right + uv0.y * up + MF_FOCAL * fwd), pxAngle, c, -1.0, mcTiles);
     float3 col = first.col;
     if (first.edge) {
         for (int s = 1; s < MF_SAMPLES; ++s) {
             float2 uv = lerpUV(float4(pos.xy + grid[s], 0.0, 1.0), u.resolution);
             float3 rd = normalize(uv.x * right + uv.y * up + MF_FOCAL * fwd);
-            col += mfScene(ro, rd, pxAngle, c, first.ao).col;
+            col += mfScene(ro, rd, pxAngle, c, first.ao, mcTiles).col;
         }
         col /= float(MF_SAMPLES);
     }
 
-    col = col / (1.0 + col * 0.3);
-    col = pow(max(col, 0.0), 1.0 / 2.2);
     col = lerpDither(col, pos);
     return half4(half3(col), 1.0h);
 }
