@@ -1,12 +1,16 @@
 // Sponge Descent — original shader written for Lerping@Home (AGPL-3.0, like
 // the rest of this project). An endless dive down the tunnels of an infinite
-// Menger sponge built from stone blocks, by the light of the torch you carry.
+// Menger sponge built out of the game's own stone bricks.
+//
+// lerp-category: Minecraft
+// lerp-requires: minecraft
 //
 // Written from the published mathematics (Karl Menger, 1926: split a cube
 // into 27, take out the centre and the six face centres, repeat on the 20
-// that remain). All textures are procedural and written here; the block-world
-// cues (16-ish texel faces, flat per-face shading, corner darkening, cracks
-// that spread before a block breaks) are homage, not copied art.
+// that remain). Every surface is a real block drawn with its real texture
+// (stone bricks with their mossy, cracked and chiseled variants, glowstone;
+// the other palettes are deepslate, sandstone, quartz and nether bricks), and
+// a block about to break shows the game's ten destroy stages.
 //
 // The world. Space is the sponge mirrored into all eight octants and grown
 // outward without end, so it is the same under x -> x/3 about the origin.
@@ -15,64 +19,60 @@
 // origin, so every period has one drop down a shaft and two runs through
 // level tunnels. Each period is rendered in its own coordinates (scaled by
 // 3^n), so float precision never runs out however long it plays, and the
-// order of the three legs is drawn per period from the seed.
+// order of the three legs is drawn per period from the seed. The camera
+// looks partly towards the origin (`gaze`), so tunnel walls turn to face it.
 //
 // Blocks. Nothing is subdivided to a fixed depth. A cube is split into its
 // 20 children only while the camera is within `detail` of its own edge
 // lengths; past that it is one solid block. So every block on screen spans
-// between 1/(3·detail) and 1/detail radians whatever the zoom, texels stay
-// a few pixels wide at any distance, and the sponge carves itself as you
-// approach: over the last span of the approach the middle third of each
-// face of a block parts along a seam, cracks and sinks (ten stepped stages),
-// then its centre and face centres break out and the 20 smaller blocks
-// behind them take its place. The camera also looks partly towards the
-// origin (`gaze`), so tunnel walls turn to face it. Nothing is accumulated; the
-// split is a function of where the camera is, and the camera of time.
+// between 1/(3·detail) and 1/detail radians whatever the zoom, and the
+// sponge mines itself as you approach: over the last span of the approach a
+// block runs through destroy_stage_0..9 across its whole face, as a block
+// being mined does, then breaks into the 20 blocks a third its size that it
+// is made of, each with its own full 16-texel face. (The game's faces are
+// 16 texels, which thirds do not divide, so the parent's texture is never
+// cut into thirds: the block breaks whole and its children are new blocks.)
+// Nothing is accumulated; the split is a function of where the camera is,
+// and the camera of time.
+//
+// Light, as the game lights it: the fixed per-face shading, smooth-lighting
+// corner darkening from the eight neighbours of each face's air cell, and
+// sky light on the game's level curve. The sponge is open to the sky at every
+// scale, so a face's sky level is set by the size of the empty cube in front
+// of it (known for free from the march): full in the big halls, falling a
+// level at a time down each smaller hole, so holes within holes read as ever
+// darker nested squares. Fog is the distance colour; light blocks glow.
 //
 // March: a hierarchical DDA. Each step finds the largest empty cube the point
 // is in (or the solid block it hit) by descending the levels, then jumps to
-// that cube's far face. No distance estimate, no creeping.
+// that cube's far face. No distance estimate, no creeping. Textures are
+// sampled once, at the hit.
 //
 // Cost, worst pixel: SD_STEPS (64) steps of at most 11 level tests each, then
-// at the hit 8 more level walks for corner darkening and one texture. Both
-// restart from the deepest cube already known to be shared (SdStart), not
-// from the root; that halved the corner-darkening cost. Typical rays take
-// 10–25 steps (a step-count heat map was checked). LerpPreview --bench at
-// 3456x2234: 8.1 ms mean at t=6.
-//
-// Light. Two sources and no shadow rays: the torch the camera carries, and
-// the glow of the depths, which is also the haze, so far walls stand dark
-// against it. What makes the holes read is "openness": a face is lit by the
-// glow in proportion to the size of the empty cube in front of it (known for
-// free from the march), so the floor of a one-block hole is dark, a hole
-// within a hole darker, and the light steps down one level of the sponge at
-// a time, the way block-world light steps down a block at a time.
-//
-// lerp-category: Minecraft
+// at the hit 8 more level walks for corner darkening and two tile samples.
+// Both restart from the deepest cube already known to be shared (SdStart).
 //
 // lerp-param: speed    float 0.25 3  = 1     "Speed"
 // lerp-param: detail   float 4 12    = 6     "Detail"
-// lerp-param: mining   float 0 1     = 0.4   "Cracking"
-// lerp-param: torch    float 0 2     = 1     "Torch"
+// lerp-param: mining   float 0 1     = 0.25  "Mining"
 // lerp-param: gaze     float 0 0.8   = 0.5   "Look to the core"
-// lerp-param: colorStone color       = (0.38, 0.35, 0.30) "Stone"
-// lerp-param: colorTrim  color       = (0.29, 0.285, 0.29) "Trim"
-// lerp-param: colorFog   color       = (0.10, 0.155, 0.24) "Depths"
+// lerp-param: blocks   int 0 4       = 0     "Blocks"
+// lerp-param: colorFog color         = (0.42, 0.52, 0.68) "Fog"
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -90 90   = 0 "Tilt"
 // lerp-param: magnify  float -1 1     = 0 "Zoom"
 //
-// lerp-preset: Deepslate  colorStone=(0.15, 0.155, 0.17), colorTrim=(0.10, 0.24, 0.20), colorFog=(0.05, 0.10, 0.10), torch=1.4
-// lerp-preset: Sandstone  colorStone=(0.45, 0.34, 0.20), colorTrim=(0.20, 0.10, 0.06), colorFog=(0.22, 0.13, 0.07), torch=0.8
-// lerp-preset: Quartz     colorStone=(0.56, 0.54, 0.51), colorTrim=(0.16, 0.17, 0.21), colorFog=(0.05, 0.06, 0.10), torch=0.8
-// lerp-preset: Nether     colorStone=(0.20, 0.065, 0.06), colorTrim=(0.06, 0.035, 0.04), colorFog=(0.30, 0.09, 0.02), torch=1.0
+// blocks: 0 stone bricks, 1 deepslate, 2 sandstone, 3 quartz, 4 nether bricks.
+// lerp-preset: Deepslate  blocks=1, colorFog=(0.16, 0.18, 0.24)
+// lerp-preset: Sandstone  blocks=2, colorFog=(0.62, 0.58, 0.50)
+// lerp-preset: Quartz     blocks=3, colorFog=(0.36, 0.40, 0.52)
+// lerp-preset: Nether     blocks=4, colorFog=(0.20, 0.03, 0.03)
 // lerp-preset: "Fine Grain" detail=10, mining=0.2
 
 constant float SD_PERIOD = 40.0;      // seconds per threefold zoom at speed 1
 constant int   SD_STEPS  = 64;
 constant int   SD_LMAX   = 8;         // deepest level ever tested
 constant float SD_ROOT   = 9.0;       // edge of the coarsest cube considered
-constant float SD_TEX    = 18.0;      // texels across a block face (thirds land on texel edges)
 constant float SD_FOCAL  = 1.05;
 constant float SD_FOG    = 0.85;      // haze distance, period units at scale 1
 constant float SD_BAND   = 0.25;      // crack span, as a fraction of the split distance
@@ -241,142 +241,57 @@ static inline float sdSolid(float3 x, float3 cam, float K, SdStart st) {
 }
 
 // ---------------------------------------------------------------------------
-// Block faces.
+// Block faces: which block this is, as the game would have built it.
 
 static inline float sdH(float3 p, float salt) {
     return hash21(p.xy * float2(1.0, 1.37) + float2(p.z * 0.731 + salt, p.z * 1.913 - salt * 0.37));
 }
 
-// Crack lines, grown from near the face centre outwards; `stage` in 0..1.
-static inline float sdCrack(float2 tc, float stage, float id) {
-    float hit = 0.0;
-    float2 c0 = float2(9.0) + (float2(hash11(id * 3.1), hash11(id * 5.7)) - 0.5) * 3.0;
-    for (int i = 0; i < 5; ++i) {
-        float fi = float(i);
-        float a = (fi + 0.6 * hash11(id + fi * 1.7)) * TWO_PI / 5.0;
-        float a2 = a + (hash11(id * 2.3 + fi) - 0.5) * 1.4;
-        float len1 = 3.5 + 2.5 * hash11(id + fi * 9.1);
-        float2 m = c0 + len1 * float2(cos(a), sin(a));
-        float2 e = m + 6.0 * float2(cos(a2), sin(a2));
-        float reach = stage * 12.0;                       // texels from the centre so far
-        // segment c0 -> m
-        float2 pa = tc - c0, ba = m - c0;
-        float hh = saturate(dot(pa, ba) / dot(ba, ba));
-        float along = hh * len1;
-        if (length(pa - ba * hh) < 0.62 && along < reach) hit = 1.0;
-        // segment m -> e
-        pa = tc - m; ba = e - m;
-        hh = saturate(dot(pa, ba) / dot(ba, ba));
-        along = len1 + hh * 6.0;
-        if (length(pa - ba * hh) < 0.62 && along < reach) hit = 1.0;
+// The tile layer for a face of block `b`. Each palette is one family of
+// building blocks with its own weathered and decorated variants mixed in, as
+// a stronghold mixes plain, mossy and cracked stone bricks, plus a rare light
+// block. `glow` is set for light blocks, which the game draws at full light.
+static inline int sdBlockTile(float3 id, int pal, bool top, thread bool& glow, float time) {
+    float h = sdH(id, 0.0), g = sdH(id, 9.7);
+    glow = g < 0.012;
+    switch (pal) {
+    case 1:   // deepslate
+        if (glow) return mcFrame(MC_SEA_LANTERN, MC_SEA_LANTERN_FRAMES, MC_SEA_LANTERN_TICKS, time);
+        if (h < 0.12) return MC_CRACKED_DEEPSLATE_BRICKS;
+        if (h < 0.30) return MC_DEEPSLATE_TILES;
+        if (h < 0.36) return MC_CRACKED_DEEPSLATE_TILES;
+        if (h < 0.40) return MC_CHISELED_DEEPSLATE;
+        return MC_DEEPSLATE_BRICKS;
+    case 2:   // sandstone
+        if (glow) return top ? MC_OCHRE_FROGLIGHT_TOP : MC_OCHRE_FROGLIGHT_SIDE;
+        if (h < 0.25) return top ? MC_SANDSTONE_TOP : MC_SANDSTONE;
+        if (h < 0.30) return top ? MC_SANDSTONE_TOP : MC_CHISELED_SANDSTONE;
+        return top ? MC_SANDSTONE_TOP : MC_CUT_SANDSTONE;
+    case 3:   // quartz
+        if (glow) return mcFrame(MC_SEA_LANTERN, MC_SEA_LANTERN_FRAMES, MC_SEA_LANTERN_TICKS, time);
+        if (h < 0.25) return top ? MC_QUARTZ_BLOCK_TOP : MC_QUARTZ_BLOCK_SIDE;
+        if (h < 0.31) return top ? MC_CHISELED_QUARTZ_BLOCK_TOP : MC_CHISELED_QUARTZ_BLOCK;
+        return MC_QUARTZ_BRICKS;
+    case 4:   // nether
+        if (glow) return h < 0.5 ? MC_GLOWSTONE : MC_SHROOMLIGHT;
+        if (h < 0.18) return MC_CRACKED_NETHER_BRICKS;
+        if (h < 0.26) return MC_RED_NETHER_BRICKS;
+        if (h < 0.30) return MC_CHISELED_NETHER_BRICKS;
+        return MC_NETHER_BRICKS;
+    default:  // stone bricks, as a stronghold lays them
+        if (glow) return MC_GLOWSTONE;
+        if (h < 0.20) return MC_MOSSY_STONE_BRICKS;
+        if (h < 0.36) return MC_CRACKED_STONE_BRICKS;
+        if (h < 0.40) return MC_CHISELED_STONE_BRICKS;
+        return MC_STONE_BRICKS;
     }
-    return hit;
-}
-
-// Albedo (linear) of a block face at face coordinates uv in [0,1]^2; `fwT` is
-// the pixel footprint in texels, against which texel detail fades out.
-static inline float3 sdFace(float2 uv, SdCell b, float la, int axis, float fwT,
-                            constant LerpUniforms& u, thread float3& emis) {
-    float2 tex = clamp(floor(uv * SD_TEX), 0.0, SD_TEX - 1.0);
-    float2 tc = tex + 0.5;
-    float3 id = b.idx + float3(la * 7.0, la * 13.0, la * 3.0);
-    float h0 = sdH(id, 0.0), h1 = sdH(id, 4.2), h2 = sdH(id, 9.7);
-    float faceSalt = float(axis) * 17.0;
-
-    // Corner blocks of their parent are stone brick, edge blocks are trim:
-    // the sponge's own 3x3 pattern shows in the masonry.
-    float3 dg = glmod3(b.idx, 3.0);
-    bool trim = (dg.x == 1.0) || (dg.y == 1.0) || (dg.z == 1.0);
-
-    float v, mean;
-    float3 base;
-    if (!trim) {
-        // Stone brick: two courses of nine, the upper one offset.
-        float row = floor(tex.y / 9.0);
-        float ty = tex.y - row * 9.0;
-        float bx = glmod(tex.x + row * 4.0, 18.0);
-        float brick = floor(bx / 9.0);
-        float tx = bx - brick * 9.0;
-        float tone = 0.88 + 0.22 * sdH(float3(brick, row, faceSalt) + id, 2.0);
-        v = tone;
-        if (ty == 1.0 || tx == 1.0) v *= 1.09;
-        if (ty == 8.0 || tx == 8.0) v *= 0.89;
-        if (ty == 0.0 || tx == 0.0) v = 0.66;
-        v *= 0.94 + 0.11 * sdH(float3(tex, faceSalt) + id * 1.3, 5.0);
-        mean = 0.92;
-        base = u.colorStone.rgb;
-    } else {
-        // Trim: a bevelled frame round a recessed square on the middle third.
-        float2 e = min(tex, SD_TEX - 1.0 - tex);
-        float ring = min(e.x, e.y);
-        v = 1.0;
-        if (ring == 0.0) v = 0.72;
-        else if (ring == 1.0) v = (tex.x < 9.0 && tex.y < 9.0) ? 1.12 : 1.04;
-        bool inner = all(tex >= 6.0) && all(tex <= 11.0);
-        bool innerEdge = inner && (tex.x == 6.0 || tex.y == 6.0 || tex.x == 11.0 || tex.y == 11.0);
-        if (inner) v = 0.86;
-        if (innerEdge) v = (tex.x == 11.0 || tex.y == 11.0) ? 1.02 : 0.72;
-        v *= 0.93 + 0.14 * sdH(float3(tex, faceSalt) + id * 1.7, 6.0);
-        v *= 0.92 + 0.12 * h1;
-        mean = 0.90;
-        base = u.colorTrim.rgb;
-    }
-
-    float3 col = base * v;
-    float3 colMean = base * mean;
-
-    // Moss creeps over one block in five.
-    if (h0 < 0.08) {
-        float m = valueNoise(tc / 3.2 + id.xy * 0.37 + float2(faceSalt));
-        m += 0.35 * hash21(tex + id.xz + faceSalt);
-        float thr = axis == 1 ? 0.62 : 0.80;
-        if (m > thr) {
-            // as dark as the stone it grows on, so dark palettes keep dark moss
-            float3 moss = float3(0.20, 0.33, 0.12) * (0.8 + 0.4 * hash21(tex * 1.31 + id.yz))
-                        * clamp(dot(base, float3(0.3, 0.59, 0.11)) / 0.29, 0.3, 1.3);
-            col = mix(col, moss, 0.9);
-        }
-        colMean = mix(colMean, colMean * float3(0.75, 1.15, 0.55), axis == 1 ? 0.3 : 0.12);
-    }
-
-    // A few blocks carry glowing crystal: emissive texels in a small cluster.
-    emis = float3(0.0);
-    if (h2 < 0.014) {
-        float2 cc = float2(4.0, 4.0) + floor(float2(h1, hash11(h2 * 91.0)) * 10.0);
-        float dd = length(tc - cc);
-        float sp = hash21(tex + id.xy * 3.1);
-        if (dd < 3.2 && sp > 0.35) {
-            float3 glow = h1 < 0.5 ? float3(0.75, 0.32, 1.0) : float3(0.25, 0.85, 0.95);
-            emis = glow * (0.6 + 0.6 * sp) * (1.0 - smoothstep(0.6, 1.4, fwT) * 0.6);
-            col = glow * 0.25;
-        }
-    }
-
-    // Giving way: the middle third, which is what breaks out, first parts
-    // from the face along a seam, then cracks, then sinks into shadow.
-    if (b.crack > 0.0) {
-        float stage = floor(b.crack * 10.0) / 10.0;
-        bool inC = all(tex >= 6.0) && all(tex <= 11.0);
-        if (inC) {
-            bool seam = tex.x == 6.0 || tex.y == 6.0 || tex.x == 11.0 || tex.y == 11.0;
-            float k = seam ? 0.5 * smoothstep(0.0, 0.5, stage) : 0.0;
-            if (!seam && stage > 0.25)
-                k = 0.32 * sdCrack(tc, (stage - 0.25) * 0.45, h1 * 113.0 + float(axis) * 7.0);
-            float sink = mix(1.0, 0.62, smoothstep(0.55, 1.0, stage));
-            col *= (1.0 - k) * sink;
-        }
-        colMean *= 1.0 - 0.06 * stage;
-    }
-
-    // Fade texel detail to the face's mean once texels are under a pixel.
-    float far = smoothstep(0.6, 1.6, fwT);
-    return mix(col, colMean, far);
 }
 
 // ---------------------------------------------------------------------------
 
 static inline float3 sdScene(float3 ro, float3 rd, float pxAngle, float s, float K,
-                             float la0, float flick, constant LerpUniforms& u) {
+                             float la0, constant LerpUniforms& u,
+                             texture2d_array<float> mcTiles) {
     float3 fogC = u.colorFog.rgb;
     float band = SD_BAND * u.mining;
     float tMax = 2.0 * SD_FOG * s;
@@ -408,24 +323,22 @@ static inline float3 sdScene(float3 ro, float3 rd, float pxAngle, float s, float
         if (t > tMax) break;
     }
 
-    // Gaussian: near walls stay clear, deep ones dissolve into the glow.
+    // Distance fog, near walls clear.
     float fogAmt = 1.0 - exp(-pow(t / (SD_FOG * s), 1.8));
     if (!found) return fogC;
 
     float3 n = float3(0.0);
     n[axis] = rd[axis] > 0.0 ? -1.0 : 1.0;
-    // the exact face point (t landed a hair inside the block)
-    float3 xh = ro + rd * tFace;
+    float3 xh = ro + rd * tFace;                     // t landed a hair inside the block
     float H = hit.h;
     float3 sgh = select(float3(-1.0), float3(1.0), (xh - n * 0.5 * H) >= 0.0);
-    float3 ctr = sgh * (hit.idx + 0.5) * H;          // block centre, p space
-    float3 loc = (xh - ctr) / H + 0.5;               // 0..1 inside the block
+    float3 ctr = sgh * (hit.idx + 0.5) * H;          // block centre
+    float3 loc = saturate((xh - ctr) / H + 0.5);     // 0..1 inside the block
     int a1 = axis == 0 ? 2 : 0;                      // face u axis
     int a2 = axis == 1 ? 2 : 1;                      // face v axis (world up on walls)
-    float2 uv = saturate(float2(loc[a1], loc[a2]));
-    xh[axis] = ctr[axis] + n[axis] * 0.5 * H;        // snap onto the face plane
+    float2 fuv = float2(loc[a1], loc[a2]);
 
-    // Corner darkening from the eight blocks round the face's air cell.
+    // Smooth lighting's corner darkening: the eight blocks round the face's air cell.
     float3 t1 = sdAxis(a1), t2 = sdAxis(a2);
     float3 ac = ctr + n * H;
     float s1n = sdSolid(ac - t1 * H, ro, K, st), s1p = sdSolid(ac + t1 * H, ro, K, st);
@@ -437,38 +350,38 @@ static inline float3 sdScene(float3 ro, float3 rd, float pxAngle, float s, float
     vao.y = (s1p * s2n > 0.5) ? 0.0 : 3.0 - (s1p + s2n + cpn);
     vao.z = (s1n * s2p > 0.5) ? 0.0 : 3.0 - (s1n + s2p + cnp);
     vao.w = (s1p * s2p > 0.5) ? 0.0 : 3.0 - (s1p + s2p + cpp);
-    float ao = mix(mix(vao.x, vao.y, uv.x), mix(vao.z, vao.w, uv.x), uv.y) / 3.0;
-    ao = 0.42 + 0.58 * ao;
+    float ao = mix(mix(vao.x, vao.y, fuv.x), mix(vao.z, vao.w, fuv.x), fuv.y) / 3.0;
+    ao = 0.45 + 0.55 * ao;
 
-    // Texture in |p| orientation so faces read the same in every octant.
+    // The texture: side faces stand upright (uv.y = 0 is the picture's top).
+    float2 uv = axis == 1 ? fuv : float2(fuv.x, 1.0 - fuv.y);
     float cosI = max(abs(rd[axis]), 0.05);
-    float fwT = t * pxAngle * pow(cosI, -0.35) / (H / SD_TEX);
-    float2 uvt = uv;
-    if (sgh[a1] < 0.0) uvt.x = 1.0 - uvt.x;
-    if (sgh[a2] < 0.0 && axis != 1) uvt.y = 1.0 - uvt.y;
-    float3 emis;
-    float3 alb = sdFace(uvt, hit, la0 + float(hit.level), axis, fwT, u, emis);
+    float fp = t * pxAngle * pow(cosI, -0.35) / H;   // one screen pixel, in blocks
+    float3 id = hit.idx + float3(la0 + float(hit.level)) * float3(7.0, 13.0, 3.0);
+    bool glow;
+    int layer = sdBlockTile(id, u.blocks, axis == 1, glow, u.time);
+    float3 alb = mcTile(mcTiles, layer, uv, fp).rgb;
 
-    // Flat per-face light: tops brightest, then the two wall directions, then undersides.
-    float shade = axis == 1 ? (n.y > 0.0 ? 1.0 : 0.42) : (axis == 0 ? 0.74 : 0.56);
+    // A block being mined wears the destroy stage over its whole face, blended
+    // as the game blends it (twice source times destination).
+    if (hit.crack > 0.0) {
+        int stage = min(int(hit.crack * 10.0), 9);
+        float4 d = mcTile(mcTiles, MC_DESTROY_STAGE_0 + stage, uv, fp);
+        alb *= mix(float3(1.0), 2.0 * d.rgb, d.a);
+    }
 
-    // The torch, warm and close; and the glow of the depths, which is also the
-    // haze, so far walls stand dark against it and every hole is a lit square.
-    float tr = t / (0.2 * s);
-    float torch = u.torch * flick * 1.7 / (1.0 + tr * tr);
-    float3 light = float3(1.0, 0.64, 0.34) * torch + fogC * 0.7;
-    float lam = 0.6 + 0.4 * abs(rd[axis]);
-    // Openness: a face looking into a big cavity sees the glow; one at the
-    // bottom of a small hole does not. Measured by the size of the empty cube
-    // in front of it, so light steps down one level of the sponge at a time
-    // and holes within holes read as ever darker nested squares.
-    float open = smoothstep(-4.2, -1.3, log2(airH / s));
-    light *= mix(0.14, 1.0, open);
-    float3 col = alb * shade * ao * lam * light + emis;
+    // Sky light: the sponge is open to the sky at every scale, so a face gets
+    // the level of the cavity it looks into, one level less for each step
+    // down in hole size, on the game's light curve. Light blocks are at 15.
+    float open = saturate((log2(airH / s) + 4.4) / 3.2);
+    float level = glow ? 15.0 : floor(5.0 + 10.0 * open + 0.5);
+    float light = max(mcLight(level), 0.05);
+    float3 col = alb * mcFaceShade(n) * (glow ? 1.0 : ao) * light;
     return mix(col, fogC, fogAmt);
 }
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
+                        texture2d_array<float> mcTiles [[texture(8)]]) {
     float minRes = min(u.resolution.x, u.resolution.y);
     float salt = floor(u.seed * 977.0) * 0.137;
 
@@ -502,14 +415,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 up = cross(right, fwd);
     float pxAngle = 2.0 / (minRes * SD_FOCAL * lens);
 
-    float flick = 1.0 + 0.035 * sin(u.time * 7.3) + 0.025 * sin(u.time * 12.9 + 1.3);
-
     float2 uv = lerpUV(pos, u.resolution);
     float3 rd = normalize(uv.x * right + uv.y * up + lens * SD_FOCAL * fwd);
-    float3 col = sdScene(ro, rd, pxAngle, s, u.detail, n, flick, u);
+    float3 col = sdScene(ro, rd, pxAngle, s, u.detail, n, u, mcTiles);
 
-    col = col / (1.0 + col * 0.35);
-    col = pow(max(col, 0.0), 1.0 / 2.2);
     col = lerpDither(col, pos);
     return half4(half3(col), 1.0h);
 }
