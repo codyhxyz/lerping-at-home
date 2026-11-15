@@ -1,25 +1,36 @@
-// Strata — a block world cut open like an ant farm.
-// Original work for Lerping@Home: every block, texture and structure here is
-// procedural and written for this file; no texture data or artwork from any
-// game. It is a homage to the block-world idea of a ground you can dig into.
+// Strata — a Minecraft world cut open like an ant farm.
+// The world generation is original work for Lerping@Home; every surface is
+// drawn with the game's own textures, bound from the copy installed on this
+// Mac (see the "Minecraft looks" section of PORTING.md).
 //
 // lerp-category: Minecraft
+// lerp-requires: minecraft
 //
 // The world is sliced along one vertical plane and the screen is the glass laid
-// against the cut. You drift along it: grass and topsoil at the top, then
-// stone with its seams of ore and pockets of granite and gravel, deepslate
-// below that, lava pooled over bedrock at the bottom. Wherever the cut opens a
-// cave you look into it. There is no sky down there: the only light is a lamp
-// held up to the glass, wandering slowly about the middle of the view, so the
-// caves fade into the rock the deeper they run, except where a mine gallery
-// keeps its torches lit or lava glows at the bottom. Flooded caves stand
-// against the glass like an aquarium.
+// against the cut. You drift along it: grass and dirt at the top, then stone
+// with its ores and its blobs of granite, diorite, andesite, dirt and gravel,
+// deepslate and tuff below that, lava pooled over bedrock at the bottom, each
+// ore at the depths the game puts it. Wherever the cut opens a cave you look
+// into it.
+//
+// It is lit as the game lights it, through its lightmap: the slab taken away
+// in front of the cut leaves the whole face open to the evening sky (sky light
+// 15), and that light falls a level a block into the caves behind it, so they
+// fade to the game's dark the deeper they run, except where a mineshaft keeps
+// its torches (14) or lava (15) glows at the bottom. Faces take the game's
+// fixed shading and smooth-lighting corners. Above the grass is the game's
+// evening: sky and fog colours at the hour the sun touches the hills, ahead of
+// the camera, with the orange sunset fan, the square sun and the flat cloud
+// layer from clouds.png. Flooded caves show the animated, tinted water face.
 //
 // Buried in the rock, one or two to a screen: amethyst geodes sliced through
-// the middle, the bones of something long, a cobblestone vault with a chest,
-// timbered mine galleries (one running along the glass, one running away from
-// it into the dark, torch after torch), and now and then a cellar under the
-// grass with a ladder up to the light.
+// the middle (smooth basalt, calcite, amethyst, budding amethyst with its
+// clusters), a fossil of bone blocks, a cobblestone dungeon with its spawner
+// and chests, mineshafts of oak with rails, cobwebs and torches (one running
+// along the glass, one running away from it into the dark), and now and then
+// a cellar under the grass with a chest, barrels and a ladder up to the light.
+// Glow lichen grows on the walls of the deeper caves.
+// Oak trees with cut-out leaves stand on the grass.
 //
 // The drift along the cut is also a slow dive: it starts at the grass, so the
 // first thing you see is the ground cut open under the sky, sinks to the lava
@@ -59,9 +70,20 @@ constant int ST_BEDROCK = -100;    // solid bedrock at or below this
 constant int M_AIR = 0, M_GRASS = 1, M_DIRT = 2, M_STONE = 3, M_GRANITE = 4, M_DIORITE = 5,
              M_ANDESITE = 6, M_GRAVEL = 7, M_DEEP = 8, M_BEDROCK = 9, M_TUFF = 10,
              M_COBBLE = 11, M_MOSSY = 12, M_PLANKS = 13, M_LOG = 14, M_BONE = 15,
-             M_CALCITE = 16, M_AMETHYST = 17, M_BASALT = 18, M_CHEST = 19, M_CAGE = 20,
-             M_LAVA = 22, M_LEAVES = 23, M_LADDER = 24, M_DRIP = 25,
+             M_CALCITE = 16, M_AMETHYST = 17, M_BASALT = 18, M_CHEST = 19, M_SPAWNER = 20,
+             M_LAVA = 22, M_LEAVES = 23, M_LADDER = 24, M_BUDDING = 25,
+             M_BONE_X = 26,   // a bone block lying along x
+             M_BARREL = 27,
              M_ORE = 32;   // + ore kind, + 8 when set in deepslate
+
+// --- The hour: the sun is just touching the hills ahead (celestial angle
+// 0.23, a little before the game's sunset), so its fan of orange is up.
+// `day` is the kit's 0 (midnight) .. 1 (noon) for sky, fog and lightmap.
+constant float  ST_DAY    = 0.5;
+constant float3 ST_SUN    = float3(0.0, 0.1253, 0.9921);     // 7.2 degrees up, straight ahead
+constant float3 ST_DUSK   = float3(0.897, 0.501, 0.2);       // the game's sunset colour, sRGB
+constant float  ST_DUSK_A = 0.78;                            // and its strength at this hour
+constant float  ST_CLOUDS = 136.0;                           // y 192 in the game's heights
 
 
 // ---------------------------------------------------------------------------
@@ -95,16 +117,6 @@ static inline float stN2(float2 q, uint s) {
     float3 o = stSaltOff(s) + float3(i, 0.0);
     float4 h = stH4(o.x + float4(0, 1, 0, 1), o.y + float4(0, 0, 1, 1), float4(o.z));
     float2 y = mix(h.xz, h.yw, f.x);
-    return mix(y.x, y.y, f.y);
-}
-
-static inline float stN3(float3 q, uint s) {
-    float3 i = floor(q), f = q - i;
-    f = f * f * (3.0 - 2.0 * f);
-    float3 o = stSaltOff(s) + i;
-    float4 xs = o.x + float4(0, 1, 0, 1), ys = o.y + float4(0, 0, 1, 1);
-    float4 z = mix(stH4(xs, ys, float4(o.z)), stH4(xs, ys, float4(o.z + 1.0)), f.z);
-    float2 y = mix(z.xz, z.yw, f.x);
     return mix(y.x, y.y, f.y);
 }
 
@@ -166,7 +178,7 @@ static inline int stFeature(int3 p, StFeat f) {
     if (f.kind == F_DUNGEON) {
         if (abs(q.x) > 4 || q.y < -1 || q.y > 5 || q.z < -1 || q.z > 7) return -1;
         if (abs(q.x) <= 3 && q.y >= 0 && q.y <= 4 && q.z >= 0 && q.z <= 6) {
-            if (q.y == 0 && q.x == 0 && q.z == 3) return M_CAGE;
+            if (q.y == 0 && q.x == 0 && q.z == 3) return M_SPAWNER;
             if (q.y == 0 && ((q.x == 2 && q.z == 5) || (q.x == -3 && q.z == 2))) return M_CHEST;
             return M_AIR;
         }
@@ -185,7 +197,7 @@ static inline int stFeature(int3 p, StFeat f) {
     if (f.kind == F_FOSSIL) {
         if (q.z < 0 || q.z > 1 || q.x < -10 || q.x > 11 || q.y < -5 || q.y > 4) return -1;
         int ys = int(round(1.4 * sin(float(q.x) * 0.3 + f.ph)));
-        if (q.x <= 8 && q.y == ys) return M_BONE;                       // spine
+        if (q.x <= 8 && q.y == ys) return M_BONE_X;                     // spine
         if (q.x >= -7 && q.x <= 5 && (q.x & 1) == 0) {                  // ribs
             int len = 4 - abs(q.x + 1) / 3;
             if (q.y < ys && q.y >= ys - len) return M_BONE;
@@ -202,7 +214,7 @@ static inline int stFeature(int3 p, StFeat f) {
         float d = length(float3(p) + 0.5 - c);
         if (d >= f.r) return -1;
         if (d < f.r - 2.0) return M_AIR;
-        if (d < f.r - 1.2) return M_AMETHYST;
+        if (d < f.r - 1.2) return stRnd(p, f.h) < 0.14 ? M_BUDDING : M_AMETHYST;
         if (d < f.r - 0.55) return M_CALCITE;
         return M_BASALT;
     }
@@ -236,7 +248,7 @@ static inline int stCellar(int3 p, StCellar c) {
     if (abs(q.x) > 4 || q.y < -1 || q.y > 3 || q.z < -1 || q.z > 5) return -1;
     if (abs(q.x) <= 3 && q.y >= 0 && q.y <= 2 && q.z >= 0 && q.z <= 4) {
         if (q.y == 0 && q.x == -2 && q.z == 3) return M_CHEST;
-        if (q.x == 2 && q.z == 4 && q.y <= 1) return M_LOG;              // barrels
+        if (q.x == 2 && q.z == 4 && q.y <= 1) return M_BARREL;           // barrels
         return M_AIR;
     }
     return M_PLANKS;
@@ -466,16 +478,18 @@ static inline int stMaterial(int3 p, uint s) {
             return M_ORE + kind + (deep ? 8 : 0);
         }
     }
-    // Pockets of other rock.
+    // Blobs of the other rocks the game scatters through stone: granite,
+    // diorite, andesite, dirt and gravel above the deepslate, tuff and gravel
+    // in it.
     float3 q = float3(p) + 0.5;
     if (stN2(float2(q.x + 0.61 * q.z, q.y) / 6.0, s + 190u) > 0.79) {
         float k = stRnd(int3(stDiv(p.x, 14), stDiv(p.y, 14), stDiv(p.z, 14)), s + 191u);
-        if (deep) return k < 0.35 ? M_TUFF : (k < 0.6 ? M_GRAVEL : M_CALCITE);
+        if (deep) return k < 0.6 ? M_TUFF : M_GRAVEL;
         if (p.y > -24 && k < 0.18) return M_DIRT;
         return k < 0.4 ? M_GRANITE : (k < 0.62 ? M_DIORITE : (k < 0.84 ? M_ANDESITE : M_GRAVEL));
     }
-    // Beds: the rock is laid down in gently folded layers, a few blocks
-    // thick, some of them a stone that stands out from the country rock.
+    // The larger bodies of the same rocks, long and flat, folded gently: the
+    // strata of the name.
     float2 xz = float2(float(p.x), float(p.z));
     float yy = float(p.y) + 18.0 * (stN2(xz / 90.0, s + 30u) - 0.5)
              + 1.4 * sin(xz.x * 0.19 + xz.y * 0.17) + 0.7 * sin(xz.x * 0.47 - xz.y * 0.4);
@@ -485,283 +499,119 @@ static inline int stMaterial(int3 p, uint s) {
     float within = yy / 7.0 - float(band);
     if (bk < 0.42 && within < 0.3 + 0.4 * bt) {
         float kk = bk / 0.42;
-        if (deep) return kk < 0.3 ? M_CALCITE : (kk < 0.65 ? M_DRIP : M_TUFF);
-        if (kk < 0.1 && within < 0.2) return M_ORE;                       // a coal seam
-        return kk < 0.45 ? M_GRANITE : (kk < 0.68 ? M_DIORITE : (kk < 0.9 ? M_DRIP : M_ANDESITE));
+        if (deep) return kk < 0.6 ? M_TUFF : base;
+        return kk < 0.4 ? M_GRANITE : (kk < 0.7 ? M_DIORITE : M_ANDESITE);
     }
     return base;
 }
 
 // ---------------------------------------------------------------------------
-// Textures: 16 x 16 texels a face, sRGB. t.y runs up the face.
+// The game's textures.
 
-static inline float stT(int2 t, uint bh, uint k) {
-    uint h = (as_type<uint>(t.x) * 0x9E3779B1u) ^ (as_type<uint>(t.y) * 0x85EBCA77u) ^ (k * 0xC2B2AE3Du) ^ bh;
-    h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12;
-    return float(h >> 8) * (1.0 / 16777216.0);
-}
-
-static inline float3 stSpeck(float3 base, int2 t, uint bh, float amp) {
-    float n1 = stT(t, bh, 0u);
-    float n2 = stT(t >> 1, bh, 1u);
-    return base * (1.0 - amp + amp * (1.2 * n2 + 0.8 * n1));
-}
-
-static inline float3 stStoneTex(int2 t, uint bh) {
-    float3 c = stSpeck(float3(0.50, 0.50, 0.51), t, bh, 0.22);
-    if (stT(int2(t.x / 3, t.y), bh, 5u) > 0.9) c *= 0.8;
-    return c;
-}
-
-static inline float3 stDeepTex(int2 t, uint bh) {
-    float row = stT(int2(0, t.y), bh, 6u);
-    float3 c = float3(0.42, 0.42, 0.47) * (0.86 + 0.16 * row + 0.12 * stT(t, bh, 0u));
-    if (stT(int2(t.x / 4, t.y), bh, 7u) > 0.78) c *= 0.75;
-    return c;
-}
-
-static inline float3 stDirtTex(int2 t, uint bh) {
-    float3 c = stSpeck(float3(0.53, 0.38, 0.26), t, bh, 0.25);
-    float n = stT(t, bh, 8u);
-    if (n > 0.92) c *= 0.68;
-    if (n < 0.05) c = float3(0.62, 0.50, 0.38);
-    return c;
-}
-
-static inline float3 stCobbleTex(int2 t, uint bh, bool mossy) {
-    float2 p = float2(t) + 0.5;
-    int2 cc = t >> 2;
-    float d1 = 1e9, d2 = 1e9; float id = 0.0;
-    for (int j = -1; j <= 1; ++j)
-    for (int i = -1; i <= 1; ++i) {
-        int2 c = cc + int2(i, j);
-        int2 w = c & 3;
-        float2 o = float2(c * 4) + 0.6 + 2.8 * float2(stT(w, bh, 20u), stT(w, bh, 21u));
-        float d = length(p - o);
-        if (d < d1) { d2 = d1; d1 = d; id = stT(w, bh, 22u); }
-        else if (d < d2) d2 = d;
-    }
-    float3 c = float3(0.36 + 0.26 * id) * float3(1.0, 1.0, 1.02);
-    if (d2 - d1 < 0.85) c = float3(0.20, 0.20, 0.21);
-    if (mossy) {
-        float m = stT(t >> 2, bh, 23u) * 0.7 + stT(t, bh, 24u) * 0.3 + id * 0.2;
-        if (m > 0.6) c = float3(0.30, 0.42, 0.19) * (0.8 + 0.4 * stT(t, bh, 25u));
-    }
-    return c;
-}
-
-static inline float3 stPlankTex(int2 t, uint bh) {
-    int row = t.y >> 2;
-    float3 c = float3(0.62, 0.47, 0.28);
-    c *= 0.88 + 0.16 * stT(int2(t.x / 3 + row * 7, row), bh, 30u) + 0.06 * stT(t, bh, 31u);
-    if ((t.y & 3) == 0) c *= 0.55;
-    if (t.x == int(glmod(float(row * 7 + int(bh & 7u)), 16.0))) c *= 0.6;
-    return c;
-}
-
-static inline float3 stLogTex(int2 t, uint bh, int face) {
-    if (face != 0) {
-        float d = length(float2(t) + 0.5 - 8.0);
-        if (d > 6.6) return float3(0.36, 0.27, 0.17);
-        return (int(d) & 1) ? float3(0.62, 0.49, 0.30) : float3(0.53, 0.40, 0.24);
-    }
-    float s = stT(int2(t.x, t.y / 5 + t.x), bh, 32u);
-    return float3(0.38, 0.29, 0.18) * (0.7 + 0.45 * s);
-}
-
-static inline float3 stOreColor(int kind) {
-    switch (kind) {
-        case 0:  return float3(0.12, 0.12, 0.13);
-        case 1:  return float3(0.84, 0.68, 0.53);
-        case 2:  return float3(0.80, 0.47, 0.29);
-        case 3:  return float3(0.99, 0.84, 0.26);
-        case 4:  return float3(0.92, 0.10, 0.07);
-        case 5:  return float3(0.18, 0.32, 0.82);
-        case 6:  return float3(0.47, 0.95, 0.90);
-        default: return float3(0.26, 0.86, 0.46);
+// Ore tiles: coal, iron, copper, gold, redstone, lapis, diamond, emerald, in
+// stone and then (k + 8) in deepslate.
+static inline int stOreLayer(int k) {
+    switch (k) {
+        case 0:  return MC_COAL_ORE;
+        case 1:  return MC_IRON_ORE;
+        case 2:  return MC_COPPER_ORE;
+        case 3:  return MC_GOLD_ORE;
+        case 4:  return MC_REDSTONE_ORE;
+        case 5:  return MC_LAPIS_ORE;
+        case 6:  return MC_DIAMOND_ORE;
+        case 7:  return MC_EMERALD_ORE;
+        case 8:  return MC_DEEPSLATE_COAL_ORE;
+        case 9:  return MC_DEEPSLATE_IRON_ORE;
+        case 10: return MC_DEEPSLATE_COPPER_ORE;
+        case 11: return MC_DEEPSLATE_GOLD_ORE;
+        case 12: return MC_DEEPSLATE_REDSTONE_ORE;
+        case 13: return MC_DEEPSLATE_LAPIS_ORE;
+        case 14: return MC_DEEPSLATE_DIAMOND_ORE;
+        default: return MC_DEEPSLATE_EMERALD_ORE;
     }
 }
 
-static inline float3 stOreTex(int2 t, uint bh, int ore, bool deep, float now) {
-    float3 c = deep ? stDeepTex(t, bh) : stStoneTex(t, bh);
-    float3 oc = stOreColor(ore);
-    for (int k = 0; k < 4; ++k) {
-        uint ob = bh >> (k * 8);
-        int2 o = int2(2 + int((ob & 15u) * 11u / 16u), 2 + int(((ob >> 4) & 15u) * 11u / 16u));
-        int2 d = t - o;
-        int2 a = abs(d);
-        if (a.x <= 1 && a.y <= 1 && (a.x + a.y <= 1 || stT(t, bh, 42u) < 0.55)) {
-            if (d.x == -1 && d.y == 1) {
-                // Each nugget's highlight catches the lamp now and then.
-                float g = pow(0.5 + 0.5 * sin(now * 0.5 + float(ob & 255u) * 0.37), 12.0);
-                return min(oc * 1.25 + 0.15 + 0.6 * g, 1.6);
-            }
-            return oc * (0.78 + 0.22 * stT(t, bh, 41u));
-        }
-        if (a.x <= 2 && a.y <= 2) c *= 0.8;
-    }
-    return c;
-}
-
-static inline float3 stTex(int mat, int2 t, uint bh, int face, bool front, float now) {
+// The tile a block shows on a face of the given axis (0, 1, 2 = x, y, z).
+// Grass, chests and lava are drawn apart.
+static inline int stLayer(int mat, int axis) {
+    bool end = axis == 1;   // a pillar block's end faces
     switch (mat) {
-    case M_GRASS: {
-        if (face == 1) return stSpeck(float3(0.35, 0.58, 0.24), t, bh, 0.3);
-        if (face == 2) return stDirtTex(t, bh);
-        int fringe = 12 + int(stT(int2(t.x, 0), bh, 50u) * 2.2);
-        if (t.y >= fringe) return stSpeck(float3(0.35, 0.58, 0.24), t, bh, 0.3);
-        return stDirtTex(t, bh);
-    }
-    case M_DIRT:     return stDirtTex(t, bh);
-    case M_STONE:    return stStoneTex(t, bh);
-    case M_DEEP:     return stDeepTex(t, bh);
-    case M_GRANITE: {
-        float n = stT(t, bh, 0u);
-        float3 c = stSpeck(float3(0.62, 0.43, 0.36), t, bh, 0.2);
-        if (n > 0.86) c = float3(0.76, 0.60, 0.55);
-        if (n < 0.08) c = float3(0.42, 0.26, 0.22);
-        return c;
-    }
-    case M_DIORITE: {
-        float3 c = stSpeck(float3(0.76, 0.76, 0.77), t, bh, 0.12);
-        if (stT(t, bh, 0u) > 0.8) c = float3(0.42, 0.42, 0.44);
-        return c;
-    }
-    case M_ANDESITE: return stSpeck(float3(0.54, 0.54, 0.53), t, bh, 0.16);
-    case M_TUFF: {
-        float3 c = stSpeck(float3(0.43, 0.44, 0.38), t, bh, 0.22);
-        if (stT(t, bh, 0u) > 0.9) c = float3(0.58, 0.58, 0.50);
-        return c;
-    }
-    case M_GRAVEL: {
-        int2 g = int2((t.x + ((t.y >> 1) & 1)) >> 1, t.y >> 1);
-        float p = stT(g, bh, 60u);
-        float3 c = mix(float3(0.34, 0.32, 0.31), float3(0.66, 0.62, 0.58), p);
-        if (stT(t, bh, 61u) < 0.16) c = float3(0.24, 0.23, 0.22);
-        return c;
-    }
-    case M_BEDROCK: {
-        float p = stT(t >> 1, bh, 62u) * 0.7 + stT(t, bh, 63u) * 0.3;
-        return float3(p < 0.35 ? 0.07 : (p < 0.6 ? 0.2 : (p < 0.8 ? 0.34 : 0.5)));
-    }
-    case M_COBBLE:   return stCobbleTex(t, bh, false);
-    case M_MOSSY:    return stCobbleTex(t, bh, true);
-    case M_PLANKS:   return stPlankTex(t, bh);
-    case M_LOG:      return stLogTex(t, bh, face);
-    case M_BONE: {
-        if (face != 0) {
-            float d = length(float2(t) + 0.5 - 8.0);
-            return float3(0.88, 0.85, 0.74) * (d < 3.0 ? 0.78 : 1.0);
-        }
-        float3 c = float3(0.88, 0.85, 0.74) * (0.93 + 0.1 * stT(t, bh, 0u));
-        if ((t.x & 3) == 0) c *= 0.84;
-        if (stT(t, bh, 64u) > 0.94) c *= 0.7;
-        return c;
-    }
-    case M_CALCITE: {
-        float3 c = stSpeck(float3(0.88, 0.89, 0.87), t, bh, 0.08);
-        if (stT(t, bh, 0u) > 0.9) c *= 0.86;
-        return c;
-    }
-    case M_AMETHYST: {
-        int k = (t.x + t.y + int(bh % 7u)) % 6;
-        const float sh[6] = { 0.78, 0.9, 1.0, 1.16, 1.02, 0.88 };
-        float3 c = float3(0.54, 0.34, 0.74) * sh[k];
-        if (stT(t, bh, 65u) > 0.93) c = float3(0.86, 0.72, 0.96);
-        return c;
-    }
-    case M_BASALT:   return stSpeck(float3(0.29, 0.29, 0.32), t, bh, 0.1);
-    case M_DRIP: {
-        float3 c = float3(0.55, 0.42, 0.33) * (0.84 + 0.2 * stT(int2(t.x, t.y / 4), bh, 69u) + 0.08 * stT(t, bh, 0u));
-        if (stT(int2(t.x, t.y / 6), bh, 70u) > 0.85) c *= 0.78;
-        return c;
-    }
-    case M_CHEST: {
-        if (t.x == 0 || t.x == 15 || t.y == 0 || t.y == 15) return float3(0.26, 0.17, 0.08);
-        if (face == 0 && (t.y == 9 || t.y == 10)) {
-            if (front && (t.x == 7 || t.x == 8)) return float3(0.80, 0.80, 0.83);
-            return float3(0.30, 0.20, 0.10);
-        }
-        if (front && (t.x == 7 || t.x == 8) && t.y == 8) return float3(0.55, 0.55, 0.58);
-        return float3(0.68, 0.47, 0.21) * (0.88 + 0.14 * stT(int2(t.x / 4, t.y / 3), bh, 66u));
-    }
-    case M_CAGE: {
-        bool bar = (t.x % 5) == 0 || (t.y % 5) == 0;
-        return bar ? float3(0.27, 0.29, 0.34) : float3(0.05, 0.05, 0.06);
-    }
-    case M_LEAVES: {
-        float3 c = float3(0.20, 0.40, 0.15) * (0.65 + 0.55 * stT(t >> 1, bh, 67u));
-        if (stT(t, bh, 68u) < 0.14) c = float3(0.07, 0.14, 0.05);
-        return c;
-    }
-    case M_LADDER: {
-        bool rail = t.x == 2 || t.x == 3 || t.x == 12 || t.x == 13;
-        bool rung = (t.y & 3) == 1 && t.x > 1 && t.x < 14;
-        if (rail || rung) return float3(0.56, 0.42, 0.24) * (rail ? 0.85 : 1.0);
-        return stDirtTex(t, bh) * 0.8;
-    }
-    case M_LAVA: {
-        float n = stN3(float3(float(t.x) * 0.31, float(t.y) * 0.31 + now * 0.07, now * 0.05 + float(bh & 255u)), 77u);
-        float3 c = mix(float3(0.72, 0.16, 0.02), float3(1.0, 0.55, 0.10), smoothstep(0.4, 0.72, n));
-        if (n > 0.78) c = float3(1.0, 0.80, 0.35);
-        return c;
-    }
-    default: break;
-    }
-    if (mat >= M_ORE) {
-        int k = mat - M_ORE;
-        return stOreTex(t, bh, k & 7, k >= 8, now);
-    }
-    return float3(1.0, 0.0, 1.0);
-}
-
-static inline float3 stMean(int mat) {
-    switch (mat) {
-        case M_GRASS:    return float3(0.45, 0.42, 0.27);
-        case M_DIRT:     return float3(0.53, 0.38, 0.26);
-        case M_DEEP:     return float3(0.41, 0.41, 0.46);
-        case M_GRANITE:  return float3(0.62, 0.43, 0.36);
-        case M_DIORITE:  return float3(0.68, 0.68, 0.69);
-        case M_TUFF:     return float3(0.43, 0.44, 0.38);
-        case M_GRAVEL:   return float3(0.48, 0.45, 0.43);
-        case M_BEDROCK:  return float3(0.2);
-        case M_COBBLE:   return float3(0.42);
-        case M_MOSSY:    return float3(0.38, 0.42, 0.3);
-        case M_PLANKS:   return float3(0.56, 0.42, 0.25);
-        case M_LOG:      return float3(0.38, 0.29, 0.18);
-        case M_BONE:     return float3(0.84, 0.81, 0.7);
-        case M_CALCITE:  return float3(0.87, 0.88, 0.86);
-        case M_AMETHYST: return float3(0.53, 0.34, 0.73);
-        case M_BASALT:   return float3(0.29, 0.29, 0.32);
-        case M_DRIP:     return float3(0.53, 0.41, 0.32);
-        case M_CHEST:    return float3(0.6, 0.41, 0.19);
-        case M_LEAVES:   return float3(0.18, 0.35, 0.13);
-        default:         return mat >= M_ORE + 8 ? float3(0.28, 0.28, 0.32) : float3(0.5);
+        case M_DIRT:     return MC_DIRT;
+        case M_STONE:    return MC_STONE;
+        case M_GRANITE:  return MC_GRANITE;
+        case M_DIORITE:  return MC_DIORITE;
+        case M_ANDESITE: return MC_ANDESITE;
+        case M_GRAVEL:   return MC_GRAVEL;
+        case M_DEEP:     return end ? MC_DEEPSLATE_TOP : MC_DEEPSLATE;
+        case M_BEDROCK:  return MC_BEDROCK;
+        case M_TUFF:     return MC_TUFF;
+        case M_COBBLE:   return MC_COBBLESTONE;
+        case M_MOSSY:    return MC_MOSSY_COBBLESTONE;
+        case M_PLANKS:   return MC_OAK_PLANKS;
+        case M_LADDER:   return MC_OAK_PLANKS;     // the shaft's lining, under the ladder
+        case M_LOG:      return end ? MC_OAK_LOG_TOP : MC_OAK_LOG;
+        case M_BONE:     return end ? MC_BONE_BLOCK_TOP : MC_BONE_BLOCK_SIDE;
+        case M_BONE_X:   return axis == 0 ? MC_BONE_BLOCK_TOP : MC_BONE_BLOCK_SIDE;
+        case M_CALCITE:  return MC_CALCITE;
+        case M_AMETHYST: return MC_AMETHYST_BLOCK;
+        case M_BUDDING:  return MC_BUDDING_AMETHYST;
+        case M_BASALT:   return MC_SMOOTH_BASALT;
+        case M_SPAWNER:  return MC_SPAWNER;
+        case M_LEAVES:   return MC_OAK_LEAVES;
+        case M_BARREL:   return end ? MC_BARREL_TOP : MC_BARREL_SIDE;
+        default:         return stOreLayer(mat - M_ORE);
     }
 }
 
-// The face's texture, crisp up close and averaged out once a texel is smaller
-// than a pixel. `fwT` is the pixel's footprint in texels.
-static inline float3 stSample(int mat, float2 uv, float fwT, uint bh, int face, bool front, float now) {
-    float3 mean = stMean(mat);
-    if (fwT > 2.0 && mat != M_LAVA) return mean;
-    float2 tc = uv * 16.0 - 0.5;
-    float2 i = floor(tc), f = tc - i;
-    float2 w = saturate((f - 0.5) / max(fwT, 1e-3) + 0.5);
-    int2 a = int2(i) + 16;
-    // Two taps: the texel under most of the pixel, and the one across
-    // whichever texel edge the pixel straddles more. Only where two edges
-    // cross (a texel corner) is the third texel left out, which no one sees.
-    int2 main = a + int2(w > 0.5);
-    float2 m = select(w, 1.0 - w, w > 0.5);        // the other side's share
-    bool alongX = m.x >= m.y;
-    int2 other = main + (alongX ? int2(w.x > 0.5 ? -1 : 1, 0) : int2(0, w.y > 0.5 ? -1 : 1));
-    float share = alongX ? m.x : m.y;
-    float3 c = float3(0.0);
-    #pragma clang loop unroll(disable)
-    for (int k = 0; k < 2; ++k)
-        c += (k == 0 ? 1.0 - share : share) * stTex(mat, (k == 0 ? main : other) & 15, bh, face, front, now);
-    return mix(c, mean, smoothstep(0.7, 2.0, fwT));
+// Where on a face of block v the point P is: 0..1 across it, y up (corner
+// shading reads it this way).
+static inline float2 stFaceL(float3 P, int3 v, int axis) {
+    float3 l = saturate(P - float3(v));
+    return axis == 0 ? l.zy : (axis == 1 ? l.xz : l.xy);
+}
+// The same in the picture's orientation, uv.y = 0 its top row, as mcTile reads.
+static inline float2 stPic(float2 l, int axis) { return axis == 1 ? l : float2(l.x, 1.0 - l.y); }
+
+// The uv change across one screen pixel both ways, for a face seen at a
+// slant: `d` is the pixel's width at the hit, across the ray. Along the
+// face's slope the footprint stretches by 1 / cos, across it it does not.
+static inline void stGrad(float3 rd, float3 n, int axis, float d, thread float2& gx, thread float2& gy) {
+    float c = max(abs(dot(rd, n)), 0.06);
+    float3 par = rd - n * dot(rd, n);
+    float lp = length(par);
+    float3 e1 = lp > 1e-4 ? par / lp : (axis == 0 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0));
+    float3 e2 = cross(n, e1) * d;
+    e1 *= d / c;
+    gx = axis == 0 ? e1.zy : (axis == 1 ? e1.xz : e1.xy);
+    gy = axis == 0 ? e2.zy : (axis == 1 ? e2.xz : e2.xy);
+}
+
+// A chest, from the game's chest model texture (entity/chest/normal.png):
+// the front is the lid's south strip over the base's, both stored upside
+// down, with the latch on the seam. The model is 14 x 15 pixels of a block;
+// here it fills the block (it stands against rock, so there is nothing to
+// show round it). KIT: a shared chest model would replace this.
+static inline float4 stChest(texture2d_array<float> skins, int axis, float3 n, float2 l, float w) {
+    float2 px;
+    if (axis == 1) {
+        px = float2(14.0 + l.x * 14.0, l.y * 14.0);                 // the lid's top
+    } else {
+        bool front = n.z < -0.5;
+        float cx = l.x * 14.0, cy = (1.0 - l.y) * 15.0;             // pixels in, and down
+        px = float2((front ? 42.0 : 0.0) + cx, cy < 5.0 ? 19.0 - cy : 48.0 - cy);
+        if (front && abs(cx - 7.0) < 1.0 && cy >= 3.0 && cy < 7.0)
+            px = float2(cx - 2.0, cy - 2.0);                        // the latch (its south face)
+    }
+    return mcSkin(skins, MCS_CHEST_NORMAL, px, w);
+}
+
+// The frame of lava_still at `now`.
+// KIT: mcFrame plays a strip straight through, but lava_still.png.mcmeta
+// plays 0..19 and back down (ping-pong), so this steps the game's own order.
+static inline int stLavaFrame(float now) {
+    int n = 2 * MC_LAVA_STILL_FRAMES - 2;
+    int f = int(glmod(floor(now * 20.0 / float(MC_LAVA_STILL_TICKS)), float(n)));
+    return MC_LAVA_STILL + (f < MC_LAVA_STILL_FRAMES ? f : n - f);
 }
 
 // ---------------------------------------------------------------------------
@@ -776,16 +626,17 @@ struct StHit {
     int   kind;     // K_ROCK or K_LAVA
     bool  outdoor;  // walked above ground
     float water;    // distance travelled through water
-    float wTop;     // t where the ray crossed a water surface from above, or -1
     float wIn;      // t where the ray first entered water, or -1
+    int   wAxis;    // the axis of the water face it entered through
 };
 
 constant int ST_COLS = 18;   // columns of the cut per ray, at most
-constant int ST_OUT  = 24;
-constant int ST_OUTZ = 13;   // the land behind the cut is gone into the evening by here   // blocks per ray above ground, at most
+constant int ST_OUT  = 24;   // blocks per ray above ground, at most
+constant int ST_OUTZ = 13;   // the land behind the cut is gone into the fog by here
 
-// Above ground: an ordinary block walk from t.
-static inline void stTraceOut(float3 ro, float3 rd, float t, uint s, thread StHit& h) {
+// Above ground: an ordinary block walk from t. With `past`, the block at t
+// is skipped (the walk goes on through a clear texel of a leaf).
+static inline void stTraceOut(float3 ro, float3 rd, float t, uint s, thread StHit& h, bool past) {
     h.outdoor = true;
     float3 p = ro + rd * (t + 1e-4);
     int3 v = int3(floor(p));
@@ -795,7 +646,7 @@ static inline void stTraceOut(float3 ro, float3 rd, float t, uint s, thread StHi
     float3 tDelta = abs(inv);
     int axis = h.axis;
     for (int i = 0; i < ST_OUT; ++i) {
-        if (stOutdoorSolid(v, s)) {
+        if (!(past && i == 0) && stOutdoorSolid(v, s)) {
             h.hit = true; h.v = v; h.axis = axis; h.t = t;
             float3 n = float3(0.0);
             n[axis] = -float(st[axis]);
@@ -813,7 +664,7 @@ static inline void stTraceOut(float3 ro, float3 rd, float t, uint s, thread StHi
 
 static inline StHit stTrace(float3 ro, float3 rd, uint s) {
     StHit h;
-    h.hit = false; h.water = 0.0; h.wTop = -1.0; h.wIn = -1.0; h.kind = K_ROCK; h.axis = 2;
+    h.hit = false; h.water = 0.0; h.wIn = -1.0; h.wAxis = 2; h.kind = K_ROCK; h.axis = 2;
     h.outdoor = false; h.n = float3(0.0, 0.0, -1.0); h.t = 0.0; h.v = int3(0);
     float invz = 1.0 / max(rd.z, 1e-4);
     float t = max((-1.5 - ro.z) * invz, 0.0);
@@ -825,7 +676,6 @@ static inline StHit stTrace(float3 ro, float3 rd, uint s) {
     float2 tMax = (float2(c) + select(float2(0.0), float2(1.0), rd.xy > 0.0) - ro.xy) * inv;
     float2 tDelta = abs(inv);
     int axis = 2;
-    int prevKind = K_ROCK;
     bool above = false;
     for (int i = 0; i < ST_COLS; ++i) {
         int Hc = stGroundAtGlass(c.x, c.y, s);
@@ -836,16 +686,17 @@ static inline StHit stTrace(float3 ro, float3 rd, uint s) {
         if (col.kind == K_WATER) {
             float a = max(t, tGlass), b = min(tExit, tz);
             if (b > a) {
-                if (h.wIn < 0.0) h.wIn = a;
-                if (prevKind != K_WATER && axis == 1 && st.y < 0) h.wTop = a;
+                if (h.wIn < 0.0) { h.wIn = a; h.wAxis = tGlass >= t ? 2 : axis; }
                 h.water += b - a;
             }
         }
-        prevKind = col.kind;
         if (tz <= tExit) {
             h.hit = true; h.kind = col.kind;
-            if (tz <= t + 1e-5 && axis != 2) {
-                // Into the side of this column.
+            if (tz < t - 1e-3 && axis != 2) {
+                // Into the side of this column. (A ray that meets the
+                // column's front right at its edge takes the front face: a
+                // side there is a one-pixel line where block edges fall on
+                // pixel centres.)
                 h.t = t; h.axis = axis;
                 h.v = int3(c, int(floor(ro.z + rd.z * t + 1e-4)));
                 float3 n = float3(0.0);
@@ -864,7 +715,8 @@ static inline StHit stTrace(float3 ro, float3 rd, uint s) {
         tMax[axis] += tDelta[axis];
         if (ro.z + rd.z * t > ST_ZMAX) break;
     }
-    if (above) { h.axis = axis; stTraceOut(ro, rd, t, s, h); return h; }
+    // Above ground the caller walks on block by block (stTraceOut) from t.
+    if (above) { h.axis = axis; h.outdoor = true; h.t = t; return h; }
     h.t = t;
     h.v = int3(c, int(ro.z + rd.z * t));
     return h;
@@ -891,190 +743,336 @@ static inline float stAO(int3 v, float3 n, int axis, float2 uv, uint s) {
     return 1.0 - 0.45 * saturate(su * w.x * w.x + sv * w.y * w.y);
 }
 
-// Warm light from the torches in a mine gallery near P.
-static inline float stTorches(float3 P, StFeat f) {
+// --- Light, in the game's levels (0..15) of the air in front of a face.
+
+// Torches are level 14 and the light falls a level a block, by Manhattan
+// distance as the game spreads it: the block light at P from the torches of
+// the mineshaft f. A Z shaft has one on its left post every 8 blocks, an X
+// shaft one on every other post.
+static inline float stTorchLevel(float3 P, StFeat f) {
     float3 q = P - float3(f.o);
     float L = 0.0;
     if (f.kind == F_MINE_Z) {
-        if (abs(q.x - 0.5) > 3.6 || q.y < -1.0 || q.y > 4.5) return 0.0;
         float z0 = floor((q.z - 2.0) / 8.0) * 8.0 + 2.0;
         for (int k = 0; k < 2; ++k) {
-            float3 tp = float3(-0.8, 1.6, z0 + 8.0 * float(k) + 0.5);
-            float3 d = q - tp;
-            L += 1.0 / (1.0 + 0.55 * dot(d, d));
+            float zt = z0 + 8.0 * float(k);
+            if (zt < 0.0 || zt > 60.0) continue;
+            float3 d = abs(q - float3(-0.5, 1.5, zt + 0.5));
+            L = max(L, 14.0 - (d.x + d.y + d.z));
         }
-    } else if (f.kind == F_DUNGEON) {
-        if (abs(q.x) > 5.0 || q.y < -1.0 || q.y > 6.0 || q.z > 8.0) return 0.0;
-        float3 d = q - float3(0.5, 3.5, 6.8);
-        L += 1.6 / (1.0 + 0.3 * dot(d, d));
     } else if (f.kind == F_MINE_X) {
-        if (abs(q.x) > 13.0 || q.y < -1.0 || q.y > 3.5 || q.z > 3.5) return 0.0;
         float x0 = floor(q.x / 8.0 + 0.5) * 8.0;
         for (int k = -1; k <= 1; k += 2) {
             float xs = x0 + 4.0 * float(k);
             if (abs(xs) > 12.0) continue;
-            float3 d = q - float3(xs + 0.5, 1.6, 1.85);
-            L += 1.0 / (1.0 + 0.55 * dot(d, d));
+            float3 d = abs(q - float3(xs + 0.5, 1.5, 1.5));
+            L = max(L, 14.0 - (d.x + d.y + d.z));
         }
     }
     return L;
 }
 
-// Torch flames drawn on the faces they hang from.
-static inline bool stTorchSprite(int3 v, float3 n, float2 uv, StFeat f, thread float3& col) {
-    int3 q = v - f.o;
-    bool on = false;
-    if (f.kind == F_MINE_Z && n.x > 0.5 && q.x == -2 && q.y == 1 && (q.z & 7) == 2) on = true;
-    if (f.kind == F_DUNGEON && n.z < -0.5 && q.x == 0 && q.y == 3 && q.z == 7) on = true;
-    if (f.kind == F_MINE_X && n.z < -0.5 && q.z == 2 && q.y == 1 && (q.x & 7) == 4 && abs(q.x) <= 12) on = true;
-    if (!on) return false;
-    int2 t = int2(floor(uv * 16.0));
-    if (t.x >= 7 && t.x <= 8 && t.y >= 2 && t.y <= 9) { col = float3(0.42, 0.30, 0.16); return true; }
-    if (t.x >= 6 && t.x <= 9 && t.y >= 10 && t.y <= 13) {
-        col = (t.y >= 12 || t.x == 6 || t.x == 9) ? float3(1.0, 0.62, 0.15) : float3(1.0, 0.92, 0.6);
-        col *= 3.0;
-        return true;
+// Where a ray is inside the box lo..hi: (enter, leave).
+static inline float2 stBox(float3 ro, float3 rd, float3 lo, float3 hi) {
+    float3 inv = 1.0 / select(rd, float3(1e-6), abs(rd) < 1e-6);
+    float3 a = (lo - ro) * inv, b = (hi - ro) * inv;
+    float3 mn = min(a, b), mx = max(a, b);
+    return float2(max(max(mn.x, mn.y), mn.z), min(min(mx.x, mx.y), mx.z));
+}
+
+// Lava is level 15. It lies where the cave field opens along the lava level,
+// so the same field, read along that level, says how far off it is.
+static inline float stLavaLevel(float3 P, uint s) {
+    float above = max(P.y - float(ST_LAVA) - 1.0, 0.0);
+    if (above > 15.0) return 0.0;
+    float2 q = float2(P.x, float(ST_LAVA) - 1.5);
+    float C = 0.62 * stN2(q / float2(17.0, 10.0), s + 20u) + 0.38 * stN2(q / float2(7.0, 4.5), s + 21u);
+    return 15.0 - above - 8.0 * (1.0 - smoothstep(0.5, 0.64, C));
+}
+
+// A ravine runs on, open to the sky, further back than the walk goes: past
+// it, the colour of its sky-lit stone walls (stone.png's mean, x-face shade).
+static inline float3 stRavineFar() {
+    return float3(0.49) * mcLightmap(0.0, 15.0, ST_DAY, 0.0) * 0.6;
+}
+
+// Did a ray that found nothing go down a ravine? Where it stopped, or where
+// it came through the cut.
+static inline bool stRavineRay(float3 ro, float3 rd, int3 last, uint s) {
+    if (last.y > -50 && stRavine(last.x, last.y, s)) return true;
+    int2 g = int2(floor((ro + rd * (-ro.z / max(rd.z, 1e-4))).xy));
+    return g.y > -50 && stRavine(g.x, g.y, s);
+}
+
+// --- The evening sky, as the game draws it.
+
+// The fog colour: the game's at this hour, pulled toward the sunset colour as
+// the camera faces the sun (it is one colour for the whole view, as there).
+static inline float3 stFogColor(float3 fwd) {
+    float2 f = normalize(fwd.xz + float2(0.0, 1e-4));
+    float k = max(dot(f, normalize(ST_SUN.xz)), 0.0) * ST_DUSK_A;
+    return mix(mcFogAt(ST_DAY), mcFromSRGB(ST_DUSK), k);
+}
+
+static inline float3 stSky(float3 ro, float3 rd, float3 fogC, float pxAngle, float now,
+                           texture2d_array<float> skins, texture2d_array<float> maps) {
+    // The sky plane, 16 blocks up, fogged over a 12-chunk render distance.
+    float3 c = rd.y > 0.0 ? mix(mcSkyAt(ST_DAY), fogC, saturate(16.0 / max(rd.y, 1e-3) / 192.0)) : fogC;
+
+    // KIT: the sunset fan and the fog warmed toward the sun belong beside
+    // mcSkyAt / mcFogAt (cascade asked for the same); stopgap here.
+    // The sunset fan: triangles from the horizon under the sun out to a ring
+    // 120 blocks round, tipped 40 x alpha down on the sun's side, the colour
+    // fading from the centre to nothing at the ring. Solved for this ray in
+    // the sun's frame (the sun is straight ahead, along +z).
+    float beta = 40.0 * ST_DUSK_A / 120.0;
+    float qd = length(float2(rd.x, rd.y / beta));
+    float den = rd.z + (100.0 / 120.0) * qd + rd.y / beta;
+    if (den > 0.0) {
+        float sFan = 100.0 / den * qd / 120.0;
+        c = mix(c, mcFromSRGB(ST_DUSK), ST_DUSK_A * saturate(1.0 - sFan));
     }
-    return false;
+
+    // The sun: its 32-pixel picture on a quad 30 either side at distance 100,
+    // added to the sky.
+    float ds = dot(rd, ST_SUN);
+    if (ds > 0.9) {
+        float3 sy = normalize(cross(ST_SUN, float3(1.0, 0.0, 0.0)));
+        float2 q = float2(rd.x, dot(rd, sy)) / ds * 100.0;
+        if (all(abs(q) < 30.0)) {
+            float2 px = (float2(q.x, -q.y) / 60.0 + 0.5) * float2(MCS_ENVIRONMENT_CELESTIAL_SUN_SIZE);
+            c += mcSkin(skins, MCS_ENVIRONMENT_CELESTIAL_SUN, px, pxAngle * 100.0 / 60.0 * 32.0).rgb;
+        }
+    }
+
+    // The flat cloud layer at the game's cloud height: one pixel of
+    // clouds.png to 12 blocks, drifting 0.6 blocks a second, the evening's
+    // grey, fogged with distance.
+    if (rd.y > 0.02) {
+        float tc = (ST_CLOUDS - ro.y) / rd.y;
+        float3 X = ro + rd * tc;
+        float2 px = float2(X.x + now * 0.6, X.z) / 12.0;
+        px -= 256.0 * floor(px / 256.0);
+        float w = tc * pxAngle / (12.0 * sqrt(rd.y));
+        float a = mcMap(maps, MCM_ENVIRONMENT_CLOUDS, px, w).a;
+        float3 cc = mix(float3(ST_DAY * 0.9 + 0.1), fogC, saturate((tc - 120.0) / 480.0));
+        c = mix(c, cc, a * 0.8 * (1.0 - smoothstep(400.0, 800.0, tc)));
+    }
+    return c;
 }
 
-static inline float3 stSky(float3 rd) {
-    float h = saturate(rd.y * 1.6 + 0.35);
-    float3 c = mix(float3(0.62, 0.47, 0.40), float3(0.13, 0.19, 0.36), h);
-    return pow(c, 2.2);
-}
+// ---------------------------------------------------------------------------
+// The picture.
 
-static inline float3 stShade(float3 ro, float3 rd, float3 lamp, float pxAngle, uint s, float now, float bright) {
+static inline float3 stShade(float3 ro, float3 rd, float pxAngle, uint s, float now, float3 fogC,
+                             texture2d_array<float> tiles, texture2d_array<float> skins,
+                             texture2d_array<float> maps) {
     StHit h = stTrace(ro, rd, s);
-    const float3 glass = float3(1.0, 0.95, 0.88);
+    int mat = M_AIR;
+    if (h.outdoor) {
+        // Above ground. Leaves are cut out by their alpha: through a clear
+        // texel the walk goes on once more, so the gaps in a crown show the
+        // leaves inside it, and at its edge the sky.
+        for (int k = 0; k < 2; ++k) {
+            stTraceOut(ro, rd, h.t, s, h, k > 0);
+            if (!h.hit) break;
+            mat = stMaterial(h.v, s);
+            if (mat != M_LEAVES || k == 1) break;
+            float2 ll = stFaceL(ro + rd * h.t, h.v, h.axis);
+            if (mcTile(tiles, MC_OAK_LEAVES, stPic(ll, h.axis), h.t * pxAngle).a > 0.5) break;
+            h.hit = false;
+        }
+    } else if (h.hit) {
+        mat = h.kind == K_LAVA ? M_LAVA : stMaterial(h.v, s);
+    }
+
     float3 col;
     float3 P = ro + rd * h.t;
     if (!h.hit) {
-        col = h.outdoor ? stSky(rd) : float3(0.0025, 0.003, 0.0045);
+        col = h.outdoor ? stSky(ro, rd, fogC, pxAngle, now, skins, maps)
+            : (stRavineRay(ro, rd, h.v, s) ? stRavineFar() : float3(0.0));
     } else {
         int3 v = h.v;
         int axis = h.axis;
         float3 n = h.n;
-        float2 uv = axis == 0 ? float2(P.z - float(v.z), P.y - float(v.y))
-                  : (axis == 1 ? float2(P.x - float(v.x), P.z - float(v.z))
-                               : float2(P.x - float(v.x), P.y - float(v.y)));
-        uv = saturate(uv);
-        int face = axis == 1 ? (n.y > 0.0 ? 1 : 2) : 0;
-        // The buried feature (if any) of the cell the face looks out into:
-        // its rails, torches and torchlight.
-        StFeat fa = stFeatOf(v + int3(n), s);
-        int mat = h.kind == K_LAVA ? M_LAVA : stMaterial(v, s);
-        uint bh = stHash(v, s + 200u);
-        float cosi = max(abs(dot(rd, n)), 0.08);
-        float fwT = h.t * pxAngle / cosi * 16.0;
-        float3 alb = stSample(mat, uv, fwT, bh, face, n.z < -0.5, now);
-        // Rails along a gallery floor.
-        if (face == 1) {
-            StFeat f = fa;
-            int3 q = v - f.o;
-            bool railZ = f.kind == F_MINE_Z && q.x == 0 && q.y == -1 && q.z >= 0 && q.z <= 34;
-            bool railX = f.kind == F_MINE_X && q.z == 1 && q.y == -1 && abs(q.x) <= 12;
-            if (railZ || railX) {
-                int2 tt = int2(floor(uv * 16.0));
-                int across = railZ ? tt.x : tt.y, along = railZ ? tt.y : tt.x;
-                bool tie = (along & 3) < 2 && across >= 2 && across <= 13;
-                bool rail = across == 3 || across == 4 || across == 11 || across == 12;
-                if (rail) alb = float3(0.62, 0.62, 0.64) * (across & 1 ? 0.8 : 1.0);
-                else if (tie) alb = float3(0.44, 0.31, 0.17);
+        float2 l = stFaceL(P, v, axis);
+        float2 uv = stPic(l, axis);
+        float2 gx, gy;
+        stGrad(rd, n, axis, h.t * pxAngle, gx, gy);
+        float fp = sqrt(length(gx) * length(gy));           // the footprint, for isotropic lookups
+        int3 av = v + int3(n);
+        bool outdoor = h.outdoor && av.y > stHeight(av.x, av.z, s);
+        // The buried feature (if any) of the air the face looks out into: its
+        // rails, torches and torchlight.
+        StFeat fa = stFeatOf(av, s);
+
+        // --- What the face is.
+        float3 alb;
+        if (mat == M_LAVA) {
+            alb = mcTileAniso(tiles, stLavaFrame(now), uv, gx, gy).rgb;
+        } else if (mat == M_GRASS) {
+            float3 tint = mcGrassTint(maps, 0.8, 0.4);              // plains
+            if (axis != 1)     alb = mcGrassSide(tiles, uv, fp, tint);
+            else if (n.y > 0.) alb = mcTileAniso(tiles, MC_GRASS_BLOCK_TOP, uv, gx, gy).rgb * tint;
+            else               alb = mcTileAniso(tiles, MC_DIRT, uv, gx, gy).rgb;
+        } else if (mat == M_CHEST) {
+            alb = stChest(skins, axis, n, l, fp * 15.0).rgb;
+        } else {
+            // A bone block lying along x turns its side texture on its side.
+            bool turn = mat == M_BONE_X && axis != 0;
+            float4 t = mcTileAniso(tiles, stLayer(mat, axis), turn ? uv.yx : uv,
+                                   turn ? gx.yx : gx, turn ? gy.yx : gy);
+            alb = t.rgb;
+            if (mat == M_LEAVES) alb *= mcFoliageTint(maps, 0.8, 0.4);
+            if (mat == M_SPAWNER && t.a < 0.5) {
+                // Through the cage to its far side, a block further on.
+                // KIT: mobs — the spawner's small spinning mob goes inside the
+                // cage here, between this face and the far one.
+                float3 dd = rd / max(abs(dot(rd, n)), 0.2);
+                float2 off = axis == 0 ? float2(dd.z, -dd.y) : (axis == 1 ? dd.xz : float2(dd.x, -dd.y));
+                float4 b = mcTileAniso(tiles, MC_SPAWNER, uv + off, gx, gy);
+                alb = b.a > 0.5 ? b.rgb * 0.5 : float3(0.02, 0.02, 0.03);
             }
         }
-        alb *= 0.96 + 0.08 * float(bh & 255u) / 255.0;
-        alb *= alb;   // to linear (gamma 2, near enough)
+
+        // Things lying on a face: rails on a mineshaft floor, the ladder up
+        // the cellar shaft, cobwebs in the mineshafts' upper corners.
+        int3 fq = v - fa.o;
+        if (n.y > 0.5) {
+            bool railZ = fa.kind == F_MINE_Z && fq.x == 0 && fq.y == -1 && fq.z >= 0 && fq.z <= 34;
+            bool railX = fa.kind == F_MINE_X && fq.z == 1 && fq.y == -1 && abs(fq.x) <= 12;
+            if (railZ || railX) {
+                float4 r = mcTileAniso(tiles, MC_RAIL, railZ ? uv : uv.yx, railZ ? gx : gx.yx, railZ ? gy : gy.yx);
+                alb = mix(alb, r.rgb, r.a);
+            }
+        }
+        if (mat == M_LADDER && n.z < -0.5) {
+            float4 r = mcTileAniso(tiles, MC_LADDER, uv, gx, gy);
+            alb = mix(alb, r.rgb, r.a);
+        }
+
+        // --- How it is lit. The air in front of the face, smoothly: sky
+        // light 15 in front of the cut (the slab taken away leaves it open to
+        // the sky) and down a ravine, falling a level a block back from the
+        // cut; block light from torches and lava.
+        float3 Pa = P + n * 0.5;
+        float sky = outdoor ? 15.0 : 15.0 - max(Pa.z + 0.5, 0.0);
+        bool rav = !outdoor && av.z >= 0 && av.y > -50 && stRavine(av.x, av.y, s);
+        if (rav) sky = 15.0;
+        float blk = max(stTorchLevel(Pa, fa), stLavaLevel(Pa, s));
+        float shade = mcFaceShade(n);
 
         if (mat == M_LAVA) {
-            col = alb * 1.5;
+            col = alb * mcLightmap(15.0, sky, ST_DAY, 0.0) * shade;
         } else {
-            float3 air = float3(v) + n;
-            int3 av = int3(air);
-            bool outdoor = h.outdoor && av.y > stHeight(av.x, av.z, s);
-            // Corner shading: on the cut face only the blocks standing proud
-            // of it can shade it, so only they are looked up.
+            // Smooth lighting's corners. On the cut face only the blocks
+            // standing proud of it can shade it, so only they are looked up.
             float ao;
             if (h.axis == 2 && v.z <= 0) {
                 float o0 = float(stCut(v.x - 1, v.y, s) < 0), o1 = float(stCut(v.x + 1, v.y, s) < 0);
                 float o2 = float(stCut(v.x, v.y - 1, s) < 0), o3 = float(stCut(v.x, v.y + 1, s) < 0);
-                float2 e0 = 1.0 - uv, e1 = uv;
-                ao = v.z < 0 ? 1.0 : 1.0 - 0.5 * saturate(o0 * e0.x * e0.x + o1 * e1.x * e1.x + o2 * e0.y * e0.y + o3 * e1.y * e1.y);
+                float2 e0 = 1.0 - l, e1 = l;
+                ao = v.z < 0 ? 1.0 : 1.0 - 0.4 * saturate(o0 * e0.x * e0.x + o1 * e1.x * e1.x + o2 * e0.y * e0.y + o3 * e1.y * e1.y);
             } else if (P.z < 7.0) {
-                ao = stAO(v, n, axis, uv, s);
+                ao = stAO(v, n, axis, l, s);
             } else {
                 ao = 1.0;   // too far into the dark for it to show
             }
-            float3 light;
-            if (outdoor) {
-                float3 sun = normalize(float3(-0.55, 0.62, 0.56));
-                float sd = max(dot(n, sun), 0.0);
-                light = float3(1.0, 0.82, 0.62) * 1.25 * sd + float3(0.42, 0.48, 0.65) * (0.45 + 0.25 * n.y);
-                light = mix(light, glass * 0.9, saturate(1.0 - P.z * 0.5));
+            col = alb * mcLightmap(blk, sky, ST_DAY, 0.0) * shade * ao;
+
+            // Things on a face that give their own light: a torch (14), glow
+            // lichen on cave walls (7), amethyst clusters (5).
+            // KIT: models — an amethyst cluster is a cross model turned to the
+            // face it grows from; the kit's mcCross only stands upright, so its
+            // picture is laid flat on the budding block until it can turn.
+            float4 e = float4(0.0);
+            float eLevel = 0.0;
+            if (mat == M_BUDDING) {
+                e = mcTileAniso(tiles, MC_AMETHYST_CLUSTER, uv, gx, gy); eLevel = 5.0;
+            } else if (!outdoor && av.z >= 0 && v.y < -4 && fa.kind == F_NONE
+                       && stRnd(av >> 2, s + 40u) < 0.3 && stRnd(v * 2 + int3(n), s + 41u) < 0.5) {
+                e = mcTileAniso(tiles, MC_GLOW_LICHEN, uv, gx, gy); eLevel = 7.0;
+            }
+            if (e.a > 0.0)
+                col = mix(col, e.rgb * mcLightmap(max(blk, eLevel), sky, ST_DAY, 0.0) * shade, e.a);
+        }
+        // The mineshafts' models in the air before the face: wall torches
+        // and cobwebs, the kit's.
+        if (fa.kind == F_MINE_Z || fa.kind == F_MINE_X) {
+            McModelHit mh;
+            float tEnd = h.t + 1e-3;
+            // The torch nearest the face.
+            int3 tc;
+            int facing;
+            if (fa.kind == F_MINE_Z) {
+                int zt = clamp(int(floor((Pa.z - float(fa.o.z) - 2.0) / 8.0 + 0.5)), 0, 7) * 8 + 2;
+                tc = fa.o + int3(-1, 1, zt); facing = 0;           // on the left post, leaning +x
             } else {
-                // A lamp held up to the glass, a little way out from it,
-                // and the cool spill of it off everything else.
-                float3 Ld = lamp - P;
-                float dl = length(Ld);
-                float lamb = max(dot(n, Ld / dl), 0.0);
-                float zf = max(P.z, 0.0);
-                float orient = n.z < -0.5 ? 1.0 : (n.y > 0.5 ? 0.8 : (n.y < -0.5 ? 0.45 : 0.62));
-                // The face itself is lit well; the light dies quickly inside,
-                // so the rock always reads lighter than the holes in it.
-                light = float3(1.0, 0.8, 0.56) * 1.25 * lamb / (1.0 + dl * dl / 330.0) * exp(-0.3 * zf)
-                      + float3(0.55, 0.66, 0.85) * 0.3 * orient * exp(-0.6 * zf);
-                // The lava's glow, on everything near the bottom.
-                light += float3(1.0, 0.36, 0.07) * 2.4 * stLavaGlow(P.x, P.y, s) * (0.55 + 0.45 * max(-n.y, 0.0) + 0.3 * max(-n.z, 0.0));
-                light += float3(1.0, 0.66, 0.32) * 1.7 * stTorches(P, fa);
+                int xt = clamp(int(floor((Pa.x - float(fa.o.x) - 4.0) / 8.0 + 0.5)), -2, 1) * 8 + 4;
+                tc = fa.o + int3(xt, 1, 1); facing = 3;            // on a post, leaning to the glass
             }
-            // Caustics under water.
-            if (h.water > 0.0) {
-                float2 cq = floor(P.xz * 16.0) / 16.0;
-                float k = sin(cq.x * 2.1 + now * 0.6) * sin(cq.y * 2.6 - now * 0.45)
-                        + sin((cq.x + cq.y) * 1.3 + now * 0.35);
-                light *= 1.0 + 0.35 * smoothstep(0.6, 1.6, k) * step(0.5, n.y);
+            float2 cb = stBox(ro, rd, float3(tc), float3(tc) + 1.0);
+            if (cb.x < cb.y && cb.x < tEnd
+                && mcWallTorch(tiles, MC_TORCH, float3(tc), facing, ro, rd, cb.x - 1e-4, tEnd, pxAngle, mh)) {
+                tEnd = mh.t;
+                col = mh.color.rgb * mcLightmap(15.0, sky, ST_DAY, 0.0) * (mh.shade > 0.5 ? mcFaceShade(mh.n) : 1.0);
             }
-            col = alb * light * ao;
-            // Things down there that give their own light: the brighter ores
-            // and the amethyst.
-            if (mat >= M_ORE) {
-                int k = (mat - M_ORE) & 7;
-                float g = k == 4 ? 0.7 : (k == 6 ? 0.5 : (k == 7 ? 0.4 : (k == 3 || k == 5 ? 0.25 : 0.0)));
-                float3 m = stMean(mat);
-                col += max(alb - m * m * 1.3, 0.0) * g;
-            } else if (mat == M_AMETHYST) {
-                col += alb * 0.22;
+            // Cobwebs hang in the corners under the timbers: in a Z shaft along
+            // both top corners, in an X shaft along the back. The first two
+            // cells of each corner the ray crosses are tried.
+            for (int b = 0; b < 2; ++b) {
+                if (fa.kind == F_MINE_X && b == 1) break;
+                float3 lo = fa.kind == F_MINE_Z ? float3(fa.o + int3(b == 0 ? -1 : 1, 2, 0))
+                                                : float3(fa.o + int3(-12, 2, 2));
+                float3 hi = lo + (fa.kind == F_MINE_Z ? float3(1.0, 1.0, 61.0) : float3(25.0, 1.0, 1.0));
+                float2 r = stBox(ro, rd, lo, hi);
+                if (!(r.x < r.y && r.x < tEnd)) continue;
+                float3 E = ro + rd * (r.x + 1e-4);
+                int3 c0 = int3(floor(E));
+                for (int k = 0; k < 2; ++k) {
+                    int3 c = c0;
+                    if (fa.kind == F_MINE_Z) c.z += k * (rd.z > 0.0 ? 1 : -1);
+                    else c.x += k * (rd.x > 0.0 ? 1 : -1);
+                    int3 cq = c - fa.o;
+                    bool post = fa.kind == F_MINE_X && (cq.x & 3) == 0;
+                    if (post || stRnd(c, s + 210u) > 0.14 || all(c == tc)) continue;
+                    float2 cr = stBox(ro, rd, float3(c), float3(c) + 1.0);
+                    if (cr.x < cr.y && cr.x < tEnd
+                        && mcCross(tiles, MC_COBWEB, float3(c), float3(1.0), ro, rd, cr.x - 1e-4, tEnd, pxAngle, mh)) {
+                        tEnd = mh.t;
+                        col = mh.color.rgb * mcLightmap(blk, sky, ST_DAY, 0.0);
+                    }
+                }
             }
-            float3 tc;
-            if (stTorchSprite(v, n, uv, fa, tc)) col = tc;
-            // Outdoors, the land fades into the evening.
-            if (outdoor) col = mix(col, stSky(rd), smoothstep(3.5, float(ST_OUTZ) - 0.5, P.z));
-            else col *= 1.0 - smoothstep(ST_ZMAX - 7.0, ST_ZMAX, P.z);
         }
+        // Outdoors, the land goes into the fog; underground, into the dark.
+        if (outdoor) col = mix(col, fogC, smoothstep(3.5, float(ST_OUTZ) - 0.5, P.z));
+        else col = mix(col, rav ? stRavineFar() : float3(0.0), smoothstep(ST_ZMAX - 7.0, ST_ZMAX, P.z));
     }
+
+    // A flooded cave: the face of the water where the ray went in, the
+    // game's still water, animated and tinted, over whatever is behind it.
     if (h.water > 0.0) {
-        float tr = 0.8 * exp(-0.09 * h.water);
-        float3 wc = pow(float3(0.10, 0.24, 0.42), float3(2.2)) * glass;
-        // The water line on the glass, and the water darkening below it.
         float3 E = ro + rd * h.wIn;
-        float below = max(float(stWaterTable(int(floor(E.x)), s)) + 1.0 - E.y, 0.0);
-        wc *= 1.25 * exp(-0.075 * below);
-        int3 ev = int3(floor(E + rd * 1e-3));
-        int3 above = ev + int3(0, 1, 0);
-        if (E.z < 0.6 && fract(E.y) > 0.86 && stColumn(above.x, above.y, stGroundAtGlass(above.x, above.y, s), s).kind != K_WATER)
-            col += float3(0.10, 0.17, 0.24) * 1.4;
-        col = col * tr * float3(0.55, 0.8, 1.0) + wc * (1.0 - tr);
-        if (h.wTop > 0.0) {
-            float3 W = ro + rd * h.wTop;
-            float2 cq = floor(W.xz * 16.0) / 16.0;
-            float k = sin(cq.x * 3.1 + now * 0.8) + sin(cq.y * 2.3 - now * 0.6);
-            col += float3(0.05, 0.09, 0.13) * (1.0 + 0.6 * k) * exp(-0.1 * max(W.z, 0.0));
-        }
+        int wa = h.wAxis;
+        float3 wn = float3(0.0);
+        wn[wa] = rd[wa] > 0.0 ? -1.0 : 1.0;
+        float2 wl = wa == 0 ? fract(E.zy) : (wa == 1 ? fract(E.xz) : fract(E.xy));
+        float2 wgx, wgy;
+        stGrad(rd, wn, wa, h.wIn * pxAngle, wgx, wgy);
+        float4 w = mcTileAniso(tiles, mcFrame(MC_WATER_STILL, MC_WATER_STILL_FRAMES, MC_WATER_STILL_TICKS, now),
+                               stPic(wl, wa), wgx, wgy);
+        float wsky = 15.0 - max(E.z + 0.5 * wn.z + 0.5, 0.0);
+        float3 wc = w.rgb * MC_WATER_TINT * mcLightmap(0.0, wsky, ST_DAY, 0.0) * mcFaceShade(wn);
+        col = mix(col, wc, w.a);
     }
-    return col * bright;
+    return col;
 }
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
+                        texture2d_array<float> mcTiles [[texture(8)]],
+                        texture2d_array<float> mcSkins [[texture(10)]],
+                        texture2d_array<float> mcMaps  [[texture(11)]]) {
     uint s = uint(u.seed * 1048576.0) * 747796405u + 2891336453u;
     float now = u.time;
     float minRes = min(u.resolution.x, u.resolution.y);
@@ -1084,7 +1082,6 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 target = float3(now * u.speed + u.seed * 5000.0, mix(ST_TOP, ST_BOTTOM, frac), 0.0);
     float3 upHint = float3(0.0, 1.0, 0.0);
     float3 ro = target - float3(0.0, 0.0, ST_D);
-    float3 base = target;
     float3 fwd = float3(0.0, 0.0, 1.0);
     float3 right = normalize(cross(upHint, fwd));
     lerpOrbit(u.yaw, u.pitch, u.magnify, target, upHint, ro, right, fwd);
@@ -1097,12 +1094,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 rd = lerpViewerRay(u, u.parallax * 0.4, uv * (dist / ST_FOCAL), dist, right, up, fwd, ro);
     float pxAngle = 2.0 / (minRes * ST_FOCAL);
 
-    // The lamp wanders slowly about the middle of the view.
-    float3 lamp = target + float3(7.0 * sin(now * 0.043 + u.seed * 6.0), 4.0 * sin(now * 0.031 + 1.0), -14.0);
-    float3 col = stShade(ro, rd, lamp, pxAngle, s, now, u.light);
-
-    col = col / (1.0 + col * 0.3);
-    col = pow(max(col, 0.0), 1.0 / 2.2);
-    col = lerpDither(col, pos);
+    float3 col = stShade(ro, rd, pxAngle, s, now, stFogColor(fwd), mcTiles, mcSkins, mcMaps);
+    col = lerpDither(saturate(col * u.light), pos);
     return half4(half3(col), 1.0h);
 }

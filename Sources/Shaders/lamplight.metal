@@ -1,36 +1,45 @@
 // Lamplight — original work for Lerping@Home, not a port.
 //
-// A lamplighter in a tall hat walks a winding road across a block landscape
-// at night, a hand lantern swinging at his side. Each lantern post he passes
-// kindles, and its light spreads the way light spreads in a world of cubes:
-// outwards from the source one block and one level at a time, fifteen levels
-// down to nothing. So every pool of light is a stepped diamond, the dark
-// between pools is solid, and the road behind him is a string of warm
+// A Minecraft night. A lamplighter walks a winding dirt path across a grassy
+// block landscape carrying a lantern. Each lantern post he passes (an oak
+// fence post with a lantern set on it) kindles, and its light spreads the way
+// the game spreads light: outwards one block and one level at a time, fifteen
+// levels down to nothing. So every pool of light is a stepped diamond, the
+// dark between pools is solid, and the road behind him is a string of warm
 // terraced pools fading into fog while the road ahead is black. Out in the
-// hills wild lights (glow blocks, soul torches, violet crystal, stray
-// torches) kindle and go out on their own slow clocks, and the lakes mirror
-// whatever burns on their shores.
+// hills wild lights come and go on their own slow clocks: glowstone, soul
+// torches, torches, and budding amethyst growing its buds through the stages
+// to a cluster. The lakes are the game's tinted water and mirror the moon.
 //
-// Light here is the block-world model, not a physical one: each air cell's
-// level is the brightest source's level minus its block (Manhattan) distance,
-// and a face takes the level of the air cell in front of it, so shading is
-// flat per face and falls off in steps. Levels map to brightness through the
-// usual l / (4 - 3l) curve, which keeps the steps visible all the way down.
-// Light does not route round hills (no flood fill), which a fragment shader
-// cannot afford; at this camera height it does not read.
+// Drawn as the game draws it with Smooth Lighting off: each face takes the
+// block-light and sky-light levels of the air cell in front of it through the
+// game's lightmap (`mcLightmap`) and the fixed face shading, and nothing else.
+// A cell's block light is the brightest source's level minus its block
+// (Manhattan) distance. Light does not route round hills (no flood fill),
+// which a fragment shader cannot afford; at this camera height it does not
+// read. Every surface is the game's own texture; the sky is the game's night:
+// black overhead, its fog at the horizon, its square stars, the moon's real
+// phase textures and the flat cloud layer from clouds.png.
+//
+// Cost: the march walks at most LL_COLS columns with a few tests each and
+// samples no texture, except inside the one column that holds a small model
+// (the shared kit's lantern, torch and cross models test their cut-out
+// texels). A pixel then reads one to three textures at its hit. Measured
+// 12.2 ms at 3456x2234 against maze's 12.5 in the same minute.
 //
 // lerp-category: Minecraft
+// lerp-requires: minecraft
 //
 // lerp-param: speed        float 0.25 3 = 1    "Walk speed"
 // lerp-param: spacing      int 9 16     = 9    "Lantern spacing"
 // lerp-param: wild         float 0 1    = 0.75 "Wild lights"
-// lerp-param: moon         float 0 2    = 1    "Moonlight"
-// lerp-param: colorLantern color        = (1.0, 0.58, 0.28) "Lantern light"
+// lerp-param: moon         float 0 1    = 0.6  "Moonlight"
+// lerp-param: soul         bool         = false "Soul lanterns"
 // lerp-param: yaw          float -180 180 = 0  "Turn"
 // lerp-param: pitch        float -25 35   = 0  "Tilt"
 // lerp-param: magnify      float -1 0.8   = 0  "Zoom"
 //
-// lerp-preset: "Soul Road" colorLantern=(0.30, 0.80, 1.0), wild=0.45
+// lerp-preset: "Soul Road" soul=true, wild=0.45
 // lerp-preset: Moonless    moon=0.2, wild=1
 
 // --- World, in blocks.
@@ -41,25 +50,22 @@ constant int   LL_WILDR = 16;       // wild light lattice
 constant float LL_WALK  = 0.6;      // walker speed, blocks per (speed-scaled) second
 constant float LL_RING  = 0.7;      // seconds per level as a road lantern kindles
 constant float LL_FOCAL = 2.4;
-constant float LL_FOG0  = 36.0;
+constant float LL_FOG0  = 40.0;     // the game's render-distance fog, linear
 constant float LL_FOG1  = 58.0;
-constant float LL_LK    = 1.5;      // block light gain
-constant float LL_LANTERN_L = 13.0; // a road lantern's full level
+constant float LL_CLOUD_Y = 136.0;  // the cloud layer, ~130 blocks over the ground as in the game
+constant float LL_WALKER_L = 11.0;  // the carried lantern's level (lantern 15; kept lower so the road ahead stays dark)
 
-constant float3 LL_FOGC = float3(0.0035, 0.0045, 0.011);
-constant float3 LL_MOON = float3(0.30, 0.42, 1.0) * 0.045;
-constant float3 LL_C_GLOW  = float3(1.00, 0.76, 0.40);
-constant float3 LL_C_SOUL  = float3(0.28, 0.78, 1.00);
-constant float3 LL_C_CRYS  = float3(0.70, 0.40, 1.00);
-constant float3 LL_C_TORCH = float3(1.00, 0.55, 0.24);
+// Glow colours of the sources' mirror images on the lakes. Light itself is
+// uncoloured, as in the game: every pool goes through the same lightmap.
+constant float3 LL_C_LANTERN = float3(1.00, 0.72, 0.38);
+constant float3 LL_C_SOULL   = float3(0.30, 0.80, 1.00);
+constant float3 LL_C_GLOW    = float3(1.00, 0.80, 0.45);
+constant float3 LL_C_AME     = float3(0.70, 0.45, 1.00);
+constant float3 LL_C_TORCH   = float3(1.00, 0.62, 0.30);
 
-enum LLMat {
-    LM_GRASS = 0, LM_GSIDE, LM_DIRT, LM_STONE, LM_SAND, LM_PATH,
-    LM_POST, LM_LANTERN, LM_IRON, LM_GLOW, LM_CRYSTAL, LM_STICK, LM_FLAME, LM_SOUL,
-    LM_TERRAIN = 99
-};
+enum LLMat { LM_TERRAIN = 0, LM_GLOW, LM_MODEL };
 
-// Light-source kinds: 1 road lantern, 3 glow block, 4 soul torch, 5 crystal, 6 torch.
+// Light-source kinds: 1 road lantern, 3 glowstone, 4 soul torch, 5 budding amethyst, 6 torch.
 
 struct LLW {
     int   bx;        // world x of the local origin: the scene is drawn near x = 0
@@ -68,6 +74,8 @@ struct LLW {
     float T;         // the walker's clock
     int   spacing;
     float wild;
+    float lmax;      // a road lantern's full level: lantern 15, soul lantern 10
+    float3 lcol;     // its mirror glow
 };
 
 // ---------------------------------------------------------------------------
@@ -104,6 +112,11 @@ static inline float llNoiseC(float2 p, int salt, thread LLNoiseCache& nc) {
     }
     float2 s = f * f * (3.0 - 2.0 * f);
     return mix(mix(nc.v.x, nc.v.y, s.x), mix(nc.v.z, nc.v.w, s.x), s.y);
+}
+
+static inline float3 llRotX(float3 v, float a) {
+    float c = cos(a), s = sin(a);
+    return float3(v.x, v.y * c - v.z * s, v.y * s + v.z * c);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,23 +161,31 @@ static inline int2 llLanternCol(int k, LLW w) {
 
 // A road lantern starts to kindle as the walker draws level with it.
 static inline float llLanternLevel(int xk, LLW w) {
-    return clamp((w.T - (float(xk) + 0.5) / LL_WALK) / LL_RING, 0.0, LL_LANTERN_L);
+    return clamp((w.T - (float(xk) + 0.5) / LL_WALK) / LL_RING, 0.0, w.lmax);
 }
 
 // The wild light of region `reg`, if it has one: column, kind and current
-// level (it kindles a level at a time, burns, then fades a level at a time).
+// level (it kindles a level at a time, burns, then fades a level at a time),
+// at the game's own levels: glowstone 15, torch 14, soul torch 10. Budding
+// amethyst grows its bud through the game's stages instead, each with the
+// stage's own light: small 1, medium 2, large 4, cluster 5.
 // The caller still checks the ground (dry, off the road).
 static inline bool llWild(int2 reg, LLW w, thread int2& p, thread int& kind,
                           thread float& lv, thread float& mx) {
     if (llH(int3(reg, w.sd + 31)) >= w.wild) return false;
     float k = llH(int3(reg, w.sd + 34));
     kind = k < 0.3 ? 3 : (k < 0.55 ? 4 : (k < 0.75 ? 5 : 6));
-    mx = kind == 3 ? 12.0 : (kind == 4 ? 10.0 : (kind == 5 ? 9.0 : 11.0));
+    mx = kind == 3 ? 15.0 : (kind == 4 ? 10.0 : (kind == 5 ? 5.0 : 14.0));
     float P = 150.0 + 100.0 * fract(k * 7.7 + 0.2);
     float cyc = glmod(w.T + P * fract(k * 31.3 + 0.5), P);
     float on = 0.62 * P;
-    lv = cyc < on ? min(cyc / 0.9, mx) : max(mx - (cyc - on) / 1.5, 0.0);
-    // Kept to the middle of the region, which with a reach of 12 means a
+    if (kind == 5) {
+        float g = cyc < on ? cyc / 6.0 : max(4.0 - (cyc - on) / 6.0, 0.0);   // 0 none .. 4 cluster
+        lv = g >= 4.0 ? 5.0 : (g >= 3.0 ? 4.0 : (g >= 2.0 ? 2.0 : (g >= 1.0 ? 1.0 : 0.0)));
+    } else {
+        lv = cyc < on ? min(cyc / 0.9, mx) : max(mx - (cyc - on) / 1.5, 0.0);
+    }
+    // Kept to the middle of the region, which with a reach of 14 means a
     // point can only be lit from its own region and one neighbour per axis.
     int2 o = int2(int(fract(k * 57.1 + 0.3) * 5.999), int(fract(k * 91.7 + 0.9) * 5.999));
     p = reg * LL_WILDR + 5 + o;
@@ -172,12 +193,12 @@ static inline bool llWild(int2 reg, LLW w, thread int2& p, thread int& kind,
 }
 
 static inline float3 llKindCol(int kind) {
-    return kind == 3 ? LL_C_GLOW : (kind == 4 ? LL_C_SOUL : (kind == 5 ? LL_C_CRYS : LL_C_TORCH));
+    return kind == 3 ? LL_C_GLOW : (kind == 4 ? LL_C_SOULL : (kind == 5 ? LL_C_AME : LL_C_TORCH));
 }
 
 // A light source as the gather sees it, packed so a quad of pixels can pass
-// sources between its lanes: (light cell, level), (colour, glow strength
-// 0..1), (glow size, glow height above the light cell).
+// sources between its lanes: (light cell, level), (mirror-glow colour,
+// strength 0..1), (glow size, glow height above the light cell).
 struct LLPk { float4 p; float4 c; float2 g; };
 
 static inline LLPk llNone() {
@@ -193,9 +214,8 @@ static inline LLPk llNone() {
 // blocks further, is never the brightest, and light takes the brightest),
 // then four wild regions: a's own and its neighbours on the side of each
 // axis a is nearer. Wild lights stand in the middle six blocks of their
-// sixteen and reach at most 12, so that choice misses nothing for any point
-// within a block and a half of a.
-static inline LLPk llSlot(int i, float3 a, LLW w, float3 lantern,
+// sixteen, so that choice misses at most the last level of a glowstone.
+static inline LLPk llSlot(int i, float3 a, LLW w,
                           thread LLNoiseCache& ncLow, thread LLNoiseCache& ncRoad) {
     LLPk k = llNone();
     float ax = a.x + float(w.bx);
@@ -209,8 +229,9 @@ static inline LLPk llSlot(int i, float3 a, LLW w, float3 lantern,
         float2 lc = float2(float(c.x - w.bx) + 0.5, float(c.y) + 0.5);
         if (abs(lc.x - a.x) + abs(lc.y - a.z) > 17.0) return k;
         float base = float(llRoadHC(c.x, w, ncRoad));
+        // The lantern sits on the fence post: its cell is the one above the post's.
         k.p = float4(lc.x, base + 1.5, lc.y, lv);
-        k.c = float4(lantern, lv / LL_LANTERN_L);
+        k.c = float4(w.lcol, lv / w.lmax);
         k.g = float2(1.0, -0.23);
         return k;
     }
@@ -227,21 +248,14 @@ static inline LLPk llSlot(int i, float3 a, LLW w, float3 lantern,
     float rd;
     int h = llHeightC(p, w, ncLow, ncRoad, rd);
     if (h < LL_WATER || rd <= 3.5) return k;
-    bool block = kind == 3 || kind == 5;
+    bool block = kind == 3;
     k.p = float4(lc.x, float(h) + 0.5, lc.y, lv);
     k.c = float4(llKindCol(kind), lv / mx);
     k.g = float2(block ? 1.6 : 0.8, block ? 0.0 : 0.12);
     return k;
 }
 
-static inline float llBright(float l) {
-    float f = saturate(l / 15.0);
-    return f / (4.0 - 3.0 * f);
-}
-
-static inline float llFog(float t) { return smoothstep(LL_FOG0, LL_FOG1, t); }
-
-// Glow in the night air round a source, seen along the ray [0, tEnd].
+// The glow of a source's mirror image, seen along the ray [0, tEnd].
 static inline float3 llGlow(float3 ro, float3 rd, float tEnd, LLPk k) {
     float3 v = k.p.xyz + float3(0.0, k.g.y, 0.0) - ro;
     float tc = clamp(dot(v, rd), 0.0, tEnd);
@@ -254,13 +268,10 @@ static inline float3 llGlow(float3 ro, float3 rd, float tEnd, LLPk k) {
     return k.c.rgb * (g * k.c.w);
 }
 
-// What one pixel gathers: block light at its air cell a, and glow along its
-// view ray, and on water the glow of each source's mirror image below the
-// surface (nudged by the ripple), which is the reflection without a second ray.
-struct LLLit {
-    float  bmax, wsum;
-    float3 csum, halo, rhalo;
-};
+// What one pixel gathers: the block-light level of its air cell a (the
+// brightest source minus its block distance), and on water the glow of each
+// source's mirror image below the surface (nudged by the ripple).
+struct LLLit { float lv; float3 rhalo; };
 
 static inline void llApply(thread LLLit& L, LLPk k, float3 a, float3 ro, float3 rd, float tEnd,
                            bool refl, float2 ripple) {
@@ -268,20 +279,13 @@ static inline void llApply(thread LLLit& L, LLPk k, float3 a, float3 ro, float3 
     float l = k.p.w - (dd.x + dd.y + dd.z);
     if (l > 0.0) {
         // Whole levels; a moving source crosses each step in a short blend.
-        float lq = floor(l) + smoothstep(0.8, 1.0, fract(l));
-        float b = llBright(lq);
-        L.bmax = max(L.bmax, b);
-        L.csum += k.c.rgb * (b * b);
-        L.wsum += b * b;
+        L.lv = max(L.lv, floor(l) + smoothstep(0.8, 1.0, fract(l)));
     }
-    if (k.c.w > 0.0) {
-        L.halo += llGlow(ro, rd, tEnd, k);
-        if (refl) {
-            const float wl = float(LL_WATER) - 0.125;
-            k.p.y = 2.0 * wl - k.p.y - 2.0 * k.g.y;
-            k.p.xz += ripple;
-            L.rhalo += llGlow(ro, rd, tEnd + 40.0, k);
-        }
+    if (refl && k.c.w > 0.0) {
+        const float wl = float(LL_WATER) - 0.125;
+        k.p.y = 2.0 * wl - k.p.y - 2.0 * k.g.y;
+        k.p.xz += ripple;
+        L.rhalo += llGlow(ro, rd, tEnd + 40.0, k);
     }
 }
 
@@ -292,24 +296,15 @@ struct LLHit {
     float  t;       // 1e9: nothing before the limit
     float  tw;      // the water surface on the way, 1e9: none
     float3 n;
-    int3   cell;    // local cell
+    int3   cell;    // local cell; for a small model, its column at ground level
     int    mat;
-    float  e;       // the column's source level, 0..1
+    int    kind;    // the column's light-source kind, 0 none
+    float  e;       // the column's source level
     int    h;       // column ground height
     float  roadD;
+    float4 mcol;    // a small model's texel (the kit's McModelHit)
+    float  mshade;  // and whether the game face-shades it
 };
-
-static inline bool llBoxHit(float3 ro, float3 inv, float3 lo, float3 hi,
-                            thread float& best, thread float3& nrm) {
-    float3 t1 = (lo - ro) * inv, t2 = (hi - ro) * inv;
-    float3 tn = min(t1, t2), tf = max(t1, t2);
-    float tN = max(max(tn.x, tn.y), tn.z), tF = min(min(tf.x, tf.y), tf.z);
-    if (tN > tF || tN < 0.0 || tN >= best) return false;
-    best = tN;
-    nrm = tN == tn.x ? float3(-sign(inv.x), 0.0, 0.0)
-        : (tN == tn.y ? float3(0.0, -sign(inv.y), 0.0) : float3(0.0, 0.0, -sign(inv.z)));
-    return true;
-}
 
 // A ray against one solid run [lo, hi) of a column it crosses over
 // [tIn, tOut], entering at height yIn and leaving at yOut. Returns the hit
@@ -322,15 +317,20 @@ static inline float llSpan(float lo, float hi, float yIn, float yOut, float tIn,
     return 1e9;
 }
 
+static inline int llBudLayer(float lv) {
+    return lv >= 5.0 ? MC_AMETHYST_CLUSTER : (lv >= 4.0 ? MC_LARGE_AMETHYST_BUD
+         : (lv >= 2.0 ? MC_MEDIUM_AMETHYST_BUD : MC_SMALL_AMETHYST_BUD));
+}
+
 // The ground and what stands on it, walked column by column below the
 // highest the ground can reach. In a column the ground is one solid run,
-// so each step is the same few tests whatever the ray's slope. The noise
-// caches are the caller's so corner shading can reuse them.
+// so each step is the same few tests whatever the ray's slope.
 static inline LLHit llMarch(float3 ro, float3 rd, float tLimit, LLW w,
-                            thread LLNoiseCache& ncLow, thread LLNoiseCache& ncRoad) {
+                            thread LLNoiseCache& ncLow, thread LLNoiseCache& ncRoad,
+                            texture2d_array<float> tiles, int lanLayer, float pxA) {
     LLHit H;
     H.t = 1e9; H.tw = 1e9; H.n = float3(0.0, 1.0, 0.0); H.cell = int3(0);
-    H.mat = -1; H.e = 0.0; H.h = 0; H.roadD = 9.0;
+    H.mat = -1; H.kind = 0; H.e = 0.0; H.h = 0; H.roadD = 9.0; H.mcol = float4(0.0); H.mshade = 0.0;
     float t0 = 0.0;
     if (ro.y > float(LL_HMAX)) {
         if (rd.y > -1e-4) return H;
@@ -338,7 +338,7 @@ static inline LLHit llMarch(float3 ro, float3 rd, float tLimit, LLW w,
     }
     float2 rs = select(rd.xz, float2(1e-6), abs(rd.xz) < 1e-6);
     float2 inv = 1.0 / rs;
-    float3 inv3 = 1.0 / select(rd, float3(1e-6), abs(rd) < 1e-6);
+    float3 inv3 = mcModelInv(rd);
     int2 cell = int2(floor(ro.xz + rd.xz * (t0 + 1e-4)));
     int2 stp = int2(sign(rs));
     float2 tDel = abs(inv);
@@ -376,7 +376,7 @@ static inline LLHit llMarch(float3 ro, float3 rd, float tLimit, LLW w,
             if (lanE < -1.5) {
                 int k = int(floor(float(wc.x - 3) / float(w.spacing) + 0.5));
                 lan = llLanternCol(k, w);
-                lanE = lan.x == wc.x ? llLanternLevel(lan.x, w) / LL_LANTERN_L : -1.0;
+                lanE = lan.x == wc.x ? llLanternLevel(lan.x, w) : -1.0;
             }
             if (lanE >= 0.0 && lan.y == wc.y) { sKind = 1; sE = lanE; }
         } else if (roadD > 3.5) {
@@ -385,7 +385,7 @@ static inline LLHit llMarch(float3 ro, float3 rd, float tLimit, LLW w,
                 wildReg = reg;
                 wildOK = llWild(reg, w, wildP, wildKind, wildLv, wildMx);
             }
-            if (wildOK && wildP.x == wc.x && wildP.y == wc.y) { sKind = wildKind; sE = wildLv / wildMx; }
+            if (wildOK && wildP.x == wc.x && wildP.y == wc.y) { sKind = wildKind; sE = wildLv; }
         }
         int h;
         if (yLo < float(hb) || sKind != 0) {
@@ -398,22 +398,32 @@ static inline LLHit llMarch(float3 ro, float3 rd, float tLimit, LLW w,
         } else {
             h = hb;   // an upper bound, which is all a miss needs
         }
-        if (sKind == 1 || sKind == 4 || sKind == 6) {
+        // The game's small models, from the shared kit, in the one column that holds one.
+        if (sKind == 1 || ((sKind == 4 || sKind == 6) && sE > 0.0) || (sKind == 5 && sE >= 1.0)) {
             float3 o = float3(float(cell.x), float(h), float(cell.y));
-            const float k = 1.0 / 16.0;
-            float bt = 1e9; float3 bn; int bm = -1;
+            float tm = tIn - 1e-4;
+            McModelHit mh;
+            mh.t = tOut + 1e-3;
+            bool got;
             if (sKind == 1) {
-                if (llBoxHit(ro, inv3, o + float3(6, 0, 6) * k,  o + float3(10, 16, 10) * k, bt, bn)) bm = LM_POST;
-                if (llBoxHit(ro, inv3, o + float3(5, 16, 5) * k, o + float3(11, 24, 11) * k, bt, bn)) bm = LM_LANTERN;
-                if (llBoxHit(ro, inv3, o + float3(6, 24, 6) * k, o + float3(10, 26, 10) * k, bt, bn)) bm = LM_IRON;
+                // KIT: models — an oak fence post; the kit has no fences yet, so
+                // it is the kit's box piece with the fence post's own uv.
+                mcModelBoxElem(tiles, MC_OAK_PLANKS, (ro - o) * 16.0, rd, inv3,
+                               float3(6, 0, 6), float3(10, 16, 10), float4(6, 0, 10, 16),
+                               float4(6, 6, 10, 10), float4(6, 6, 10, 10), tm, pxA, 1.0, mh);
+                got = mh.t < tOut + 1e-3;
+                McModelHit lh;
+                if (sE > 0.0 && mcLantern(tiles, lanLayer, o + float3(0.0, 1.0, 0.0), false,
+                                          ro, rd, tm, mh.t, pxA, lh)) { mh = lh; got = true; }
+            } else if (sKind == 5) {
+                got = mcCross(tiles, llBudLayer(sE), o, float3(1.0), ro, rd, tm, mh.t, pxA, mh);
             } else {
-                if (llBoxHit(ro, inv3, o + float3(7, 0, 7) * k, o + float3(9, 8, 9) * k, bt, bn)) bm = LM_STICK;
-                if (sE > 0.0 && llBoxHit(ro, inv3, o + float3(6.5, 8, 6.5) * k, o + float3(9.5, 11, 9.5) * k, bt, bn))
-                    bm = sKind == 4 ? LM_SOUL : LM_FLAME;
+                got = mcTorch(tiles, sKind == 4 ? MC_SOUL_TORCH : MC_TORCH, o, ro, rd, tm, mh.t, pxA, mh);
             }
-            if (bm >= 0) {
-                H.t = bt; H.n = bn; H.cell = int3(floor(ro + rd * bt - bn * 0.01));
-                H.mat = bm; H.e = sE; H.h = h; H.roadD = roadD;
+            if (got) {
+                H.t = mh.t; H.n = mh.n; H.cell = int3(cell.x, h, cell.y);
+                H.mat = LM_MODEL; H.kind = sKind; H.e = sE; H.h = h; H.roadD = roadD;
+                H.mcol = mh.color; H.mshade = mh.shade;
                 return H;
             }
         }
@@ -421,9 +431,11 @@ static inline LLHit llMarch(float3 ro, float3 rd, float tLimit, LLW w,
         if (H.tw > 1e8 && rd.y < 0.0 && yIn >= wl && yOut < wl && h < LL_WATER)
             H.tw = (wl - ro.y) / rd.y;
 
-        bool block = sKind == 3 || sKind == 5;
+        bool block = sKind == 3 && sE > 0.0;
+        // A dirt path is a sixteenth lower than a full block.
+        float top = float(h + (block ? 1 : 0)) - (roadD < 1.5 ? 0.0625 : 0.0);
         int face;
-        float tg = llSpan(-1e9, float(h + (block ? 1 : 0)), yIn, yOut, tIn, ro.y, rd.y, face);
+        float tg = llSpan(-1e9, top, yIn, yOut, tIn, ro.y, rd.y, face);
         if (tg < 1e8) {
             int hitY = face == 1 ? h + (block ? 1 : 0) - 1 : int(floor(yIn));
             float3 nn = float3(0.0, 1.0, 0.0);
@@ -432,8 +444,8 @@ static inline LLHit llMarch(float3 ro, float3 rd, float tLimit, LLW w,
                 if (axis == 0) nn.x = -float(stp.x); else nn.z = -float(stp.y);
             }
             H.t = tg; H.n = nn; H.cell = int3(cell.x, hitY, cell.y);
-            H.mat = (block && hitY == h) ? (sKind == 3 ? LM_GLOW : LM_CRYSTAL) : LM_TERRAIN;
-            H.e = sE; H.h = h; H.roadD = roadD;
+            H.mat = (block && hitY == h) ? LM_GLOW : LM_TERRAIN;
+            H.kind = sKind; H.e = sE; H.h = h; H.roadD = roadD;
             return H;
         }
         if (tMax.x < tMax.y) { axis = 0; tIn = tMax.x; tMax.x += tDel.x; cell.x += stp.x; }
@@ -443,247 +455,167 @@ static inline LLHit llMarch(float3 ro, float3 rd, float tLimit, LLW w,
 }
 
 // ---------------------------------------------------------------------------
-// Surfaces: 16 x 16 texels a face, all procedural. Colours are written in
-// display values and squared into (roughly) linear light.
+// Surfaces.
 
-struct LLTex { float3 alb; float3 emi; };
-
-static inline LLTex llTexel(int mat, int2 tx, int salt, float detail, float e, float3 lantern) {
-    int2 lt = tx & 15;
-    float r  = llH(int3(tx, salt));
-    float r2 = fract(r * 11.37 + 0.31);
-    float v = mix(1.0, 0.8 + 0.4 * r, detail);
-    LLTex o;
-    o.emi = float3(0.0);
-    float3 c;
-    switch (mat) {
-    case LM_GRASS:
-        c = float3(0.33, 0.52, 0.20) * v * (r2 > 0.9 ? mix(1.0, 1.18, detail) : 1.0);
-        break;
-    case LM_GSIDE: {
-        int fr = 3 + int(llH(int3(tx.x, tx.y >> 4, salt + 3)) * 2.99);
-        c = (lt.y >= 16 - fr ? float3(0.30, 0.48, 0.18) : float3(0.46, 0.32, 0.21)) * v;
-        break;
-    }
-    case LM_DIRT:
-        c = float3(0.46, 0.32, 0.21) * v * (r2 > 0.88 ? mix(1.0, 0.7, detail) : 1.0);
-        break;
-    case LM_STONE: {
-        float rr = llH(int3(tx >> 1, salt + 5));
-        c = float3(0.47, 0.47, 0.48) * mix(1.0, 0.72 + 0.4 * mix(r, rr, 0.6), detail);
-        break;
-    }
-    case LM_SAND:
-        c = float3(0.80, 0.73, 0.52) * mix(1.0, 0.9 + 0.18 * r, detail);
-        break;
-    case LM_PATH:
-        c = (r2 > 0.72 ? float3(0.45, 0.43, 0.40) : float3(0.56, 0.44, 0.28)) * v;
-        break;
-    case LM_POST:
-        c = float3(0.52, 0.39, 0.24) * v * (llH(int3(tx.x, 0, salt + 11)) < 0.3 ? 0.75 : 1.0);
-        break;
-    case LM_LANTERN: {
-        bool frame = lt.x == 5 || lt.x == 10 || lt.y == 0 || lt.y == 7;
-        if (frame) c = float3(0.20, 0.20, 0.22) * v;
-        else {
-            c = float3(0.30, 0.22, 0.12);
-            float core = (lt.y >= 2 && lt.y <= 5 && lt.x >= 7 && lt.x <= 8) ? 1.4 : 1.0;
-            o.emi = lantern * e * (1.7 + 0.6 * r) * core;
-        }
-        break;
-    }
-    case LM_IRON:
-        c = float3(0.20, 0.20, 0.22) * v;
-        break;
-    case LM_GLOW: {
-        float q = llH(int3(tx >> 1, salt + 13));
-        c = float3(0.42, 0.34, 0.20) * v;
-        o.emi = LL_C_GLOW * e * (q > 0.4 ? 1.0 + 0.9 * r : 0.18);
-        break;
-    }
-    case LM_CRYSTAL: {
-        bool facet = ((lt.x + lt.y) & 7) < 3 || ((lt.x - lt.y) & 7) == 0;
-        c = float3(0.30, 0.20, 0.40) * v;
-        o.emi = LL_C_CRYS * e * (facet ? 1.4 : 0.3) * (0.7 + 0.6 * r);
-        break;
-    }
-    case LM_STICK:
-        c = float3(0.45, 0.32, 0.18) * v;
-        break;
-    case LM_FLAME:
-        c = float3(0.10, 0.09, 0.08);
-        o.emi = (lt.y >= 10 ? float3(1.0, 0.85, 0.5) : LL_C_TORCH) * e * (1.5 + r);
-        break;
-    default: // LM_SOUL
-        c = float3(0.10, 0.09, 0.08);
-        o.emi = (lt.y >= 10 ? float3(0.7, 0.95, 1.0) : LL_C_SOUL) * e * (1.5 + r);
-        break;
-    }
-    o.alb = c * c;
-    return o;
+// Width of a screen pixel on a face, as uv change per pixel in x and y:
+// the ray differentials projected onto the face plane.
+static inline void llFaceGrad(float3 rd, float t, float3 n, float3 dRx, float3 dRy,
+                              float3 U, float3 V, thread float2& gx, thread float2& gy) {
+    float dn = min(dot(n, rd), -0.05);
+    float3 px = t * (dRx - rd * (dot(n, dRx) / dn));
+    float3 py = t * (dRy - rd * (dot(n, dRy) / dn));
+    gx = float2(dot(px, U), dot(px, V));
+    gy = float2(dot(py, U), dot(py, V));
 }
 
-// Crisp texels up close (each texel edge blended over one pixel), and the
-// per-texel variation fading out once a texel is smaller than a pixel, so
-// nothing crawls as the camera drifts.
-static inline LLTex llTexF(int mat, float2 uvw, int2 shift, int salt, float fwT, float e, float3 lantern) {
-    float detail = 1.0 - smoothstep(0.7, 2.2, fwT);
-    float2 tp = uvw * 16.0 - 0.5;
-    float2 i0 = floor(tp);
-    float2 f = tp - i0;
-    float2 wg = saturate((f - 0.5) / max(fwT, 1e-3) + 0.5);
-    int2 b = int2(i0) + shift;
-    LLTex a  = llTexel(mat, b,              salt, detail, e, lantern);
-    LLTex bb = llTexel(mat, b + int2(1, 0), salt, detail, e, lantern);
-    LLTex c  = llTexel(mat, b + int2(0, 1), salt, detail, e, lantern);
-    LLTex d  = llTexel(mat, b + int2(1, 1), salt, detail, e, lantern);
-    LLTex o;
-    o.alb = mix(mix(a.alb, bb.alb, wg.x), mix(c.alb, d.alb, wg.x), wg.y);
-    o.emi = mix(mix(a.emi, bb.emi, wg.x), mix(c.emi, d.emi, wg.x), wg.y);
-    return o;
-}
-
-// Is terrain cell (world column c, height y) solid?
-static inline float llSolid(int2 c, int y, LLW w, thread LLNoiseCache& ncLow, thread LLNoiseCache& ncRoad) {
-    float roadD = abs(float(c.y) + 0.5 - llRoadZ(float(c.x) + 0.5, w));
-    int b = max(int(floor(3.0 + 7.0 * llNoiseC((float2(c) + 0.5) / 24.0, w.sd, ncLow))), 1);
-    if (roadD >= 5.5) return y < b ? 1.0 : 0.0;
-    int rh = llRoadHC(c.x, w, ncRoad);
-    int h = roadD < 2.5 ? rh : int(round(mix(float(rh), float(b), (roadD - 2.5) / 3.0)));
-    return y < h ? 1.0 : 0.0;
-}
-
-// Darkening where a terrain face meets a wall or the ground. Only the
-// nearer edge on each axis is looked up: two neighbours, not eight.
-static inline float llAO(LLHit H, float3 P, LLW w, thread LLNoiseCache& ncLow, thread LLNoiseCache& ncRoad) {
-    int3 a = H.cell + int3(H.n);
-    int2 ac = int2(a.x + w.bx, a.z);
-    bool top = H.n.y > 0.5;
-    int2 e1 = top || abs(H.n.x) < 0.5 ? int2(1, 0) : int2(0, 1);
-    float uu = top ? fract(P.x) : (abs(H.n.x) > 0.5 ? fract(P.z) : fract(P.x));
-    float vv = top ? fract(P.z) : fract(P.y);
-    // Each edge darkens the quarter block beside it; a pixel looks up only
-    // the edges it is near.
-    float du = smoothstep(0.35, 1.0, 1.0 - 2.0 * min(uu, 1.0 - uu));
-    float dv = smoothstep(0.35, 1.0, 1.0 - 2.0 * min(vv, 1.0 - vv));
-    float occ = 0.0;
-    if (du > 0.0) occ += du * llSolid(ac + (uu < 0.5 ? -e1 : e1), a.y, w, ncLow, ncRoad);
-    if (dv > 0.0) {
-        if (top) occ += dv * llSolid(ac + int2(0, vv < 0.5 ? -1 : 1), a.y, w, ncLow, ncRoad);
-        else if (vv < 0.5) occ += dv * llSolid(ac, a.y - 1, w, ncLow, ncRoad);   // the floor at a wall's foot
-    }
-    return 1.0 - 0.45 * min(occ, 1.0);
-}
-
-static inline float3 llShadeBlock(LLHit H, float3 ro, float3 rd, float pxA, LLW w,
-                                  thread LLNoiseCache& ncLow, thread LLNoiseCache& ncRoad,
-                                  float3 light, float moon, float3 lantern) {
+static inline float3 llShadeBlock(LLHit H, float3 ro, float3 rd, float3 dRx, float3 dRy, float pxA,
+                                  LLW w, float3 lm, float time,
+                                  texture2d_array<float> tiles, texture2d_array<float> maps) {
     float3 P = ro + rd * H.t;
     float3 n = H.n;
-    int mat = H.mat;
-    bool terrain = mat == LM_TERRAIN;
-    if (terrain) {
-        bool sandy = H.h <= LL_WATER && H.roadD >= 1.5;
-        int depth = H.h - 1 - H.cell.y;
-        if (n.y > 0.5) mat = sandy ? LM_SAND : (H.roadD < 1.5 ? LM_PATH : LM_GRASS);
-        else if (sandy) mat = depth < 3 ? LM_SAND : LM_STONE;
-        else if (depth == 0) mat = H.roadD < 1.5 ? LM_DIRT : LM_GSIDE;
-        else mat = depth < 4 ? LM_DIRT : LM_STONE;
-    }
-    float2 uvw; int2 shift; int plane;
-    if (abs(n.y) > 0.5)      { uvw = P.xz; shift = int2(w.bx * 16, 0); plane = H.cell.y * 3; }
-    else if (abs(n.x) > 0.5) { uvw = P.zy; shift = int2(0);           plane = (H.cell.x + w.bx) * 3 + 1; }
-    else                     { uvw = P.xy; shift = int2(w.bx * 16, 0); plane = H.cell.z * 3 + 2; }
-    int salt = w.sd + plane * 131 + mat * 7919 + (n.x + n.y + n.z > 0.0 ? 0 : 104729);
-    float fwT = H.t * pxA * 16.0 / max(abs(dot(rd, n)), 0.2);
-    LLTex tx = llTexF(mat, uvw, shift, salt, fwT, H.e, lantern);
+    if (H.mat == LM_TERRAIN || H.mat == LM_GLOW) {
+        // Face uv as the game lays textures: tops north up, sides upright.
+        float2 uv; float3 U, V;
+        if (abs(n.y) > 0.5)      { uv = P.xz; U = float3(1, 0, 0); V = float3(0, 0, 1); }
+        else if (abs(n.x) > 0.5) { uv = float2(n.x > 0.0 ? -P.z : P.z, -P.y);
+                                   U = float3(0, 0, n.x > 0.0 ? -1.0 : 1.0); V = float3(0, -1, 0); }
+        else                     { uv = float2(n.z > 0.0 ? P.x : -P.x, -P.y);
+                                   U = float3(n.z > 0.0 ? 1.0 : -1.0, 0, 0); V = float3(0, -1, 0); }
+        float2 gx, gy;
+        llFaceGrad(rd, H.t, n, dRx, dRy, U, V, gx, gy);
 
-    float ao = terrain ? llAO(H, P, w, ncLow, ncRoad) : 1.0;
-    float fs = n.y > 0.5 ? 1.0 : (n.y < -0.5 ? 0.5 : (abs(n.z) > 0.5 ? 0.8 : 0.62));
-    float mf = n.y > 0.5 ? 1.0 : (n.x > 0.5 ? 0.5 : 0.32);
-    // Moonlight sees almost no colour; block light sees all of it.
-    float3 night = mix(tx.alb, float3(dot(tx.alb, float3(0.3, 0.55, 0.15))), 0.85);
-    return (night * LL_MOON * moon * mf + tx.alb * light * LL_LK * fs) * ao + tx.emi;
+        int depth = H.h - 1 - H.cell.y;
+        bool top = n.y > 0.5;
+        bool sandy = H.h <= LL_WATER && H.roadD >= 1.5;
+        int layer = MC_STONE;
+        bool turn = false, grass = false, side = false;
+        if (H.mat == LM_GLOW) layer = MC_GLOWSTONE;
+        else if (depth == 0 && H.kind == 5) layer = MC_BUDDING_AMETHYST;
+        else if (sandy) { layer = depth < 3 ? MC_SAND : MC_SANDSTONE; turn = top; }
+        else if (depth == 0) {
+            if (H.roadD < 1.5) { layer = top ? MC_DIRT_PATH_TOP : (n.y < -0.5 ? MC_DIRT : MC_DIRT_PATH_SIDE); turn = top; }
+            else if (top) { layer = MC_GRASS_BLOCK_TOP; grass = true; turn = true; }
+            else if (n.y < -0.5) layer = MC_DIRT;
+            else side = true;
+        } else layer = depth < 4 ? MC_DIRT : MC_STONE;
+
+        float3 tint = (grass || side) ? mcGrassTint(maps, 0.8, 0.4) : float3(1.0);   // plains
+        float3 alb;
+        if (side) {
+            // KIT: an anisotropic mcGrassSide; the isotropic one takes the long axis.
+            alb = mcGrassSide(tiles, uv, max(length(gx), length(gy)), tint);
+        } else {
+            if (turn) {
+                // The game turns these tops a random quarter per block.
+                int r = int(llH(int3(H.cell.x + w.bx, H.cell.z, 911)) * 3.999);
+                float2 f = fract(uv);
+                if (r == 1)      { uv = float2(f.y, 1.0 - f.x); gx = float2(gx.y, -gx.x); gy = float2(gy.y, -gy.x); }
+                else if (r == 2) { uv = 1.0 - f; gx = -gx; gy = -gy; }
+                else if (r == 3) { uv = float2(1.0 - f.y, f.x); gx = float2(-gx.y, gx.x); gy = float2(-gy.y, gy.x); }
+            }
+            alb = mcTileAniso(tiles, layer, uv, gx, gy).rgb * tint;
+        }
+        return alb * mcFaceShade(n) * lm;
+    }
+    // Small models: the kit's texel, lit like any face.
+    return H.mcol.rgb * (H.mshade > 0.5 ? mcFaceShade(n) : 1.0) * lm;
 }
 
 // ---------------------------------------------------------------------------
-// The lamplighter: a few boxes in his own frame, hat to boots.
+// The lamplighter.
+//
+// KIT: mobs — he is to be a wandering trader (MCS_WANDERING_TRADER on the
+// villager box model, 0.9375 scale) holding the lantern below in his crossed
+// arms. His hook, all in world space with the scene's local x:
+//   position  K.W (feet, on the road's surface), heading K.f (unit, level),
+//   walk phase K.stride (radians: legs swing as cos(stride)), and the
+//   carried lantern's centre `lamp`, which is also his light source.
+// Until the mob kit lands only the lantern he carries is drawn.
 
-struct LLWalker { float3 W; float3 f; float3 s; float swing; };
+struct LLWalker { float3 W; float3 f; float3 s; float stride; };
 
-static inline bool llWalkerHit(float3 ro, float3 rd, LLWalker k, thread float& t,
-                               thread float3& n, thread int& part, thread float3& lp) {
-    float3 oc = ro - (k.W + float3(0.0, 1.0, 0.0));
-    float b = dot(oc, rd);
-    if (b * b - (dot(oc, oc) - 1.7) < 0.0) return false;
-    float3 o = ro - k.W;
-    float3 lro = float3(dot(o, k.s), o.y, dot(o, k.f));
-    float3 lrd = float3(dot(rd, k.s), rd.y, dot(rd, k.f));
-    float3 inv = 1.0 / select(lrd, float3(1e-6), abs(lrd) < 1e-6);
-    float best = 1e9; float3 nl = float3(0.0, 1.0, 0.0);
-    part = -1;
-    float sw = k.swing;
-    if (llBoxHit(lro, inv, float3(-0.20, 0.00, -0.08 + sw), float3(-0.02, 0.62, 0.10 + sw), best, nl)) part = 0;
-    if (llBoxHit(lro, inv, float3( 0.02, 0.00, -0.08 - sw), float3( 0.20, 0.62, 0.10 - sw), best, nl)) part = 0;
-    if (llBoxHit(lro, inv, float3(-0.25, 0.55, -0.15), float3(0.25, 1.32, 0.15), best, nl)) part = 1;
-    if (llBoxHit(lro, inv, float3(-0.37, 0.88, -0.07 + sw * 0.5), float3(-0.25, 1.28, 0.07 + sw * 0.5), best, nl)) part = 1;
-    if (llBoxHit(lro, inv, float3( 0.25, 0.95, -0.06), float3( 0.37, 1.28, 0.30), best, nl)) part = 1;
-    if (llBoxHit(lro, inv, float3( 0.21, 0.60, 0.14), float3( 0.41, 0.88, 0.34), best, nl)) part = 4;
-    if (llBoxHit(lro, inv, float3(-0.17, 1.32, -0.17), float3(0.17, 1.64, 0.17), best, nl)) part = 2;
-    if (llBoxHit(lro, inv, float3(-0.27, 1.62, -0.27), float3(0.27, 1.67, 0.27), best, nl)) part = 3;
-    if (llBoxHit(lro, inv, float3(-0.16, 1.67, -0.16), float3(0.16, 1.98, 0.16), best, nl)) part = 3;
-    if (part < 0) return false;
-    t = best;
-    n = nl.x * k.s + float3(0.0, nl.y, 0.0) + nl.z * k.f;
-    lp = lro + lrd * best;
-    if (part == 2 && nl.z > 0.5) part = 5;   // his face
-    return true;
+// The carried lantern: the kit's standing lantern at 5/8 scale, hanging in
+// front of where his hands are.
+constant float LL_LSCALE = 0.625;
+
+static inline float3 llCarriedBase(LLWalker k) {
+    return k.W + float3(0.0, 0.73, 0.0) + k.f * 0.44;   // the lantern's bottom centre
 }
 
-static inline float3 llShadeWalker(int part, float3 lp, float3 n, float3 P, float3 lamp,
-                                   float3 light, float moon, float3 lantern, float flick) {
-    float3 c; float3 emi = float3(0.0);
-    switch (part) {
-    case 0: c = float3(0.13, 0.11, 0.10); break;
-    case 1: c = float3(0.42, 0.17, 0.12); if (abs(lp.y - 0.92) < 0.04) c = float3(0.25, 0.17, 0.10); break;
-    case 2: c = float3(0.30, 0.20, 0.14); break;                         // hair at the back and sides
-    case 3: c = abs(lp.y - 1.695) < 0.025 ? float3(0.50, 0.14, 0.11) : float3(0.09, 0.09, 0.10); break;
-    case 4: {
-        bool band = lp.y < 0.64 || lp.y > 0.84;
-        c = band ? float3(0.20, 0.20, 0.22) : float3(0.3, 0.22, 0.12);
-        if (!band) emi = lantern * 2.0 * flick;
-        break;
-    }
-    default: {
-        float ex = abs(lp.x);
-        bool eye = ex > 0.04 && ex < 0.10 && lp.y > 1.45 && lp.y < 1.51;
-        c = eye ? float3(0.06, 0.05, 0.05) : float3(0.86, 0.66, 0.50);
-        break;
-    }
-    }
-    float toward = max(dot(n, normalize(lamp - P)), 0.0);
-    float mf = n.y > 0.5 ? 1.0 : 0.4;
-    return c * c * (LL_MOON * moon * mf + light * LL_LK * (0.3 + 0.7 * toward)) + emi;
+static inline bool llCarriedHit(float3 ro, float3 rd, LLWalker k, int lanLayer, float pxA,
+                                texture2d_array<float> tiles, thread McModelHit& mh) {
+    // Into a frame where the lantern is full size; t is unchanged.
+    float3 ro2 = (ro - llCarriedBase(k)) / LL_LSCALE + float3(0.5, 0.0, 0.5);
+    return mcLantern(tiles, lanLayer, float3(0.0), false, ro2, rd / LL_LSCALE, 0.0, 1e9,
+                     pxA / LL_LSCALE, mh);
 }
 
-static inline float3 llSky(float3 rd) {
-    float3 c = mix(LL_FOGC, LL_FOGC * 0.4, saturate(rd.y * 4.0));
-    if (rd.y > 0.0) {
-        float2 sp = rd.xz / (rd.y + 0.3) * 90.0;
-        float2 ci = floor(sp), fr = sp - ci;
-        int2 cc = int2(ci);
-        float hh = llH(int3(cc, 77));
-        if (hh > 0.93) {
-            float2 sc = float2(llH(int3(cc, 78)), llH(int3(cc, 79))) * 0.6 + 0.2;
-            float d = length(fr - sc);
-            c += float3(0.7, 0.75, 1.0) * 0.25 * (hh - 0.93) / 0.07 * smoothstep(0.14, 0.0, d)
-               * saturate(rd.y * 6.0);
+// ---------------------------------------------------------------------------
+// The game's night sky: black overhead, its fog colour at the horizon, its
+// square stars turning with the sky, the moon's phase texture added on, and
+// the flat cloud layer over everything.
+
+struct LLSkyP { float e; float az; int moonLayer; float moonAmt; float px; float drift; int bx; };
+
+static inline float3 llSky(float3 rd, float3 ro, LLSkyP s,
+                           texture2d_array<float> skins, texture2d_array<float> maps) {
+    float3 fog = mcFogAt(0.0);
+    if (rd.y <= 0.0) return fog;
+    float3 c = mix(fog, mcSkyAt(0.0), smoothstep(0.0, 0.3, rd.y));
+
+    // Stars: ~1500 small squares, each at its own angle, on a cube round the sky.
+    float3 sd = llRotX(rd, -s.e);
+    float3 aa = abs(sd);
+    float2 f; float m; int fid;
+    if (aa.x >= aa.y && aa.x >= aa.z) { f = sd.yz; m = aa.x; fid = sd.x > 0.0 ? 0 : 1; }
+    else if (aa.y >= aa.z)            { f = sd.xz; m = aa.y; fid = sd.y > 0.0 ? 2 : 3; }
+    else                              { f = sd.xy; m = aa.z; fid = sd.z > 0.0 ? 4 : 5; }
+    float2 g = (f / m * 0.5 + 0.5) * 40.0;
+    float2 gi = floor(g);
+    int2 ci = int2(gi);
+    float hh = llH(int3(ci, 200 + fid));
+    if (hh > 0.84) {
+        float2 ctr = 0.3 + 0.4 * float2(llH(int3(ci, 210 + fid)), llH(int3(ci, 220 + fid)));
+        float2 d = rotate(g - gi - ctr, hh * 40.0);
+        float half_ = 0.03 + 0.02 * fract(hh * 13.7);       // 0.15..0.25 at a hundred blocks
+        float pxc = s.px * 20.0 * m;                        // a screen pixel, in cells
+        float st = saturate((half_ - max(abs(d.x), abs(d.y))) / pxc + 0.5);
+        c += 0.5 * st * smoothstep(0.0, 0.2, rd.y);
+    }
+
+    // The moon: a quad 40 wide at a hundred blocks, on the sun's arc.
+    // The arc runs east to west over the zenith; the road's heading against
+    // east is the seed's (az).
+    float3 E = float3(cos(s.az), 0.0, -sin(s.az));
+    float3 Hz = float3(sin(s.az), 0.0, cos(s.az));
+    float3 M = Hz * cos(s.e) + float3(0.0, sin(s.e), 0.0);
+    float3 Tn = float3(0.0, cos(s.e), 0.0) - Hz * sin(s.e);
+    float dm = dot(rd, M);
+    if (dm > 0.9) {
+        float2 q = float2(dot(rd, E), dot(rd, Tn)) / dm;
+        if (max(abs(q.x), abs(q.y)) < 0.2) {
+            float4 mt = mcSkin(skins, s.moonLayer, float2(q.x / 0.4 + 0.5, 0.5 - q.y / 0.4) * 32.0, s.px * 80.0);
+            c += mt.rgb * mt.a * s.moonAmt;
         }
+    }
+
+    // Clouds: clouds.png flat, 12 blocks a texel, drifting with the game's wind.
+    if (rd.y > 0.03) {
+        float tc = (LL_CLOUD_Y - ro.y) / rd.y;
+        float2 cp = (ro.xz + rd.xz * tc + float2(float(s.bx) + s.drift, 0.0)) / 12.0;
+        float4 cl = mcMap(maps, MCM_ENVIRONMENT_CLOUDS, fract(cp / 256.0) * 256.0, tc * s.px / (12.0 * rd.y));
+        float fade = 1.0 - smoothstep(250.0, 700.0, tc);
+        c = mix(c, float3(0.1, 0.1, 0.15), cl.a * 0.8 * fade);   // the game's cloud colour at midnight
     }
     return c;
 }
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+static inline float llFog(float t) { return saturate((t - LL_FOG0) / (LL_FOG1 - LL_FOG0)); }
+
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
+                        texture2d_array<float> mcTiles [[texture(8)]],
+                        texture2d_array<float> mcSkins [[texture(10)]],
+                        texture2d_array<float> mcMaps  [[texture(11)]]) {
     LLW w;
     w.T = u.time * u.speed + u.seed * 3000.0 + 40.0;
     w.sd = int(u.seed * 65536.0);
@@ -691,25 +623,30 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     w.ph2 = u.seed * 17.0;
     w.spacing = max(u.spacing, 2);
     w.wild = u.wild;
-    float3 lantern = u.colorLantern.rgb;
+    bool soul = u.soul != 0;
+    w.lmax = soul ? 10.0 : 15.0;
+    w.lcol = soul ? LL_C_SOULL : LL_C_LANTERN;
+    // Sky light: 15 * moon. The default, level 9 through the game's lightmap
+    // at its default Brightness, is about what the game shows at full sky
+    // light with Brightness at Moody; 1 is the default-brightness night.
+    float skyLv = 15.0 * saturate(u.moon);
 
     // The walker, in local coordinates (world x minus bx).
     float xw = LL_WALK * w.T;
     w.bx = int(floor(xw));
     float lx = xw - float(w.bx);
-    float stride = xw * 2.6;
     float fy = xw - floor(xw);
     LLNoiseCache wc0 = llCache();
     // The next column's height only matters for the last stretch of a step.
     float y0 = float(llRoadHC(w.bx, w, wc0)), y1 = y0;
     if (fy > 0.6) y1 = float(llRoadHC(w.bx + 1, w, wc0));
     LLWalker K;
-    K.W = float3(lx, mix(y0, y1, smoothstep(0.6, 1.0, fy)) + 0.03 * abs(sin(stride)), llRoadZ(xw, w));
+    // On the dirt path, which is a sixteenth below the block top.
+    K.W = float3(lx, mix(y0, y1, smoothstep(0.6, 1.0, fy)) - 0.0625, llRoadZ(xw, w));
     K.f = normalize(float3(1.0, 0.0, llRoadDZ(xw, w)));
     K.s = cross(float3(0.0, 1.0, 0.0), K.f);
-    K.swing = 0.12 * sin(stride);
-    float flick = 0.92 + 0.05 * sin(w.T * 7.3) + 0.03 * sin(w.T * 13.1);
-    float3 lamp = K.W + K.s * 0.31 + float3(0.0, 0.74, 0.0) + K.f * (0.24 + 0.03 * sin(stride + 1.0));
+    K.stride = xw * 2.6;
+    float3 lamp = llCarriedBase(K) + float3(0.0, 0.2, 0.0);
 
     // Camera: high and to one side, keeping pace, the road crossing the frame.
     float zt = 3.5 * sin(xw * 0.043 + w.ph1);
@@ -727,20 +664,45 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float minRes = min(u.resolution.x, u.resolution.y);
     float pxA = 2.0 / (minRes * LL_FOCAL);
     float2 uv = lerpUV(pos, u.resolution);
-    float3 rd = normalize(uv.x * right + uv.y * up + LL_FOCAL * fwd);
+    float3 D = uv.x * right + uv.y * up + LL_FOCAL * fwd;
+    float dl = length(D);
+    float3 rd = D / dl;
+    // The ray's change across one screen pixel, for texture footprints.
+    float3 dRx = right * (2.0 / (minRes * dl)), dRy = up * (2.0 / (minRes * dl));
 
-    float tW = 1e9; float3 nW; int part; float3 lpW;
-    bool wHit = llWalkerHit(ro, rd, K, tW, nW, part, lpW);
+    // The sky: midnight with the moon on its arc, high in front of the camera,
+    // so the lakes catch it; a phase for each activation (never the new moon).
+    LLSkyP sp;
+    // Its elevation sweeps slowly through the band the lakes reflect.
+    sp.e = 0.92 + 0.2 * sin(w.T * 0.0021 + u.seed * 11.0);
+    sp.az = 0.35 * sin(u.seed * 23.0);
+    int ph = int(fract(u.seed * 7.31 + 0.13) * 6.999);
+    sp.moonLayer = ph == 0 ? MCS_ENVIRONMENT_CELESTIAL_MOON_FULL_MOON
+                 : ph == 1 ? MCS_ENVIRONMENT_CELESTIAL_MOON_WANING_GIBBOUS
+                 : ph == 2 ? MCS_ENVIRONMENT_CELESTIAL_MOON_THIRD_QUARTER
+                 : ph == 3 ? MCS_ENVIRONMENT_CELESTIAL_MOON_WANING_CRESCENT
+                 : ph == 4 ? MCS_ENVIRONMENT_CELESTIAL_MOON_WAXING_CRESCENT
+                 : ph == 5 ? MCS_ENVIRONMENT_CELESTIAL_MOON_FIRST_QUARTER
+                           : MCS_ENVIRONMENT_CELESTIAL_MOON_WAXING_GIBBOUS;
+    sp.moonAmt = saturate(u.moon * 1.7);
+    sp.px = pxA;
+    sp.drift = w.T * 0.6;
+    sp.bx = w.bx;
+
+    int lanLayer = soul
+        ? mcFrame(MC_SOUL_LANTERN, MC_SOUL_LANTERN_FRAMES, MC_SOUL_LANTERN_TICKS, u.time)
+        : mcFrame(MC_LANTERN, MC_LANTERN_FRAMES, MC_LANTERN_TICKS, u.time);
+    McModelHit cw;
+    bool wHit = llCarriedHit(ro, rd, K, lanLayer, pxA, mcTiles, cw);
+    float tW = wHit ? cw.t : 1e9;
     float tLim = wHit ? tW : LL_FOG1;
-    // The march's noise caches are kept for corner shading, whose
-    // neighbour columns nearly always fall in the same lattice cells.
     LLNoiseCache mLow = llCache(), mRoad = llCache();
-    LLHit H = llMarch(ro, rd, tLim, w, mLow, mRoad);
+    LLHit H = llMarch(ro, rd, tLim, w, mLow, mRoad, mcTiles, lanLayer, pxA);
     bool walkerFront = wHit && tW <= H.t;
     float tSolid = walkerFront ? tW : H.t;
 
-    // What this pixel shows (0 sky, 1 water, 2 the walker, 3 a block) and
-    // the air cell its light is read from.
+    // What this pixel shows (0 sky, 1 water, 2 the carried lantern, 3 a
+    // block) and the air cell its light is read from.
     int show = H.tw < tSolid ? 1 : (walkerFront ? 2 : (H.t < 1e8 ? 3 : 0));
     float3 Pw = ro + rd * H.tw, a;
     float2 rp = float2(0.0);
@@ -751,10 +713,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         a = float3(floor(Pw.x) + 0.5, float(LL_WATER) - 0.5, floor(Pw.z) + 0.5);
         tEnd = H.tw;
     } else if (show == 2) {
-        a = ro + rd * tW + nW * 0.4;
+        a = floor(lamp) + 0.5;
     } else if (show == 3) {
         float3 P = ro + rd * H.t;
-        bool small = H.mat >= LM_POST && H.mat <= LM_SOUL && H.mat != LM_GLOW && H.mat != LM_CRYSTAL;
+        bool small = H.mat == LM_MODEL;
         a = small ? floor(P + H.n * 0.3) + 0.5 : float3(H.cell) + 0.5 + H.n;
     } else {
         a = ro + rd * 30.0;
@@ -768,10 +730,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // them. A lane whose cell is more than a block and a half from that
     // pixel's (an edge between near and far surfaces) works its own out.
     LLLit L;
-    L.bmax = 0.0; L.wsum = 1e-6; L.csum = float3(0.0); L.halo = float3(0.0); L.rhalo = float3(0.0);
+    L.lv = 0.0; L.rhalo = float3(0.0);
     LLPk walker;
-    walker.p = float4(lamp, 11.0);
-    walker.c = float4(lantern, flick);
+    walker.p = float4(lamp, LL_WALKER_L * w.lmax / 15.0);
+    walker.c = float4(w.lcol, 0.9);
     walker.g = float2(0.8, 0.0);
     bool refl = show == 1;
     llApply(L, walker, a, ro, rd, tEnd, refl, rp * 0.3);
@@ -780,8 +742,8 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     LLPk s0, s1;
     {
         LLNoiseCache ncLow = llCache(), ncRoad = llCache();
-        s0 = q < 2 ? llSlot(q, anchor, w, lantern, ncLow, ncRoad) : llNone();
-        s1 = llSlot(2 + q, anchor, w, lantern, ncLow, ncRoad);
+        s0 = q < 2 ? llSlot(q, anchor, w, ncLow, ncRoad) : llNone();
+        s1 = llSlot(2 + q, anchor, w, ncLow, ncRoad);
     }
     bool far = show != 0 && dot(abs(a - anchor), float3(1.0)) > 1.5;
     bool own = !far && show != 0;
@@ -797,39 +759,40 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     if (far) {
         LLNoiseCache ncLow = llCache(), ncRoad = llCache();
         for (int i = 0; i < 6; ++i)
-            llApply(L, llSlot(i, a, w, lantern, ncLow, ncRoad), a, ro, rd, tEnd, refl, rp * 0.3);
+            llApply(L, llSlot(i, a, w, ncLow, ncRoad), a, ro, rd, tEnd, refl, rp * 0.3);
     }
-    float3 light = L.csum / L.wsum * L.bmax;
 
     float3 col;
-    thread LLNoiseCache& ncLow = mLow;
-    thread LLNoiseCache& ncRoad = mRoad;
+    float3 lm = mcLightmap(L.lv, skyLv, 0.0, 0.0);
+    float3 fogC = mcFogAt(0.0);
     if (show == 1) {
-        // Water: the lit surface, the bed seen through it, and the lights mirrored.
-        float3 bed = H.t < 1e8 ? llShadeBlock(H, ro, rd, pxA, w, ncLow, ncRoad, light, u.moon, lantern) : LL_FOGC;
-        float depth = (H.t < 1e8 ? H.t : H.tw + 6.0) - H.tw;
-        float3 trans = exp(-depth * float3(0.9, 0.55, 0.4));
-        float3 surf = float3(0.004, 0.025, 0.08) * (LL_MOON * u.moon + light * LL_LK);
-        float3 rr = reflect(rd, normalize(float3(0.035 * rp.x, 1.0, 0.035 * rp.y)));
-        float3 refc = llSky(rr) * 0.6 + L.rhalo * 0.55;
-        col = bed * trans * 0.8 + surf + refc;
-        float fg = llFog(H.tw);
-        col = mix(col, LL_FOGC, fg) + L.halo * (1.0 - fg);
+        // Water: the bed through the game's tinted, animated still water.
+        // Sky light loses a level a block down through it.
+        float3 bed = fogC;
+        if (H.t < 1e8) {
+            float dpt = float(LL_WATER) - 0.125 - (ro.y + rd.y * H.t);
+            float3 lmBed = mcLightmap(L.lv, max(skyLv - ceil(max(dpt, 0.0)), 0.0), 0.0, 0.0);
+            bed = llShadeBlock(H, ro, rd, dRx, dRy, pxA, w, lmBed, u.time, mcTiles, mcMaps);
+        }
+        float2 gx, gy;
+        llFaceGrad(rd, H.tw, float3(0, 1, 0), dRx, dRy, float3(1, 0, 0), float3(0, 0, 1), gx, gy);
+        int wf = mcFrame(MC_WATER_STILL, MC_WATER_STILL_FRAMES, MC_WATER_STILL_TICKS, u.time);
+        float4 wt = mcTileAniso(mcTiles, wf, Pw.xz, gx, gy);
+        col = mix(bed, wt.rgb * MC_WATER_TINT * lm, wt.a);
+        // Not the game's: the lakes mirror the sky and the lights on their shores.
+        float3 rr = float3(rd.x, -rd.y, rd.z);   // a flat mirror: the game's water has no waves
+        col += llSky(rr, Pw, sp, mcSkins, mcMaps) * 0.6 + L.rhalo * 0.6;
+        col = mix(col, fogC, llFog(H.tw));
     } else if (show == 2) {
-        float3 P = ro + rd * tW;
-        col = llShadeWalker(part, lpW, nW, P, lamp, light, u.moon, lantern, flick);
-        float fg = llFog(tW);
-        col = mix(col, LL_FOGC, fg) + L.halo * (1.0 - fg);
+        col = cw.color.rgb * mcFaceShade(cw.n) * lm;
+        col = mix(col, fogC, llFog(tW));
     } else if (show == 3) {
-        col = llShadeBlock(H, ro, rd, pxA, w, ncLow, ncRoad, light, u.moon, lantern);
-        float fg = llFog(H.t);
-        col = mix(col, LL_FOGC, fg) + L.halo * (1.0 - fg);
+        col = llShadeBlock(H, ro, rd, dRx, dRy, pxA, w, lm, u.time, mcTiles, mcMaps);
+        col = mix(col, fogC, llFog(H.t));
     } else {
-        col = rd.y > 0.0 ? llSky(rd) : LL_FOGC;
+        col = llSky(rd, ro, sp, mcSkins, mcMaps);
     }
 
-    col = 1.0 - exp(-1.3 * max(col, 0.0));
-    col = pow(col, 1.0 / 2.2);
     col = lerpDither(col, pos);
     return half4(half3(col), 1.0h);
 }
