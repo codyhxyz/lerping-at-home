@@ -1,26 +1,32 @@
-// Overworld — the block world drawn as a top-down pixel-art map.
-// Original work for Lerping@Home: every texture, building and creature here is
-// procedural and written for this file; no texture data or artwork from any
-// game. It is a homage to the block-world idea, drawn the way old top-down
-// adventure maps were: no perspective, just tops and the south faces under
-// them.
+// Overworld — a Minecraft world drawn as a top-down map, in the game's own
+// textures (bound from the copy installed on this Mac; see PORTING.md).
 //
 // lerp-category: Minecraft
+// lerp-requires: minecraft
 //
 // The screen is a picture plane in cabinet oblique: one block is 16×16 texels
 // on top and 16×16 on its south face, and a block one level higher sits one
 // block further up the screen. Texels land on whole screen pixels (the texel
 // size is rounded to an integer for the display, and the pan moves in whole
-// pixels), so the pixel art stays crisp at every size and never shimmers.
+// pixels), so every 16×16 face of the game's art maps texel for texel and
+// never shimmers. mcTile is used for every face: at a whole-pixel texel size
+// and a sample on a texel centre (which this projection always gives) it is
+// exactly a nearest lookup; where texels fall under a pixel (thumbnails) it
+// mip-filters instead of aliasing. Alpha tests use read(), one exact texel.
 //
-// The map pans slowly over a seeded world of grassland, birch and oak woods,
-// snowy spruce taiga, desert with cacti, rocky peaks, lakes and rivers, and
-// every visit opens on a village: gabled houses along dirt paths, wheat fields
-// on irrigation channels that ripen and are cut, hay, pumpkins, lamp posts.
-// Sheep, cows, pigs and hens of this file's own design wander and graze. The
-// sun crosses behind the map, so shadows fall toward the viewer and stretch
-// toward dawn and dusk; cloud shadows drift over; at dusk the windows and
-// lamps come on one by one and light the ground in stepped pools.
+// The map pans slowly over a seeded world of plains, birch and oak woods,
+// snowy spruce taiga, desert with cacti, stone peaks, lakes and rivers, and
+// every visit opens on a village: houses of cobblestone, planks and logs (cut
+// sandstone in the desert, spruce under snow) with glass windows and doors,
+// dirt paths, lamp posts (a fence post and a torch), moist farmland on
+// irrigation channels where wheat grows through its eight stages and is
+// replanted, hay bales, pumpkins and flowers. Light is the game's: fixed face
+// shading (tops 1, south faces 0.8), smooth-lighting corner occlusion, sky
+// light dimmed a level a leaf under tree canopies, the lightmap through the
+// day, and torch light falling a level a block, so at dusk the lamps and the
+// lit windows come up as the sky darkens. Water is the animated, tinted
+// still-water texture over the lit river bed; the game's flat cloud layer
+// from clouds.png drifts over the map, with its south sides showing.
 //
 // Rendering: each pixel walks the 45° line of sight through the block columns
 // in front of it, two voxels a column (that is all one column can hold of a
@@ -28,7 +34,16 @@
 // misses. A SIMD group nearly always looks down one or two such lines, so its
 // lanes build the line's columns in parallel, one each, and walk and probe
 // them by shuffle; groups that cannot (a screen edge, sub-pixel texels) walk
-// serially through the same functions. Worst case about 12 ms at 3456×2234.
+// serially through the same functions. The walk reads a texture only to test
+// a cut-out candidate (a leaf face: one read(); wheat, plants and the torch
+// are the kit's models, mcCrop, mcCross and mcTorch, handed this projection
+// as a parallel ray, which sample their own); everything else is sampled
+// once, at the hit. At 3456×2234 the opening (t = 6) costs a little under
+// `maze`; a screen packed with houses and wheat about 10% over it.
+//
+// The grazing animals (sheep, cows, pigs, chickens) wait on the shared mob
+// kit: owMobAt keeps their positions and poses, and lerpMain marks where they
+// are drawn (KIT: mobs).
 //
 // lerp-param: blocks    float 10 32     = 22   "Blocks tall"
 // lerp-param: speed     float 0 1.5     = 0.4  "Pan speed"
@@ -41,7 +56,7 @@
 
 constant int OW_W    = 4;    // water fills every column below this level
 constant int OW_YMAX = 18;   // nothing solid reaches this level
-constant float OW_YC = 24.0; // height of the clouds whose shadows cross the map
+constant float OW_YC = 24.0; // the cloud layer's underside (in this projection only an offset)
 
 // Materials.
 constant int OW_AIR = 0, OW_GRASS = 1, OW_DIRT = 2, OW_STONE = 3, OW_SAND = 4,
@@ -50,7 +65,7 @@ constant int OW_AIR = 0, OW_GRASS = 1, OW_DIRT = 2, OW_STONE = 3, OW_SAND = 4,
              OW_CACTUS = 14, OW_WALL = 15, OW_ROOF = 16, OW_COBBLE = 17, OW_FARM = 18,
              OW_WHEAT = 19, OW_PATH = 20, OW_GRAVEL = 21, OW_POST = 22, OW_TORCH = 23,
              OW_TALLGRASS = 24, OW_FLOWER = 25, OW_ICE = 26, OW_DEADBUSH = 27,
-             OW_PUMPKIN = 28, OW_HAY = 29;
+             OW_PUMPKIN = 28, OW_HAY = 29, OW_FERN = 30;
 
 constant int OW_PLAINS = 0, OW_FOREST = 1, OW_SNOWY = 2, OW_DESERT = 3, OW_MOUNT = 4;
 
@@ -315,7 +330,7 @@ static OwCol owColumn(int2 p, float hf, thread const OwCell& k) {
             else if (r < tg + (biome == OW_PLAINS ? 0.06 : 0.025)) c.deco = OW_FLOWER;
             else if (r < tg + 0.065 && biome == OW_PLAINS) { c.oLo = h; c.oHi = h + 1; c.oMat = OW_PUMPKIN; c.tTop = h; }
         } else if (top == OW_SAND && biome == OW_DESERT && r < 0.03) c.deco = OW_DEADBUSH;
-        else if (top == OW_SNOW && biome == OW_SNOWY && r < 0.015) c.deco = OW_TALLGRASS;
+        else if (top == OW_SNOW && biome == OW_SNOWY && r < 0.015) c.deco = OW_FERN;
     }
 
     c.h = h; c.top = top; c.sub = sub; c.biome = biome;
@@ -331,7 +346,7 @@ static inline int owVox(thread const OwCol& c, int Y) {
 }
 
 static inline bool owCutout(int m) {
-    return m == OW_WHEAT || m == OW_TALLGRASS || m == OW_FLOWER || m == OW_DEADBUSH;
+    return m == OW_WHEAT || m == OW_TALLGRASS || m == OW_FLOWER || m == OW_DEADBUSH || m == OW_FERN;
 }
 
 // Opaque, shadow-casting voxel at v? Bounded first, so open air costs two lookups.
@@ -353,9 +368,7 @@ static inline void owShape(int m, thread float3& lo, thread float3& hi) {
     lo = float3(0.0); hi = float3(1.0);
     if (m == OW_FARM || m == OW_PATH) hi.y = 15.0 / 16.0;
     else if (m == OW_POST) { lo = float3(6.0, 0.0, 6.0) / 16.0; hi = float3(10.0, 16.0, 10.0) / 16.0; }
-    else if (m == OW_TORCH) { lo = float3(7.0, 0.0, 7.0) / 16.0; hi = float3(9.0, 10.0, 9.0) / 16.0; }
     else if (m == OW_CACTUS) { lo = float3(1.0, 0.0, 1.0) / 16.0; hi = float3(15.0, 16.0, 15.0) / 16.0; }
-    else if (m == OW_PUMPKIN) { lo = float3(1.0, 0.0, 1.0) / 16.0; hi = float3(15.0, 14.0, 15.0) / 16.0; }
 }
 
 // The 45° line z + y = s (in the voxel's own coordinates) at x = fx against a
@@ -371,137 +384,163 @@ static inline bool owBoxHit(float s, float fx, float3 lo, float3 hi,
 }
 
 // ---------------------------------------------------------------------------
-// Pixel art. tc is the texel (x right, y up the face / north across a top).
+// Faces and small models. uv runs 0..1 across a face with y up the face (a
+// south face) or north across it (a top); the game's pictures have row 0 at
+// the top, hence the flip.
 
-static inline float owT(uint bh, int2 tc, uint k) {
-    return owU(owHash(bh ^ uint(tc.x * 16 + tc.y) * 0x9E3779B1U ^ k * 0x85ebca6bU));
+static inline float4 owTile(texture2d_array<float> tiles, int L, float2 uv, float fp) {
+    return mcTile(tiles, L, float2(uv.x, 1.0 - uv.y), fp);
 }
 
-static inline float3 owGrassTint(float temp, float moist) {
-    float3 g = mix(float3(0.30, 0.52, 0.19), float3(0.56, 0.60, 0.25), saturate((temp - 0.47) * 3.5));
-    g = mix(g, float3(0.36, 0.54, 0.40), saturate((0.47 - temp) * 4.0));
-    return g * mix(1.06, 0.88, moist);
+// One exact texel's alpha, for deciding whether a cut-out face is hit.
+static inline float owAlpha(texture2d_array<float> tiles, int L, float2 uv) {
+    int2 t = clamp(int2(floor(float2(uv.x, 1.0 - uv.y) * 16.0)), 0, 15);
+    return tiles.read(uint2(t), uint(L)).a;
 }
 
-static inline float3 owDirt(uint bh, int2 tc) {
-    float r = owT(bh, tc, 1u);
-    float3 c = float3(0.54, 0.38, 0.25) * (r < 0.2 ? 0.84 : (r < 0.85 ? 1.0 : 1.1));
-    if (owT(bh, tc, 2u) < 0.04) c = float3(0.52, 0.50, 0.47);
-    return c;
-}
-
-static inline float3 owStone(uint bh, int2 tc, bool ores) {
-    float blot = owT(bh, tc / 3, 3u);
-    float r = owT(bh, tc, 4u);
-    float3 c = float3(0.49, 0.49, 0.51) * (blot < 0.3 ? 0.88 : (blot < 0.8 ? 1.0 : 1.07));
-    if (r < 0.07) c *= 0.8;
-    if (ores) {
-        uint ob = owHash(bh + 5u) % 23u;
-        if (ob < 2u) {
-            int2 o = int2(int(owHash(bh + 6u) % 10u) + 3, int(owHash(bh + 7u) % 10u) + 3);
-            int2 dd = abs(tc - o);
-            if (dd.x + dd.y <= 2 && owT(bh, tc, 8u) < 0.8)
-                c = ob == 0u ? float3(0.13, 0.12, 0.12) : float3(0.78, 0.58, 0.44);
-        }
-    }
-    return c;
-}
-
-static inline float3 owPlanks(uint bh, int2 tc, float3 base) {
-    int row = tc.y / 4;
-    float3 c = base * (0.94 + 0.12 * owT(bh, int2(row, tc.x / 3), 9u));
-    if ((tc.y & 3) == 0) c *= 0.72;
-    int joint = int(owHash(bh + uint(row) * 31u) % 16u);
-    if (tc.x == joint) c *= 0.74;
-    if (owT(bh, tc, 10u) < 0.08) c *= 0.88;
-    return c;
-}
-
-static inline float3 owCobble(uint bh, int2 tc) {
-    int row = (tc.y + 1) / 4;
-    int off = int(owHash(bh + uint(row) * 7u) % 5u);
-    int sx = (tc.x + off) / 5;
-    int lx = (tc.x + off) - sx * 5, ly = (tc.y + 1) - row * 4;
-    float stone = owT(bh, int2(sx, row), 11u);
-    float3 c = float3(0.52, 0.51, 0.50) * (0.82 + 0.3 * stone);
-    if (lx == 0 || ly == 0) c = float3(0.30, 0.30, 0.31);
-    else if (lx == 1 && ly == 3) c *= 1.15;
-    return c;
-}
-
-static inline float3 owLogSide(uint bh, int2 tc, int m) {
-    if (m == OW_BIRCH) {
-        float3 c = float3(0.86, 0.85, 0.80) * (0.95 + 0.07 * owT(bh, tc, 12u));
-        int mark = int(owHash(bh + uint(tc.y) * 13u) % 7u);
-        int mx = int(owHash(bh + uint(tc.y) * 17u) % 12u);
-        if (mark == 0 && tc.x >= mx && tc.x < mx + 3) c = float3(0.20, 0.19, 0.17);
-        return c;
-    }
-    float3 base = m == OW_SPRUCE ? float3(0.29, 0.20, 0.12) : float3(0.42, 0.31, 0.18);
-    float s = owU(owHash(bh + uint(tc.x) * 29u));
-    float3 c = base * (s < 0.3 ? 0.78 : (s < 0.8 ? 1.0 : 1.12));
-    if (owT(bh, tc, 13u) < 0.06) c *= 0.75;
-    return c;
-}
-
-static inline float3 owLogTop(int2 tc, int m) {
-    float2 d = float2(tc) - 7.5;
-    float r = max(abs(d.x), abs(d.y));
-    float3 bark = m == OW_BIRCH ? float3(0.80, 0.79, 0.74) : (m == OW_SPRUCE ? float3(0.29, 0.20, 0.12) : float3(0.40, 0.30, 0.17));
-    if (r > 6.0) return bark;
-    float3 wood = float3(0.70, 0.56, 0.34);
-    return (int(r) & 1) == 0 ? wood : wood * 0.82;
-}
-
-// Leaves in 2×2 clusters, a few dark gaps between them and a few bright tips.
-static inline float3 owLeaves(uint bh, int2 tc, float3 tint) {
-    float cl = owT(bh, tc / 2, 15u), r = owT(bh, tc, 14u);
-    float v = cl < 0.3 ? 0.80 : (cl < 0.78 ? 1.0 : 1.14);
-    if (r < 0.09) v *= 0.62;
-    else if (r > 0.94) v *= 1.15;
-    return tint * v;
-}
-
-
-// Wheat growth stage 0…7 for a farm plot: rows ripen together and are cut.
+// Wheat growth stage 0…7 for a farm plot: rows ripen together, then the plot
+// is harvested and replanted.
 static inline int owWheatStage(uint vh, int lz, float t) {
     float cyc = 150.0;
     float ph = fract(t / cyc + owU(owHash(vh + 31u)) + float(lz) * 0.015);
-    return min(7, int(ph * 9.5));   // the last stretch is stubble (stage 8 → bare)
+    return min(7, int(ph * 9.5));   // the last stretch holds ripe wheat
 }
 
-// Which texels of a cut-out plant are solid. owCutTex colours only these.
-static bool owCutAlpha(int m, int face, int2 tc, uint bh, int st) {
-    if (m == OW_WHEAT) {
-        if (face == 1) {
-            if ((tc.x & 1) == 1) return false;
-            int ht = 2 + int(float(st) * 1.75) + int(owHash(bh + uint(tc.x)) % 3u) - 1;
-            return tc.y < ht;
-        }
-        bool dot = ((tc.x + 2 * tc.y) % 4) == 0 && (tc.y & 3) != 0;
-        if (st >= 3) dot = dot || ((tc.x + 2 * tc.y) % 4) == 2;
-        return dot;
+static inline int owPlantLayer(int m, uint bh, int st) {
+    if (m == OW_WHEAT) return MC_WHEAT_STAGE0 + st;   // stage0..7 are consecutive layers
+    if (m == OW_TALLGRASS) return MC_SHORT_GRASS;
+    if (m == OW_FERN) return MC_FERN;
+    if (m == OW_DEADBUSH) return MC_DEAD_BUSH;
+    switch (owHash(bh + 3u) % 6u) {
+    case 0u: return MC_DANDELION;
+    case 1u: return MC_POPPY;
+    case 2u: return MC_CORNFLOWER;
+    case 3u: return MC_OXEYE_DAISY;
+    case 4u: return MC_AZURE_BLUET;
+    default: return MC_ALLIUM;
     }
-    if (m == OW_TALLGRASS) {
-        if (face == 1) {
-            uint ch = owHash(bh + uint(tc.x) * 47u);
-            if ((ch & 3u) == 0u) return false;
-            return tc.y < 2 + int((ch >> 4) % 7u);
-        }
-        int2 d = tc - int2(4 + int(bh % 8u), 4 + int((bh >> 3) % 8u));
-        return (d.x == 0 && d.y >= -1 && d.y <= 1) || (d.y == 0 && abs(d.x) == 1) || (abs(d.x) == 2 && d.y == 1);
+}
+
+static inline bool owLeaves(int m) { return m == OW_LEAVES || m == OW_BLEAVES || m == OW_SLEAVES; }
+static inline int owLeafLayer(int m) {
+    return m == OW_BLEAVES ? MC_BIRCH_LEAVES : (m == OW_SLEAVES ? MC_SPRUCE_LEAVES : MC_OAK_LEAVES);
+}
+
+// Where the line z + y = s (in the voxel's own coordinates, at x = fx) meets
+// voxel material m. face 1 is a face looking south (or a plant's plane), 0 a
+// top. Leaves and plants are cut out by their texture's alpha, so a line
+// through a hole walks on to whatever is behind. kc gets the texel of a kit
+// model (wheat, plants, the torch), which samples its own.
+//
+// The kit's small models are ray-based; this projection is a parallel ray,
+// direction (0, -1, 1)/√2 at x = fx, so the line is handed to them as a ray
+// from D blocks back, and the footprint of a pixel (fp, constant here) as
+// fp / t at that distance. The cross plant is set half a texel north: its
+// diagonal planes would otherwise put every sample on a texel edge in this
+// projection, where the crisp filter blends two texels.
+static bool owHitVox(int m, int st, uint bh, float s, float fx, float fp, texture2d_array<float> tiles,
+                     thread int& face, thread float2& uv, thread float& zl, thread float3& kc) {
+    if (m == OW_WHEAT || m == OW_TORCH || owCutout(m)) {
+        const float D = 4.0;
+        const float3 rd = float3(0.0, -0.70710678, 0.70710678);
+        float3 ro = float3(fx, s + D, -D);
+        float pxA = fp / (D * 1.41421356);
+        McModelHit mh;
+        bool ok;
+        if (m == OW_WHEAT) ok = mcCrop(tiles, MC_WHEAT_STAGE0 + st, float3(0.0), ro, rd, 0.0, 1e3, pxA, mh);
+        else if (m == OW_TORCH) ok = mcTorch(tiles, MC_TORCH, float3(0.0), ro, rd, 0.0, 1e3, pxA, mh);
+        else ok = mcCross(tiles, owPlantLayer(m, bh, st), float3(0.0, 0.0, 1.0 / 32.0), float3(1.0),
+                          ro, rd, 0.0, 1e3, pxA, mh);
+        if (!ok) return false;
+        float3 p = ro + rd * mh.t;
+        face = mh.n.y > 0.5 ? 0 : 1;
+        uv = float2(fx, face == 1 ? p.y : p.z);
+        zl = p.z;
+        kc = mh.color.rgb;
+        return true;
     }
-    if (m == OW_FLOWER) {
-        int2 d = abs(tc - int2(7, 7));
-        if (face == 1) return (tc.x == 7 && tc.y < 6) || (tc.x == 8 && tc.y == 3) || (d.x <= 1 && d.y <= 1 && !(d.x == 1 && d.y == 1));
-        return d.x + d.y <= 1;
-    }
-    if (m == OW_DEADBUSH) {
-        if (face != 1) return false;
-        int x = tc.x - 8;
-        return (tc.y < 4 && x == 0) || (tc.y >= 3 && tc.y < 9 && (x == tc.y - 4 || -x == tc.y - 3));
-    }
+    float3 lo, hi;
+    owShape(m, lo, hi);
+    if (!owBoxHit(s, fx, lo, hi, face, uv, zl)) return false;
+    if (owLeaves(m) && owAlpha(tiles, owLeafLayer(m), uv) < 0.5) return false;
     return true;
+}
+
+// The colour of a face texel before light. add: light that is already lit
+// (a room seen through glass); lamp: the texel is a torch, drawn full bright.
+static float3 owAlbedo(int m, int face, float2 uv, float fp, uint bh, int Y, thread const OwCol& c,
+                       int st, float3 gt, float3 ft, float3 inLight, float3 kc, texture2d_array<float> tiles,
+                       thread float3& add, thread bool& lamp) {
+    add = float3(0.0); lamp = false;
+    bool top = face == 0;
+    switch (m) {
+    case OW_GRASS:
+        if (top) return owTile(tiles, MC_GRASS_BLOCK_TOP, uv, fp).rgb * gt;
+        return mcGrassSide(tiles, float2(uv.x, 1.0 - uv.y), fp, gt);
+    case OW_DIRT: return owTile(tiles, MC_DIRT, uv, fp).rgb;
+    case OW_STONE: {
+        uint o = bh % 41u;   // ore shows where the stone is cut
+        return owTile(tiles, o < 2u ? MC_COAL_ORE : (o == 2u ? MC_IRON_ORE : MC_STONE), uv, fp).rgb;
+    }
+    case OW_SAND: return owTile(tiles, MC_SAND, uv, fp).rgb;
+    case OW_SANDSTONE: return owTile(tiles, top ? MC_SANDSTONE_TOP : MC_SANDSTONE, uv, fp).rgb;
+    case OW_SNOW:
+        return owTile(tiles, top ? MC_SNOW : (c.sub == OW_DIRT ? MC_GRASS_BLOCK_SNOW : MC_SNOW), uv, fp).rgb;
+    case OW_ICE: {
+        float4 i = owTile(tiles, MC_ICE, uv, fp);
+        return mix(MC_WATER_TINT * 0.3, i.rgb, i.a);
+    }
+    case OW_LOG:    return owTile(tiles, top ? MC_OAK_LOG_TOP : MC_OAK_LOG, uv, fp).rgb;
+    case OW_BIRCH:  return owTile(tiles, top ? MC_BIRCH_LOG_TOP : MC_BIRCH_LOG, uv, fp).rgb;
+    case OW_SPRUCE: return owTile(tiles, top ? MC_SPRUCE_LOG_TOP : MC_SPRUCE_LOG, uv, fp).rgb;
+    case OW_LEAVES: return owTile(tiles, MC_OAK_LEAVES, uv, fp).rgb * ft;
+    case OW_BLEAVES: return owTile(tiles, MC_BIRCH_LEAVES, uv, fp).rgb * mcFromSRGB(float3(0x80, 0xA7, 0x55) / 255.0);
+    case OW_SLEAVES: return owTile(tiles, MC_SPRUCE_LEAVES, uv, fp).rgb * mcFromSRGB(float3(0x61, 0x99, 0x61) / 255.0);
+    case OW_CACTUS: return owTile(tiles, top ? MC_CACTUS_TOP : MC_CACTUS_SIDE, uv, fp).rgb;
+    case OW_WALL: {
+        int sty = c.style;
+        int lv = Y - c.vb;
+        int wallL = sty == 1 ? MC_CUT_SANDSTONE : (sty == 2 ? MC_SPRUCE_PLANKS : MC_OAK_PLANKS);
+        if (top) return owTile(tiles, wallL, uv, fp).rgb;
+        bool pillar = c.lx == 2 || c.lx == 6;
+        bool door = c.lx == 4 && lv <= 1;
+        bool win = lv == 1 && (c.lx == 3 || c.lx == 5);
+        // The room behind glass and the door's window: its far wall, lit by
+        // the torch inside.
+        float3 room = owTile(tiles, wallL, uv + float2(0.5, 0.3125), fp).rgb * inLight;
+        if (door) {
+            int L = sty == 2 ? (lv == 0 ? MC_SPRUCE_DOOR_BOTTOM : MC_SPRUCE_DOOR_TOP)
+                             : (lv == 0 ? MC_OAK_DOOR_BOTTOM : MC_OAK_DOOR_TOP);
+            float4 d = owTile(tiles, L, uv, fp);
+            add = room * (1.0 - d.a);
+            return d.rgb * d.a;
+        }
+        if (win) {
+            float4 g = owTile(tiles, MC_GLASS, uv, fp);
+            add = room * (1.0 - g.a);
+            return g.rgb * g.a;
+        }
+        if (pillar) return owTile(tiles, sty == 1 ? MC_SANDSTONE : (sty == 2 ? MC_SPRUCE_LOG : MC_OAK_LOG), uv, fp).rgb;
+        if (lv == 0) return owTile(tiles, sty == 1 ? MC_SANDSTONE : MC_COBBLESTONE, uv, fp).rgb;
+        return owTile(tiles, wallL, uv, fp).rgb;
+    }
+    case OW_ROOF:
+        if (c.style == 1) return owTile(tiles, top ? MC_SANDSTONE_TOP : MC_CUT_SANDSTONE, uv, fp).rgb;
+        if (c.style == 2 && top) return owTile(tiles, MC_SNOW, uv, fp).rgb;
+        return owTile(tiles, MC_SPRUCE_PLANKS, uv, fp).rgb;
+    case OW_COBBLE: return owTile(tiles, MC_COBBLESTONE, uv, fp).rgb;
+    case OW_FARM: return owTile(tiles, top ? MC_FARMLAND_MOIST : MC_DIRT, uv, fp).rgb;
+    case OW_PATH: return owTile(tiles, top ? MC_DIRT_PATH_TOP : MC_DIRT_PATH_SIDE, uv, fp).rgb;
+    case OW_GRAVEL: return owTile(tiles, MC_GRAVEL, uv, fp).rgb;
+    case OW_POST: return owTile(tiles, MC_OAK_PLANKS, uv, fp).rgb;   // an oak fence post
+    case OW_TORCH: lamp = true; return kc;   // the kit's torch, full bright
+    case OW_WHEAT: case OW_TALLGRASS: case OW_FERN: case OW_FLOWER: case OW_DEADBUSH:
+        return (m == OW_TALLGRASS || m == OW_FERN) ? kc * gt : kc;
+    case OW_PUMPKIN: return owTile(tiles, top ? MC_PUMPKIN_TOP : MC_PUMPKIN_SIDE, uv, fp).rgb;
+    case OW_HAY: return owTile(tiles, top ? MC_HAY_BLOCK_TOP : MC_HAY_BLOCK_SIDE, uv, fp).rgb;
+    default: break;
+    }
+    return float3(1.0, 0.0, 1.0);
 }
 
 // One column of a shared line of sight, packed for shuffling. V: the voxels
@@ -511,6 +550,11 @@ static bool owCutAlpha(int m, int face, int2 tc, uint bh, int st) {
 // I/Id/Vh/T/M: what texturing needs, for whichever lane's pixel hits it.
 struct OwProd { uint V, S, I, Id, Vh; float T, M; int top; };
 
+static inline uint owPackS(thread const OwCol& c) {
+    uint solidObj = (c.oHi > c.oLo && c.oMat != OW_TORCH) ? 1u : 0u;
+    return uint(clamp(c.h, 0, 31)) | (uint(clamp(c.oLo, 0, 31)) << 5) | (uint(clamp(c.oHi, 0, 31)) << 10) | (solidObj << 15);
+}
+
 static OwProd owProduce(int2 p, int n, float t, thread OwCell& kc, thread OwVC& kv) {
     float hf = owBaseH(float2(p) + 0.5);
     owEnsureV(p, kv);
@@ -519,8 +563,7 @@ static OwProd owProduce(int2 p, int n, float t, thread OwCell& kc, thread OwVC& 
     OwProd r;
     r.V = uint(owVox(c, n)) | (uint(owVox(c, n - 1)) << 5) | (uint(owWheatStage(c.vh, c.lz, t)) << 10) |
           (uint(owVox(c, n + 1)) << 14);
-    uint solidObj = (c.oHi > c.oLo && c.oMat != OW_TORCH) ? 1u : 0u;
-    r.S = uint(clamp(c.h, 0, 31)) | (uint(clamp(c.oLo, 0, 31)) << 5) | (uint(clamp(c.oHi, 0, 31)) << 10) | (solidObj << 15);
+    r.S = owPackS(c);
     r.I = uint(c.top) | (uint(c.sub) << 5) | (uint(c.lx) << 10) | (uint(c.lz) << 13) |
           (uint(clamp(c.vb, 0, 31)) << 16) | (uint(c.style + 2) << 21) | (uint(clamp(c.h, 0, 31)) << 24) | (uint(c.biome) << 29);
     r.Id = c.id; r.Vh = c.vh; r.T = c.temp; r.M = c.moist;
@@ -532,240 +575,10 @@ static inline bool owPackSolid(uint q, int Y) {
     if (Y < int(q & 31u)) return true;
     return ((q >> 15) & 1u) == 1u && Y >= int((q >> 5) & 31u) && Y < int((q >> 10) & 31u);
 }
-
-// The four cut-out plants, apart from the rest so the walk that tests their
-// alpha does not carry every texture with it.
-static float4 owCutTex(int m, int face, int2 tc, uint bh, thread const OwCol& c, float t) {
-    float3 gt = owGrassTint(c.temp, c.moist);
-    switch (m) {
-    case OW_WHEAT: {
-        int st = owWheatStage(c.vh, c.lz, t);
-        float3 green = float3(0.36, 0.56, 0.18), gold = float3(0.82, 0.68, 0.30);
-        float3 col = mix(green, gold, saturate(float(st - 3) / 3.0));
-        if (face == 1) {
-            if ((tc.x & 1) == 1) return float4(0.0);
-            int ht = 2 + int(float(st) * 1.75) + int(owHash(bh + uint(tc.x)) % 3u) - 1;
-            if (tc.y >= ht) return float4(0.0);
-            float3 cc = col * (tc.y >= ht - 2 && st >= 5 ? 0.82 : 1.0) * (0.9 + 0.2 * owT(bh, tc, 32u));
-            return float4(cc, 1.0);
-        }
-        bool dot = ((tc.x + 2 * tc.y) % 4) == 0 && (tc.y & 3) != 0;
-        if (st >= 3) dot = dot || ((tc.x + 2 * tc.y) % 4) == 2;
-        return dot ? float4(col * (0.85 + 0.25 * owT(bh, tc, 33u)), 1.0) : float4(0.0);
-    }
-    case OW_TALLGRASS: {
-        bool snowy = c.top == OW_SNOW;
-        float3 g = snowy ? float3(0.42, 0.50, 0.42) : gt;
-        if (face == 1) {
-            uint ch = owHash(bh + uint(tc.x) * 47u);
-            if ((ch & 3u) == 0u) return float4(0.0);
-            int ht = 2 + int((ch >> 4) % 7u);
-            if (tc.y >= ht) return float4(0.0);
-            return float4(g * (tc.y < 2 ? 0.75 : (0.9 + 0.25 * float(tc.y) / float(ht))), 1.0);
-        }
-        int2 d = tc - int2(4 + int(bh % 8u), 4 + int((bh >> 3) % 8u));
-        bool on = (d.x == 0 && d.y >= -1 && d.y <= 1) || (d.y == 0 && abs(d.x) == 1) || (abs(d.x) == 2 && d.y == 1);
-        return on ? float4(g * (d.y > 0 ? 1.15 : 0.95), 1.0) : float4(0.0);
-    }
-    case OW_FLOWER: {
-        uint k = owHash(bh + 3u) % 4u;
-        float3 pet = k == 0u ? float3(0.85, 0.18, 0.15) : (k == 1u ? float3(0.95, 0.82, 0.22) : (k == 2u ? float3(0.40, 0.48, 0.92) : float3(0.95, 0.93, 0.90)));
-        if (face == 1) {
-            if (tc.x == 7 && tc.y < 6) return float4(gt * 0.8, 1.0);
-            if (tc.x == 8 && tc.y == 3) return float4(gt, 1.0);
-            int2 d = abs(tc - int2(7, 7));
-            if (d.x <= 1 && d.y <= 1 && !(d.x == 1 && d.y == 1)) return float4(d.x + d.y == 0 ? float3(0.95, 0.80, 0.25) : pet, 1.0);
-            return float4(0.0);
-        }
-        int2 d = abs(tc - int2(7, 7));
-        if (d.x + d.y == 0) return float4(0.95, 0.80, 0.25, 1.0);
-        if (d.x + d.y == 1) return float4(pet, 1.0);
-        return float4(0.0);
-    }
-    case OW_DEADBUSH: {
-        float3 b = float3(0.48, 0.34, 0.18);
-        if (face == 1) {
-            int x = tc.x - 8;
-            bool on = (tc.y < 4 && abs(x) <= 0) || (tc.y >= 3 && tc.y < 9 && (x == tc.y - 4 || -x == tc.y - 3));
-            return on ? float4(b, 1.0) : float4(0.0);
-        }
-        return float4(0.0);
-    }
-    default: break;
-    }
-    return float4(0.0);
-}
-
-// Albedo and cut-out of a texel. em gets any light the texel gives off.
-static float4 owTex(int m, int face, int2 tc, uint bh, thread const OwCol& c, int Y,
-                    float t, float night, thread float3& em) {
-    em = float3(0.0);
-    float3 gt = owGrassTint(c.temp, c.moist);
-    switch (m) {
-    case OW_GRASS: {
-        float r = owT(bh, tc, 20u);
-        float clump = owT(bh, tc / 2, 19u);
-        // Each block a shade apart from its neighbours, so the grid reads.
-        float3 g = gt * (r < 0.16 ? 0.86 : (r < 0.88 ? 1.0 : 1.09)) * (0.96 + 0.06 * clump) * (0.95 + 0.08 * owU(bh));
-        if (face == 0) return float4(g, 1.0);
-        uint ch = owHash(bh + uint(tc.x) * 41u);
-        int d = 2 + int(ch % 3u) + ((ch >> 8) % 6u == 0u ? 2 : 0);
-        return float4(tc.y >= 16 - d ? g : owDirt(bh, tc), 1.0);
-    }
-    case OW_DIRT: return float4(owDirt(bh, tc), 1.0);
-    case OW_STONE: return float4(owStone(bh, tc, face == 1), 1.0);
-    case OW_SAND: {
-        float r = owT(bh, tc, 21u);
-        float3 s = float3(0.85, 0.79, 0.57) * (r < 0.15 ? 0.93 : (r > 0.93 ? 1.05 : 1.0)) * (0.96 + 0.06 * owU(bh));
-        if (owT(bh, tc, 22u) < 0.03) s = float3(0.70, 0.62, 0.44);
-        return float4(s, 1.0);
-    }
-    case OW_SANDSTONE: {
-        float3 s = float3(0.82, 0.74, 0.52) * (0.96 + 0.06 * owT(bh, tc, 23u));
-        if (tc.y <= 2) s *= 0.9;
-        if (tc.y == 12) s *= 0.88;
-        if (tc.y >= 13) s *= 1.04;
-        return float4(s, 1.0);
-    }
-    case OW_SNOW: {
-        float3 w = float3(0.90, 0.94, 0.99) * (owT(bh, tc, 24u) < 0.15 ? 0.93 : 1.0);
-        if (face == 0) return float4(w, 1.0);
-        uint ch = owHash(bh + uint(tc.x) * 43u);
-        int d = 3 + int(ch % 2u) + ((ch >> 8) % 7u == 0u ? 2 : 0);
-        return float4(tc.y >= 16 - d ? w : owDirt(bh, tc), 1.0);
-    }
-    case OW_ICE: {
-        float3 i = float3(0.52, 0.72, 0.98) * (0.95 + 0.06 * owT(bh, tc, 25u));
-        int dg = (tc.x + tc.y + int(bh % 13u)) % 11;
-        if (dg == 0 && tc.x > 2 && tc.x < 13) i = float3(0.80, 0.90, 1.0);
-        else if (dg == 1 && tc.x > 4 && tc.x < 11) i *= 1.08;
-        return float4(i, 1.0);
-    }
-    case OW_LOG: case OW_BIRCH: case OW_SPRUCE:
-        return float4(face == 0 ? owLogTop(tc, m) : owLogSide(bh, tc, m), 1.0);
-    case OW_LEAVES: return float4(owLeaves(bh, tc, gt * float3(0.80, 0.88, 0.78)), 1.0);
-    case OW_BLEAVES: return float4(owLeaves(bh, tc, gt * float3(1.05, 1.08, 0.80)), 1.0);
-    case OW_SLEAVES: return float4(owLeaves(bh, tc, float3(0.17, 0.32, 0.24)), 1.0);
-    case OW_CACTUS: {
-        float3 g = float3(0.27, 0.50, 0.19);
-        if (face == 0) {
-            int2 d = abs(tc - 7);
-            g *= (max(d.x, d.y) >= 6) ? 0.8 : (d.x + d.y < 3 ? 1.2 : 1.0);
-        } else {
-            if ((tc.x % 4) == 1) g *= 0.75;
-            if (owT(bh, tc, 26u) < 0.05) g = float3(0.86, 0.85, 0.62);
-        }
-        return float4(g, 1.0);
-    }
-    case OW_WALL: {
-        int st = c.style;
-        int lv = Y - c.vb;
-        if (face == 0) return float4(float3(0.4), 1.0);
-        bool pillar = c.lx == 2 || c.lx == 6;
-        float3 plank = st == 2 ? float3(0.40, 0.29, 0.17) : float3(0.66, 0.50, 0.30);
-        if (st == 1) {
-            // Sandstone house: smooth walls, a carved band.
-            float3 s = float3(0.84, 0.76, 0.54) * (0.97 + 0.05 * owT(bh, tc, 27u));
-            if (pillar) s *= (tc.x == 0 || tc.x == 15) ? 0.86 : 0.95;
-            if (lv == 2 && (tc.y == 13 || tc.y == 14)) s *= 0.82;
-            plank = s;
-        }
-        bool door = c.lx == 4 && lv <= 1;
-        bool win = lv == 1 && (c.lx == 3 || c.lx == 5);
-        uint hh = owHash(c.vh + uint(c.lx * 7 + c.lz * 131) + uint(Y) * 5u);
-        if (door) {
-            float3 d = st == 2 ? float3(0.30, 0.21, 0.13) : float3(0.45, 0.32, 0.18);
-            if (tc.x < 2 || tc.x > 13) return float4(pillar ? plank : (st == 1 ? plank : owPlanks(bh, tc, plank)), 1.0);
-            float3 dc = d * ((tc.x == 2 || tc.x == 13 || (tc.y & 7) == 0) ? 0.7 : 1.0);
-            if (lv == 1 && tc.x >= 5 && tc.x <= 10 && tc.y >= 7 && tc.y <= 11) {
-                float lit = smoothstep(owU(hh) * 0.5 + 0.1, owU(hh) * 0.5 + 0.25, night);
-                dc = mix(float3(0.16, 0.20, 0.26), float3(1.0, 0.72, 0.36), lit);
-                em = float3(1.0, 0.62, 0.28) * lit * 0.9;
-            }
-            if (lv == 0 && tc.x == 11 && tc.y == 8) dc = float3(0.75, 0.70, 0.40);
-            return float4(dc, 1.0);
-        }
-        if (pillar && st != 1) return float4(owLogSide(bh, tc, st == 2 ? OW_SPRUCE : OW_LOG), 1.0);
-        if (lv == 0 && st != 1) return float4(owCobble(bh, tc), 1.0);
-        if (win && tc.x >= 3 && tc.x <= 12 && tc.y >= 3 && tc.y <= 12) {
-            bool frame = tc.x == 3 || tc.x == 12 || tc.y == 3 || tc.y == 12 || tc.x == 7 || tc.x == 8 || tc.y == 8;
-            if (frame) return float4(st == 1 ? float3(0.62, 0.52, 0.34) : plank * 0.7, 1.0);
-            float lit = smoothstep(owU(hh) * 0.5 + 0.1, owU(hh) * 0.5 + 0.25, night);
-            float3 glass = mix(float3(0.24, 0.33, 0.42) + 0.12 * float(tc.x + tc.y == 16), float3(1.0, 0.76, 0.40), lit);
-            em = float3(1.0, 0.64, 0.30) * lit;
-            return float4(glass, 1.0);
-        }
-        return float4(st == 1 ? plank : owPlanks(bh, tc, plank), 1.0);
-    }
-    case OW_ROOF: {
-        if (face == 0 && c.style == 2) return float4(float3(0.90, 0.94, 0.99) * (owT(bh, tc, 28u) < 0.15 ? 0.93 : 1.0), 1.0);
-        if (c.style == 1) {
-            float3 s = float3(0.86, 0.78, 0.56) * (0.97 + 0.05 * owT(bh, tc, 29u));
-            if (face == 1 && tc.y >= 12) s *= 0.9;
-            return float4(s, 1.0);
-        }
-        float3 base = c.style == 2 ? float3(0.30, 0.21, 0.14) : float3(0.55, 0.26, 0.19);
-        int ry = face == 0 ? tc.y : tc.y + 2;
-        int row = ry / 4;
-        float3 r = base * (0.92 + 0.14 * owT(bh, int2(row, (tc.x + row * 3) / 5), 30u));
-        if ((ry & 3) == 0) r *= 0.66;
-        if (((tc.x + row * 3) % 5) == 0) r *= 0.8;
-        return float4(r, 1.0);
-    }
-    case OW_COBBLE: return float4(owCobble(bh, tc), 1.0);
-    case OW_FARM: {
-        if (face == 1) return float4(owDirt(bh, tc), 1.0);
-        float3 f = float3(0.34, 0.22, 0.13) * (0.9 + 0.2 * owT(bh, tc, 31u));
-        if ((tc.y & 3) == 0) f *= 0.68;
-        return float4(f, 1.0);
-    }
-    case OW_PATH: {
-        if (face == 1) return float4(owDirt(bh, tc), 1.0);
-        float r = owT(bh, tc, 34u);
-        float3 p = (c.style == 1 ? float3(0.74, 0.64, 0.44) : float3(0.60, 0.49, 0.31)) * (r < 0.2 ? 0.9 : (r > 0.9 ? 1.08 : 1.0));
-        return float4(p, 1.0);
-    }
-    case OW_GRAVEL: {
-        float r = owT(bh, tc / 2, 35u);
-        float3 g = r < 0.3 ? float3(0.42, 0.40, 0.40) : (r < 0.6 ? float3(0.56, 0.53, 0.52) : (r < 0.85 ? float3(0.50, 0.45, 0.42) : float3(0.66, 0.64, 0.62)));
-        return float4(g, 1.0);
-    }
-    case OW_POST: return float4(float3(0.36, 0.26, 0.15) * ((tc.x == 7 || tc.x == 8) ? 1.0 : 0.85), 1.0);
-    case OW_TORCH: {
-        int top = 9;
-        if (face == 1 && tc.y >= top - 1) {
-            float fl = 0.85 + 0.15 * sin(t * 7.0 + float(bh % 17u));
-            em = float3(1.0, 0.7, 0.3) * 1.4 * fl;
-            return float4(tc.y == top ? float3(1.0, 0.9, 0.5) : float3(1.0, 0.6, 0.2), 1.0);
-        }
-        if (face == 0) { em = float3(1.0, 0.8, 0.4) * 1.4; return float4(1.0, 0.9, 0.5, 1.0); }
-        return float4(0.40, 0.29, 0.16, 1.0);
-    }
-    case OW_WHEAT: case OW_TALLGRASS: case OW_FLOWER: case OW_DEADBUSH:
-        return owCutTex(m, face, tc, bh, c, t);
-    case OW_PUMPKIN: {
-        float3 o = float3(0.86, 0.50, 0.12);
-        if (face == 0) {
-            int2 d = abs(tc - 7);
-            if (d.x <= 1 && d.y <= 1) return float4(0.38, 0.30, 0.12, 1.0);
-            return float4(o * (((tc.x + 1) % 4) == 0 ? 0.78 : 1.0), 1.0);
-        }
-        return float4(o * (((tc.x + 1) % 4) == 0 ? 0.76 : 1.0) * (tc.y < 2 ? 0.85 : 1.0), 1.0);
-    }
-    case OW_HAY: {
-        float3 h = float3(0.80, 0.66, 0.24) * (0.9 + 0.2 * owT(bh, tc, 37u));
-        if (face == 1 && (tc.y == 3 || tc.y == 4 || tc.y == 11 || tc.y == 12)) h = float3(0.52, 0.30, 0.15);
-        if (face == 0 && (tc.y == 3 || tc.y == 4 || tc.y == 11 || tc.y == 12)) h = float3(0.52, 0.30, 0.15);
-        return float4(h, 1.0);
-    }
-    default: break;
-    }
-    return float4(1.0, 0.0, 1.0, 1.0);
-}
-
 // ---------------------------------------------------------------------------
-// Animals. One may live in each 9×9 cell, strolling east and west around its
-// spot, stopping to graze.
+// Animals. One may live in each 12×12 cell, strolling east and west around
+// its spot, stopping to graze. Positions and poses only; the drawing is the
+// shared mob kit's (KIT: mobs, in lerpMain).
 
 struct OwMob { int kind; float3 o; float dir; float graze; float step; };
 
@@ -807,117 +620,47 @@ static bool owMobAt(int2 cell, float t, float2 w, thread OwMob& mb) {
     return true;
 }
 
-// Box i (in 1/16 block, x forward from the body's middle) of a creature kind.
-// part: 0 body, 1 head, 2 leg, 3 snout/beak, 4 comb.
-static inline bool owMobBox(int kind, int i, float graze, float stp,
-                            thread float3& lo, thread float3& hi, thread int& part) {
-    float g = graze * 5.0;
-    float ls = stp;   // legs shuffle one texel while walking
-    if (kind == 0) {        // woolly
-        switch (i) {
-        case 0: lo = float3(-7, 5, 1); hi = float3(7, 13, 9); part = 0; return true;
-        case 1: lo = float3(5, 9 - g, 2); hi = float3(11, 15 - g, 8); part = 1; return true;
-        case 2: lo = float3(-6 + ls, 0, 1); hi = float3(-3 + ls, 5, 3); part = 2; return true;
-        case 3: lo = float3(3 - ls, 0, 1); hi = float3(6 - ls, 5, 3); part = 2; return true;
-        default: return false;
-        }
-    } else if (kind == 1) { // spotted grazer
-        switch (i) {
-        case 0: lo = float3(-8, 6, 0); hi = float3(8, 15, 10); part = 0; return true;
-        case 1: lo = float3(7, 10 - g, 2); hi = float3(13, 16 - g, 8); part = 1; return true;
-        case 2: lo = float3(-7 + ls, 0, 0); hi = float3(-4 + ls, 6, 3); part = 2; return true;
-        case 3: lo = float3(4 - ls, 0, 0); hi = float3(7 - ls, 6, 3); part = 2; return true;
-        case 4: lo = float3(9, 16 - g, 2); hi = float3(10, 17 - g, 8); part = 4; return true;
-        default: return false;
-        }
-    } else if (kind == 2) { // snuffler
-        switch (i) {
-        case 0: lo = float3(-6, 3, 1); hi = float3(6, 10, 8); part = 0; return true;
-        case 1: lo = float3(5, 4 - g * 0.4, 1); hi = float3(10, 10 - g * 0.4, 8); part = 1; return true;
-        case 2: lo = float3(10, 4 - g * 0.4, 3); hi = float3(11, 7 - g * 0.4, 6); part = 3; return true;
-        case 3: lo = float3(-5 + ls, 0, 1); hi = float3(-3 + ls, 3, 3); part = 2; return true;
-        case 4: lo = float3(3 - ls, 0, 1); hi = float3(5 - ls, 3, 3); part = 2; return true;
-        default: return false;
-        }
-    } else {                // hen
-        switch (i) {
-        case 0: lo = float3(-3, 2, 3); hi = float3(3, 7, 7); part = 0; return true;
-        case 1: lo = float3(1, 6 - g * 0.6, 4); hi = float3(4, 10 - g * 0.6, 6); part = 1; return true;
-        case 2: lo = float3(4, 7 - g * 0.6, 4); hi = float3(5, 8 - g * 0.6, 6); part = 3; return true;
-        case 3: lo = float3(2, 10 - g * 0.6, 4); hi = float3(3, 11 - g * 0.6, 6); part = 4; return true;
-        case 4: lo = float3(-1, 0, 4); hi = float3(0, 2, 5); part = 2; return true;
-        default: return false;
-        }
-    }
-}
-
-static inline float3 owMobTex(int kind, int part, int face, int2 tc, int2 sz, float dir, uint mh) {
-    // tf counts texels from the creature's tail end of this box toward its nose.
-    int tf = dir > 0.0 ? tc.x : sz.x - 1 - tc.x;
-    if (kind == 0) {
-        if (part == 0) return float3(0.88, 0.86, 0.80) * (0.9 + 0.15 * owU(owHash(mh ^ uint(tc.x * 31 + tc.y * 7 + face))));
-        if (part == 1) {
-            if (face == 1 && tf == sz.x - 2 && tc.y == sz.y - 3) return float3(0.05);
-            if (face == 1 && tf == sz.x - 3 && tc.y == sz.y - 3) return float3(0.9);
-            if (tf <= 1) return float3(0.86, 0.84, 0.78);
-            return float3(0.30, 0.25, 0.22);
-        }
-        return float3(0.30, 0.25, 0.22);
-    }
-    if (kind == 1) {
-        float3 brown = float3(0.33, 0.22, 0.15);
-        if (part == 4) return float3(0.85, 0.82, 0.72);
-        if (part == 0 || part == 2) {
-            uint p = owHash(mh ^ uint((tc.x / 3) * 13 + (tc.y / 3) * 101 + face * 7));
-            return (p % 3u == 0u) ? float3(0.88, 0.86, 0.82) : brown;
-        }
-        if (face == 1 && tf == sz.x - 3 && tc.y == sz.y - 2) return float3(0.05);
-        if (tf >= sz.x - 2 && tc.y < 3) return float3(0.80, 0.70, 0.62);
-        return brown;
-    }
-    if (kind == 2) {
-        float3 pink = float3(0.90, 0.62, 0.60);
-        if (part == 3) return (face == 1 && tc.y == 1) ? float3(0.55, 0.30, 0.30) : float3(0.95, 0.70, 0.68);
-        if (part == 1 && face == 1 && tf == sz.x - 2 && tc.y == sz.y - 2) return float3(0.05);
-        if (part == 2) return pink * 0.85;
-        return pink * (0.95 + 0.08 * owU(owHash(mh ^ uint(tc.x * 31 + tc.y))));
-    }
-    if (part == 3) return float3(0.95, 0.72, 0.15);
-    if (part == 4) return float3(0.85, 0.12, 0.10);
-    if (part == 2) return float3(0.90, 0.70, 0.20);
-    if (part == 1 && face == 1 && tf == sz.x - 1 && tc.y == sz.y - 2) return float3(0.05);
-    return float3(0.94, 0.93, 0.90) * (part == 0 && face == 1 && tc.y > 1 && tc.y < 4 && tf < 4 ? 0.85 : 1.0);
-}
-
 // ---------------------------------------------------------------------------
-// Cloud shadows: the clouds themselves are above the picture; only their
-// shadows cross the map, blown east, stepped to the texel like everything else.
+// The game's flat cloud layer: clouds.png, one pixel to a 12×12-block cell,
+// 4 blocks thick, drifting east.
 
-static inline float owCloudShade(float2 xz, float t, float cover) {
-    float2 q = float2((xz.x - t * 0.6) * (1.0 / 19.0), xz.y * (1.0 / 9.0));
-    float n = valueNoise(q + 200.0);
-    return smoothstep(mix(0.95, 0.5, cover), mix(0.95, 0.5, cover) + 0.015, n);
+static inline bool owCloudAt(texture2d_array<float> maps, float i, float j) {
+    uint2 p = uint2(glmod(i, 256.0), glmod(j, 256.0));
+    return maps.read(p, uint(MCM_ENVIRONMENT_CLOUDS)).a > 0.5;
+}
+
+// Solid object levels above the air voxel at Yair in a packed column (sky
+// light loses a level to each leaf it passes).
+static inline int owCover(uint S, int Yair) {
+    if (((S >> 15) & 1u) == 0u) return 0;
+    int lo = int((S >> 5) & 31u), hi = int((S >> 10) & 31u);
+    return max(0, hi - max(lo, Yair));
 }
 
 // ---------------------------------------------------------------------------
 
-fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]]) {
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
+                        texture2d_array<float> mcTiles [[texture(8)]],
+                        texture2d_array<float> mcMaps  [[texture(11)]]) {
     float2 res = u.resolution;
     float t = u.time;
     float rr = res.y / (u.blocks * 16.0);
     float T = rr >= 1.0 ? round(rr) : rr;          // screen pixels per texel
     float B = 16.0 * T;
+    float fp = 1.0 / B;                             // one screen pixel, in blocks
 
     // The pan: east, meandering north and south. Whole pixels only.
-    float pt = t * u.speed;
+    float pt = t * u.speed, pt5 = 5.0 * u.speed;
     float2 cam = float2(pt + u.seed * 4111.0,
                         18.0 * sin(pt / 90.0 + u.seed * 6.2832) + 8.0 * sin(pt / 40.0 + 1.3 + u.seed * 17.0) + u.seed * 2333.0);
+    float2 c5 = float2(pt5 + u.seed * 4111.0,
+                       18.0 * sin(pt5 / 90.0 + u.seed * 6.2832) + 8.0 * sin(pt5 / 40.0 + 1.3 + u.seed * 17.0) + u.seed * 2333.0);
     // Every visit opens on a village: the world is shifted so the first valid
-    // one along the path sits at the centre of the screen at t = 5 s.
+    // one along the path sits at the centre of the screen at t = 5 s. (The
+    // shift is taken from the camera at 5 s, so it is fixed for the visit.)
     int2 startCell = int2(-999999);
+    float2 shift = float2(0.0);
     {
-        float2 c5 = float2(5.0 * u.speed + u.seed * 4111.0, cam.y);
-        float2 shift = float2(0.0);
         for (int i = 0; i < 3; i++) {
             int2 probe = int2(floor(c5)) + int2(i * 45, 22);
             int2 vc = owVCell(probe);
@@ -940,8 +683,9 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float f = w.y - float(vi);
 
     // --- Walk the line of sight from the nearest column back.
-    int hm = OW_AIR, hface = 0, hY = 0, hZ = 0;
+    int hm = OW_AIR, hface = 0, hY = 0, hZ = 0, hSt = 0;
     float2 huv = float2(0.0);
+    float3 hKc = float3(0.0);                      // a kit model's texel at the hit
     float hz = 1e9;                                 // world z of the hit
     float wEntry = -1.0;
     OwCell kc;
@@ -954,7 +698,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // most two lines (x and x + 1) from at most two block rows, and would
     // walk the same columns one after another. Instead lane k builds column k
     // of each line once and packs it; every lane then walks its line, and
-    // probes it for shadow and corners, by shuffles. Anything else (a group
+    // probes it for light and corners, by shuffles. Anything else (a group
     // cut by the screen edge, or texels under a pixel) walks serially below;
     // the two paths read the same world through the same functions.
     uint lane = simd_prefix_exclusive_sum(1u);
@@ -984,6 +728,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
             if (hm != OW_AIR) continue;
             int n = OW_YMAX - k;
             int Z = vi - n;
+            int st = int((q >> 10) & 15u);
             for (int j = 0; j < 2; j++) {
                 int Y = n - j;
                 // The producer's own entry level is n - dv.
@@ -993,12 +738,9 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
                     if (wEntry < 0.0) wEntry = float(Z) + (j == 0 ? 0.0 : f);
                     continue;
                 }
-                float3 lo, hi;
-                owShape(m, lo, hi);
-                int face; float2 uv; float zl;
-                if (!owBoxHit(f + float(j), fx, lo, hi, face, uv, zl)) continue;
-                if (owCutout(m) && !owCutAlpha(m, face, clamp(int2(floor(uv * 16.0)), 0, 15), owH3(X, Y, Z), int((q >> 10) & 15u))) continue;
-                hm = m; hface = face; huv = uv; hY = Y; hZ = Z; hz = float(Z) + zl;
+                int face; float2 uv; float zl; float3 kcol;
+                if (!owHitVox(m, st, owH3(X, Y, Z), f + float(j), fx, fp, mcTiles, face, uv, zl, kcol)) continue;
+                hm = m; hface = face; huv = uv; hY = Y; hZ = Z; hz = float(Z) + zl; hSt = st; hKc = kcol;
                 break;
             }
         }
@@ -1085,26 +827,19 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
             owEnsure(p, kc, kv);
             if (n - 1 >= owBound(p, hf, kc, kv)) continue;
             OwCol c = owColumn(p, hf, kc);
+            int st = owWheatStage(c.vh, c.lz, t);
             bool done = false;
             for (int j = 0; j < 2; j++) {
                 int Y = n - j;
                 int m = owVox(c, Y);
                 if (m == OW_AIR) continue;
-                float s = f + float(j);
                 if (m == OW_WATER) {
                     if (wEntry < 0.0) wEntry = float(Z) + (j == 0 ? 0.0 : f);
                     continue;
                 }
-                float3 lo, hi;
-                owShape(m, lo, hi);
-                int face; float2 uv; float zl;
-                if (!owBoxHit(s, fx, lo, hi, face, uv, zl)) continue;
-                if (owCutout(m)) {
-                    float3 em;
-                    int2 tc = clamp(int2(floor(uv * 16.0)), 0, 15);
-                    if (!owCutAlpha(m, face, tc, owH3(X, Y, Z), owWheatStage(c.vh, c.lz, t))) continue;
-                }
-                hm = m; hface = face; huv = uv; hY = Y; hZ = Z; hz = float(Z) + zl;
+                int face; float2 uv; float zl; float3 kcol;
+                if (!owHitVox(m, st, owH3(X, Y, Z), f + float(j), fx, fp, mcTiles, face, uv, zl, kcol)) continue;
+                hm = m; hface = face; huv = uv; hY = Y; hZ = Z; hz = float(Z) + zl; hSt = st; hKc = kcol;
                 done = true;
                 break;
             }
@@ -1114,14 +849,17 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     }
 
     OwCol hc;
+    uint sHit;                                      // the hit column's solid profile
     if (coop) {
         ushort src = ushort(clamp(hZ - ZB, 0, 31));
         uint qi = simd_shuffle(P0.I, src), id = simd_shuffle(P0.Id, src), vh = simd_shuffle(P0.Vh, src);
+        uint qs = simd_shuffle(P0.S, src);
         float te = simd_shuffle(P0.T, src), mo = simd_shuffle(P0.M, src);
         if (two) {
             uint qi1 = simd_shuffle(P1.I, src), id1 = simd_shuffle(P1.Id, src), vh1 = simd_shuffle(P1.Vh, src);
+            uint qs1 = simd_shuffle(P1.S, src);
             float te1 = simd_shuffle(P1.T, src), mo1 = simd_shuffle(P1.M, src);
-            if (!mine0) { qi = qi1; id = id1; vh = vh1; te = te1; mo = mo1; }
+            if (!mine0) { qi = qi1; id = id1; vh = vh1; te = te1; mo = mo1; qs = qs1; }
         }
         hc.id = id; hc.vh = vh; hc.temp = te; hc.moist = mo;
         hc.top = int(qi & 31u); hc.sub = int((qi >> 5) & 31u);
@@ -1129,88 +867,41 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         hc.vb = int((qi >> 16) & 31u); hc.style = int((qi >> 21) & 7u) - 2;
         hc.h = int((qi >> 24) & 31u); hc.biome = int((qi >> 29) & 7u);
         hc.wTop = 0; hc.deco = 0; hc.oLo = 0; hc.oHi = 0; hc.oMat = 0; hc.tTop = 0; hc.tMat = 0; hc.plot = 0;
+        sHit = qs;
     } else {
         int2 p = int2(X, hZ);
         owEnsureV(p, kv);
         owEnsure(p, kc, kv);
         hc = owColumn(p, owBaseH(float2(p) + 0.5), kc);
+        sHit = owPackS(hc);
     }
 
-    // --- Day and night.
+    // --- Day and night: the sun's height e and the game's daylight factor.
     float phase = fract(t / u.dayLength + 0.05 + 0.3 * u.seed);
     const float dayF = 0.66;
-    float e, az;
-    if (phase < dayF) { float a = phase / dayF; e = sin(PI * a); az = cos(PI * a); }
-    else { float a = (phase - dayF) / (1.0 - dayF); e = -sin(PI * a); az = -cos(PI * a); }
-    float sunUp = smoothstep(-0.04, 0.22, e);
-    float night = 1.0 - smoothstep(-0.12, 0.16, e);
-    // The sun crosses behind the map (north), so shadows fall toward the
-    // viewer and lengthen toward dawn and dusk. Keeping it in the x = const
-    // plane keeps every shadow probe on the pixel's own line of sight.
-    (void)az;
-    float3 Ls = normalize(float3(0.0, max(e, 0.0) + 0.32, 0.42));
-    float3 Lm = normalize(float3(0.0, 0.85, 0.42));
-    float3 L = e > -0.03 ? Ls : Lm;
-    float3 sunCol = mix(float3(1.0, 0.58, 0.32), float3(1.0, 0.95, 0.86), smoothstep(0.08, 0.5, e)) * 0.72 * sunUp;
-    float3 moonCol = float3(0.20, 0.25, 0.40) * night;
-    float3 amb = mix(float3(0.06, 0.075, 0.15), float3(0.30, 0.35, 0.46), smoothstep(-0.18, 0.3, e));
-    amb = mix(amb, amb * float3(1.15, 0.9, 0.8), (1.0 - smoothstep(0.05, 0.4, e)) * sunUp);
+    float e;
+    if (phase < dayF) e = sin(PI * phase / dayF);
+    else e = -sin(PI * (phase - dayF) / (1.0 - dayF));
+    float day = saturate(2.0 * e + 0.2);           // the game's sky darkening, from the sun's height
 
     // --- Animals in front of the hit?
-    OwMob mb; bool mobHit = false; int mPart = 0, mFace = 0; int2 mtc = int2(0), msz = int2(1);
-    float mz = hz; uint mHash = 0u;
-    float shadowMob = 1.0;
-    {
-        // A creature roams x in [5, 8] ± 3 of its 12-wide cell, so only this
-        // pixel's own cell column can hold one; two cells cover the depths.
-        int cx0 = int(floor(w.x / 12.0));
-        int cz0 = int(floor((w.y - 17.0) / 12.0));
-        for (int ci = 0; ci < 2; ci++) {
-            int2 cell = int2(cx0, cz0 + ci);
-            OwMob m;
-            if (!owMobAt(cell, t, w, m)) continue;
-            // Contact shadow on the ground just south of the body.
-            if (hface == 0 && abs(float(hY + 1) - (hm == OW_FARM || hm == OW_PATH ? 1.0 / 16.0 : 0.0) - m.o.y) < 0.01) {
-                float px = w.x, pz = hz;
-                if (abs(px - m.o.x) < 0.42 && pz > m.o.z - 0.2 && pz < m.o.z + 0.6) shadowMob = 0.6;
-            }
-            for (int i = 0; i < 5; i++) {
-                float3 lo, hi; int part;
-                if (!owMobBox(m.kind, i, m.graze, m.step, lo, hi, part)) break;
-                float x0 = m.o.x + m.dir * lo.x / 16.0, x1 = m.o.x + m.dir * hi.x / 16.0;
-                float3 wlo = float3(min(x0, x1), m.o.y + lo.y / 16.0, m.o.z + lo.z / 16.0);
-                float3 whi = float3(max(x0, x1), m.o.y + hi.y / 16.0, m.o.z + hi.z / 16.0);
-                if (w.x < wlo.x || w.x > whi.x) continue;
-                float y = w.y - wlo.z, zz;
-                int fc;
-                float2 uvb;
-                if (y >= wlo.y && y <= whi.y) { fc = 1; zz = wlo.z; uvb = float2(w.x - wlo.x, y - wlo.y); }
-                else {
-                    zz = w.y - whi.y;
-                    if (zz < wlo.z || zz > whi.z) continue;
-                    fc = 0; uvb = float2(w.x - wlo.x, zz - wlo.z);
-                }
-                if (zz < mz) {
-                    mz = zz; mobHit = true; mb = m; mPart = part; mFace = fc;
-                    msz = int2(round((whi.x - wlo.x) * 16.0), round((fc == 1 ? whi.y - wlo.y : whi.z - wlo.z) * 16.0));
-                    mtc = clamp(int2(floor(uvb * 16.0)), int2(0), msz - 1);
-                    mHash = uint(hash21(float2(cell) + 0.37) * 4294967040.0 / 0.42);
-                }
-            }
-        }
-    }
+    // KIT: mobs — sheep, cows, pigs and chickens wander and graze here, from
+    // the game's skins on its box models, once the shared mob kit lands. One
+    // may live in each 12×12-block cell; owMobAt gives each one's kind (0
+    // sheep, 1 cow, 2 pig, 3 chicken), feet position o (o.z is the body's
+    // south edge, the body runs along x), facing dir (+1 east, -1 west),
+    // graze (head down) and step (walking leg phase). Only this pixel's own
+    // cell column can hold one, and two cells cover the depths: test the
+    // kit's mob against the line z + y = w.y at x = w.x for each, keep the
+    // nearest face in front of hz, light it with mcLightmap(0, 15, day, 0)
+    // times mcFaceShade, and give it the game's round shadow on the ground.
+    bool mobHit = false;
 
     // --- Shade the hit.
-    float3 P, N;
-    if (mobHit) {
-        P = float3(w.x, w.y - mz, mz);
-        N = mFace == 1 ? float3(0.0, 0.0, -1.0) : float3(0.0, 1.0, 0.0);
-    } else {
-        P = float3(w.x, w.y - hz, hz);
-        N = hface == 1 ? float3(0.0, 0.0, -1.0) : float3(0.0, 1.0, 0.0);
-    }
+    float3 P = float3(w.x, w.y - hz, hz);
+    float3 N = hface == 1 ? float3(0.0, 0.0, -1.0) : float3(0.0, 1.0, 0.0);
 
-    if (hc.style == -2 && !mobHit) {
+    if (hc.style == -2) {
         OwVil v = owVillage(int2(X, hZ));
         float2 vcl = owClimateAt(floor(v.c));
         int vb = owBiome(7.0, vcl.x, vcl.y);
@@ -1219,115 +910,115 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         if (hc.style == 1) hc.sub = OW_SANDSTONE;
         if (hm == OW_GRASS && hY == hc.h - 1) hm = hc.top;
     }
-    float3 em = float3(0.0);
-    float3 alb;
-    if (mobHit) alb = owMobTex(mb.kind, mPart, mFace, mtc, msz, mb.dir, mHash);
-    else {
-        int2 tc = clamp(int2(floor(huv * 16.0)), 0, 15);
-        alb = owTex(hm, hface, tc, owH3(X, hY, hZ), hc, hY, t, night, em).rgb;
-    }
 
-    // Sun (or moon) shadow on tops: six probes up the light, every one on
-    // this line (shared by shuffle when cooperative). South faces take a fill
-    // light and are not probed.
-    float sh = 1.0;
-    float aoT = 1.0;
+    bool plant = owCutout(hm) || hm == OW_TORCH;
+
+    // Light levels of the air the face looks into, and the corner shading of
+    // smooth lighting: a top against a block to its north, a face's foot on
+    // the ground in front, darken towards that edge from 1 to 0.6 as the game's
+    // vertex occlusion does.
+    float skyLv = 15.0, blkLv = 0.0, ao = 1.0;
     {
-        float3 q0 = P + N * 0.02;
-        bool top = N.y > 0.5;
-        for (int i = 0; i < 5; i++) {
-            float dy = 0.35 + 0.95 * float(i);
-            float3 q = q0 + L * (dy / L.y);
-            int Zq = int(floor(q.z)), Yq = int(floor(q.y));
-            bool solid;
-            if (coop) {
-                int ln = Zq - ZB;
-                ushort src = ushort(clamp(ln, 0, 31));
-                uint s0 = simd_shuffle(P0.S, src);
-                uint s1 = two ? simd_shuffle(P1.S, src) : 0u;
-                solid = ln >= 0 && ln < 32 && owPackSolid(mine0 ? s0 : s1, Yq);
-            } else {
-                solid = top && sh > 0.0 && owSolid(int3(X, Yq, Zq), kc, kv);
-            }
-            if (top && solid) sh = 0.0;
-        }
-        // Corners: a top's north edge against a wall, a face's foot on the ground.
-        int2 tc = clamp(int2(floor(huv * 16.0)), 0, 15);
         int Za = hface == 0 ? hZ + 1 : hZ - 1;
         int Ya = hface == 0 ? hY + 1 : hY - 1;
-        bool want = !mobHit && ((hface == 0 && tc.y > 12) || (hface == 1 && tc.y < 3 && hm != OW_TORCH && hm != OW_POST));
+        int Yair = hface == 0 ? hY + 1 : hY;
+        bool want = !plant && hm != OW_POST;
         bool solidA;
+        uint sFront = 0u;
         if (coop) {
             int ln = Za - ZB;
             ushort src = ushort(clamp(ln, 0, 31));
             uint s0 = simd_shuffle(P0.S, src);
             uint s1 = two ? simd_shuffle(P1.S, src) : 0u;
-            solidA = ln >= 0 && ln < 32 && owPackSolid(mine0 ? s0 : s1, Ya);
+            sFront = (ln >= 0 && ln < 32) ? (mine0 ? s0 : s1) : 0u;
+            solidA = ln >= 0 && ln < 32 && owPackSolid(sFront, Ya);
         } else {
             solidA = want && owSolid(int3(X, Ya, Za), kc, kv);
+            if (hface == 1) {
+                int2 p = int2(X, hZ - 1);
+                owEnsureV(p, kv);
+                owEnsure(p, kc, kv);
+                sFront = owPackS(owColumn(p, owBaseH(float2(p) + 0.5), kc));
+            }
         }
-        if (want && solidA) aoT = hface == 0 ? 0.70 + 0.1 * float(15 - tc.y) : 0.72 + 0.09 * float(tc.y);
+        if (want && solidA) ao = hface == 0 ? mix(1.0, 0.6, huv.y) : mix(0.6, 1.0, huv.y);
+        skyLv = 15.0 - float(min(owCover(hface == 0 ? sHit : sFront, Yair), 2));
     }
-    // Cloud shadows.
-    float cover = u.clouds;
-    if (cover > 0.0 && sh > 0.0) {
-        float3 q = P + L * ((OW_YC - P.y) / L.y);
-        sh *= 1.0 - 0.32 * owCloudShade(q.xz, t, cover);
-    }
-    sh *= shadowMob;
 
-    float ao = aoT;
-
-    bool plant = !mobHit && (owCutout(hm) || hm == OW_TORCH);
-    if (plant) { N = float3(0.0, 1.0, 0.0); ao = 1.0; }
-    // Tops take the light; south faces a fill, so cliffs read but never go black.
-    float ndl = N.y > 0.5 ? max(L.y, 0.0) : 0.6 * max(L.y, 0.0) + max(-L.z, 0.0);
-    float faceAmb = N.y > 0.5 ? 1.0 : 0.9;
-    float3 lightCol = sunCol + moonCol;
-    float3 light = amb * faceAmb * ao + lightCol * ndl * sh * mix(1.0, ao, 0.5);
-
-    // Lamps and windows at night: stepped warm pools around each lit house.
-    if (night > 0.01) {
-        owEnsureV(int2(floor(P.xz)), kv);
+    // Torch light, a level a block (taxicab, as the game spreads it) from
+    // each lamp post's torch (14) and from each house's door, which passes the
+    // light of the torch inside (13 there). It is always on; it shows as the
+    // sky darkens.
+    if (day < 0.999) {
+        float3 Pa = P + N * 0.5;
+        owEnsureV(int2(floor(Pa.xz)), kv);
         OwVil v = kv.v;
         if (kv.vOK == 1) {
             float2 vcen = floor(v.c);
-            float2 q = P.xz - vcen + 32.0;
-            // The four plots whose lamps and doors are nearest.
-            int2 pi0 = int2(floor((q - float2(3.0, 1.5)) / 8.0));
-            float tl = 0.0;
-            for (int i = 0; i < 4; i++) {
-                int2 pi = pi0 + int2(i & 1, i >> 1);
-                float2 pc = vcen - 32.0 + float2(pi) * 8.0 + 4.0;
-                if (length(pc - v.c) >= v.R - 4.0) continue;
+            int2 pc0 = int2(floor((Pa.xz - vcen + 32.0) / 8.0));
+            for (int i = 0; i < 9; i++) {
+                int2 pi = pc0 + int2(i % 3 - 1, i / 3 - 1);
+                float2 o = vcen - 32.0 + float2(pi) * 8.0;
+                if (length(o + 4.0 - v.c) >= v.R - 4.0) continue;
                 uint ph = owH3(pi.x + int(v.hs & 1023u), pi.y, 77);
                 if (owU(ph) >= 0.5) continue;
-                float2 o = vcen - 32.0 + float2(pi) * 8.0;
-                float3 lamp = float3(o.x + 1.5, float(v.vb) + 1.6, o.y + 1.5);
-                float3 door = float3(o.x + 4.5, float(v.vb) + 1.0, o.y + 1.4);
-                float d1 = length(P - lamp), d2 = length(P - door);
-                tl += max(0.0, 1.0 - d1 / 7.0) + 0.6 * max(0.0, 1.0 - d2 / 5.0);
+                float3 lamp = float3(o.x + 1.5, float(v.vb) + 1.5, o.y + 1.5);
+                float3 door = float3(o.x + 4.5, float(v.vb) + 1.5, o.y + 2.5);
+                float3 d1 = abs(Pa - lamp), d2 = abs(Pa - door);
+                blkLv = max(blkLv, max(14.0 - (d1.x + d1.y + d1.z), 13.0 - (d2.x + d2.y + d2.z)));
             }
-            tl = floor(saturate(tl) * 7.0) / 7.0;
-            light += float3(1.0, 0.62, 0.30) * tl * 1.1 * night * (faceAmb > 0.9 ? 1.0 : 0.8);
         }
     }
 
-    float3 col = alb * light + em * night + (hm == OW_TORCH && !mobHit ? em * 0.6 : float3(0.0));
+    // Water over the hit: the bed loses a level of sky light a block down.
+    bool underWater = wEntry >= 0.0;
+    float depth = max(float(OW_W) - P.y, 0.0);
+    if (underWater) skyLv = min(skyLv, 15.0 - depth);
 
-    // Water between the eye and the hit: clear in the shallows, deep blue beyond.
-    if (wEntry >= 0.0 && (!mobHit || mz > wEntry)) {
-        float depth = max(float(OW_W) - P.y, 0.0);
-        float3 wc = float3(0.08, 0.20, 0.40) * (amb * 1.2 + lightCol * 0.6);
-        float tr = exp(-1.3 * depth) * 0.8;
-        col = mix(wc, col * float3(0.75, 0.9, 1.0), tr);
-        // Surface ripples: short one-texel crests drifting north.
-        float2 sp = floor(float2(w.x, wEntry) * 16.0);
-        float wv = fract((sp.y + 3.0 * sin(sp.x * 0.11 + t * 0.35)) / 23.0 - t * 0.012);
-        uint seg = owH3(int(floor(sp.x / 5.0)), int(floor((sp.y + 3.0 * sin(sp.x * 0.11 + t * 0.35)) / 23.0 - t * 0.012)), 3);
-        if (wv < 0.045 && owU(seg) < 0.45) col += float3(0.11, 0.15, 0.19) * (amb + lightCol * 0.7);
-        if (hz - wEntry < 0.9 && owU(owH3(int(tex.x), int(floor(wEntry * 16.0)), int(floor(t * 1.5)))) < 0.18)
-            col += float3(0.07, 0.08, 0.09) * (amb + lightCol);
+    // Climate per block (the game blends its biome tints per block too).
+    float2 clm = owClimateAt(float2(float(X), float(hZ)) + 0.5);
+    float tg = saturate((clm.x - 0.28) * 3.0 + 0.1), dg = saturate(0.2 + 0.75 * clm.y);
+    float3 gt = mcGrassTint(mcMaps, tg, dg);
+    float3 ft = owLeaves(hm) && hm == OW_LEAVES ? mcFoliageTint(mcMaps, tg, dg) : float3(1.0);
+
+    float3 inLight = mcLightmap(13.0, 11.0, day, 0.0) * 0.8;
+    float3 add; bool lamp;
+    float3 alb = owAlbedo(hm, hface, huv, fp, owH3(X, hY, hZ), hY, hc, hSt, gt, ft, inLight, hKc, mcTiles, add, lamp);
+
+    float shade = plant ? 1.0 : mcFaceShade(N);
+    float3 col = lamp ? alb : alb * shade * ao * mcLightmap(blkLv, skyLv, day, 0.0) + add;
+
+    if (underWater) {
+        int fr = mcFrame(MC_WATER_STILL, MC_WATER_STILL_FRAMES, MC_WATER_STILL_TICKS, t);
+        float4 wt = mcTile(mcTiles, fr, float2(fract(w.x), 1.0 - fract(wEntry)), fp);
+        float3 tint = hc.biome == OW_SNOWY ? mcFromSRGB(float3(0x3D, 0x57, 0xD6) / 255.0) : MC_WATER_TINT;
+        col = mix(col, wt.rgb * tint * mcLightmap(blkLv, 15.0, day, 0.0), wt.a);
+    }
+    (void)mobHit;
+
+    // The cloud layer above it all: its tops, and the south sides of its edges.
+    if (u.clouds > 0.0) {
+        float drift = floor(t * 0.6 * 16.0) / 16.0;
+        // The layer is placed so the opening village lies under one of eight
+        // wide gaps in clouds.png (each at least 10×7 cells clear), picked by seed.
+        const int2 gaps[8] = { int2(36, 0), int2(118, 0), int2(198, 0), int2(156, 3),
+                               int2(83, 6), int2(2, 7), int2(227, 28), int2(130, 29) };
+        int2 g = gaps[int(fract(u.seed * 7.13) * 8.0) & 7];
+        float2 o5 = c5 + shift;
+        float2 coff = float2(g) - floor(float2(o5.x - floor(5.0 * 0.6 * 16.0) / 16.0, o5.y - (OW_YC + 4.0)) / 12.0);
+        float ci = floor((w.x - drift) / 12.0) + coff.x;
+        float zt = w.y - (OW_YC + 4.0);
+        bool on = owCloudAt(mcMaps, ci, floor(zt / 12.0) + coff.y);
+        float csh = 1.0;
+        if (!on) {
+            float zb = 12.0 * ceil(zt / 12.0);
+            if (zb <= w.y - OW_YC && owCloudAt(mcMaps, ci, zb / 12.0 + coff.y)) { on = true; csh = 0.8; }
+        }
+        if (on) {
+            float cb = saturate(e * 2.0 + 0.5) * 0.85 + 0.15;
+            float3 cc = float3(cb, cb, cb * 0.85 + 0.15) * csh;
+            col = mix(col, cc, u.clouds);
+        }
     }
 
     col = lerpDither(col, pos);
