@@ -561,6 +561,21 @@ shaders here write. The prelude adds, for a shader that requires minecraft:
   `mcGrassSide(mcTiles, uv, footprint, tint)`, `mcFromSRGB(colour)` for a
   colour quoted from the game, and `MC_WATER_TINT`, `MC_SKY_DAY`, `MC_FOG_DAY`.
 
+- The game's small block models, to call from a march when a ray enters a
+  cell that holds one: `mcLantern` (standing or hanging; the soul lantern by
+  layer), `mcTorch`, `mcWallTorch`, `mcCross` (short grass, flowers,
+  saplings), `mcCrop` (wheat and the other crops by stage) and `mcBeacon`.
+  Each takes the block's origin, the ray and a `(tMin, tMax)` range, does its
+  own bounding test, and fills a `McModelHit` (distance, normal, tinted colour,
+  whether to face-shade). Pass `tMin` a hair below the cell's entry distance:
+  it is exclusive and a model face can lie on the cell boundary. The
+  `mcModelBox…` and `mcModelQuad…` pieces they are made of are there for a
+  model the kit does not have yet. Source and full comments:
+  `Sources/LerpCore/MinecraftKit.swift`.
+
+Do not hand-build a second copy of anything in the kit. If a look needs a
+model or convention it lacks, add it to the kit so the next look has it too.
+
 Several textures are grey and take a tint in the game: grass tops, leaves,
 vines, water. The sun and moon are drawn on black and added to the sky.
 Leaves, glass and plants carry their shape in alpha.

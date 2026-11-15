@@ -68,7 +68,7 @@ public enum LerpMinecraft {
         guard let constants = try? String(contentsOf: url, encoding: .utf8) else {
             throw Failure(message: "cannot read \(url.path); run `make minecraft` again")
         }
-        let source = constants + helpers
+        let source = constants + helpers + models
         lock.lock(); defer { lock.unlock() }
         prelude = source
         return source

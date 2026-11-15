@@ -41,11 +41,11 @@
 // lerp-param: flips       bool         = true    "Flip on pickup"
 // lerp-param: style       int 0 4      = 0       "Garden (0 = new each maze)"
 // lerp-param: colorGoal   color        = #ffffff "Beam"
-// lerp-param: brightness  float 0 1    = 0.3     "Brightness"
 //
 // lerp-preset: Labyrinth size=24, speed=1.6
 // lerp-preset: "Cherry Grove" style=4
 // lerp-preset: "Spruce and Moss" style=2
+
 
 // --- Geometry, in blocks. A maze cell is 4 blocks: a 1-block wall line and a
 // 3-block corridor. Cell coordinate c maps to block coordinate 4c + 0.5, so a
@@ -70,6 +70,7 @@ constant int HM_LAYERS = 4;         // cut-out surfaces a ray may pass through
 #define HK_BEACON  5    // iron block with the beacon on it
 #define HK_PLANT   6
 #define HK_LAMP    7    // the lantern itself
+#define HK_BMODEL  8    // the beacon itself, on its iron block
 
 // Plants.
 #define HP_NONE    0
@@ -109,8 +110,6 @@ struct HmEnv {
     uint   style;      // which garden, 0..3
     float  now;
     float  pxA;        // radians per pixel
-    float  skyDark;    // sky light at night
-    float  gamma;      // the game's brightness setting
     float3 zen, hor, fog, cloud;
     float3 grassTint, leafTint;
     float3 beamCol;
@@ -134,7 +133,7 @@ static inline int hmColumn(int2 b, device const uint* verts, thread const HmEnv&
     H = 0.0;
     if (r.x != 0 && r.y != 0) {
         if (ci.x == E.goalCell.x && ci.y == E.goalCell.y) {
-            if (b.x == E.goalB.x && b.y == E.goalB.y) { H = 2.0; return HK_BEACON; }
+            if (b.x == E.goalB.x && b.y == E.goalB.y) { H = 1.0; return HK_BEACON; }
             H = 1.0;
             return HK_BASE;
         }
@@ -209,18 +208,6 @@ static inline int hmPlant(int2 b, thread const HmEnv& E) {
     return HP_NONE;
 }
 
-static inline bool hmBox(float3 ro, float3 inv, float3 lo, float3 hi,
-                         thread float& tN, thread float3& n) {
-    float3 t1 = (lo - ro) * inv, t2 = (hi - ro) * inv;
-    float3 tn = min(t1, t2), tf = max(t1, t2);
-    float a = max(max(tn.x, tn.y), tn.z), z = min(min(tf.x, tf.y), tf.z);
-    if (a > z || z <= 0.0) return false;
-    tN = a;
-    n = a == tn.x ? float3(-sign(inv.x), 0.0, 0.0)
-      : (a == tn.y ? float3(0.0, -sign(inv.y), 0.0) : float3(0.0, 0.0, -sign(inv.z)));
-    return true;
-}
-
 struct HmHit {
     float  t;
     float3 n;
@@ -228,8 +215,8 @@ struct HmHit {
     int2   b;
     float  H;      // the hit column's height
     float  clear;  // closest the ray came to passing a column top, in radians
-    int    part;   // plant type, or lantern box (0 body, 1 cap)
-    float2 uv;     // a plant's or lantern's face coordinates, 0..1
+    int    part;   // plant type
+    McModelHit m;  // a small model's hit: plant, lantern, beacon
 };
 
 // Steps the ray column by column from tMin. Everything solid stands on the
@@ -238,13 +225,13 @@ struct HmHit {
 // inside a column (behind a leaf it saw through) ignores that column's near
 // side and carries on.
 static inline HmHit hmTrace(float3 ro, float3 rd, float tMin, float tFar,
-                            device const uint* verts, thread const HmEnv& E) {
+                            device const uint* verts, thread const HmEnv& E,
+                            texture2d_array<float> mcTiles) {
     HmHit h;
     h.t = 1e9; h.kind = HK_NONE; h.n = float3(0.0); h.b = int2(0); h.H = 0.0; h.clear = 1e9;
-    h.part = 0; h.uv = float2(0.0);
+    h.part = 0;
     float tFloor = rd.y < -1e-5 ? -ro.y / rd.y : 1e9;
     float tLim = min(tFloor, tFar);
-    float3 inv3 = 1.0 / select(rd, float3(1e-7), abs(rd) < 1e-7);
     float2 d = select(rd.xz, float2(1e-7), abs(rd.xz) < 1e-7);
     float2 inv = 1.0 / d;
     float3 p0 = ro + rd * tMin;
@@ -276,48 +263,29 @@ static inline HmHit hmTrace(float3 ro, float3 rd, float tMin, float tFar,
                     return h;
                 }
             }
-            if (kind == HK_LPOST) {
-                // The lantern: a 6x7x6 body and a 4x2x4 cap, in sixteenths.
-                // KIT: block models (lantern, beacon, cross plants) built here by hand.
-                float3 c = float3(float(b.x), 4.0, float(b.y));
-                float tb, best = 1e9; float3 nb, nn; int part = -1;
-                if (hmBox(ro, inv3, c + float3(5.0, 0.0, 5.0) / 16.0, c + float3(11.0, 7.0, 11.0) / 16.0, tb, nb)
-                    && tb > tMin && tb < best) { best = tb; nn = nb; part = 0; }
-                if (hmBox(ro, inv3, c + float3(6.0, 7.0, 6.0) / 16.0, c + float3(10.0, 9.0, 10.0) / 16.0, tb, nb)
-                    && tb > tMin && tb < best) { best = tb; nn = nb; part = 1; }
-                if (part >= 0) {
-                    h.t = best; h.kind = HK_LAMP; h.n = nn; h.b = b; h.part = part;
-                    return h;
-                }
+            if (kind == HK_LPOST && mcLantern(mcTiles, E.lampFrame, float3(float(b.x), 4.0, float(b.y)), false,
+                                              ro, rd, max(tEnter - 1e-4, tMin), tExit, E.pxA, h.m)) {
+                h.t = h.m.t; h.kind = HK_LAMP; h.n = h.m.n; h.b = b;
+                return h;
+            }
+            if (kind == HK_BEACON && mcBeacon(mcTiles, float3(float(b.x), 1.0, float(b.y)),
+                                              ro, rd, max(tEnter - 1e-4, tMin), tExit, E.pxA, h.m)) {
+                h.t = h.m.t; h.kind = HK_BMODEL; h.n = h.m.n; h.b = b;
+                return h;
             }
         } else if (min(yE, ro.y + rd.y * tExit) < 1.0) {
-            // Plants: two crossed planes on the block's diagonals.
+            // Plants, in the corner blocks of a cell.
             int pl = hmPlant(b, E);
             if (pl != HP_NONE) {
-                float2 o2 = ro.xz - (float2(b) + 0.5);
-                float best = 1e9, bu = 0.0; float3 bn = float3(0.0);
-                float den = rd.x - rd.z;
-                if (abs(den) > 1e-6) {
-                    float t = -(o2.x - o2.y) / den;
-                    float2 q = o2 + rd.xz * t;
-                    float y = ro.y + rd.y * t;
-                    if (t > max(tEnter, tMin) && t < tExit && y >= 0.0 && y < 1.0) {
-                        best = t; bu = (q.x + q.y) * 0.5 + 0.5; bn = float3(0.7071, 0.0, -0.7071);
-                    }
-                }
-                den = rd.x + rd.z;
-                if (abs(den) > 1e-6) {
-                    float t = -(o2.x + o2.y) / den;
-                    float2 q = o2 + rd.xz * t;
-                    float y = ro.y + rd.y * t;
-                    if (t > max(tEnter, tMin) && t < tExit && t < best && y >= 0.0 && y < 1.0) {
-                        best = t; bu = (q.x - q.y) * 0.5 + 0.5; bn = float3(0.7071, 0.0, 0.7071);
-                    }
-                }
-                if (best < 1e8) {
-                    h.t = best; h.kind = HK_PLANT; h.b = b; h.part = pl;
-                    h.uv = float2(bu, 1.0 - (ro.y + rd.y * best));
-                    h.n = dot(bn, rd) > 0.0 ? -bn : bn;
+                int layer = pl == HP_GRASS ? MC_SHORT_GRASS
+                          : pl == HP_POPPY ? MC_POPPY
+                          : pl == HP_DANDELION ? MC_DANDELION
+                          : pl == HP_CORNFLOWER ? MC_CORNFLOWER
+                          : pl == HP_DAISY ? MC_OXEYE_DAISY : MC_FIREFLY_BUSH;
+                if (mcCross(mcTiles, layer, float3(float(b.x), 0.0, float(b.y)),
+                            pl == HP_GRASS ? E.grassTint : float3(1.0),
+                            ro, rd, max(tEnter - 1e-4, tMin), tExit, E.pxA, h.m)) {
+                    h.t = h.m.t; h.kind = HK_PLANT; h.n = h.m.n; h.b = b; h.part = pl;
                     return h;
                 }
             }
@@ -357,14 +325,9 @@ static inline float hmBlockLevel(float3 q, device const uint* verts, thread cons
     return max(lv, 0.0);
 }
 
-static inline float3 hmLightmap(float blockLevel, float skyLevel, thread const HmEnv& E) {
-    float bl = mcLight(blockLevel);
-    float3 bc = float3(bl, bl * ((bl * 0.6 + 0.4) * 0.6 + 0.4), bl * (bl * bl * 0.6 + 0.4));
-    float sl = mcLight(skyLevel) * E.skyDark;
-    float3 c = saturate(bc + float3(sl * 0.82, sl * 0.86, sl));
-    float3 g = 1.0 - pow(1.0 - c, float3(4.0));
-    c = mix(c, g, E.gamma);
-    return saturate(c * 0.96 + 0.03);
+// The game's lightmap at midnight in the Overworld.
+static inline float3 hmLightmap(float blockLevel) {
+    return mcLightmap(blockLevel, 15.0, 0.0, 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +420,7 @@ static inline float3 hmScene(float3 ro, float3 rd, thread const HmEnv& E, uint s
     edge = false;
     tOut = 1e9;
     for (int layer = 0; layer < HM_LAYERS; ++layer) {
-        h = hmTrace(ro, rd, tMin, HM_FOG1, verts, E);
+        h = hmTrace(ro, rd, tMin, HM_FOG1, verts, E, mcTiles);
         if (layer == 0) edge = h.clear < 1.5 * E.pxA;
         if (h.kind == HK_NONE) {
             if (cache.skyValid) col = cache.sky;
@@ -474,47 +437,20 @@ static inline float3 hmScene(float3 ro, float3 rd, thread const HmEnv& E, uint s
         float fogK = smoothstep(HM_FOG0, HM_FOG1, h.t);
 
         if (h.kind == HK_PLANT) {
-            int layerT = h.part == HP_GRASS ? MC_SHORT_GRASS
-                       : h.part == HP_POPPY ? MC_POPPY
-                       : h.part == HP_DANDELION ? MC_DANDELION
-                       : h.part == HP_CORNFLOWER ? MC_CORNFLOWER
-                       : h.part == HP_DAISY ? MC_OXEYE_DAISY : MC_FIREFLY_BUSH;
-            float fp = px / max(abs(dot(rd, n)), 0.2);
-            float4 tx = mcTile(mcTiles, layerT, h.uv, fp);
-            if (tx.a < 0.5 && layer < HM_LAYERS - 1) {
-                if (layer == 0 && tx.a > 0.1) edge = true;
-                tMin = h.t + 1e-4;
-                continue;
-            }
-            if (layer == 0 && tx.a < 0.9) edge = true;
-            float3 rgb = tx.rgb;
-            if (h.part == HP_GRASS) rgb *= E.grassTint;
+            if (layer == 0 && h.m.color.a < 0.9) edge = true;
             float3 q = float3(float(h.b.x) + 0.5, 0.5, float(h.b.y) + 0.5);
-            col = rgb * hmLightmap(hmBlockLevel(q, verts, E), 15.0, E);
+            col = h.m.color.rgb * hmLightmap(hmBlockLevel(q, verts, E));
             if (h.part == HP_BUSH) {
-                float4 em = mcTile(mcTiles, E.bushFrame, h.uv, fp);
+                float4 em = mcModelTexel(mcTiles, E.bushFrame, h.m.px, h.m.rect, px);
                 col = mix(col, em.rgb, em.a);
             }
             col = mix(col, E.fog, fogK);
             break;
         }
 
-        if (h.kind == HK_LAMP) {
-            // The lantern's faces, from its texture's layout: body sides from
-            // (0,2) 6x7, body top (0,9) 6x6, cap sides (1,0) 4x2, cap top (1,10) 4x4.
-            float3 c = float3(float(h.b.x), 4.0, float(h.b.y));
-            float3 l = (P - c) * 16.0;
-            float2 fuv;
-            if (abs(n.y) > 0.5) {
-                fuv = h.part == 0 ? float2(l.x - 5.0, l.z - 5.0) + float2(0.0, 9.0)
-                                  : float2(l.x - 6.0, l.z - 6.0) + float2(1.0, 10.0);
-            } else {
-                float along = abs(n.x) > 0.5 ? l.z : l.x;
-                fuv = h.part == 0 ? float2(along - 5.0, 7.0 - l.y) + float2(0.0, 2.0)
-                                  : float2(along - 6.0, 9.0 - l.y) + float2(1.0, 0.0);
-            }
-            float4 tx = mcTile(mcTiles, E.lampFrame, clamp(fuv, 0.01, 15.99) / 16.0, px);
-            col = tx.rgb * hmLightmap(15.0, 15.0, E) * mcFaceShade(n);
+        if (h.kind == HK_LAMP || h.kind == HK_BMODEL) {
+            // Lantern and beacon both give light 15.
+            col = h.m.color.rgb * hmLightmap(15.0) * (h.m.shade > 0.5 ? mcFaceShade(n) : 1.0);
             col = mix(col, E.fog, fogK);
             edge = edge || layer == 0;
             break;
@@ -535,7 +471,7 @@ static inline float3 hmScene(float3 ro, float3 rd, thread const HmEnv& E, uint s
 
         int texL;
         float3 tint = float3(1.0);
-        bool cutout = false, fullBright = false;
+        bool cutout = false;
         if (h.kind == HK_FLOOR) {
             texL = hmIsPath(h.b, verts, E) ? MC_DIRT_PATH_TOP : MC_GRASS_BLOCK_TOP;
             if (texL == MC_GRASS_BLOCK_TOP) tint = E.grassTint;
@@ -546,39 +482,14 @@ static inline float3 hmScene(float3 ro, float3 rd, thread const HmEnv& E, uint s
             texL = feature ? MC_FLOWERING_AZALEA_LEAVES : E.leaf;
             if (!feature) tint = E.leafTint;
             cutout = true;
-        } else if (h.kind == HK_BASE || (h.kind == HK_BEACON && P.y < 1.0)) {
+        } else if (h.kind == HK_BASE || h.kind == HK_BEACON) {
             texL = MC_IRON_BLOCK;
-        } else if (h.kind == HK_BEACON) {
-            texL = MC_GLASS;
-            cutout = true;
-            fullBright = true;
         } else {
             texL = E.pillar;
         }
         float4 tx = mcTileAniso(mcTiles, texL, tuv, dx, dy);
 
         if (cutout && tx.a < 0.5) {
-            if (h.kind == HK_BEACON) {
-                // Through the glass: the beacon's core and its obsidian base.
-                // KIT: beacon model built here by hand.
-                float3 c = float3(float(h.b.x), 1.0, float(h.b.y));
-                float3 inv3 = 1.0 / select(rd, float3(1e-7), abs(rd) < 1e-7);
-                float tb, best = 1e9; float3 nb, nn; int part = -1;
-                if (hmBox(ro, inv3, c + float3(3.0, 3.0, 3.0) / 16.0, c + float3(13.0, 14.0, 13.0) / 16.0, tb, nb)
-                    && tb > h.t && tb < best) { best = tb; nn = nb; part = 0; }
-                if (hmBox(ro, inv3, c + float3(2.0, 0.1, 2.0) / 16.0, c + float3(14.0, 3.0, 14.0) / 16.0, tb, nb)
-                    && tb > h.t && tb < best) { best = tb; nn = nb; part = 1; }
-                if (part >= 0) {
-                    float3 Q = ro + rd * best;
-                    float2 iuv = abs(nn.y) > 0.5 ? fract(Q.xz)
-                               : float2(fract(abs(nn.x) > 0.5 ? Q.z : Q.x), 1.0 - fract(Q.y));
-                    float4 it = mcTile(mcTiles, part == 0 ? MC_BEACON : MC_OBSIDIAN, iuv, best * E.pxA);
-                    col = it.rgb * hmLightmap(15.0, 15.0, E) * mcFaceShade(nn);
-                    col = mix(col, E.fog, smoothstep(HM_FOG0, HM_FOG1, best));
-                    tOut = best;
-                    break;
-                }
-            }
             if (layer < HM_LAYERS - 1) {
                 if (layer == 0 && tx.a > 0.1) edge = true;
                 tMin = h.t + 1e-4;
@@ -652,8 +563,7 @@ static inline float3 hmScene(float3 ro, float3 rd, thread const HmEnv& E, uint s
                 occ += 0.8 * lowY * lowY;
                 ao = 1.0 - 0.4 * saturate(occ);
             }
-            float3 lm = fullBright ? hmLightmap(15.0, 15.0, E)
-                                   : hmLightmap(hmBlockLevel(Ps + n * 0.5, verts, E), 15.0, E);
+            float3 lm = hmLightmap(hmBlockLevel(Ps + n * 0.5, verts, E));
             light = lm * mcFaceShade(n) * ao;
             cache.valid = true; cache.kind = h.kind; cache.b = h.b; cache.n = n; cache.tid = tid;
             cache.light = light;
@@ -726,7 +636,7 @@ static inline float3 hmOverlays(float3 col, float3 ro, float3 rd, float tHit, th
         if (it.a < 0.5) continue;
         if (it.a < 0.95) edge = true;
         float3 lp = c;
-        col = it.rgb * hmLightmap(hmBlockLevel(lp, verts, E), 15.0, E) * 0.9;
+        col = it.rgb * hmLightmap(hmBlockLevel(lp, verts, E));
         col = mix(col, E.fog, smoothstep(HM_FOG0, HM_FOG1, t));
         tHit = t;
     }
@@ -808,10 +718,8 @@ fragment half4 lerpMain(float4 pos [[position]],
     E.pxA = 2.0 / (minRes * HM_FOCAL * lens);
     E.camR = right;
     E.camU = up;
-    E.skyDark = 0.2;
-    E.gamma = u.brightness;
-    E.zen = mcFromSRGB(float3(0.0, 0.0, 0.02));
-    E.hor = mcFromSRGB(float3(0.03, 0.04, 0.09));
+    E.zen = mcSkyAt(0.03);
+    E.hor = mcFogAt(0.0);
     E.fog = E.hor;
     E.cloud = float3(0.13, 0.13, 0.16);
     E.grassTint = mcGrassTint(mcMaps, 0.8, 0.4);
