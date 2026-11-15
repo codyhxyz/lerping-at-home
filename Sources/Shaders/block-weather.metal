@@ -29,12 +29,14 @@
 // Stills (gallery, snapshots) are midnight on an equinox, as the clock
 // provider gives them; `clock` pins the hour, `pace` runs the day faster.
 //
-// Cost: 12.3 ms a frame at 3456x2234 on an M5 against maze's 10.2 in the
-// same minute (bench state: midnight, raining).
+// Cost: 13.1 ms a frame at 3456x2234 on an M5 against maze's 10.1 in the
+// same minute (bench state: midnight, raining). The kit's tree walk is
+// about 0.8 of that over the leaner walk this look had before it.
 // Worst pixel: up to 4 rounds of (14 march samples + 10 column cells) in
 // the near field, 12 bands of 10 cells; for rays toward the knoll's flanks
-// a walk of up to 6 tree regions and 16 blocks of one crown (at most 3 leaf
-// texels); 8 corner lookups (near tops only); 4 cells of plant tests; a
+// a walk of up to 6 tree regions and the kit's mcTree through one crown (up
+// to 26 blocks, a texel at each leaf); one region lookup for the canopy's
+// shade on the ground; 8 corner lookups (near tops only); 4 cells of plant tests; a
 // 4-cell cloud walk; up to 12 rain panels, one texel fetch each. The land
 // walks never sample a texture. Rain is the costly part (about 4 ms with
 // the game's 10-block ring), so the panels are walked out to 8 blocks
@@ -85,8 +87,6 @@ struct BwEnv {
     float  g;                       // the game's cos(celestial angle): 1 noon, 0 sun on the horizon, -1 midnight
     float3 sky, fog;                // sky colour overhead; fog colour before the sunrise blend
     float4 rise;                    // sunrise / sunset colour and strength
-    float2 riseAx;                  // horizontal direction of the sun
-    float3 riseSide;
     float3 cloud;                   // cloud colour
     float  lightDay;                // `day` for mcLightmap, rain and thunder included
     float3 light15;                 // lightmap at full sky light
@@ -290,80 +290,52 @@ static inline float bwTrace(float3 ro, float3 rd, float tMax, float2 off,
 }
 
 // ---------------------------------------------------------------------------
-// Trees: at most one in each 7x7 region, its trunk kept two cells in from
-// the region's edges so the whole crown stays inside it. They grow only on
-// the knoll's flanks either side of the view out over the lake (framing it,
-// never blocking it), on dry land. Oak in summer (the game's oak: four to
-// six logs, two 5x5 leaf layers with ragged corners, two 3x3 above, the top
-// one a plus); spruce in a winter world.
+// Trees: at most one in each 7x7 region, grown by the game's rule (the
+// kit's mcTreeGrow: oak in summer, spruce in a winter world), its trunk
+// kept in from the region's edges so the whole crown stays inside it (a
+// spruce's reach of 3 sits it in the middle). They grow only on the knoll's
+// flanks either side of the view out over the lake (framing it, never
+// blocking it), on dry land.
 //
-// KIT: trees (cascade has its own oak; one shared tree would serve both).
 // They are found after the land, in a pass of their own that only rays able
-// to reach the flanks take: walk the regions along the ray, meet each
-// crown's box, and step through its blocks. A leaf block whose texel there
-// is a hole lets the ray on to the next block, or out to the land behind.
+// to reach the flanks take: walk the regions along the ray and hand each
+// tree to the kit's mcTree, which steps through its blocks with the leaves
+// cut out by their alpha.
 
 constant int BW_TREG = 7;
 
-// How far a point is outside the central wedge of the view (trees stand
-// at 3.5 and more).
+// How far a point is outside the central wedge of the view (trunks stand
+// at 3.5 and more, so no crown comes nearer than about -0.7).
 static inline float bwWedge(float2 p) { return abs(p.x - 0.5) - 0.4 * max(p.y + 8.5, 0.0); }
 
-struct BwTree { int2 trunk; float g; float H; float on; float salt; };
+struct BwTree { McTree tr; float on; };
 
 static inline BwTree bwTreeIn(int2 r, float2 off, bool spruce) {
     BwTree T;
+    T.on = 0.0;
     float2 h = hash22(float2(r) * 1.31 + off * 0.173);
     float h2 = hash21(float2(r) * 0.77 + off * 0.31 + 3.1);
-    T.trunk = r * BW_TREG + 2 + int2(floor(h * 2.999));
-    float2 c = float2(T.trunk) + 0.5;
-    T.H = spruce ? 6.0 + floor(h2 * 2.999) : 4.0 + floor(h2 * 2.999);
-    T.salt = h2;
-    T.g = 0.0;
-    T.on = 0.0;
+    int2 trunk = r * BW_TREG + (spruce ? int2(3) : 2 + int2(floor(h * 2.999)));
+    float2 c = float2(trunk) + 0.5;
     if (h2 < 0.72 && bwWedge(c) > 3.5 && c.y > -4.0 && c.y < 12.0) {
-        T.g = floor(bwHeightC(c, off));
-        T.on = T.g >= 2.0 ? 1.0 : 0.0;
+        float g = floor(bwHeightC(c, off));
+        if (g >= 2.0) {
+            T.on = 1.0;
+            T.tr = mcTreeGrow(spruce ? MC_TREE_SPRUCE : MC_TREE_OAK,
+                              float3(float(trunk.x), g, float(trunk.y)), h2 * 97.0 + h.x * 13.0);
+        }
     }
     return T;
 }
 
-// The tree's span over cell c: (lo, hi, logTop); none when lo >= hi.
-// y < logTop is log, above it leaves.
-static inline float3 bwTreeSpan(int2 c, BwTree T, bool spruce) {
-    const float3 none = float3(0.0, -1.0, 0.0);
-    int2 a = abs(c - T.trunk);
-    int m = max(a.x, a.y);
-    if (m > 2) return none;
-    float g = T.g, H = T.H;
-    bool corner = a.x == a.y;
-    if (spruce) {
-        if (m == 0) return float3(g, g + H + 1.0, g + H - 1.0);
-        if (m == 1) return float3(g + 2.0, corner ? g + H - 2.0 : g + H, -1e9);
-        return corner ? none : float3(g + 2.0, g + 4.0, -1e9);
-    }
-    if (m == 0) return float3(g, g + H + 1.0, g + H);
-    if (m == 1) return float3(g + H - 3.0, corner ? g + H : g + H + 1.0, -1e9);
-    if (corner) {
-        // the game drops 5x5 corners at random
-        float k = hash21(float2(c) * 1.7 + T.salt * 13.0);
-        return k < 0.5 ? none : float3(g + H - 3.0, g + H - (k < 0.75 ? 2.0 : 1.0), -1e9);
-    }
-    return float3(g + H - 3.0, g + H - 1.0, -1e9);
-}
-
-// A block face's texture coordinates (see bwFaceUV below for the full form).
-static inline float2 bwFaceUV0(float3 P, float3 n) {
-    if (abs(n.y) > 0.5) return P.xz;
-    if (abs(n.x) > 0.5) return float2((n.x > 0.0 ? -1.0 : 1.0) * P.z, -P.y);
-    return float2((n.z > 0.0 ? 1.0 : -1.0) * P.x, -P.y);
-}
-
-// The nearest tree block before tBest, if any: its distance, normal and
-// kind (1 log, 2 leaves).
+// The nearest tree face before tBest, if any (kind 1 log, 2 leaves).
 static inline float bwTrees(float3 ro, float3 rd, float tBest, float2 off, bool spruce, float px,
-                            texture2d_array<float> tiles, thread float3& nOut, thread int& kindOut) {
+                            texture2d_array<float> tiles, texture2d_array<float> maps,
+                            thread McModelHit& hit, thread int& kind, thread float& passed) {
     float tEnd = min(tBest, rd.z > 1e-3 ? (15.0 - ro.z) / rd.z : 60.0);
+    // a rising ray is done once it is over the tallest crown can be
+    if (rd.y > 0.0) tEnd = min(tEnd, (28.0 - ro.y) / rd.y);
+    float3 tint = mcTreeLeafTint(spruce ? MC_TREE_SPRUCE : MC_TREE_OAK, mcFoliageTint(maps, 0.8, 0.4));
     float3 dr = select(rd, float3(1e-6), abs(rd) < 1e-6);
     float3 inv = 1.0 / dr;
     int3 stp = int3(sign(dr));
@@ -371,50 +343,14 @@ static inline float bwTrees(float3 ro, float3 rd, float tBest, float2 off, bool 
     int2 r = int2(floor(ro.xz / R));
     float2 tR = ((float2(r) + select(float2(0.0), float2(1.0), dr.xz > 0.0)) * R - ro.xz) * inv.xz;
     float tIn = 0.0;
-    int leafSamples = 0;
-    // a rising ray is done once it is over the tallest crown can be
-    if (rd.y > 0.0) tEnd = min(tEnd, (25.0 - ro.y) / rd.y);
     for (int i = 0; i < 6; ++i) {
         if (tIn >= tEnd) break;
-        float tOutR = min(min(tR.x, tR.y), tEnd);
         BwTree T = bwTreeIn(r, off, spruce);
         if (T.on > 0.5) {
-            // the crown's box
-            float3 lo = float3(float(T.trunk.x - 2), T.g, float(T.trunk.y - 2));
-            float3 hi = float3(float(T.trunk.x + 3), T.g + T.H + 1.0, float(T.trunk.y + 3));
-            float3 ta = (lo - ro) * inv, tb = (hi - ro) * inv;
-            float3 tn = min(ta, tb), tf = max(ta, tb);
-            float a = max(max(tn.x, tn.y), tn.z), z = min(min(tf.x, tf.y), min(tf.z, tEnd));
-            if (a < z && z > 0.0) {
-                // step through its blocks
-                float t = max(a, 0.0);
-                int ax = a == tn.x ? 0 : (a == tn.y ? 1 : 2);
-                int3 v = int3(floor(ro + rd * (t + 1e-4)));
-                float3 tNext = (float3(v) + select(float3(0.0), float3(1.0), dr > 0.0) - ro) * inv;
-                for (int k = 0; k < 16; ++k) {
-                    if (t >= z) break;
-                    float3 sp = bwTreeSpan(v.xz, T, spruce);
-                    float y = float(v.y);
-                    if (y >= sp.x && y < sp.y) {
-                        float3 n = ax == 0 ? float3(-float(stp.x), 0.0, 0.0)
-                                 : ax == 1 ? float3(0.0, -float(stp.y), 0.0) : float3(0.0, 0.0, -float(stp.z));
-                        int kind = y < sp.z ? 1 : 2;
-                        bool solid = true;
-                        if (kind == 2 && leafSamples < 3) {
-                            ++leafSamples;
-                            float3 P = ro + rd * t;
-                            solid = mcTile(tiles, spruce ? MC_SPRUCE_LEAVES : MC_OAK_LEAVES,
-                                           bwFaceUV0(P, n), t * px).a >= 0.5;
-                        }
-                        if (solid) { nOut = n; kindOut = kind; return t; }
-                    }
-                    if (tNext.x < tNext.y && tNext.x < tNext.z) { t = tNext.x; tNext.x += abs(inv.x); v.x += stp.x; ax = 0; }
-                    else if (tNext.y < tNext.z)                 { t = tNext.y; tNext.y += abs(inv.y); v.y += stp.y; ax = 1; }
-                    else                                        { t = tNext.z; tNext.z += abs(inv.z); v.z += stp.z; ax = 2; }
-                }
-            }
+            int k = mcTree(tiles, T.tr, tint, ro, rd, 0.0, tEnd, px, hit, passed);
+            if (k > 0) { kind = k; return hit.t; }
         }
-        tIn = tOutR;
+        tIn = min(tR.x, tR.y);
         if (tR.x < tR.y) { tR.x += R * abs(inv.x); r.x += stp.x; }
         else             { tR.y += R * abs(inv.z); r.y += stp.z; }
     }
@@ -477,7 +413,7 @@ static inline float bwLuma(float3 c) { return dot(c, float3(0.3, 0.59, 0.11)); }
 // The game's sky, fog, cloud and light colours for the hour and the weather
 // (its ClientLevel / FogRenderer / LightTexture arithmetic, in its own
 // gamma-space colour).
-static inline BwEnv bwEnv(constant LerpUniforms& u, BwArc A) {
+static inline BwEnv bwEnv(constant LerpUniforms& u, BwArc A, float3 look) {
     BwEnv E;
     E.winter = bwWinter(u, A);
     E.sunDir = A.sunDir;
@@ -498,23 +434,21 @@ static inline BwEnv bwEnv(constant LerpUniforms& u, BwArc A) {
     E.thunder = thunder;
 
     // Sky: the biome's sky colour dimmed by the day, greyed by rain and storm.
-    float day = saturate(g * 2.0 + 0.5);
+    // KIT: the rain/storm greying of sky, fog and clouds.
+    float day = mcSkyDay(g);
     float3 sky = mcSkyAt(day);
     sky = mix(sky, float3(bwLuma(sky) * 0.6), rain * 0.75);
     sky = mix(sky, float3(bwLuma(sky) * 0.2), thunder * 0.75);
     E.sky = sky;
-    E.fog = mcFogAt(day);
 
-    // Sunrise and sunset: the game's colour fan on the horizon under the sun.
-    // KIT: the sunrise colour, and the rain/storm greying of sky and clouds.
-    E.rise = float4(0.0);
-    if (abs(g) <= 0.4) {
-        float x = g / 0.4 * 0.5 + 0.5;
-        float a = 1.0 - (1.0 - sin(x * PI)) * 0.99;
-        E.rise = float4(mcFromSRGB(float3(x * 0.3 + 0.7, x * x * 0.7 + 0.2, 0.2)), a * a);
-    }
-    E.riseAx = normalize(A.sunDir.xz + float2(1e-5, 0.0));
-    E.riseSide = float3(E.riseAx.y, 0.0, -E.riseAx.x);
+    // Sunrise and sunset: the game's glow, its fan drawn in bwSky; the fog
+    // warmed toward it by the camera's facing (one fog for the whole view,
+    // as the game has it), drawn a little toward the sky (render distance),
+    // then darkened by rain and storm.
+    E.rise = mcSunsetAt(g);
+    float3 fog = mcFogToward(mcFogAt(day), E.rise, look, A.sunDir);
+    fog += (sky - fog) * 0.146;
+    E.fog = fog * float3(1.0 - rain * 0.5, 1.0 - rain * 0.5, 1.0 - rain * 0.4) * (1.0 - thunder * 0.5);
 
     // Clouds: white, greyed by rain, dimmed by the night, storm-dark.
     float3 cl = mix(float3(1.0), float3(0.6), rain * 0.95);
@@ -523,7 +457,7 @@ static inline BwEnv bwEnv(constant LerpUniforms& u, BwArc A) {
     E.cloud = cl;
 
     // The lightmap's day: the game's sky darkening, rain and storm included.
-    float dk = saturate(g * 2.0 + 0.2) * (1.0 - rain * 5.0 / 16.0) * (1.0 - thunder * 5.0 / 16.0);
+    float dk = mcLightDay(g) * (1.0 - rain * 5.0 / 16.0) * (1.0 - thunder * 5.0 / 16.0);
     E.lightDay = dk;
     E.light15 = mcLightmap(0.0, 15.0, dk, 0.0);
     float sb = saturate(1.0 - (g * 2.0 + 0.25));
@@ -541,20 +475,6 @@ static inline BwEnv bwEnv(constant LerpUniforms& u, BwArc A) {
     E.coff = int2(int(fract(u.seed * 5.3) * 256.0), int(fract(u.seed * 1.91) * 256.0));
     E.starTurn = A.hour * (TWO_PI / 24.0);
     return E;
-}
-
-// Fog colour looking along rd: the day's fog, warmed toward the sunrise
-// colour when facing the sun, drawn a little toward the sky (render
-// distance), then darkened by rain and storm.
-static inline float3 bwFogCol(float3 rd, BwEnv E) {
-    float3 c = E.fog;
-    if (E.rise.a > 0.0) {
-        float d = max(dot(normalize(rd.xz + float2(1e-6, 0.0)), E.riseAx), 0.0);
-        c = mix(c, E.rise.rgb, d * E.rise.a);
-    }
-    c += (E.sky - c) * 0.146;
-    c *= float3(1.0 - E.rain * 0.5, 1.0 - E.rain * 0.5, 1.0 - E.rain * 0.4) * (1.0 - E.thunder * 0.5);
-    return c;
 }
 
 // ---------------------------------------------------------------------------
@@ -586,16 +506,9 @@ static inline int bwMoonLayer(int p) {
 static inline float3 bwSky(float3 rd, BwEnv E, float px, texture2d_array<float> skins) {
     float y = rd.y;
     float hd = 16.0 * sqrt(max(1.0 - y * y, 0.0)) / max(y, 1e-4);
-    float3 c = mix(E.sky, bwFogCol(rd, E), y > 0.0 ? saturate(hd / BW_SKYFOG) : 1.0);
+    float3 c = mix(E.sky, E.fog, y > 0.0 ? saturate(hd / BW_SKYFOG) : 1.0);
 
-    if (E.rise.a > 0.002) {
-        float z = dot(rd.xz, E.riseAx);
-        if (z > 0.0) {
-            float2 q = float2(dot(rd, E.riseSide), y) / z;
-            q /= float2(1.2, q.y > 0.0 ? 1.2 + 0.8 * E.rise.a : 0.85);
-            c = mix(c, E.rise.rgb, saturate(1.0 - length(q)) * E.rise.a);
-        }
-    }
+    c = mix(c, E.rise.rgb, mcSunsetFan(rd, E.sunDir, E.rise));
 
     float clear = 1.0 - E.rain;
     if (clear <= 0.0) return c;
@@ -824,20 +737,14 @@ static inline BwFace bwFaceUV(float3 P, float3 n, float3 dPdx, float3 dPdy) {
 static inline float3 bwGrassTint(texture2d_array<float> maps) { return mcGrassTint(maps, 0.8, 0.4); }   // plains
 
 // A block face's colour before light: which block, its texture, its tint.
-static inline float3 bwAlbedo(float3 P, float3 n, int2 cell, float h, int kind, bool winter,
+static inline float3 bwAlbedo(float3 P, float3 n, int2 cell, float h, bool winter,
                               BwFace F, float2 off,
                               texture2d_array<float> tiles, texture2d_array<float> maps) {
     bool top = abs(n.y) > 0.5;
     int L;
     float3 tint = float3(1.0);
     bool fringe = false;          // a grass block's side: dirt under the tinted fringe
-    if (kind == 1) {
-        L = winter ? (top ? MC_SPRUCE_LOG_TOP : MC_SPRUCE_LOG) : (top ? MC_OAK_LOG_TOP : MC_OAK_LOG);
-    } else if (kind == 2) {
-        L = winter ? MC_SPRUCE_LEAVES : MC_OAK_LEAVES;
-        tint = winter ? mcFromSRGB(float3(0.380, 0.600, 0.380))   // spruce leaves: #619961
-                      : mcFoliageTint(maps, 0.8, 0.4);
-    } else if (top) {
+    if (top) {
         if (h < 0.0) L = bwBedBlock(cell, h, off);
         else if (winter) L = MC_SNOW;
         else if (h < 1.0) L = MC_SAND;
@@ -889,16 +796,22 @@ fragment half4 lerpMain(float4 pos [[position]],
     int kind = 0;
     float t = bwTrace(ro, rd, BW_FOG1 + 10.0, off, n, cell);
     float tZe = rd.z > 1e-3 ? max((15.0 - ro.z) / rd.z, 0.0) : 0.0;
-    if (max(bwWedge(ro.xz), bwWedge(ro.xz + rd.xz * tZe)) > 0.4) {   // no crown reaches nearer than 0.7
-        float3 nT; int kT;
-        float tT = bwTrees(ro, rd, min(t, BW_FOG1), off, winter, px, mcTiles, nT, kT);
-        if (tT < t) { t = tT; n = nT; kind = kT; }
+    float3 treeCol = float3(0.0);
+    float treeSky = 15.0;
+    // (no oak crown comes nearer the wedge than about -0.3, no spruce -0.7)
+    if (max(bwWedge(ro.xz), bwWedge(ro.xz + rd.xz * tZe)) > (winter ? -1.0 : -0.5)) {
+        McModelHit th; int kT = 0; float passed = 0.0;
+        float tT = bwTrees(ro, rd, min(t, BW_FOG1), off, winter, px, mcTiles, mcMaps, th, kT, passed);
+        if (tT < t) {
+            t = tT; n = th.n; kind = kT; treeCol = th.color.rgb;
+            treeSky = 15.0 - min(passed, 3.0);   // sky light lost through the leaves passed
+        }
     }
     float tw = (BW_WATER - ro.y) / rd.y;
     bool water = rd.y < 0.0 && tw > 0.0 && tw < t && tw < BW_FOG1;
     bool hit = t < 1e8 && dot(n, n) > 0.5;
 
-    BwEnv E = bwEnv(u, bwArc(u, clock));
+    BwEnv E = bwEnv(u, bwArc(u, clock), fwd);
     float3 P = ro + rd * t;
     float h = (hit && kind == 0) ? bwHeight(cell, off) : 0.0;
 
@@ -910,10 +823,16 @@ fragment half4 lerpMain(float4 pos [[position]],
         float3 dPdx = t * px * (right - rd * dot(right, n) / dn);
         float3 dPdy = t * px * (up - rd * dot(up, n) / dn);
         BwFace F = bwFaceUV(P, n, dPdx, dPdy);
-        float3 alb = bwAlbedo(P, n, cell, h, kind, winter, F, off, mcTiles, mcMaps);
+        float3 alb = kind > 0 ? treeCol : bwAlbedo(P, n, cell, h, winter, F, off, mcTiles, mcMaps);
         float ao = (kind == 0 && n.y > -0.5 && P.z < BW_ZB) ? bwOcclusion(P, n, cell, h, t, off) : 1.0;
         // under the lake, sky light falls by one a block of water
-        float3 lm = (kind == 0 && h < 0.0) ? mcLightmap(0.0, 15.0 + min(h, 0.0), E.lightDay, 0.0) : E.light15;
+        float sky = kind > 0 ? treeSky : 15.0 + min(h, 0.0);
+        // and under a crown the ground loses some (the kit's mcTreeShade)
+        if (kind == 0 && h >= 2.0 && bwWedge(P.xz) > -1.0 && P.z < 15.0) {
+            BwTree T = bwTreeIn(int2(floor(P.xz / float(BW_TREG))), off, winter);
+            if (T.on > 0.5) sky -= mcTreeShade(T.tr, P, ao);
+        }
+        float3 lm = sky < 15.0 ? mcLightmap(0.0, sky, E.lightDay, 0.0) : E.light15;
         col = alb * mcFaceShade(n) * ao * lm;
 
         // Short grass and flowers on the grass near the eye: the shared
@@ -978,9 +897,9 @@ fragment half4 lerpMain(float4 pos [[position]],
             float4 ic = mcTile(mcTiles, MC_ICE, Pw.xz, fpw);
             col = mix(col, ic.rgb * E.light15, ic.a);
         }
-        col = mix(col, bwFogCol(rd, E), saturate((tw * length(rd.xz) - BW_FOG0) / (BW_FOG1 - BW_FOG0)));
+        col = mix(col, E.fog, saturate((tw * length(rd.xz) - BW_FOG0) / (BW_FOG1 - BW_FOG0)));
     } else if (t < 1e8) {
-        col = mix(col, bwFogCol(rd, E), saturate((t * length(rd.xz) - BW_FOG0) / (BW_FOG1 - BW_FOG0)));
+        col = mix(col, E.fog, saturate((t * length(rd.xz) - BW_FOG0) / (BW_FOG1 - BW_FOG0)));
     } else {
         // 4. The sky and the cloud layer.
         col = bwSky(rd, E, px, mcSkins);
