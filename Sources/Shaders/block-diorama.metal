@@ -4,17 +4,25 @@
 // (`make minecraft`); none of them are in this file or this repo.
 //
 // lerp-category: Minecraft
-// lerp-requires: minecraft
+// lerp-requires: minecraft mobs
 //
-// On top: a plank cottage with glass windows, an oak door, a lamp by the
-// path and smoke from its cobblestone chimney; trees; a spring pond and the
-// stream it feeds, which runs to one cut edge and pours off it as falling
-// water into the clouds. In the cut faces: grass, dirt, stone and deepslate,
-// bedrock at the bottom, granite, andesite, diorite and tuff, ore seams, a
-// tunnel or two, and a cave with a lava floor that glows out through the
-// side. The day turns over it: the sky darkens, the moon goes through its
-// phases, and at dusk the redstone lamp, the windows and the cave come up.
+// On top: a plank cottage with glass windows, an oak door, a torch inside, a
+// lantern on a fence post by the path and smoke from its cobblestone
+// chimney; trees; a spring pond and the stream it feeds, which runs to one
+// cut edge and pours off it as falling water into the clouds. In the cut
+// faces: grass, dirt, stone and deepslate, bedrock at the bottom, granite,
+// andesite, diorite and tuff, ore seams, a tunnel or two, and a cave with a
+// lava floor that glows out through the side. The day turns over it: the sky
+// darkens, the moon goes through its phases, and at dusk the lantern, the
+// windows and the cave come up.
 // Each seed digs a different chunk, in plains, cherry grove or snowy taiga.
+//
+// Life, from the game's own mobs: a few animals of the kinds the biome
+// spawns, in its skins (cold pigs, cows and chickens and mostly black sheep
+// in the taiga, with snow foxes or ashen wolves; sheep and pigs in the cherry
+// grove; the farm animals and horses on the plains), strolling about their
+// spot on the grass and grazing; a villager of the biome's type on the path,
+// who goes indoors at dusk; a cat on the ridge of the roof.
 //
 // Lit as the game lights: fixed per-face shading, smooth-lighting corners,
 // sky light and block light by level (a level a block from the source), the
@@ -57,9 +65,10 @@ constant int B_AIR = 0, B_GRASS = 1, B_DIRT = 2, B_STONE = 3, B_DEEP = 4,
              B_LOG = 27,         // 27..30 oak, birch, spruce, cherry
              B_LEAVES = 31,      // 31..34 the same
              B_PLANKS = 35, B_COBBLE = 36, B_GLASS = 37, B_ROOF = 38,
-             B_DOOR_LO = 39, B_DOOR_HI = 40, B_LAMP = 41, B_WATER = 42,
+             B_DOOR_LO = 39, B_DOOR_HI = 40, B_WATER = 42,
              B_LAVA = 43, B_FALL = 44, B_ICE = 45, B_PATH = 46,
-             B_CRAFT = 47, B_FURNACE = 48, B_PLANT = 49, B_POST = 50;
+             B_CRAFT = 47, B_FURNACE = 48, B_PLANT = 49, B_POST = 50,
+             B_FENCE = 51, B_LANTERN = 52, B_TORCH = 53;   // the kit's small models, from B_FENCE up
 
 constant int DM_ORE_STONE[7] = { MC_COAL_ORE, MC_IRON_ORE, MC_COPPER_ORE, MC_GOLD_ORE,
                                  MC_REDSTONE_ORE, MC_LAPIS_ORE, MC_DIAMOND_ORE };
@@ -290,6 +299,8 @@ static inline int dmBlock(int3 c, DmCol col, thread const DmWorld& w, bool full)
 
     // The cottage: 5×5, walls three high, a stepped gable along x.
     int lx = c.x - w.house.x, lz = c.z - w.house.y, ly = y - w.house.z;
+    // The lamp post by the path: a fence post on the ground, a lantern on it.
+    if (lx == 0 && lz == -2 && y <= col.h + 2) return y == col.h + 1 ? B_FENCE : B_LANTERN;
     if (lx >= -1 && lx <= 5 && lz >= -2 && lz <= 5 && ly >= 1 && ly <= 8) {
         if (lx == 3 && lz == 3 && ly >= 4 && ly <= 7) return B_COBBLE;   // chimney
         if (lz >= -1) {
@@ -307,13 +318,12 @@ static inline int dmBlock(int3 c, DmCol col, thread const DmWorld& w, bool full)
                     }
                     if (ly == 1 && lx == 1 && lz == 3) return B_CRAFT;
                     if (ly == 1 && lx == 3 && lz == 1) return B_FURNACE;
+                    if (ly == 2 && lx == 2 && lz == 3) return B_TORCH;   // on the back wall, facing the door
                     return B_AIR;
                 }
                 if (ex) return B_PLANKS;
                 return B_AIR;
             }
-        } else if (lx == 0 && ly <= 2) {
-            return ly == 1 ? B_COBBLE : B_LAMP;   // a redstone lamp by the path
         }
     }
 
@@ -325,7 +335,8 @@ static inline int dmBlock(int3 c, DmCol col, thread const DmWorld& w, bool full)
 
 // Blocks that hide what is behind them and darken their neighbours' corners.
 static inline bool dmOpaque(int id) {
-    return id != B_AIR && id != B_WATER && id != B_FALL && id != B_PLANT && id != B_GLASS && id != B_ICE;
+    return id != B_AIR && id != B_WATER && id != B_FALL && id != B_PLANT && id != B_GLASS && id != B_ICE
+        && id < B_FENCE;
 }
 // Blocks whose texture alpha decides where a ray stops.
 static inline bool dmCutout(int id) {
@@ -336,7 +347,48 @@ static inline int dmBlockAt(int3 c, thread const DmWorld& w) {
     return dmBlock(c, dmColumn(c.xz, w), w, false);
 }
 
-static DmWorld dmMakeWorld(float seed, int biomeParam) {
+// Plot k of the four the cottage may take: its cost (lower is better: flat,
+// dry, away from the water) and the cottage it would hold.
+static inline float dmPlot(int k, float s, thread const DmWorld& w, thread int3& house) {
+    int2 o = int2(2 + 7 * (k & 1), 3 + 6 * (k >> 1));
+    o += int2(int(hash11(s + 20.0 + float(k)) * 2.0), int(hash11(s + 30.0 + float(k)) * 2.0));
+    float2 mid = float2(o) + 2.5;
+    float ds = abs(mid.y - dmStreamZ(mid.x, w));
+    float dp = length(mid - w.pond);
+    int g0 = dmRawGround(o, w), g3 = dmRawGround(o + int2(4, 4), w);
+    int gm = dmRawGround(o + int2(2, 2), w);
+    float spread = float(max(max(g0, g3), gm) - min(min(g0, g3), gm));
+    house = int3(o, max(gm, w.W + 1));
+    return spread + (gm <= w.W ? 50.0 : 0.0) + (ds < 4.5 ? 30.0 : 0.0) + (dp < 5.5 ? 30.0 : 0.0)
+         + hash11(s + 40.0 + float(k)) * 0.5;
+}
+
+// Tree i, one chance per cell of a 4×4 grid, kept off the water and the
+// plot: packed as DmWorld.tree says, 0 for none.
+static inline uint dmTree(int i, float s, thread const DmWorld& w) {
+    int cx = i & 3, cz = i >> 2;
+    float h0 = hash11(s + 50.0 + float(i) * 3.1);
+    float h1 = hash11(s + 51.0 + float(i) * 3.7);
+    float h2 = hash11(s + 52.0 + float(i) * 4.3);
+    int2 tp = int2(2 + cx * 3 + (cz & 1) + int(h1 * 2.0), 2 + cz * 3 + int(h2 * 2.0) + (cx & 1));
+    tp = min(tp, int2(13));
+    if (h0 > 0.85) return 0u;
+    int lx = tp.x - w.house.x, lz = tp.y - w.house.y;
+    if (lx >= -2 && lx <= 6 && lz >= -3 && lz <= 6) return 0u;
+    float2 q = float2(tp) + 0.5;
+    if (q.x > w.pond.x - 1.0 && abs(q.y - dmStreamZ(q.x, w)) < 2.2) return 0u;
+    int g = dmRawGround(tp, w);
+    if (g <= w.W) return 0u;
+    int kind = w.biome == 2 ? 2 : (w.biome == 1 ? 3 : (h1 * 7.0 - floor(h1 * 7.0) < 0.3 ? 1 : 0));
+    int T = (kind == 2 ? 5 : 4) + int(h2 * 7.0 - floor(h2 * 7.0) < 0.5);
+    return uint(tp.x) | (uint(tp.y) << 4) | (uint(g) << 8) | (uint(T) << 13) | (uint(kind) << 16) | (1u << 20);
+}
+
+// The world depends on the seed alone, so a full SIMD group (coop) builds it
+// together: lane k weighs plot k and grows tree k, and every lane gathers the
+// rest by shuffles. A group the chunk's outline cuts builds it alone. Both
+// run the same functions in the same order and come out the same.
+static DmWorld dmMakeWorld(float seed, int biomeParam, bool coop, uint lane) {
     DmWorld w;
     float s = seed * 97.13;
     w.ph = float4(hash11(s + 1.0), hash11(s + 2.0), hash11(s + 13.0), hash11(s + 14.0)) * TWO_PI;
@@ -354,42 +406,32 @@ static DmWorld dmMakeWorld(float seed, int biomeParam) {
     w.tbp = TWO_PI * hash11(s + 11.0);
     w.cham = float3(5.0 + 6.0 * hash11(s + 12.0), 2.6, 1.2);
 
-    // The cottage takes the best dry plot of four, away from the stream.
+    // The cottage takes the best dry plot of four, away from the stream (the
+    // first of equals).
     w.house = int3(-100, -100, 0);
     float best = 1e9;
-    for (int k = 0; k < 4; ++k) {
-        int2 o = int2(2 + 7 * (k & 1), 3 + 6 * (k >> 1));
-        o += int2(int(hash11(s + 20.0 + float(k)) * 2.0), int(hash11(s + 30.0 + float(k)) * 2.0));
-        float2 mid = float2(o) + 2.5;
-        float ds = abs(mid.y - dmStreamZ(mid.x, w));
-        float dp = length(mid - w.pond);
-        int g0 = dmRawGround(o, w), g3 = dmRawGround(o + int2(4, 4), w);
-        int gm = dmRawGround(o + int2(2, 2), w);
-        float spread = float(max(max(g0, g3), gm) - min(min(g0, g3), gm));
-        float cost = spread + (gm <= w.W ? 50.0 : 0.0) + (ds < 4.5 ? 30.0 : 0.0) + (dp < 5.5 ? 30.0 : 0.0)
-                   + hash11(s + 40.0 + float(k)) * 0.5;
-        if (cost < best) { best = cost; w.house = int3(o, max(gm, w.W + 1)); }
+    if (coop) {
+        int3 h;
+        float c = dmPlot(int(lane & 3u), s, w, h);
+        uint hp = uint(h.x) | (uint(h.y) << 8) | (uint(h.z) << 16);
+        for (int k = 0; k < 4; ++k) {
+            float ck = simd_shuffle(c, ushort(k));
+            uint hk = simd_shuffle(hp, ushort(k));
+            if (ck < best) { best = ck; w.house = int3(int(hk & 255u), int((hk >> 8) & 255u), int(hk >> 16)); }
+        }
+    } else {
+        for (int k = 0; k < 4; ++k) {
+            int3 h;
+            float c = dmPlot(k, s, w, h);
+            if (c < best) { best = c; w.house = h; }
+        }
     }
 
-    // Trees, one chance per cell of a 4×4 grid, kept off the water and the plot.
-    for (int i = 0; i < 16; ++i) {
-        int cx = i & 3, cz = i >> 2;
-        float h0 = hash11(s + 50.0 + float(i) * 3.1);
-        float h1 = hash11(s + 51.0 + float(i) * 3.7);
-        float h2 = hash11(s + 52.0 + float(i) * 4.3);
-        int2 tp = int2(2 + cx * 3 + (cz & 1) + int(h1 * 2.0), 2 + cz * 3 + int(h2 * 2.0) + (cx & 1));
-        tp = min(tp, int2(13));
-        w.tree[i] = 0u;
-        if (h0 > 0.85) continue;
-        int lx = tp.x - w.house.x, lz = tp.y - w.house.y;
-        if (lx >= -2 && lx <= 6 && lz >= -3 && lz <= 6) continue;
-        int g = dmRawGround(tp, w);
-        if (g <= w.W) continue;
-        float2 q = float2(tp) + 0.5;
-        if (q.x > w.pond.x - 1.0 && abs(q.y - dmStreamZ(q.x, w)) < 2.2) continue;
-        int kind = w.biome == 2 ? 2 : (w.biome == 1 ? 3 : (h1 * 7.0 - floor(h1 * 7.0) < 0.3 ? 1 : 0));
-        int T = (kind == 2 ? 5 : 4) + int(h2 * 7.0 - floor(h2 * 7.0) < 0.5);
-        w.tree[i] = uint(tp.x) | (uint(tp.y) << 4) | (uint(g) << 8) | (uint(T) << 13) | (uint(kind) << 16) | (1u << 20);
+    if (coop) {
+        uint t = dmTree(int(lane & 15u), s, w);
+        for (int i = 0; i < 16; ++i) w.tree[i] = simd_shuffle(t, ushort(i));
+    } else {
+        for (int i = 0; i < 16; ++i) w.tree[i] = dmTree(i, s, w);
     }
     return w;
 }
@@ -447,7 +489,6 @@ static float4 dmFace(int id, float3 n, float2 fu, float fp, int3 cell, thread co
     case B_DOOR_LO: case B_DOOR_HI:
         if (abs(n.z) > 0.5) return mcTile(T, id == B_DOOR_HI ? MC_OAK_DOOR_TOP : MC_OAK_DOOR_BOTTOM, fu, fp);
         return mcTile(T, MC_OAK_PLANKS, fu, fp);
-    case B_LAMP:     return mcTile(T, K.lampOn ? MC_REDSTONE_LAMP_ON : MC_REDSTONE_LAMP, fu, fp);
     case B_CRAFT:    return mcTile(T, top ? MC_CRAFTING_TABLE_TOP : (bottom ? MC_OAK_PLANKS
                                      : (n.z < -0.5 ? MC_CRAFTING_TABLE_FRONT : MC_CRAFTING_TABLE_SIDE)), fu, fp);
     case B_FURNACE:  return mcTile(T, side ? (n.z < -0.5 ? (K.lampOn ? MC_FURNACE_FRONT_ON : MC_FURNACE_FRONT)
@@ -534,8 +575,8 @@ struct DmSky {
     float  day;          // the game's sky brightness, 0 night .. 1 day
     float3 sunPos, moonPos;
     float  sunUp;        // sun height on its orbit, -1..1
-    bool   lampOn;
-    int3   lamp;         // block positions of the lights
+    bool   lampOn;       // night: the furnace is lit
+    int3   lamp;         // the lantern's block (its post stands on the ground: near enough)
     float3 lavaLo, lavaHi;
 };
 
@@ -564,8 +605,8 @@ static float2 dmLightLevels(int3 a, DmCol c, thread const DmWorld& w, DmSky L) {
     float3 q = float3(a) + 0.5;
     float3 d = max(max(L.lavaLo - q, q - L.lavaHi), 0.0);
     blk = max(blk, 15.0 - (d.x + d.y + d.z));
-    // The redstone lamp, at night.
-    if (L.lampOn) { int3 e = abs(a - L.lamp); blk = max(blk, 15.0 - float(e.x + e.y + e.z)); }
+    // The lantern by the path.
+    { int3 e = abs(a - L.lamp); blk = max(blk, 15.0 - float(e.x + e.y + e.z)); }
     // Torches inside the cottage: light through the windows and the door.
     if (room) blk = max(blk, 13.0);
     else {
@@ -627,6 +668,381 @@ static inline bool dmBillboard(float3 ro, float3 rd, float3 p, float hs, float3 
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Life: the game's mobs, drawn by the shared kit from their real skins on the
+// game's box models. Everything here is a pure function of time and seed.
+// It runs before the voxel walk: only rays through the layer the animals live
+// in (or the villager's and cat's boxes) look for them, each is boxed in
+// stages before anything costly is read, only the two whose boxes the ray
+// enters first are posed and traced, and the walk then stops at the mob.
+
+constant float DM_WANDER   = 1.2;    // how far an animal strolls from its spot
+constant float DM_STROLL   = 9.0;    // seconds a leg: turn, stroll, then graze or look about
+constant float DM_REACH    = 1.3;    // the kit's bounds, centre to tip, for these animals
+constant float DM_REACH_HORSE = 1.85;
+constant float DM_LIFE_TOP = 7.4;    // the animals' layer: feet at most five above the water, plus a horse
+
+constant int DK_SHEEP = 0, DK_PIG = 1, DK_CHICKEN = 2, DK_COW = 3, DK_HORSE = 4, DK_FOX = 5, DK_WOLF = 6;
+
+constant int DM_HORSE[7]      = { MCS_HORSE_WHITE, MCS_HORSE_CREAMY, MCS_HORSE_CHESTNUT, MCS_HORSE_BROWN,
+                                  MCS_HORSE_BLACK, MCS_HORSE_GRAY, MCS_HORSE_DARKBROWN };
+constant int DM_HORSE_BABY[7] = { MCS_HORSE_WHITE_BABY, MCS_HORSE_CREAMY_BABY, MCS_HORSE_CHESTNUT_BABY,
+                                  MCS_HORSE_BROWN_BABY, MCS_HORSE_BLACK_BABY, MCS_HORSE_GRAY_BABY,
+                                  MCS_HORSE_DARKBROWN_BABY };
+constant int DM_MARKS[4]      = { MCS_HORSE_MARKINGS_WHITE, MCS_HORSE_MARKINGS_WHITEFIELD,
+                                  MCS_HORSE_MARKINGS_WHITEDOTS, MCS_HORSE_MARKINGS_BLACKDOTS };
+constant int DM_MARKS_BABY[4] = { MCS_HORSE_MARKINGS_WHITE_BABY, MCS_HORSE_MARKINGS_WHITEFIELD_BABY,
+                                  MCS_HORSE_MARKINGS_WHITEDOTS_BABY, MCS_HORSE_MARKINGS_BLACKDOTS_BABY };
+// Village cats (the all-black one is the witch's).
+constant int DM_CATS[10]      = { MCS_CAT_TABBY, MCS_CAT_BLACK, MCS_CAT_RED, MCS_CAT_SIAMESE,
+                                  MCS_CAT_BRITISH_SHORTHAIR, MCS_CAT_CALICO, MCS_CAT_PERSIAN,
+                                  MCS_CAT_RAGDOLL, MCS_CAT_WHITE, MCS_CAT_JELLIE };
+
+static inline float dmAngleTo(float a, float b, float k) {
+    float d = b - a;
+    d -= TWO_PI * floor(d / TWO_PI + 0.5);
+    return a + d * k;
+}
+
+// Whether an animal may stand at p: on dry grass (the water is where
+// dmRawGround puts it), off the cottage, its path and its lamp, and a block
+// in from the cut edges.
+static inline bool dmMobSpot(float2 p, thread const DmWorld& w) {
+    if (any(p < 1.2) || any(p > 14.8)) return false;
+    float2 l = p - float2(w.house.xy);
+    if (l.x > -1.5 && l.x < 6.5 && l.y > -3.5 && l.y < 6.5) return false;
+    float2 q = floor(p) + 0.5;
+    if (distance_squared(q, w.pond) < 3.6 * 3.6) return false;
+    return !(q.x > w.pond.x && abs(q.y - dmStreamZ(q.x, w)) < 2.0);
+}
+
+// Whether the stretch a..b keeps clear of the trunks, and of the spruces'
+// skirts of leaves, which come down to the ground. Only the trees whose
+// lattice cells can reach it are read.
+static bool dmMobClear(float2 a, float2 b, thread const DmWorld& w) {
+    float2 ab = b - a;
+    float ll = max(dot(ab, ab), 1e-6);
+    // tree i's trunk centre is 2.5..4.5 + 3k on each axis; the widest reach is 3
+    int2 lo = max(int2(ceil((min(a, b) - 7.5) / 3.0)), int2(0));
+    int2 hi = min(int2(floor((max(a, b) + 0.5) / 3.0)), int2(3));
+    for (int cz = lo.y; cz <= hi.y; ++cz)
+    for (int cx = lo.x; cx <= hi.x; ++cx) {
+        uint t = w.tree[cz * 4 + cx];
+        if (t == 0u) continue;
+        float2 c = float2(float(t & 15u), float((t >> 4) & 15u)) + 0.5;
+        float2 d = a + ab * saturate(dot(c - a, ab) / ll) - c;
+        float r = ((t >> 16) & 3u) == 2u ? 2.8 : 1.3;
+        if (dot(d, d) < r * r) return false;
+    }
+    return true;
+}
+
+// The animals' spots: one candidate near the middle of each cell of a 4x4
+// lattice, kept if it is open (dmMobSpot, dmMobClear, and ground no more than
+// three above the water). On the plains and in the cherry grove about five
+// in six are taken up, which leaves three or four animals; the taiga's
+// spruces leave two or three. Each is decided on its own, so a ray only asks
+// about the spots it passes near.
+static inline float2 dmMobHome(int c, float2 b) {
+    return float2(float(c & 3), float(c >> 2)) * 4.0 + 1.4 + 1.2 * fract(b + float(c) * float2(0.7548777, 0.5698403));
+}
+
+// What lives here, by the game's spawn weights: farm animals sheep 12, pig
+// 10, chicken 10, cow 8; the plains add horses 5, the snowy taiga wolves 8
+// and foxes 8; the cherry grove has sheep 2 and pigs 1 (and rabbits, which
+// the kit lacks). Groups spawn together, so a chunk holds a herd of one kind
+// and a few of another.
+static inline int dmFarmKind(float h, bool horses) {
+    h *= horses ? 45.0 : 40.0;
+    return h < 12.0 ? DK_SHEEP : (h < 22.0 ? DK_PIG : (h < 32.0 ? DK_CHICKEN : (h < 40.0 ? DK_COW : DK_HORSE)));
+}
+
+static inline int dmMobKind(bool herd, int biome, float s) {
+    float a = hash11(s + 80.0), b = hash11(s + 81.0);
+    if (biome == 1) { bool sheep = a < 0.667; return (herd == sheep) ? DK_SHEEP : DK_PIG; }
+    if (biome == 0) return dmFarmKind(herd ? a : b, true);
+    return herd ? dmFarmKind(a, false) : (b < 0.5 ? DK_FOX : DK_WOLF);
+}
+
+// The model and skin, as the game picks them: cold variants in the snow,
+// the sheep's wool by the game's colour odds for the climate, horses in
+// seven coats with their markings.
+static MCMOB_Skin dmMobLook(int kind, bool cold, bool baby, float h, thread int& type) {
+    if (kind == DK_SHEEP) {
+        // Temperate: white 82 (one in 500 of those pink), black, grey and
+        // light grey 5 each, brown 3. Cold: black and white swap.
+        const float3 white = float3(249.0, 255.0, 254.0), black = float3(29.0, 29.0, 33.0);
+        float r = h * 100.0;
+        float3 dye = r < 82.0 ? (fract(h * 7919.0) < 0.002 ? float3(243.0, 139.0, 170.0) : (cold ? black : white))
+                   : r < 87.0 ? (cold ? white : black)
+                   : r < 92.0 ? float3(71.0, 79.0, 82.0)
+                   : r < 97.0 ? float3(157.0, 157.0, 151.0) : float3(131.0, 84.0, 50.0);
+        type = baby ? MCMOB_SHEEP_BABY : MCMOB_SHEEP;
+        return mcMobSheepSkin(baby, true, mcFromSRGB(dye / 255.0));
+    }
+    if (kind == DK_PIG) {
+        type = baby ? MCMOB_PIG_BABY : (cold ? MCMOB_PIG_COLD : MCMOB_PIG);
+        return mcMobSkin(cold ? (baby ? MCS_PIG_COLD_BABY : MCS_PIG_COLD)
+                              : (baby ? MCS_PIG_TEMPERATE_BABY : MCS_PIG_TEMPERATE));
+    }
+    if (kind == DK_CHICKEN) {
+        type = baby ? MCMOB_CHICKEN_BABY : (cold ? MCMOB_CHICKEN_COLD : MCMOB_CHICKEN);
+        return mcMobSkin(cold ? (baby ? MCS_CHICKEN_COLD_BABY : MCS_CHICKEN_COLD)
+                              : (baby ? MCS_CHICKEN_TEMPERATE_BABY : MCS_CHICKEN_TEMPERATE));
+    }
+    if (kind == DK_COW) {
+        type = cold ? (baby ? MCMOB_COW_COLD_BABY : MCMOB_COW_COLD) : (baby ? MCMOB_COW_BABY : MCMOB_COW);
+        return mcMobSkin(cold ? (baby ? MCS_COW_COLD_BABY : MCS_COW_COLD)
+                              : (baby ? MCS_COW_TEMPERATE_BABY : MCS_COW_TEMPERATE));
+    }
+    if (kind == DK_HORSE) {
+        int coat = min(int(h * 7.0), 6), mark = min(int(fract(h * 31.0) * 5.0), 4);
+        type = baby ? MCMOB_HORSE_BABY : MCMOB_HORSE;
+        MCMOB_Skin sk = mcMobSkin(baby ? DM_HORSE_BABY[coat] : DM_HORSE[coat]);
+        if (mark > 0) sk.over1 = baby ? DM_MARKS_BABY[mark - 1] : DM_MARKS[mark - 1];
+        return sk;
+    }
+    if (kind == DK_FOX) {
+        type = baby ? MCMOB_FOX_BABY : MCMOB_FOX;
+        return mcMobSkin(cold ? (baby ? MCS_FOX_SNOW_BABY : MCS_FOX_SNOW) : (baby ? MCS_FOX_BABY : MCS_FOX));
+    }
+    type = baby ? MCMOB_WOLF_BABY : MCMOB_WOLF;
+    return mcMobSkin(cold ? (baby ? MCS_WOLF_ASHEN_BABY : MCS_WOLF_ASHEN) : (baby ? MCS_WOLF_BABY : MCS_WOLF));
+}
+
+// Where a stroll leg goes: leg k runs out from the spot (k even) or back to
+// it (k odd), to the point off(m) of the odd leg m it shares.
+static inline float2 dmStrollOff(float m, float sI) {
+    float a = TWO_PI * hash11(m * 1.37 + sI);
+    float r = DM_WANDER * (0.45 + 0.55 * hash11(m * 2.11 + sI * 1.7 + 5.0));
+    return r * float2(sin(a), cos(a));
+}
+
+// The ground under a mob: the highest block under its feet, as the game
+// stands a mob on whatever its box rests on (front and back of the stride).
+static inline float dmFeet(float2 p, float heading, thread const DmWorld& w) {
+    float2 f = 0.3 * float2(sin(heading), cos(heading));
+    return float(max(dmGround(int2(floor(p + f)), w), dmGround(int2(floor(p - f)), w))) + 1.0;
+}
+
+// A mob ready to trace: which, how it stands, where, facing which way.
+struct DmActor { int type; MCMOB_Skin skin; MCMOB_Pose pose; float3 at; float heading; };
+
+static inline bool dmBoxHit(float3 ro, float3 inv, float3 lo, float3 hi, float best) {
+    float2 b = dmBox(ro, inv, lo, hi);
+    return b.y > max(b.x, 0.0) && b.x < best;
+}
+static inline float dmBoxEnter(float3 ro, float3 inv, float3 lo, float3 hi) {
+    float2 b = dmBox(ro, inv, lo, hi);
+    return b.y > max(b.x, 0.0) ? max(b.x, 0.0) : 1e9;
+}
+
+// Animal i, at home spot `home`: false if the ray cannot reach it. It strolls
+// out from its spot and back, a leg each DM_STROLL seconds, turning first
+// toward where the leg points; a leg whose far end is water, a trunk, the
+// plot, a ledge or the edge is not walked, only looked at. Between legs it
+// grazes or looks about.
+static bool dmAnimal(int i, float2 home, int kind, float3 ro, float3 inv, float best, float now, float s,
+                     thread const DmWorld& w, bool full, thread float& enter, thread DmActor& a) {
+    float body = kind == DK_HORSE ? DM_REACH_HORSE : DM_REACH;
+    float W = float(w.W);
+    if (!dmMobSpot(home, w)) return false;
+    // The leg it is on; nothing more is read unless the ray passes near it.
+    float sI = s * 13.7 + float(i) * 7.31;
+    float T = now + 97.0 * hash11(sI);
+    float k = floor(T / DM_STROLL), f = T - k * DM_STROLL;
+    bool outLeg = glmod(k, 2.0) < 0.5;
+    float2 off = dmStrollOff(outLeg ? k + 1.0 : k, sI);
+    float2 A = home + off;
+    if (!dmBoxHit(ro, inv, float3(min(home, A) - body, W + 1.8).xzy, float3(max(home, A) + body, W + DM_LIFE_TOP).xzy, best))
+        return false;
+    // Meadow and the low rises: animals keep off the hilltops.
+    int g0 = dmGround(int2(floor(home)), w);
+    if (g0 <= w.W || g0 > w.W + 3) return false;
+    float y0 = float(g0);
+    if (!dmBoxHit(ro, inv, float3(min(home, A) - body, y0 - 0.15).xzy, float3(max(home, A) + body, y0 + 4.4).xzy, best))
+        return false;
+    // Whether its spot is clear of the trees, and whether the leg's far end
+    // is fit to walk to.
+    bool go = dmMobSpot(A, w) && dmMobClear(home, A, w);
+    if (!go && !dmMobClear(home, home, w)) return false;
+    if (go) { int gA = dmGround(int2(floor(A)), w); go = gA > w.W && abs(gA - g0) <= 1; }
+    float2 from = go && !outLeg ? A : home, to = go && outLeg ? A : home;
+    float2 dirP = outLeg ? -dmStrollOff(k - 1.0, sI) : off;
+    float2 dir  = outLeg ? off : -off;
+    a.heading = dmAngleTo(atan2(dirP.x, dirP.y), atan2(dir.x, dir.y), smoothstep(0.0, 0.8, f));
+    float dist = length(to - from);
+    float walkT = max(dist / 0.8, 1e-3);
+    float uw = saturate((f - 0.8) / walkT);
+    float ue = uw * uw * (3.0 - 2.0 * uw);
+    float2 p = mix(from, to, ue);
+    enter = dmBoxEnter(ro, inv, float3(p.x - body, y0 - 0.15, p.y - body), float3(p.x + body, y0 + 4.4, p.y + body));
+    if (!(enter < best)) return false;
+    if (!full) return true;
+
+    float hk = hash11(k * 0.71 + sI * 3.1);
+    a.skin = dmMobLook(kind, w.biome == 2, hash11(sI + 3.3) < 0.17, hash11(sI + 9.1), a.type);
+    a.pose = mcMobStill();
+    bool walking = go && uw > 0.0 && uw < 1.0;
+    a.pose.walk = (k * 3.0 + dist * ue) * 4.0;
+    a.pose.speed = walking ? 0.55 * smoothstep(0.0, 0.12, uw) * (1.0 - smoothstep(0.88, 1.0, uw)) : 0.0;
+    float fe = 0.8 + (go ? walkT : 0.0);   // when the leg's walking is over
+    if (kind <= DK_HORSE && hk < 0.65) {
+        float g1 = fe + 0.6 + 1.5 * hk;
+        a.pose.graze = smoothstep(g1, g1 + 0.35, f) * (1.0 - smoothstep(g1 + 2.6, g1 + 3.0, f));
+    } else {
+        a.pose.yaw = 0.7 * sin(f * 0.8 + k * 2.3) * smoothstep(fe, fe + 0.6, f);
+        a.pose.pitch = 0.15 * sin(f * 0.5 + k);
+    }
+    a.at = float3(p.x, dmFeet(p, a.heading, w), p.y);
+    return true;
+}
+
+// The villager: by day on the path, strolling between the door and its end
+// and looking about; at dusk in through the door, and out again at dawn.
+// `dayTurn` > 0 while the sun climbs.
+static bool dmVillager(float3 ro, float3 inv, float best, float now, float s, float day, float dayTurn,
+                       thread const DmWorld& w, bool full, thread float& enter, thread DmActor& a) {
+    float3 hb = float3(float(w.house.x), float(w.house.z), float(w.house.y));   // x, floor y, z
+    if (!dmBoxHit(ro, inv, float3(hb.x + 1.6, hb.y - 3.0, hb.z - 3.4), float3(hb.x + 3.4, hb.y + 3.3, hb.z + 3.2), best))
+        return false;
+    float sV = s * 7.9 + 41.0;
+    float T = now * 0.9 + 60.0 * hash11(sV);
+    float k = floor(T / 11.0), f = T - k * 11.0;
+    float za = hb.z - 0.7 - 1.9 * hash11(k * 1.31 + sV), zb = hb.z - 0.7 - 1.9 * hash11((k + 1.0) * 1.31 + sV);
+    float walkT = max(abs(zb - za) / 0.8, 1e-3);
+    float uw = saturate((f - 0.6) / walkT), ue = uw * uw * (3.0 - 2.0 * uw);
+    float dirH = zb > za ? 0.0 : PI;
+    a.heading = f < 0.6 + walkT ? dmAngleTo(PI, dirH, smoothstep(0.0, 0.6, f))
+                                : dmAngleTo(dirH, PI, smoothstep(0.6 + walkT, 1.2 + walkT, f));
+    bool walking = uw > 0.0 && uw < 1.0 && abs(zb - za) > 0.05;
+    float o = smoothstep(0.30, 0.45, day);
+    float z = mix(hb.z + 2.2, mix(za, zb, ue), o);
+    enter = dmBoxEnter(ro, inv, float3(hb.x + 1.7, hb.y - 2.2, z - 0.8), float3(hb.x + 3.3, hb.y + 3.2, z + 0.8));
+    if (!(enter < best)) return false;
+    if (!full) return true;
+    if (o > 0.0 && o < 1.0) { a.heading = dayTurn > 0.0 ? PI : 0.0; walking = true; }
+    a.pose = mcMobStill();
+    a.pose.walk = (z - hb.z) * 4.0;
+    a.pose.speed = walking ? 0.6 : 0.0;
+    if (!walking) a.pose.yaw = 0.8 * sin(now * 0.37 + k * 1.9);
+    float hp = hash11(sV + 2.0);
+    int prof = hp < 0.4 ? -1 : (hp < 0.6 ? MCS_VILLAGER_PROFESSION_FARMER
+             : (hp < 0.8 ? MCS_VILLAGER_PROFESSION_FISHERMAN : MCS_VILLAGER_PROFESSION_SHEPHERD));
+    a.skin = mcMobVillagerSkin(MCS_VILLAGER, w.biome == 2 ? MCS_VILLAGER_TYPE_SNOW : MCS_VILLAGER_TYPE_PLAINS,
+                               prof, prof < 0 ? -1 : MCS_VILLAGER_PROFESSION_LEVEL_STONE);
+    a.type = MCMOB_VILLAGER;
+    float2 p = float2(hb.x + 2.5, z);
+    a.at = float3(p.x, dmFeet(p, a.heading, w), p.y);
+    return true;
+}
+
+// The cat, along the roof's ridge (its top row, at lz = 2): a few blocks one
+// way or the other now and then, looking about between.
+static bool dmCat(float3 ro, float3 inv, float best, float now, float s, thread const DmWorld& w,
+                  bool full, thread float& enter, thread DmActor& a) {
+    float3 hb = float3(float(w.house.x), float(w.house.z), float(w.house.y));
+    float yR = hb.y + 7.0;
+    if (!dmBoxHit(ro, inv, float3(hb.x - 1.4, yR - 0.1, hb.z + 1.5), float3(hb.x + 6.4, yR + 0.8, hb.z + 3.5), best))
+        return false;
+    float sC = s * 5.3 + 17.0;
+    float T = now + 80.0 * hash11(sC);
+    float k = floor(T / 13.0), f = T - k * 13.0;
+    float xm = hash11((k - 1.0) * 1.7 + sC), x0 = hash11(k * 1.7 + sC), x1 = hash11((k + 1.0) * 1.7 + sC);
+    float hP = x0 > xm ? 0.5 * PI : -0.5 * PI, hN = x1 > x0 ? 0.5 * PI : -0.5 * PI;
+    x0 = hb.x - 0.1 + 5.2 * x0;
+    x1 = hb.x - 0.1 + 5.2 * x1;
+    float walkT = max(abs(x1 - x0) / 0.7, 1e-3);
+    float uw = saturate((f - 1.0) / walkT), ue = uw * uw * (3.0 - 2.0 * uw);
+    float x = mix(x0, x1, ue);
+    enter = dmBoxEnter(ro, inv, float3(x - 1.2, yR - 0.1, hb.z + 1.5), float3(x + 1.2, yR + 0.8, hb.z + 3.5));
+    if (!(enter < best)) return false;
+    if (!full) return true;
+    a.heading = dmAngleTo(hP, hN, smoothstep(0.0, 1.0, f));
+    a.pose = mcMobStill();
+    bool walking = uw > 0.0 && uw < 1.0;
+    a.pose.walk = (x - hb.x) * 4.0;
+    a.pose.speed = walking ? 0.5 : 0.0;
+    if (!walking) { a.pose.yaw = 0.9 * sin(now * 0.29 + k * 2.7); a.pose.pitch = 0.3 + 0.2 * sin(now * 0.21 + k); }
+    a.skin = mcMobSkin(DM_CATS[min(int(hash11(sC + 4.0) * 10.0), 9)]);
+    a.type = MCMOB_CAT;
+    a.at = float3(x, yR, hb.z + 2.5);
+    return true;
+}
+
+// The nearest mob on the ray closer than `best`, which it lowers. False if none.
+struct DmMobHit { MCMOB_Hit h; int type; MCMOB_Skin skin; float3 at; float heading; };
+
+static bool dmLife(float3 ro, float3 rd, float3 inv, float now, float s, thread const DmWorld& w, float day,
+                   float dayTurn, thread float& best, thread DmMobHit& mh,
+                   texture2d_array<float> mcSkins, texture2d_array<float> mcMaps) {
+    float W = float(w.W);
+    float2 b = float2(hash11(s + 70.0), hash11(s + 71.0));
+    // Find the two mobs whose boxes the ray enters first (0-15 the animal
+    // spots, 16 the villager, 17 the cat), placing them only as far as that
+    // needs; only those two are posed, skinned and traced.
+    int i0 = -1, i1 = -1;
+    float e0 = best, e1 = best, e;
+    DmActor a;
+    float2 sl = dmBox(ro, inv, float3(0.0, W + 1.8, 0.0), float3(16.0, W + DM_LIFE_TOP, 16.0));
+    if (sl.y > max(sl.x, 0.0) && sl.x < best) {
+        // Only the spots whose stroll the ray's path through the animals'
+        // layer passes near.
+        float t0 = max(sl.x, 0.0), t1 = min(sl.y, best);
+        float2 o2 = ro.xz + rd.xz * t0, d2 = rd.xz * (t1 - t0);
+        float dd = max(dot(d2, d2), 1e-8);
+        float keep = w.biome == 2 ? 1.0 : 0.85;
+        int kindA = dmMobKind(true, w.biome, s), kindB = dmMobKind(false, w.biome, s);
+        const float RM = DM_WANDER + DM_REACH_HORSE;
+        // cell k's spot is 1.4..2.6 + 4k on each axis
+        int2 clo = max(int2(ceil((min(o2, o2 + d2) - RM - 2.6) / 4.0)), int2(0));
+        int2 chi = min(int2(floor((max(o2, o2 + d2) + RM - 1.4) / 4.0)), int2(3));
+        for (int cz = clo.y; cz <= chi.y; ++cz)
+        for (int cx = clo.x; cx <= chi.x; ++cx) {
+            int c = cz * 4 + cx;
+            float2 home = dmMobHome(c, b);
+            int kind = hash11(s + 60.0 + float(c) * 1.618) < 0.6 ? kindA : kindB;
+            float R = DM_WANDER + (kind == DK_HORSE ? DM_REACH_HORSE : DM_REACH);
+            float2 q = o2 + d2 * saturate(dot(home - o2, d2) / dd) - home;
+            if (dot(q, q) > R * R || hash11(s + 50.0 + float(c) * 2.39) > keep) continue;
+            if (!dmAnimal(c, home, kind, ro, inv, e1, now, s, w, false, e, a)) continue;
+            if (e < e0) { i1 = i0; e1 = e0; i0 = c; e0 = e; } else { i1 = c; e1 = e; }
+        }
+    }
+    if (dmVillager(ro, inv, e1, now, s, day, dayTurn, w, false, e, a)) {
+        if (e < e0) { i1 = i0; e1 = e0; i0 = 16; e0 = e; } else { i1 = 16; e1 = e; }
+    }
+    if (dmCat(ro, inv, e1, now, s, w, false, e, a)) {
+        if (e < e0) { i1 = i0; e1 = e0; i0 = 17; e0 = e; } else { i1 = 17; e1 = e; }
+    }
+    // Pose, skin and trace them, nearest box first.
+    bool found = false;
+    float gate = best;
+    for (int j = 0; j < 2; ++j) {
+        int i = j == 0 ? i0 : i1;
+        if (i < 0 || (j == 1 && e1 >= best)) break;
+        bool ok;
+        if (i < 16) {
+            int kind = hash11(s + 60.0 + float(i) * 1.618) < 0.6 ? dmMobKind(true, w.biome, s) : dmMobKind(false, w.biome, s);
+            ok = dmAnimal(i, dmMobHome(i, b), kind, ro, inv, gate, now, s, w, true, e, a);
+        } else {
+            ok = i == 16 ? dmVillager(ro, inv, gate, now, s, day, dayTurn, w, true, e, a)
+                         : dmCat(ro, inv, gate, now, s, w, true, e, a);
+        }
+        if (!ok) continue;
+        float3 lro, lrd;
+        mcMobRay(ro, rd, a.at, a.heading, lro, lrd);
+        float2 bb = mcMobBounds(a.type, lro, lrd);
+        if (!(bb.x < bb.y && bb.x < best)) continue;
+        MCMOB_Hit h = mcMobTrace(a.type, a.pose, a.skin, lro, lrd, best, mcSkins, mcMaps);
+        if (!(h.t < best)) continue;
+        best = h.t;
+        mh.h = h; mh.type = a.type; mh.skin = a.skin; mh.at = a.at; mh.heading = a.heading;
+        found = true;
+    }
+    return found;
+}
+
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
                         texture2d_array<float> mcTiles [[texture(8)]],
                         texture2d_array<float> mcSkins [[texture(10)]],
@@ -658,7 +1074,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     L.moonPos = pivot - sunOff;
     L.sunUp = sunOff.y / DM_SUN_R;
     L.day = saturate(L.sunUp * 2.0 + 0.5);              // the game's own curve
-    L.lampOn = L.day < 0.45;                             // a daylight detector's switch
+    L.lampOn = L.day < 0.45;                             // someone is cooking
 
     float3 rdS = dmSafeDir(rd);
     float3 inv = 1.0 / rdS;
@@ -691,10 +1107,29 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float2 tbF = dmBox(ro, inv, DM_FALL_BOX_LO, DM_FALL_BOX_HI);
     bool inM = tbM.y > max(tbM.x, 0.0), inF = tbF.y > max(tbF.x, 0.0);
     if (inM || inF) {
-        DmWorld w = dmMakeWorld(u.seed, u.biome);
+        DmWorld w = dmMakeWorld(u.seed, u.biome, simd_sum(1u) == 32u, simd_prefix_exclusive_sum(1u));
         L.lamp = int3(w.house.x, w.house.z + 2, w.house.y - 2);
         L.lavaLo = float3(w.cham.x - 3.0, 1.0, 0.0);
         L.lavaHi = float3(w.cham.x + 3.0, 2.0, w.cham.z + 2.2);
+        float2 tb = float2(min(inM ? tbM.x : 1e9, inF ? tbF.x : 1e9), max(inM ? tbM.y : -1e9, inF ? tbF.y : -1e9));
+
+        // The mobs first, lit, so only their distance and colour ride
+        // through the walk, which stops once it is past them.
+        float tMob = tb.y;
+        float3 mobCol = float3(0.0);
+        bool isMob;
+        {
+            DmMobHit mob;
+            isMob = dmLife(ro, rd, inv, now, u.seed * 97.13, w, L.day, cos(th), tMob, mob, mcSkins, mcMaps);
+            if (isMob) {
+                float3 nW = mcMobNormal(mob.h.n, mob.heading);
+                int3 lc = int3(floor(mob.at + float3(0.0, 0.6, 0.0)));
+                float2 lv = dmLightLevels(lc, dmColumn(lc.xz, w), w, L);
+                float4 mc = mcMobColor(mob.type, mob.h, mob.skin, tMob * pxAngle * 16.0, mcSkins, mcMaps);
+                mobCol = mc.rgb * mcFaceShade(nW) * dmLightmap(lv, L.day);
+            }
+        }
+
         DmLook K;
         K.now = now;
         K.lampOn = L.lampOn;
@@ -703,8 +1138,6 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         K.foliage = mcFoliageTint(mcMaps, clim.x, clim.y);
         K.water = w.biome == 1 ? mcFromSRGB(float3(0.365, 0.718, 0.937)) : MC_WATER_TINT;
         float3 skyLight = dmLightmap(float2(15.0, 0.0), L.day);
-
-        float2 tb = float2(min(inM ? tbM.x : 1e9, inF ? tbF.x : 1e9), max(inM ? tbM.y : -1e9, inF ? tbF.y : -1e9));
         float3 boxLo = (inM && tbM.x <= tb.x) ? DM_BOX_LO : DM_FALL_BOX_LO;
         float3 boxHi = (inM && tbM.x <= tb.x) ? DM_BOX_HI : DM_FALL_BOX_HI;
         float t = max(tb.x, 0.0);
@@ -722,6 +1155,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         int3 hc = int3(0); int hid = 0; int haxis = 1;
         float3 hn = float3(0.0, 1.0, 0.0);
         float4 plantTex = float4(0.0);
+        McModelHit model;                 // the lamp post's and the torch's hit
         int2 colXZ = int2(-999);
         DmCol colInfo;
         int prev = B_AIR;
@@ -792,17 +1226,53 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
             if (tMax.x < tMax.y && tMax.x < tMax.z) { t = tMax.x; tMax.x += tDelta.x; c.x += stp.x; axis = 0; }
             else if (tMax.y < tMax.z)               { t = tMax.y; tMax.y += tDelta.y; c.y += stp.y; axis = 1; }
             else                                    { t = tMax.z; tMax.z += tDelta.z; c.z += stp.z; axis = 2; }
-            if (t > tb.y) break;
+            if (t > min(tb.y, tMob)) break;
+        }
+
+        // The game's lamp post and wall torch. The walk passes through their
+        // cells; they stand where the cottage puts them, so they are tested
+        // here, in front of whatever the walk hit.
+        {
+            float tTo = min(hit ? tHit : tb.y, tMob);
+            float3 hb = float3(float(w.house.x), float(w.house.z), float(w.house.y));
+            float2 bl = dmBox(ro, inv, float3(hb.x, hb.y - 1.0, hb.z - 2.0), float3(hb.x + 1.0, hb.y + 4.0, hb.z - 1.0));
+            if (bl.y > max(bl.x, 0.0) && bl.x < tTo) {
+                int2 lc = int2(w.house.x, w.house.y - 2);
+                float3 org = float3(float(lc.x), float(dmGround(lc, w) + 1), float(lc.y));
+                McModelHit mh;
+                if (mcFence(mcTiles, DM_PLANKS[w.biome], org, 0, ro, rdS, 0.0, tTo, pxAngle, mh)) {
+                    hit = true; tTo = tHit = mh.t; hc = int3(org); hid = B_FENCE; hn = mh.n; model = mh;
+                }
+                org.y += 1.0;
+                int lf = mcFrame(MC_LANTERN, MC_LANTERN_FRAMES, MC_LANTERN_TICKS, now);
+                if (mcLantern(mcTiles, lf, org, false, ro, rdS, 0.0, tTo, pxAngle, mh)) {
+                    hit = true; tTo = tHit = mh.t; hc = int3(org); hid = B_LANTERN; hn = mh.n; model = mh;
+                }
+            }
+            float3 tc = hb + float3(2.0, 2.0, 3.0);
+            float2 bt = dmBox(ro, inv, tc, tc + 1.0);
+            if (bt.y > max(bt.x, 0.0) && bt.x < tTo) {
+                McModelHit mh;
+                if (mcWallTorch(mcTiles, MC_TORCH, tc, 3, ro, rdS, 0.0, tTo, pxAngle, mh)) {
+                    hit = true; tHit = mh.t; hc = int3(tc); hid = B_TORCH; hn = mh.n; model = mh;
+                }
+            }
+            if (hit && hid >= B_FENCE) colInfo = dmColumn(hc.xz, w);
         }
 
         float3 surf = col;
-        if (hit) {
+        if (hit && !(isMob && tMob < tHit)) {
             float3 P = ro + rdS * tHit;
             float3 n = hn;
             float3 lit;
             if (hid == B_PLANT) {
                 float2 lv = dmLightLevels(hc, colInfo, w, L);
                 lit = plantTex.rgb * 0.9 * dmLightmap(lv, L.day);
+            } else if (hid >= B_FENCE) {
+                // Lit by its own cell; the lantern and the torch give light 15.
+                float2 lv = dmLightLevels(hc, colInfo, w, L);
+                if (hid != B_FENCE) lv.y = 15.0;
+                lit = model.color.rgb * (model.shade > 0.5 ? mcFaceShade(n) : 1.0) * dmLightmap(lv, L.day);
             } else {
                 float fp = tHit * pxAngle / max(abs(dot(rd, n)), 0.25);
                 float4 tex = dmFace(hid, n, dmFaceUV(P, hc, haxis), fp, hc, w, K, mcTiles);
@@ -813,16 +1283,18 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
                 DmCol ca = haxis == 1 ? colInfo : dmColumn(a.xz, w);
                 float ao = dmAO(a, haxis, saturate(aoUV), ca, w);
                 float2 lv = dmLightLevels(a, ca, w, L);
-                bool glow = hid == B_LAVA || (hid == B_LAMP && L.lampOn);
+                bool glow = hid == B_LAVA;
                 float3 lm = glow ? float3(1.0) : dmLightmap(lv, L.day);
                 lit = tex.rgb * mcFaceShade(n) * (glow ? 1.0 : ao) * lm;
             }
             surf = lit;
         }
-        col = accCol + accT * surf;
+
+        isMob = isMob && !(hit && tHit < tMob);
+        col = accCol + accT * (isMob ? mobCol : surf);
 
         // Chimney smoke: the game's campfire smoke particles, rising and fading.
-        float tNear = hit ? tHit : 1e9;
+        float tNear = isMob ? tMob : (hit ? tHit : 1e9);
         float3 top = float3(float(w.house.x) + 3.5, float(w.house.z) + 8.2, float(w.house.y) + 3.5);
         for (int i = 3; i >= 0; --i) {
             float age = fract(now * 0.08 + float(i) * 0.25);
