@@ -1,7 +1,7 @@
 // Piston Clock — a redstone piston display built in Minecraft, telling the
 // Mac's time. Every pixel of the digits is a block on a sticky piston, the
-// seconds are a ring of redstone lamps, and the whole machine stands on a
-// smooth-stone plinth in an ordinary overworld field.
+// seconds are a square of redstone lamps, fifteen to a side, and the whole
+// machine stands on a smooth-stone plinth in an ordinary overworld field.
 //
 // lerp-category: Minecraft
 // lerp-requires: minecraft
@@ -12,13 +12,19 @@
 //   (side, inner face, the extended head and arm), redstone lamps lit and
 //   unlit, redstone dust, the masonry, lanterns, grass, logs and leaves, the
 //   sun, the moon's phases and the cloud layer.
-// - The time is real (`lerp-data: clock`): hours and minutes in pistoned
+// - The time is real (`lerp-data: clock`): hours over minutes in pistoned
 //   blocks, 3×5 a digit (in 12-hour time the leading digit can only be a
-//   1, so it is built as a single column, as a player would build it). When the minute turns, a signal runs along the dust
-//   on the plinth and the blocks that change slide out or back behind it,
-//   a column every redstone tick or so. Blocks that are off sit two deep in
-//   the wall, where less light reaches them. The ring of sixty lamps lights one a second clockwise from the
-//   top and goes dark in a sweep as the minute turns; the colon blinks.
+//   1, so it is built as a single column, as a player would build it). When
+//   the minute turns, a signal runs along the dust on the plinth and the
+//   blocks that change slide out or back behind it, a column every redstone
+//   tick or so, the lower rows first. Blocks that are off sit two deep in
+//   the wall, where less light reaches them.
+// - The face is square, and its frame keeps the seconds: fifteen lamps a
+//   side between four corner blocks, one lit each second, clockwise from
+//   the top left. A side fills every quarter minute (top by :15, right by
+//   :30, bottom by :45, left by :60) and the square goes dark in a sweep as
+//   the minute turns. The colon, on its side between hours and minutes,
+//   blinks.
 // - Lit the way the game lights: fixed face shading, smooth-lighting corner
 //   occlusion, sky light and block light (lamps and lanterns, level 15,
 //   falling one a block), the game's lightmap colours, sky and fog colours,
@@ -45,7 +51,7 @@
 
 constant int   PC_STEPS        = 96;    // ground columns a view ray may cross
 constant float PC_FOCAL        = 1.9;
-constant float PC_TOP          = 18.0;   // nothing solid at or above this y
+constant float PC_TOP          = 19.0;   // nothing solid at or above this y
 constant float PC_RANGE        = 60.0;   // fog is total by here
 
 // Materials.
@@ -92,68 +98,70 @@ static inline uint4 pcDigits(int m, bool h24) {
                  PC_GLYPH[mm / 10], PC_GLYPH[mm % 10]);
 }
 
-// Which digit a display column belongs to (-1 if none) and its column in it.
-static inline int pcDigitAt(int x, thread int& cx) {
-    // Columns -8..-6 and -4..-2 are digits 0 and 1; 2..4 and 6..8 are 2 and 3.
-    int q = x < 0 ? x + 8 : x - 2;
+// Which digit a display cell belongs to (-1 if none), and its column and row
+// (0 at the top) in it. Hours (digits 0 and 1) are rows 11..15, minutes
+// (2 and 3) rows 3..7; both pairs stand in columns -3..-1 and 1..3.
+static inline int pcDigitAt(int x, int y, thread int& cx, thread int& r) {
+    int q = x + 3;
     if (q < 0 || q > 6 || q == 3) return -1;
+    bool hours = y >= 11;
+    r = (hours ? 15 : 7) - y;
+    if (r < 0 || r > 4) return -1;
     cx = q & 3;
-    return (x < 0 ? 0 : 2) + q / 4;
+    return (hours ? 0 : 2) + q / 4;
 }
 
 // Face position of the pushed block in display column (x, y): +1 out, -2 in.
 // Returns -9 when (x, y) is not a display cell.
 static inline float pcCellF(int x, int y, thread const PcScene& S) {
-    if (y < 3 || y > 7) return -9.0;
-    int cx;
-    int k = pcDigitAt(x, cx);
+    int cx, r;
+    int k = pcDigitAt(x, y, cx, r);
     if (k < 0) return -9.0;
     if (k == 0 && !S.h24 && cx != 2) return -9.0;   // 12-hour: the leading 1 is one column
-    int r = 7 - y;
     int b = r * 3 + cx;
     uint mp = k == 0 ? S.prev.x : (k == 1 ? S.prev.y : (k == 2 ? S.prev.z : S.prev.w));
     uint mn = k == 0 ? S.now.x  : (k == 1 ? S.now.y  : (k == 2 ? S.now.z  : S.now.w));
     float a = ((mp >> b) & 1u) ? 1.0 : -2.0;
     float c = ((mn >> b) & 1u) ? 1.0 : -2.0;
     if (a == c) return c;
-    float col = float(x + 8);                 // 0 at the left edge
-    float d = 0.075 * col + 0.05 * float(r);
+    // Behind the signal on the dust below (0 at its left end), and up the wall.
+    float d = 0.075 * float(x + 8) + 0.05 * float(y - 3);
     float p = smoothstep(d, d + 0.85, S.sec);
     return mix(a, c, p);
 }
 
-// Seconds lamp k (0 at top centre, clockwise): on from second k, switched off
-// in a sweep (a tick or so a lamp) as the minute turns. Lamps switch, they
-// do not fade.
+// Seconds lamp k (0 at the left end of the top side, clockwise, fifteen a
+// side): on from second k, switched off in a sweep (a tick or so a lamp) as
+// the minute turns. Lamps switch, they do not fade.
 static inline bool pcLampOn(int k, float s) {
     return s >= float(k) || s < 0.05 + 0.013 * float(k);
 }
 
+// The square is cells -8..8 by 1..17; its four corner cells are not lamps.
 static inline int pcRingIndex(int x, int y) {
-    if (y == 9)  return x >= 0 ? x : 60 + x;
-    if (x == 11) return 12 + (8 - y);
-    if (y == 1)  return 19 + (11 - x);
-    return 42 + (y - 2);                        // x == -11
+    if (y == 17) return x + 7;                  // top, left to right
+    if (x == 8)  return 15 + (16 - y);          // right, downward
+    if (y == 1)  return 30 + (7 - x);           // bottom, right to left
+    return 45 + (y - 2);                        // left (x == -8), upward
 }
 
 // The lamp cell holding ring index k.
 static inline int2 pcRingCell(int k) {
-    if (k <= 11) return int2(k, 9);
-    if (k <= 18) return int2(11, 8 - (k - 12));
-    if (k <= 41) return int2(11 - (k - 19), 1);
-    if (k <= 48) return int2(-11, 2 + (k - 42));
-    return int2(k - 60, 9);
+    if (k < 15) return int2(k - 7, 17);
+    if (k < 30) return int2(8, 16 - (k - 15));
+    if (k < 45) return int2(7 - (k - 30), 1);
+    return int2(-8, 2 + (k - 45));
 }
 
-// The colon: two lamps on for a second, off for a second.
+// The colon, on its side: two lamps on for a second, off for a second.
 static inline bool pcColonOn(float s) { return glmod(s, 2.0) < 1.0; }
 
 // ---------------------------------------------------------------------------
 // The world: the clock (a known box, walked cell by cell only inside it) on
 // ground that is a heightfield with trees (walked column by column).
 
-constant float3 PC_CLO = float3(-13.0, 0.0, -8.0);   // the clock's cell bounds
-constant float3 PC_CHI = float3( 14.0, 11.0, 2.0);   // nothing solid at y >= 11
+constant float3 PC_CLO = float3(-10.0, 0.0, -8.0);   // the clock's cell bounds
+constant float3 PC_CHI = float3( 11.0, 19.0, 2.0);   // nothing solid at y >= 19
 
 static inline float pcAmp(float2 p) {
     float r = length(p);
@@ -228,20 +236,22 @@ static inline int pcGroundMat(int3 c, int h) {
 // The clock: plinth, wall, pillars, coping, lanterns. Air elsewhere in its box.
 static int pcClockBlock(int3 c, thread const PcScene& S) {
     if (c.y == 0) return PC_PLINTH;
-    if ((c.x == -13 || c.x == 13) && c.z == 1 && c.y <= 2)
+    if ((c.x == -10 || c.x == 10) && c.z == 1 && c.y <= 2)
         return c.y == 1 ? PC_TRIM : PC_LANTERN;
     int ax = c.x;
-    bool pillar = (ax == -12 || ax == 12) && c.z >= -7 && c.z <= 0 && c.y <= 10;
+    bool pillar = (ax == -9 || ax == 9) && c.z >= -7 && c.z <= 0 && c.y <= 18;
     if (pillar) return PC_TRIM;
-    if (c.y == 10 && ax >= -11 && ax <= 11 && c.z >= -7 && c.z <= -1) return PC_TRIM;
-    if (ax >= -11 && ax <= 11 && c.y >= 1 && c.y <= 9 && c.z >= -6 && c.z <= 0) {
+    if (c.y == 18 && ax >= -8 && ax <= 8 && c.z >= -7 && c.z <= -1) return PC_TRIM;
+    if (ax >= -8 && ax <= 8 && c.y >= 1 && c.y <= 17 && c.z >= -6 && c.z <= 0) {
         bool disp = pcCellF(ax, c.y, S) > -5.0;
         if (disp && c.z >= -3) return PC_DISP;
         if (disp && c.z == -4) return PC_PISTON;
         if (c.z == 0) return PC_AIR;
         if (c.z == -1) {
-            if (ax == -11 || ax == 11 || c.y == 1 || c.y == 9) return PC_LAMP;
-            if (ax == 0 && (c.y == 4 || c.y == 6)) return PC_COLON;
+            bool edgeX = ax == -8 || ax == 8, edgeY = c.y == 1 || c.y == 17;
+            if (edgeX && edgeY) return PC_TRIM;      // a corner block
+            if (edgeX || edgeY) return PC_LAMP;
+            if ((ax == -1 || ax == 1) && c.y == 9) return PC_COLON;
         }
         return PC_WALL;
     }
@@ -249,14 +259,14 @@ static int pcClockBlock(int3 c, thread const PcScene& S) {
 }
 
 static inline bool pcInClockBox(int3 c) {
-    return c.x >= -13 && c.x <= 13 && c.y >= 0 && c.y <= 10 && c.z >= -8 && c.z <= 1;
+    return c.x >= -10 && c.x <= 10 && c.y >= 0 && c.y <= 18 && c.z >= -8 && c.z <= 1;
 }
 
 // True when every column within one of c is flat ground at height 0 with no
 // clock and no tree crown over it: hills need amp*14 >= 1, and crowns come
 // only from trees rooted 17+ from the clock and, in front, 44+.
 static inline bool pcFlatAround(int2 c) {
-    if (c.x >= -14 && c.x <= 14 && c.y >= -8 && c.y <= 2) return false;
+    if (c.x >= -11 && c.x <= 11 && c.y >= -9 && c.y <= 2) return false;
     float2 p = float2(c) + float2(-0.5, 0.5);
     float r = length(p) + 1.5;
     float amp = smoothstep(15.0, 36.0, r) * mix(1.0, 0.35, smoothstep(0.0, 16.0, p.y - 1.5));
@@ -591,18 +601,21 @@ static inline float pcL1(float3 a, float3 b) { float3 d = abs(a - b); return d.x
 // lanterns: 15 at a source, one level less per block.
 static float pcBlockLevel(float3 sp, float s) {
     float lvl = 0.0;
-    lvl = max(lvl, 15.0 - pcL1(sp, float3(-12.5, 2.25, 1.5)));
-    lvl = max(lvl, 15.0 - pcL1(sp, float3( 13.5, 2.25, 1.5)));
+    lvl = max(lvl, 15.0 - pcL1(sp, float3(-9.5, 2.25, 1.5)));
+    lvl = max(lvl, 15.0 - pcL1(sp, float3(10.5, 2.25, 1.5)));
     if (pcColonOn(s)) {
-        lvl = max(lvl, 15.0 - pcL1(sp, float3(0.5, 4.5, -0.5)));
-        lvl = max(lvl, 15.0 - pcL1(sp, float3(0.5, 6.5, -0.5)));
+        lvl = max(lvl, 15.0 - pcL1(sp, float3(-0.5, 9.5, -0.5)));
+        lvl = max(lvl, 15.0 - pcL1(sp, float3( 1.5, 9.5, -0.5)));
     }
     // The ring: its nearest lamp, and the ends of the run that is lit.
-    int2 q = int2(clamp(floor(sp.xy), float2(-11.0, 1.0), float2(11.0, 9.0)));
-    if (q.x > -11 && q.x < 11 && q.y > 1 && q.y < 9) {
-        int dl = q.x + 11, dr = 11 - q.x, db = q.y - 1, dt = 9 - q.y;
+    int2 q = int2(clamp(floor(sp.xy), float2(-8.0, 1.0), float2(8.0, 17.0)));
+    if (q.x > -8 && q.x < 8 && q.y > 1 && q.y < 17) {
+        int dl = q.x + 8, dr = 8 - q.x, db = q.y - 1, dt = 17 - q.y;
         int m = min(min(dl, dr), min(db, dt));
-        if (m == dl) q.x = -11; else if (m == dr) q.x = 11; else if (m == db) q.y = 1; else q.y = 9;
+        if (m == dl) q.x = -8; else if (m == dr) q.x = 8; else if (m == db) q.y = 1; else q.y = 17;
+    } else if (abs(q.x) == 8 && (q.y == 1 || q.y == 17)) {
+        // A corner block is no lamp: the neighbour that lights first.
+        if (q.x == 8 && q.y == 1) q.y = 2; else q.x = q.x < 0 ? -7 : 7;
     }
     int kn = pcRingIndex(q.x, q.y);
     int kl = int(floor(s));
@@ -730,7 +743,6 @@ fragment half4 lerpMain(float4 pos [[position]],
                         texture2d_array<float> mcMaps  [[texture(11)]]) {
     float2 uv = lerpUV(pos, u.resolution);
     float minRes = min(u.resolution.x, u.resolution.y);
-    float xExt = u.resolution.x / minRes;
 
     // --- The time.
     float daySec = glmod(clock.hourAtZero * 3600.0 + u.time, 86400.0);
@@ -766,8 +778,8 @@ fragment half4 lerpMain(float4 pos [[position]],
     float tc = u.time + u.seed * 1777.0;
     float yawA = 0.50 * sin(TWO_PI * tc / 310.0) + 0.10 * sin(TWO_PI * tc / 127.0 + 1.0);
     float pitA = 0.20 + 0.06 * sin(TWO_PI * tc / 230.0 + 2.0);
-    float dist = max(21.0, 15.0 * PC_FOCAL / xExt);
-    float3 pivot = float3(0.5, 5.2, 0.0);
+    float dist = 26.0;
+    float3 pivot = float3(0.5, 9.3, 0.0);
     float3 ro = pivot + dist * float3(sin(yawA) * cos(pitA), sin(pitA), cos(yawA) * cos(pitA));
     float3 upHint = float3(0.0, 1.0, 0.0);
     float3 fwd = normalize(pivot - ro);
@@ -877,7 +889,7 @@ fragment half4 lerpMain(float4 pos [[position]],
         }
 
         // Redstone dust along the front of the plinth.
-        if (h.mat == PC_PLINTH && top && h.cell.z == 1 && h.cell.x >= -11 && h.cell.x <= 11) {
+        if (h.mat == PC_PLINTH && top && h.cell.z == 1 && h.cell.x >= -8 && h.cell.x <= 8) {
             float4 d = mcTileAniso(mcTiles, MC_REDSTONE_DUST_LINE0, float2(fuv.y, fuv.x), float2(gx.y, gx.x), float2(gy.y, gy.x));
             alb = mix(alb, d.rgb * pcDustColour(pcDustPower(h.cell.x, S.sec)), d.a);
         }
@@ -885,7 +897,7 @@ fragment half4 lerpMain(float4 pos [[position]],
         // Smooth lighting: corner occlusion from the cells beside the face.
         float ao = 1.0;
         bool open = (n.y > 0.5 && h.cell.y == -1 && pcFlatAround(h.cell.xz))
-                 || (n.z > 0.5 && h.mat == PC_WALL && abs(h.cell.x) <= 10 && h.cell.y >= 2 && h.cell.y <= 8);
+                 || (n.z > 0.5 && h.mat == PC_WALL && abs(h.cell.x) <= 7 && h.cell.y >= 2 && h.cell.y <= 16);
         if (!open && h.mat != PC_LANTERN && h.mat != PC_ROD && h.mat != PC_HEAD) {
             int3 ni = int3(n);
             int3 ac = int3(floor(p + n * 0.5));
@@ -911,7 +923,7 @@ fragment half4 lerpMain(float4 pos [[position]],
         // Light levels at the air in front of the face.
         float3 sp = p + n * 0.5;
         float skyLevel = 15.0;
-        if (sp.z < 0.0 && sp.y > 3.0 && sp.y < 8.0 && abs(sp.x - 0.5) < 9.0)
+        if (sp.z < 0.0 && abs(sp.x - 0.5) < 3.5 && ((sp.y > 3.0 && sp.y < 8.0) || (sp.y > 11.0 && sp.y < 16.0)))
             skyLevel = 15.0 - ceil(-sp.z);                 // down a piston's hole
         float blockLevel = pcBlockLevel(sp, S.sec);
         float3 light = mcLightmap(blockLevel, skyLevel, K.dayF, 0.0);
