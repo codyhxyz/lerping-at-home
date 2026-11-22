@@ -75,6 +75,7 @@ public final class LerpSaverView: ScreenSaverView {
     /// Instances that have started rendering for the current session, so the
     /// second start is a no-op instead of a double display link.
     private var rendering = false
+    private var profileLogMetadata = ""
     private var lifecycleObservers: [NSObjectProtocol] = []
 
     /// See "Hosts that are never shown".
@@ -135,12 +136,13 @@ public final class LerpSaverView: ScreenSaverView {
         animationTimeInterval = 1
         effectiveIsPreview = isPreview || frame.width < 600
         wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
         setUpMetalView()
         observeScreenSaverLifecycle()
         Self.log.notice("""
             init frame=\(Int(frame.width))x\(Int(frame.height)) isPreview=\(isPreview) \
             effectiveIsPreview=\(self.effectiveIsPreview) \
-            build=\(Self.buildRevision, privacy: .public)
+            build=\(Self.buildRevision, privacy: .public) \(self.profileLogMetadata, privacy: .public)
             """)
     }
 
@@ -201,33 +203,48 @@ public final class LerpSaverView: ScreenSaverView {
         metalView?.shaderLibrary.discover() ?? []
     }
 
-    private func currentConfig() -> LerpMetalView.Config {
-        let all = discoveredShaders().rotationEntries()
+    private func applyConfig() {
+        let shaders = discoveredShaders()
+        let all = shaders.rotationEntries()
         var config = Settings.load(from: Self.defaults()).config
         let state = Self.savedRotation(discovered: all)
-        config.enabledEntries = LerpRotation.enabled(discovered: all, in: state)
-        // What this host believes it is allowed to play, recorded from inside
-        // the real host rather than inferred from the file a harness read.
-        // `enabledEntries == nil` is the widest possible answer -- every look --
-        // and is worth seeing spelled out, because a settings read that quietly
-        // failed and a user who has genuinely chosen nothing look identical
-        // from outside and are not the same thing at all.
-        let chosen = config.enabledEntries
+        let profile = state.activeProfile
+        profileLogMetadata = "profile=\(profile.id.uuidString) profileName=\(String(reflecting: profile.name))"
+        let chosen = LerpRotation.enabled(discovered: all, in: state)
+        config.enabledEntries = chosen
+        // A valid pin is intentionally independent of Shuffle. If there's no
+        // pin and nothing eligible, cover even a previous session's drawable.
+        let pinned = config.shaderName.flatMap { shaders.named($0) } != nil
+        let neutral = !pinned && (chosen?.isEmpty ?? all.isEmpty)
         Self.log.notice("""
             rotation resolved: \(chosen.map { "\($0.count)" } ?? "nil (all)", privacy: .public) \
             of \(all.count) discovered, \(state.summary, privacy: .public), \
-            pinned=\(config.shaderName ?? "no", privacy: .public)
+            pinned=\(config.shaderName ?? "no", privacy: .public) neutral=\(neutral) \
+            \(self.profileLogMetadata, privacy: .public)
             """)
-        return config
+        guard let view = metalView else { return }
+        if neutral {
+            view.isHidden = true
+            view.stop()
+        }
+        view.rotationLogMetadata = profileLogMetadata
+        view.config = config
+        if !neutral { view.isHidden = false }
+    }
+
+    private func startVisibleMetalView() {
+        guard rendering, let view = metalView, !view.isHidden else { return }
+        view.start()
+        if parkedReason != nil { view.park() }
     }
 
     private func setUpMetalView() {
-        guard let view = LerpMetalView(frame: bounds) else { return }
-        // Assign first: currentConfig() discovers shaders through this view.
-        metalView = view
-        view.config = currentConfig()
-        view.autoresizingMask = [.width, .height]
-        addSubview(view)
+        if let view = LerpMetalView(frame: bounds) {
+            metalView = view
+            view.autoresizingMask = [.width, .height]
+            addSubview(view)
+        }
+        applyConfig()
     }
 
     // MARK: - Session lifecycle
@@ -272,9 +289,9 @@ public final class LerpSaverView: ScreenSaverView {
         presenceSamples = 0
         guard !rendering else { return }
         rendering = true
-        Self.log.notice("[\(self.instanceID)] start rendering (\(reason, privacy: .public))")
-        metalView?.config = currentConfig()
-        metalView?.start()
+        applyConfig()
+        Self.log.notice("[\(self.instanceID)] start rendering (\(reason, privacy: .public)) \(self.profileLogMetadata, privacy: .public)")
+        startVisibleMetalView()
         if !effectiveIsPreview { startHostWatch() }
     }
 
@@ -796,7 +813,8 @@ public final class LerpSaverView: ScreenSaverView {
             settings.hdr = (hdrCheckbox?.state ?? .on) == .on
             settings.save(to: defaults)
         }
-        metalView?.config = currentConfig()
+        applyConfig()
+        startVisibleMetalView()
         endConfigureSheet()
     }
 
@@ -826,7 +844,7 @@ public final class LerpSaverView: ScreenSaverView {
 /// Everything the saver persists: the key strings, the defaults, and the round
 /// trip through `ScreenSaverDefaults`, in one place.
 ///
-/// These keys used to be read once in `currentConfig()`, read a second time
+/// These keys used to be read once for the renderer, read a second time
 /// with the same literals to populate the Options sheet, and written back from
 /// a third set in `configureSheetOK` — three places for a renamed key to turn
 /// into a setting that silently stops applying.
@@ -859,7 +877,7 @@ private struct Settings {
     var hdr = true
     /// The shuffle rotation. Not loaded from here and never saved from here:
     /// `LerpSaverView.savedRotation` reads it out of the ByHost plist the
-    /// playground writes. Set by `currentConfig` after this struct is built.
+    /// playground writes. Set by `applyConfig` after this struct is built.
     var enabledEntries: Set<LerpRotationEntry>?
 
     static func load(from defaults: UserDefaults?) -> Settings {

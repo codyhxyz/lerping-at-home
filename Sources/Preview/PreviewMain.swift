@@ -52,6 +52,9 @@ enum PreviewMain {
         }
 
         if args.contains("--rotation-selftest") {
+            guard !LerpDefaults.isProduction else {
+                fail("--rotation-selftest requires \(LerpDefaults.moduleOverrideVariable) set to a scratch domain")
+            }
             ShelfSelfTest.run(extraSearch)
             RotationSelfTest.run(extraSearch)
             return

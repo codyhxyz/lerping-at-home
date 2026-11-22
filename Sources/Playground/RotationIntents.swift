@@ -6,9 +6,8 @@ import Metal
 ///
 /// These are not a second writer. App Intents run inside the app that declares
 /// them, so every `perform()` here executes in LerpPlayground's own process and
-/// writes through `RotationStore.setLook` — the same `RotationStore.save` →
-/// `LerpRotation.write` path a click in the gallery takes, into the same ByHost
-/// `rotationState` record, with no keys of its own. If the playground is not
+/// uses `RotationStore`, just like the gallery, writing into the same ByHost
+/// `rotationState` record with no keys of its own. If the playground is not
 /// running, the system launches it to run the action.
 ///
 /// What is deliberately not here: pinning. The pin (`shader` / `preset` in the
@@ -221,6 +220,58 @@ struct ListLooksIntent: AppIntent {
     }
 }
 
+// MARK: - Named playlists
+
+struct RotationPlaylistEntity: AppEntity {
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Rotation Playlist"
+    static let defaultQuery = RotationPlaylistQuery()
+
+    let id: UUID
+    let name: String
+
+    init(_ profile: RotationProfile) {
+        id = profile.id
+        name = profile.name
+    }
+
+    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)") }
+}
+
+struct RotationPlaylistQuery: EntityStringQuery {
+    func entities(for identifiers: [UUID]) async throws -> [RotationPlaylistEntity] {
+        let profiles = Dictionary(uniqueKeysWithValues: RotationStore.profiles.map { ($0.id, $0) })
+        return identifiers.compactMap { profiles[$0].map(RotationPlaylistEntity.init) }
+    }
+
+    func entities(matching string: String) async throws -> [RotationPlaylistEntity] {
+        RotationStore.profiles.filter { string.isEmpty || $0.name.localizedCaseInsensitiveContains(string) }
+            .map(RotationPlaylistEntity.init)
+    }
+
+    func suggestedEntities() async throws -> [RotationPlaylistEntity] {
+        RotationStore.profiles.map(RotationPlaylistEntity.init)
+    }
+}
+
+struct SwitchRotationPlaylistIntent: AppIntent {
+    static let title: LocalizedStringResource = "Switch Rotation Playlist"
+    static let description = IntentDescription("Chooses which playlist the screensaver uses in Shuffle mode.")
+
+    @Parameter(title: "Playlist")
+    var playlist: RotationPlaylistEntity
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Switch the screensaver rotation to \(\.$playlist)")
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let changed = try RotationStore.setActiveProfile(id: playlist.id, catalog: LookCatalog.discovered())
+        return .result(dialog: changed ? "Switched to \(playlist.name)."
+                                       : "\(playlist.name) is already active.")
+    }
+}
+
 // MARK: - Shortcuts app / Spotlight
 
 struct LerpShortcuts: AppShortcutsProvider {
@@ -237,5 +288,9 @@ struct LerpShortcuts: AppShortcutsProvider {
                     phrases: ["List \(.applicationName) presets"],
                     shortTitle: "List Presets",
                     systemImageName: "square.grid.3x3")
+        AppShortcut(intent: SwitchRotationPlaylistIntent(),
+                    phrases: ["Switch the \(.applicationName) rotation playlist"],
+                    shortTitle: "Switch Playlist",
+                    systemImageName: "list.bullet")
     }
 }
