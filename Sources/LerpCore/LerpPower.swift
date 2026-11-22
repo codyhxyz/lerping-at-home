@@ -60,6 +60,9 @@ public final class LerpPowerMonitor {
     /// Same subsystem as every other Lerping line — see `LerpMetalView.log`.
     static let log = Logger(subsystem: LerpDefaults.productionModule, category: "power")
 
+    /// Posted on main after a battery or Low Power Mode transition is committed.
+    static let didChangeNotification = Notification.Name("LerpPowerMonitorDidChange")
+
     public private(set) var state: LerpPowerState
     private var observers: [NSObjectProtocol] = []
 
@@ -97,6 +100,7 @@ public final class LerpPowerMonitor {
         guard new != state else { return }
         let old = state
         state = new
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
         Self.log.notice("power: \(old.summary, privacy: .public) → \(new.summary, privacy: .public) (\(trigger, privacy: .public))")
     }
 

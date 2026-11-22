@@ -65,6 +65,11 @@ enum PreviewMain {
             return
         }
 
+        if args.contains("--export-selftest") {
+            LoopExportSelfTest.run()
+            return
+        }
+
         if args.contains("--animate-selftest") {
             AnimateSelfTest.run(extraSearch)
             return
