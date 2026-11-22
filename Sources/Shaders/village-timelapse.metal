@@ -5,6 +5,7 @@
 //
 // lerp-category: Minecraft
 // lerp-requires: minecraft mobs
+// lerp-data: clock
 //
 // The island is a three-by-three grid of plots between dirt paths, with an
 // oak fence and lantern at each inner crossroads. Each plot runs its own
@@ -35,16 +36,24 @@
 // dusk, sky and fog colours with the sunset glow toward the sun, the sun and
 // moon textures, and the flat cloud layer from clouds.png.
 //
+// The sky keeps the Mac's hours (the clock provider): the sun rises at
+// today's sunrise, is highest at midday and sets at today's sunset, and the
+// lanterns and torches carry the village through the night under the moon.
+// The building runs at timelapse speed under a real-time sky. `clock` pins
+// the hour on an equinox day; stills are midnight, as the provider gives.
+// Golden Hour is the low late-afternoon sun this look used to drift in all
+// day (sun 0.3-0.42); pinned at 17:00 it sets about an hour into a session.
+//
 // lerp-param: speed   float 0.25 3   = 1    "Build speed"
-// lerp-param: sun     float 0 1      = 0.36 "Sun height"
-// lerp-animate: sun 0.3 0.42 period=300
+// lerp-param: clock   float -1 24    = -1   "Hour (-1 = now)"
 // lerp-param: orbit   float 0 3      = 1    "Orbit speed"
 // lerp-param: yaw     float -180 180 = 0    "Turn"
 // lerp-param: pitch   float -25 45   = 0    "Tilt"
 // lerp-param: magnify float -1 1     = 0    "Zoom"
 //
-// lerp-preset: Noon     sun=0.9
-// lerp-preset: Night    sun=0.03
+// lerp-preset: "Golden Hour" clock=17
+// lerp-preset: Noon     clock=12
+// lerp-preset: Night    clock=0
 // lerp-preset: Bustle   speed=2.5
 
 // --- Timeline, in build-clock seconds (u.time × speed).
@@ -603,6 +612,21 @@ struct VtLight {
     float  glowA;      // and its strength
 };
 
+// The clock as `vtLighting`'s sun height. On a sine from sunrise to sunset
+// the sun climbs to 1.21 rad at midday (the old Noon preset, sun=0.9) and
+// sinks to -0.44 rad at the middle of the night (the old Night, sun=0.03).
+static inline float vtSunFromClock(constant LerpUniforms& u, constant LerpClock& clock) {
+    float hour = glmod(clock.hourAtZero + u.time / 3600.0, 24.0);
+    float rise = clock.sunrise, set = clock.sunset;
+    float e;
+    if (hour >= rise && hour <= set) {
+        e = 1.21 * sin(PI * (hour - rise) / (set - rise));
+    } else {
+        e = -0.443 * sin(PI * glmod(hour - set, 24.0) / (24.0 - (set - rise)));
+    }
+    return (e + 0.5) / 1.9;
+}
+
 static inline VtLight vtLighting(float sunParam) {
     VtLight l;
     float e = mix(-0.5, 1.4, sunParam);            // sun elevation, radians
@@ -980,6 +1004,7 @@ static inline bool vtMobHit(int i, float now, uint sb, float3 ro, float3 rd, flo
 }
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
+                        constant LerpClock& clock [[buffer(1)]],
                         texture2d_array<float> mcTiles [[texture(8)]],
                         texture2d_array<float> mcSkins [[texture(10)]],
                         texture2d_array<float> mcMaps  [[texture(11)]]) {
@@ -988,7 +1013,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     W.now = u.time;
     W.seedBits = vtPcg(uint(u.seed * 4294967.0) + 17u);
     W.noiseOff = float2(float(W.seedBits & 255u), float((W.seedBits >> 8) & 255u)) * 0.37;
-    VtLight l = vtLighting(u.sun);
+    VtLight l = vtLighting(vtSunFromClock(u, clock));
 
     // Camera: a slow orbit round the island from about 23° up, looking down
     // a little less than that, so the island sits low and the horizon high.
