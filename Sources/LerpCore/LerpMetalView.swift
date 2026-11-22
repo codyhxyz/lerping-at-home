@@ -124,6 +124,8 @@ public final class LerpMetalView: NSView {
     /// not rendering.
     public private(set) var currentEntry: LerpRotationEntry?
     public var onCompileError: ((String, String) -> Void)?
+    /// Optional host context appended to each successful shuffle pick log.
+    var rotationLogMetadata: String?
     /// Polled once per drawn frame for the `audio*` uniforms. Nil — the saver,
     /// and the playground until its toggle is turned on — means every frame
     /// renders with `.silent`, byte-for-byte what it rendered before the
@@ -799,6 +801,11 @@ public final class LerpMetalView: NSView {
     /// wait out the rest of a five-minute interval to find out whether it took
     /// is how a setting stops being believed.
     private func rotationChanged(releasedPin: Bool) {
+        // A pending pick belongs to the previous configuration, even when the
+        // current look is still eligible and doesn't need to be replaced.
+        switchToken &+= 1
+        holdingFrame = false
+        pendingBrowse = nil
         if releasedPin {
             // Back to Shuffle: the schedule owns the screen again. Said here,
             // before the early return below, because the saver assigns its
@@ -948,10 +955,11 @@ public final class LerpMetalView: NSView {
         //
         // `verify-rotation.py` matches the text up to the closing parenthesis;
         // anything after it is free.
+        let metadata = rotationLogMetadata.map { " " + $0 } ?? ""
         Self.log.notice("""
             playing \(candidate.key, privacy: .public) \
             (\(self.shuffleLooks.count) in rotation of \(available.rotationEntries().count) discovered)\
-            \(crossfade ? " crossfade" : "", privacy: .public)
+            \(crossfade ? " crossfade" : "", privacy: .public)\(metadata, privacy: .public)
             """)
     }
 
