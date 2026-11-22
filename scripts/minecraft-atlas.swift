@@ -151,6 +151,14 @@ for folder in folders {
         files.append(String(url.standardizedFileURL.path.dropFirst(root.path.count + 1)))
     }
 }
+// Single textures from folders not packed whole: the round shadow the game
+// draws under every mob (the mobs kit's mcMobShadow).
+for single in ["misc/shadow.png"] {
+    guard FileManager.default.fileExists(atPath: root.appendingPathComponent(single).path) else {
+        fail("no \(single) under \(root.path)")
+    }
+    files.append(single)
+}
 files.sort()
 
 var tiles = Data(), items = Data(), skins = Data(), maps = Data()

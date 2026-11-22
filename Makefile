@@ -248,7 +248,7 @@ define STAGE_DMG
 		-srcfolder "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
 endef
 
-.PHONY: splats images minecraft depth-window photo-window photo-window-setup local-modules all preview playground playground-build saver saver-build midi-deps \
+.PHONY: splats images minecraft minecraft-save minecraft-world depth-window photo-window photo-window-setup local-modules all preview playground playground-build saver saver-build midi-deps \
         verify-rotation pulse uninstall-pulse \
         install install-example install-playground uninstall-playground package dmg release clean \
         FORCE
@@ -421,6 +421,52 @@ minecraft:
 	# that say `lerp-requires: minecraft mobs`. Needs the launcher's Java and
 	# python3 with numpy and Pillow; says which is missing if one is.
 	scripts/minecraft-mobs/build.sh "$(MINECRAFT_JAR)" $(MINECRAFT_SRC)/assets/minecraft/textures "$(MINECRAFT_OUT)"
+
+# Minecraft worlds, for the looks that say `// lerp-requires: minecraft world:<name>`
+# (Sources/LerpCore/MinecraftWorld.swift, scripts/minecraft-world/FORMAT.md).
+# A world is a real save baked into 3D textures a look ray traces. Like the
+# textures it is made on this Mac from the user's own game and lands in the
+# user's Lerping folder; nothing of it is in the repo or a release. Both
+# targets need `make minecraft` first, and a world must be baked again after
+# the atlas changes (a new game version or texture pack); the look says so.
+#   make minecraft-save                    the most recently played save, as `mine`
+#   make minecraft-save SAVE=name-or-path  a particular save
+#   make minecraft-world MINECRAFT_EULA=true
+#       the shared world: the game's own generator, run headless from the
+#       installed jar with a fixed seed, so every Mac on the same game version
+#       gets the same blocks. Running the server needs your assent to
+#       Minecraft's EULA (https://aka.ms/MinecraftEULA), which is what the
+#       flag says. The generated save is kept under build/, named for its seed
+#       and game version, and reused; only the bake runs again.
+MINECRAFT_SAVES ?= $(HOME)/Library/Application Support/minecraft/saves
+MINECRAFT_SEED  ?= Lerping@Home
+# Where in that seed the shared world is: a plains village on a peninsula,
+# chosen from an audition of the 62 villages nearest the origin (14 houses,
+# 22 beds, a bell at a central meeting point, sea on three sides, a hill).
+MINECRAFT_PLACE     ?= -1616,736
+MINECRAFT_STRUCTURE ?= minecraft:village_plains
+MINECRAFT_EULA  ?=
+mc_comma := ,
+SAVE ?=
+
+minecraft-save:
+	@test -f "$(MINECRAFT_OUT)/atlas.json" || { echo "make minecraft-save: run make minecraft first" >&2; exit 1; }
+	@save="$(SAVE)"; \
+	if [ -z "$$save" ]; then save="$$(ls -td "$(MINECRAFT_SAVES)"/*/ 2>/dev/null | head -1)"; fi; \
+	if [ ! -d "$$save" ] && [ -d "$(MINECRAFT_SAVES)/$$save" ]; then save="$(MINECRAFT_SAVES)/$$save"; fi; \
+	test -f "$$save/level.dat" || { echo "make minecraft-save: no save found; pass SAVE=name-or-path" >&2; exit 1; }; \
+	echo "baking $$save as mine"; \
+	python3 scripts/minecraft-world/bake.py "$$save" mine --jar "$(MINECRAFT_JAR)"
+
+minecraft-world:
+	@test -f "$(MINECRAFT_OUT)/atlas.json" || { echo "make minecraft-world: run make minecraft first" >&2; exit 1; }
+	@test -f "$(MINECRAFT_JAR)" || { echo "make minecraft-world: no Minecraft client jar found; pass MINECRAFT_JAR=/path/to/version.jar" >&2; exit 1; }
+	@save="$(BUILD)/minecraft-world/saves/$(MINECRAFT_SEED)-$$(basename "$(MINECRAFT_JAR)" .jar)-$(subst $(mc_comma),_,$(MINECRAFT_PLACE))"; \
+	if [ ! -f "$$save/lerping-generate.json" ]; then \
+		MINECRAFT_EULA="$(MINECRAFT_EULA)" scripts/minecraft-world/generate.sh "$(MINECRAFT_JAR)" "$$save" --seed "$(MINECRAFT_SEED)" \
+			--at "$(MINECRAFT_PLACE)" --structure "$(MINECRAFT_STRUCTURE)" || exit 1; \
+	fi; \
+	python3 scripts/minecraft-world/bake.py "$$save" shared --jar "$(MINECRAFT_JAR)"
 
 # `make depth-window IMAGE=photo.jpg NAME=beach` — a depth-window look of your
 # own photo. Depth Anything V2 Small (Apple's Core ML conversion, Apache-2.0)

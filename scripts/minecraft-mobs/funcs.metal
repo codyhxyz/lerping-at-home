@@ -69,6 +69,14 @@ static inline MCMOB_Skin mcMobEndermanSkin() {
     MCMOB_Skin s = mcMobSkin(MCS_ENDERMAN); s.over1 = MCS_ENDERMAN_EYES; s.flags = MCMOB_GLOW1;
     return s;
 }
+// A llama or trader llama: `coat` MCM_LLAMA_CREAMY, _WHITE, _BROWN or _GRAY;
+// `decor` the blanket on its decor model, -1 for none: a carpet
+// (MCM_EQUIPMENT_LLAMA_BODY_RED, ...) or, as the game gives every trader
+// llama that wears no carpet, MCM_EQUIPMENT_LLAMA_BODY_TRADER_LLAMA.
+static inline MCMOB_Skin mcMobLlamaSkin(int coat, int decor) {
+    MCMOB_Skin s = mcMobSkin(coat); s.fur = decor;
+    return s;
+}
 
 // ---- placing a mob
 
@@ -84,6 +92,10 @@ static inline void mcMobRay(float3 ro, float3 rd, float3 at, float heading, thre
 static inline float3 mcMobNormal(float3 n, float heading) {
     float c = cos(heading), s = sin(heading);
     return float3(c * n.x + s * n.z, n.y, -s * n.x + c * n.z);
+}
+// A point in mob space (MCMOB_LLAMA_LEASH) to the world, for a mob at `at` facing `heading`.
+static inline float3 mcMobPoint(float3 p, float3 at, float heading) {
+    return at + mcMobNormal(p, heading);
 }
 
 // ---- bounds
@@ -109,6 +121,7 @@ static inline float2 mcMobFacePx(int cube, int face, float3 f) {
 static inline float mcMobAlpha(MCMOB_Skin s, int cflags, float2 px, bool big,
                                texture2d_array<float> skins, texture2d_array<float> maps) {
     uint2 q = uint2(clamp(px, 0.0, big ? 127.0 : 63.0));
+    if (big && (cflags & 128) != 0) return s.fur >= 0 ? maps.read(q, uint(s.fur)).a : 0.0;
     if (big) return maps.read(q, uint(s.base)).a;
     if ((cflags & 128) != 0) return s.fur >= 0 ? skins.read(q, uint(s.fur)).a : 0.0;
     float a = skins.read(q, uint(s.base)).a;
@@ -217,6 +230,7 @@ static inline MCMOB_Hit mcMobTrace(int type, MCMOB_Pose pose, MCMOB_Skin skin, f
 // eyes); add rgb * a unlit, or ignore it.
 static inline float4 mcMobColor(int type, MCMOB_Hit h, MCMOB_Skin s, float w,
                                 texture2d_array<float> skins, texture2d_array<float> maps) {
+    if (MCMOB_TYPE[type].z != 0 && (h.flags & 128) != 0) return float4(mcMap(maps, s.fur, h.px, w).rgb * s.tint, 0.0);
     if (MCMOB_TYPE[type].z != 0) return float4(mcMap(maps, s.base, h.px, w).rgb, 0.0);
     if ((h.flags & 128) != 0) return float4(mcSkin(skins, s.fur, h.px, w).rgb * s.tint, 0.0);
     float4 c = mcSkin(skins, s.base, h.px, w);
@@ -230,4 +244,101 @@ static inline float4 mcMobColor(int type, MCMOB_Hit h, MCMOB_Skin s, float w,
     if (s.over2 >= 0) { float4 o = mcSkin(skins, s.over2, h.px, w); rgb = mix(rgb, o.rgb, o.a); }
     if (s.over3 >= 0) { float4 o = mcSkin(skins, s.over3, h.px, w); rgb = mix(rgb, o.rgb, o.a); }
     return float4(rgb, glow);
+}
+
+// ---- the lead
+
+// The lead (leash) as the game draws it (LeashFeatureRenderer): 24 straight
+// segments from the leashed mob's point `from` (mcMobPoint(MCMOB_LLAMA_LEASH,
+// llamaAt, heading)) to the holder's `to` (traderAt + (0, MCMOB_TRADER_HOLD, 0)),
+// world space, blocks. The curve is the game's: the height runs as d.y * f^2
+// when the holder is higher, d.y * (1 - (1 - f)^2) when lower, so a lead
+// between equal heights is straight. Each segment is two flat ribbons crossed
+// in an X, 0.05 blocks wide and 0.05 tall, untextured, light and dark brown by
+// turns. A lead hanging plumb (to straight above from) draws nothing in the
+// game either. t is INFINITY on a miss; rgb is unlit and takes no face shade:
+// multiply it by the light, lerping the two ends' light by f (0 at `from`).
+struct MCMOB_Lead { float t; float3 rgb; float f; };
+
+static inline float3 mcMobLeadAt(float3 d, float f) {
+    float y = d.y > 0.0 ? d.y * f * f : d.y - d.y * (1.0 - f) * (1.0 - f);
+    return float3(d.x * f, y, d.z * f);
+}
+
+static inline MCMOB_Lead mcMobLead(float3 ro, float3 rd, float3 from, float3 to, float tMax) {
+    MCMOB_Lead L; L.t = INFINITY; L.rgb = float3(0.0); L.f = 0.0;
+    float3 d = to - from;
+    float h = length(d.xz);
+    if (!(h > 1e-6)) return L;
+    float3 m = float3(-d.z, 0.0, d.x) / h;     // level, across the lead
+    // the ribbons keep within 0.025 of the lead's upright plane: where the ray is in that slab
+    float wo = dot(ro - from, m), wd = dot(rd, m);
+    float t0 = 0.0, t1 = tMax;
+    if (abs(wd) > 1e-9) {
+        float ta = (-0.025 - wo) / wd, tb = (0.025 - wo) / wd;
+        t0 = max(t0, min(ta, tb)); t1 = min(t1, max(ta, tb));
+    } else if (abs(wo) > 0.025) return L;
+    if (t0 > t1) return L;
+    // and which segments lie along that stretch (f is the position along the lead, level)
+    float2 hd = d.xz / (h * h);
+    float fa = dot((ro + rd * t0 - from).xz, hd), fb = dot((ro + rd * t1 - from).xz, hd);
+    if (max(fa, fb) < 0.0 || min(fa, fb) > 1.0) return L;
+    int s0 = clamp(int(floor(min(fa, fb) * 24.0)), 0, 23), s1 = clamp(int(floor(max(fa, fb) * 24.0)), 0, 23);
+    float best = tMax;
+    for (int s = s0; s <= s1; s++) {
+        float3 p0 = from + mcMobLeadAt(d, float(s) / 24.0);
+        float3 e2 = from + mcMobLeadAt(d, float(s + 1) / 24.0) - p0;
+        for (int k = 0; k < 2; k++) {
+            // the game's two vertex pairs: (P + 0.025m + 0.05 up, P - 0.025m) and (P + 0.025m, P - 0.025m + 0.05 up)
+            float sg = k == 0 ? 1.0 : -1.0;
+            float3 c = p0 - sg * 0.025 * m;
+            float3 e1 = sg * 0.05 * m + float3(0.0, 0.05, 0.0);
+            float3 pv = cross(rd, e2);
+            float det = dot(e1, pv);
+            if (abs(det) < 1e-12) continue;
+            float3 tv = ro - c;
+            float u = dot(tv, pv) / det;
+            if (u < 0.0 || u > 1.0) continue;
+            float3 qv = cross(tv, e1);
+            float v = dot(rd, qv) / det;
+            if (v < 0.0 || v > 1.0) continue;
+            float t = dot(e2, qv) / det;
+            if (t <= 0.0 || t >= best) continue;
+            best = t;
+            L.t = t; L.f = (float(s) + v) / 24.0;
+            // flat-shaded strip: odd segments take the 0.7 shade
+            L.rgb = mcFromSRGB(float3(0.5, 0.4, 0.3) * ((s & 1) != 0 ? 0.7 : 1.0));
+        }
+    }
+    return L;
+}
+
+// ---- the ground shadow
+
+// How much the round shadow the game draws under every mob
+// (textures/misc/shadow.png) darkens the ground at `p`, a point on the top
+// face of a full block, for mob `type` with its feet at `at` (world, blocks):
+// multiply the ground's colour by 1 - this. As EntityRenderer.extractShadow
+// has it: radius MCMOB_SHADOW[type]; strength 1 - (distance to the camera
+// `cam`)^2 / 256, so no shadow 16 blocks or more from the camera; laid on the
+// block tops from the feet's level down to 2 * strength - 1 blocks below
+// them, fading by half for each block the feet are above that top; none
+// where `light`, the light level (0..15) of the cell above the block, is 3 or
+// less, and dimmed by mcLight(light) above that (the overworld's curve). The
+// game draws it only on blocks with a full collision box (no slabs, paths,
+// farmland or snow layers): that test is the caller's. `w` is one screen
+// pixel's width in blocks at p, to filter the edge.
+static inline float mcMobShadow(int type, float3 at, float3 p, float3 cam, float light, float w,
+                                texture2d_array<float> skins) {
+    float r = min(MCMOB_SHADOW[type], 32.0);
+    float3 dc = at - cam;
+    float s = 1.0 - dot(dc, dc) / 256.0;
+    if (s <= 0.0 || light <= 3.0) return 0.0;
+    float2 cell = floor(p.xz);
+    if (any(cell < floor(at.xz - r)) || any(cell > floor(at.xz + r))) return 0.0;
+    float top = round(p.y);            // the block's top, the y of the cell above it
+    if (top < floor(at.y - min(s / 0.5 - 1.0, r)) || top > floor(at.y)) return 0.0;
+    float a = saturate((s - (at.y - top) * 0.5) * 0.5 * mcLight(light));
+    float2 uv = saturate(0.5 - (p.xz - at.xz) / (2.0 * r));
+    return a * mcSkin(skins, MCS_MISC_SHADOW, uv * 64.0, w * 32.0 / r).a;
 }

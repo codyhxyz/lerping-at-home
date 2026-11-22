@@ -105,6 +105,11 @@ def merge(*ds):
         for k, v in d.items(): out[k] = out.get(k, []) + v
     return out
 
+LLAMA_COATS = ['llama/llama_creamy.png', 'llama/llama_white.png', 'llama/llama_brown.png', 'llama/llama_gray.png']
+LLAMA_DECOR = ['equipment/llama_body/%s.png' % c for c in
+               ('white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'light_gray',
+                'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black', 'trader_llama')]
+
 # name, layers (main, fur), skins to scan for alpha, anim map, notes
 MOBS = [
  ('VILLAGER', ['villager#main'], None, ['villager/villager.png'],
@@ -181,7 +186,49 @@ MOBS = [
      'right_leg': [('swing', 1.0)], 'left_leg': [('swing', -1.0)], 'tail': [('wag', 0.2)]}),
  ('BAT', ['bat#main'], None, ['bat/bat.png'],
     {'head': head(0.0), 'right_wing': [('flap', (0, 1.1, 0))], 'left_wing': [('flap', (0, -1.1, 0))]}),
+ # New types go here, at the end, so the numbers of the ones above never move.
+ # The llama's second model is its decor (llama#decor, the same boxes 0.5 px
+ # larger), which LlamaDecorLayer draws with a carpet's texture, or with the
+ # trader llama's blanket on a trader llama that wears none. The trader llama
+ # has its own layer in the game (identical boxes today) and keeps it here.
+ ('LLAMA', ['llama#main'], 'llama#decor', LLAMA_COATS, merge({'head': head(0.0)}, QUAD), LLAMA_DECOR),
+ ('TRADER_LLAMA', ['trader_llama#main'], 'llama#decor', LLAMA_COATS, merge({'head': head(0.0)}, QUAD), LLAMA_DECOR),
 ]
+
+# The radius of the round shadow under each mob, as the 26.2 jar's renderers
+# set it (the float each constructor hands to MobRenderer, read from the
+# classes named; not measured). MobRenderer.getShadowRadius multiplies it by
+# the age scale, 0.5 for a baby (LivingEntity.getAgeScale), and
+# VillagerRenderer.getShadowRadius halves a baby villager's once more.
+SHADOW = {
+    'VILLAGER': 0.5,     # VillagerRenderer
+    'PIG': 0.7,          # PigRenderer
+    'COW': 0.7,          # CowRenderer (MushroomCowRenderer 0.7 too)
+    'SHEEP': 0.7,        # SheepRenderer
+    'CHICKEN': 0.3,      # ChickenRenderer
+    'WOLF': 0.5,         # WolfRenderer
+    'CAT': 0.4,          # CatRenderer (OcelotRenderer 0.4 too)
+    'FOX': 0.4,          # FoxRenderer
+    'BEE': 0.4,          # BeeRenderer
+    'HORSE': 0.75,       # AbstractHorseRenderer, for HorseRenderer
+    'DONKEY': 0.75,      # AbstractHorseRenderer, for DonkeyRenderer (donkey, mule)
+    'IRON_GOLEM': 0.7,   # IronGolemRenderer
+    'ZOMBIE': 0.5,       # AbstractZombieRenderer (zombie, husk)
+    'SKELETON': 0.5,     # AbstractSkeletonRenderer (skeleton, stray, wither skeleton)
+    'CREEPER': 0.5,      # CreeperRenderer
+    'ENDERMAN': 0.5,     # EndermanRenderer
+    'ALLAY': 0.4,        # AllayRenderer
+    'PARROT': 0.3,       # ParrotRenderer
+    'BAT': 0.25,         # BatRenderer
+    'LLAMA': 0.7,        # LlamaRenderer (llama and trader llama)
+    'TRADER_LLAMA': 0.7,
+}
+def shadow_radius(name):
+    adult = re.sub(r'(_COLD|_WARM)?(_BABY)?$', '', name)
+    if adult not in SHADOW: die('no shadow radius for ' + name + ': add the renderer\'s to SHADOW')
+    r = SHADOW[adult]
+    if name.endswith('_BABY'): r *= 0.5 * (0.5 if adult == 'VILLAGER' else 1.0)
+    return r
 
 if sys.argv[1:] == ['--layers']:
     print(' '.join(sorted({'minecraft:' + l for spec in MOBS for l in spec[1] + ([spec[2]] if spec[2] else [])})))
@@ -280,7 +327,12 @@ BONES, BOXES, UVS, TYPES, AABBS, REPORT = [], [], [], [], [], []
 for spec in MOBS:
     name, mains, fur, skins, anim = spec[:5]
     furskins = spec[5] if len(spec) > 5 else []
-    big = os.path.basename(skins[0]).startswith('iron_golem')
+    # A skin wider or taller than 64 px is packed in mcMaps (iron golem, llama),
+    # and the fur model's skins must sit in the same array.
+    sizes = {p: tex_alpha(p).shape for p in skins + furskins}
+    big = max(sizes[skins[0]]) > 64
+    if any((max(s) > 64) != big for s in sizes.values()):
+        die(name + ': its skins are not all in one texture array: ' + ', '.join('%s %dx%d' % (p, s[1], s[0]) for p, s in sizes.items()))
     items = []
     for l in mains: items += flatten(l, anim, 0)
     if fur: items += flatten(fur, anim, 1)
@@ -377,6 +429,18 @@ out.append(',\n'.join('    ' + f4(t) for t in BOXES) + '};')
 out.append('// per cube face (axis*2+side): skin pixel = (u0 + du*fa, v0 + dv*fb)')
 out.append('constant half4 MCMOB_UV[%d] = {' % len(UVS))
 out.append(',\n'.join('    ' + h4(t) for t in UVS) + '};')
+# The lead's two ends, as the 26.2 jar's code places them (read from its classes):
+#   Llama.getLeashOffset()            (0, 0.75 * eyeHeight, 0.5 * width), turned with the body
+#   EntityTypes LLAMA, TRADER_LLAMA   sized(0.9, 1.87).eyeHeight(1.7765)
+#   Entity.getRopeHoldPosition()      position + (0, 0.7 * eyeHeight, 0); a wandering trader
+#   EntityTypes WANDERING_TRADER      does not override it, eyeHeight(1.62)
+LLAMA_EYE, LLAMA_WIDTH, TRADER_EYE = 1.7765, 0.9, 1.62
+out.append('// where the game ties a lead: on a llama (mob space, the front of its chest) and in a wandering trader\'s hand (height above his feet)')
+out.append('constant float3 MCMOB_LLAMA_LEASH = %s;' % ('float3(%s)' % ', '.join(f(x) for x in (0.0, 0.75 * LLAMA_EYE, 0.5 * LLAMA_WIDTH))))
+out.append('constant float MCMOB_TRADER_HOLD = %s;' % f(0.7 * TRADER_EYE))
+out.append('// per type: the radius of the round shadow the game draws under it, in blocks')
+out.append('constant float MCMOB_SHADOW[%d] = {' % len(REPORT))
+out.append(',\n'.join('    %s' % f(shadow_radius(name)) for name, *_ in REPORT) + '};')
 header = open(os.path.join(HERE, 'header.metal')).read().replace('@VERSION@', VERSION)
 kit = header + '\n'.join(out) + '\n' + open(os.path.join(HERE, 'funcs.metal')).read()
 with open(OUT, 'w') as fh: fh.write(kit)

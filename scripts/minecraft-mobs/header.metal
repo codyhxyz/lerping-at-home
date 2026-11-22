@@ -39,6 +39,13 @@
 //   IRON_GOLEM (skin in mcMaps), ZOMBIE, ZOMBIE_BABY (husk: same with its skin),
 //   SKELETON (stray, wither skeleton: same with their skins), CREEPER,
 //   ENDERMAN (eyes glow), ALLAY, PARROT, BAT
+//   LLAMA, TRADER_LLAMA (skins in mcMaps; mcMobLlamaSkin(coat, decor) lays a carpet or
+//                                      the trader llama's blanket on the decor model)
+// The lead: mcMobLead(ro, rd, from, to, tMax) between MCMOB_LLAMA_LEASH on a llama
+// (mcMobPoint(MCMOB_LLAMA_LEASH, at, heading)) and MCMOB_TRADER_HOLD above a trader's feet.
+// Not in, for llamas: their chests, baby llamas, the spit.
+// The ground shadow: mcMobShadow(type, at, p, cam, light, w, mcSkins), the opacity of the
+// round shadow the game lays under a mob, radius MCMOB_SHADOW[type] from its renderer.
 // Not in: saddles, armour, chests on donkeys, held items, the mooshroom's
 // mushrooms, collars, the iron golem's cracks and flower, the bee's stinger
 // model for an angry bee, the sitting / sleeping / eating poses beyond the

@@ -618,7 +618,15 @@ if (b.x < b.y && b.x < best) {
 `MCMOB_Pose` has `walk` and `speed` (the game's walk phase and stride; 0.3–0.6
 is a walk), `yaw`, `pitch`, `graze`, `flap`, `wag`. `mcMobVillagerSkin(base,
 biome, profession, level)`, `mcMobSheepSkin(baby, woolly, dye)` and
-`mcMobEndermanSkin()` build the layered skins. The header of
+`mcMobEndermanSkin()` build the layered skins; `mcMobLlamaSkin(coat, decor)` lays
+a carpet or the trader llama's blanket on `MCMOB_LLAMA` / `MCMOB_TRADER_LLAMA`.
+`mcMobLead(ro, rd, from, to, tMax)` is the game's lead between
+`mcMobPoint(MCMOB_LLAMA_LEASH, at, heading)` and a holder's
+`feet + float3(0, MCMOB_TRADER_HOLD, 0)`. Ground shadow: multiply a full block's
+top at `p` by `1 - mcMobShadow(int type, float3 at, float3 p, float3 cam, float light,
+float w, mcSkins)` (`light` the level above the block, `w` the pixel in blocks);
+radius `MCMOB_SHADOW[type]` is the renderer's, and it fades with the feet's height
+and the camera's distance (none past 16 blocks) as the game's does. The header of
 `~/Library/Application Support/Lerping/Minecraft/mobs.metal` lists every
 `MCMOB_*` type and what is not covered. Testing every mob's bounds for every
 pixel is the real cost (41 box tests a pixel is about 5 ms at Retina size):
@@ -632,6 +640,241 @@ vines, water. The sun and moon are drawn on black and added to the sky.
 Leaves, glass and plants carry their shape in alpha.
 
 Read `Sources/LerpCore/MinecraftAssets.swift` for the exact helper source.
+
+### Worlds
+
+A look can film a real Minecraft world: the user's own save, or the shared
+fixed-seed one, baked by `scripts/minecraft-world/` into voxel volumes under
+`~/Library/Application Support/Lerping/Minecraft/Worlds/<name>/` (the byte
+layout is that folder's `FORMAT.md`). The kit traces it for you; do not write
+a tracer of your own. Name the world among the requirements:
+
+```metal
+// lerp-requires: minecraft world:mine          // the user's save
+// lerp-requires: minecraft mobs world:shared   // the shared world, with mobs
+```
+
+The look is absent where that world has not been baked, as `minecraft` hides
+the other looks. A look names one world. A world baked against a different
+atlas than the one installed (`make minecraft` was run again) is a compile
+error that says to re-bake; there is nothing to draw it with.
+
+**Bindings.** Take them all with one macro, after `LerpUniforms` and after any
+`// lerp-data:` provider's own bindings, then gather them into one value:
+
+```metal
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]], MCW_BINDINGS) {
+    McWorld W = MCW_WORLD;          // needs `u` in scope: it carries u.time for animated textures
+    W.pxA = 2.0 / (focal * min(u.resolution.x, u.resolution.y));   // one pixel's angle, for texture filtering
+```
+
+`MCW_BINDINGS` declares `mcTiles` (texture 8), `mcSkins` (10) and `mcMaps`
+(11), so do not declare those again (`mcItems` at 9 you may add), and the
+world's own: blocks (12), light (13), tints (14), far heights (15), far colours
+(16), materials (17), elements (18), far tile maxima (19), and the shared clock
+at buffer 12. Mobs work as above: their calls take `mcSkins, mcMaps`.
+`world.metal`'s constants are in scope: `MCW_SIZE`, `MCW_ORIGIN`, `MCW_CENTER`
+(the bake's chosen centre, at ground height), `MCW_SEA_LEVEL`, `MCW_DAY_TIME`
+(the save's time of day), the points of interest `MCW_POI[i]` (`xyz` centre,
+`w` radius; `MCW_POI_KIND[i]` is one of `MCW_POI_CLUSTER`, `_STRUCTURE`,
+`_BELL`, `_HILLTOP`, `_SHORE`, `_LIT`; best first; `MCW_POI_COUNT` >= 1;
+`MCW_POI_VIEW[i].xz` the direction from it toward a good camera, 0 for any;
+`MCW_POI_BOX_MIN[i]` / `_MAX[i]` its box, max exclusive) and the mob routes
+`MCW_ROUTES` / `MCW_ROUTE_POINTS`. Everything is in volume space: blocks,
+the box `[0, MCW_SIZE)`, +x east, +y up, +z south. `scripts/minecraft-world/FORMAT.md`
+"world.metal" has every constant.
+
+**Time.** Every Mac shows the same moment. The clock is UTC, read once per
+session and anchored to `u.time == 0`, as `clock` is, so a frame is still a
+pure function of `(time, seed, parameters)` and scrubbing works. Gallery stills
+and `LerpPreview` (no bundle identifier) get 2026-01-01T00:00Z; declare
+`// lerp-param: utc float -1 24 = -1` and `--param utc=13.5` pins the hour
+for testing.
+
+| Function | Returns |
+|---|---|
+| `mcWorldTicks(W, u.time)` | the game's time of day, 0..24000 (0 sunrise, 6000 noon, 12000 sunset, 18000 midnight), at the game's 20-minute day, shared |
+| `mcWorldSeconds(W, u.time, period)` | seconds into any whole-second period (1..65535) of shared time, exact however far from the epoch: for a mob route or anything else every Mac should agree on |
+| `mcWorldMoonPhase(W, u.time)` | 0..7 as the game counts (0 full, 4 new), shared |
+| `mcWorldSunDir(ticks)` | unit vector to the sun: up at noon, rising in the east (+x) on the game's curve; the moon is `-sun` |
+| `mcWorldCelestial(ticks)` | the game's celestial angle (0 noon, 0.5 midnight) |
+
+Light helpers take `day = mcWorldDay(sun.y)` (the game's `mcLightDay`,
+darkened by weather); sky and fog take `sun` itself.
+
+**Weather.** Every sky, fog and shading function below takes `rain` and
+`thunder` (0..1, the game's levels) as its last two arguments, 0 if left out,
+and applies the client's own formulas: the sky greys, the fog dims, the sun,
+moon and stars fade, the lightmap's day darkens (`mcWorldDay(sunY, rain,
+thunder)`), and sun shadows fade out. `float4 mcWorldClouds(W, ro, rd, tMax,
+sun, rain, reach)` is the game's cloud layer (clouds.png as 12-block cells, 4
+thick at world y 192.33, its "fancy" boxes and face shades), drifting with the
+shared clock; lay it on with `col = mix(col, c.rgb, c.a)`, `tMax` the world
+hit's `t`, `reach` about 600. Rain and snow falling are not in the kit yet;
+the textures are `MCM_ENVIRONMENT_RAIN` / `_SNOW` in `mcMaps`.
+
+**Tracing.** `McWorldHit mcWorldTrace(W, ro, rd, tMax)` returns the first
+surface within `tMax`: in the volume, then on the far field around it. Pass
+the fog's end as `tMax`: nothing past it shows (the sky takes over, as in the
+game). The hit:
+
+| Field | |
+|---|---|
+| `t`, `p`, `n` | distance, point, face normal (toward the ray). `t >= tMax` is a miss; `color.a < 0` means the march ran out of steps (draw fog) |
+| `mid` | the material id (0 on the far field); `mcWorldHitCell(h)` is the block (volume space) |
+| `color` | the texel, textured, animated, tinted by the column's biome, overlay laid on, alpha-tested; Display P3 |
+| `flags` | `MCW_HIT_WATER` (water crossed on the way), `_EMISSIVE` (draw full bright), `_TRANSLUCENT` (a layer was crossed), `_FAR` (the horizon, not a block), `_MODEL`, `_LAVA`, `_FLAT` (lit flat, no ambient occlusion: torches, plants), `_SHADE` (the game face-shades it; `mcWorldHitShade(h)`); the face's own light emission, 0..15, is `mcWorldHitGlow(h)` |
+| `waterT` | the first water surface crossed, or `< 0`; the hit itself is the bed under it. `mcWorldWaterP(h, ro, rd)`, `mcWorldWaterN(h)` |
+| `layerT`, `layerColor` | the first translucent face crossed (ice, stained glass, slime) and its texel (`a` its opacity), or `layerT < 0`; the hit is what is behind it. `mcWorldLayerN(h)` |
+| `steps` | cells visited, for a heat map |
+
+The record is kept small on purpose (anything in it stays live through the
+shading and costs every pixel registers), so what can be worked out from it is
+a function.
+
+**Shading.** One call does the ordinary look:
+`float3 mcWorldShade(W, h, ro, rd, sun, moonPhase, shadows, fogEnd, tMax, rain, thunder)`:
+the sky on a miss, else the texel lit, shadowed by the sun if `shadows`, the
+water over it, the translucent layer over that, fogged. It is made of these,
+for a look that wants something else between them (mobs, reflections, its own
+fog):
+
+| Function | |
+|---|---|
+| `mcWorldColor(W, h, rd, sun, moonPhase, shadows, tMax)` | the hit lit (or the sky), before water and fog |
+| `mcWorldLight(W, h, day, shadow)` | what to multiply `h.color` by: the game's smooth lighting from the light volume (a linear sample half a block out from the face), coloured block light keeping its colour, `mcLightmap`, face shade; full bright if emissive. `shadow` 1 in the sun, 0 in shadow: a shadowed face loses `MCW_SHADOW_LEVELS` (4) of sky light in daylight |
+| `mcWorldLightAt(W, p, n, day, shadow)` | the same light at any point and normal, no face shade (for a mob: `p` its middle, `n` 0) |
+| `mcWorldShadow(W, p, n, L)` | 1 if the sun (or moon) along `L` reaches `p`, 0 if a block is in the way; leaves and models let some through. A face turned away from `L` is in shadow. The game has no sun shadows; these move with the sun |
+| `mcWorldSky(W, rd, sun, moonPhase)` | the sky: sky over fog colour, the sunrise fan, stars, the sun and moon from the game's textures |
+| `mcWorldSkyFog(rd, sun)` | the fog colour along `rd` (warmed toward a low sun) |
+| `mcWorldFog(col, rd, t, sun, fogEnd)` | the game's distance fog, linear over the last tenth to `fogEnd`; `mcWorldFogEnd()` is 192 blocks, the game's default render distance |
+| `mcWorldWater(W, h, ro, rd, under, depth, day, reflected)` | the water surface over `under` (what is seen through it, lit): the animated texture in the column's water tint at its own alpha. `depth` is `h.t - h.waterT`; `reflected` = `under` for none |
+| `mcWorldLayer(W, h, ro, rd, behind, sun, fogEnd)` | the translucent layer over `behind` |
+| `mcWorldReflect(W, h, ro, rd, sun, moonPhase, fogEnd, maxSteps)` | what the water reflects (the game has none): the reflected ray traced at most `maxSteps` cells (24 is plenty: banks, boats and the sky), lit without shadows, fogged. `mcWorldShadeReflect(...mcWorldShade's arguments..., maxSteps)` is `mcWorldShade` with it on the water |
+| `mcWorldShafts(W, ro, rd, tEnd, L, pos, samples, reach)` | 0..1, how much of the first `reach` blocks of the view ray is open to the sun, judged by the baked sky light 3 blocks toward the sun at `samples` jittered points: shafts through gaps in leaves and roofs at dusk. `col += mcWorldSkyFog(rd, sun) * 0.25 * mcWorldShafts(W, ro, rd, h.t, sun, pos, 6, 48.0);` |
+
+A surface seen through water takes no sun shadow in `mcWorldShade`: the water's
+darkening with depth (the light bake's, as in the game) is what shows there,
+and a shadow ray from every pixel of a lake bed costs as much as the trace.
+
+**Cameras.** `mcWorldGround(W, xz, water)` is the top of the highest
+non-fluid block in a column (and `water` its water surface);
+`mcWorldSurface(W, xz)` the higher of the two, what a camera stays above;
+`mcWorldSolid(W, p)` whether `p` is inside a block a camera should not be in
+(plants, torches and water are not); `mcWorldTint(W, xz, layer)` the column's
+grass (0), foliage (1), water (2) or dry-foliage (3) colour;
+`float3 mcWorldRoute(r, t, speed, heading)` where a mob walking route `r`
+(0..`MCW_ROUTE_COUNT` - 1) at `speed` blocks a second has its feet at time `t`
+(standing on what is there: half a block up on a slab, a sixteenth down on a
+path; a step up is a hop), with its heading as `mcMobRay` takes it;
+`McWorldRoutePos mcWorldRouteAt(r, t, speed)` gives the same with `climb`
+(1 up, -1 down, 0 level for the step under way), the `point` it left and that
+point's `flags` (FORMAT.md routes: by a path, farmland, a waypoint).
+
+**Mobs in a world.** Trace the world first, then hand the mob kit the world
+hit's distance as its limit, so the mob is in front of or behind the world as
+it should be, and light it with the world's light where it stands:
+
+```metal
+McWorldRoutePos m = mcWorldRouteAt(0, u.time, 1.0);
+float3 lro, lrd;
+mcMobRay(ro, rd, m.feet, m.heading, lro, lrd);
+float2 b = mcMobBounds(MCMOB_COW, lro, lrd);
+if (b.x < b.y && b.x < h.t) {
+    MCMOB_Pose pose = mcMobStill(); pose.walk = u.time * 4.0; pose.speed = 0.4;
+    MCMOB_Skin skin = mcMobSkin(MCS_COW_TEMPERATE);
+    MCMOB_Hit mh = mcMobTrace(MCMOB_COW, pose, skin, lro, lrd, h.t, mcSkins, mcMaps);
+    if (mh.t < h.t) {
+        float4 mc = mcMobColor(MCMOB_COW, mh, skin, mh.t * W.pxA * 16.0, mcSkins, mcMaps);
+        float3 light = mcWorldLightAt(W, m.feet + float3(0.0, 0.7, 0.0), float3(0.0), mcWorldDay(sun.y), 1.0);
+        col = mcWorldFog(mc.rgb * mcFaceShade(mcMobNormal(mh.n, m.heading)) * light + mc.rgb * mc.a,
+                         rd, mh.t, sun, fogEnd);
+    }
+}
+```
+
+**A per-frame plan.** Work every pixel would repeat (a directed camera
+checking its shot: is it inside a block, does it see past the save's edge)
+can run once a frame instead, in a kernel beside `lerpMain`:
+
+```metal
+// lerp-plan: 64      // float4s the kernel writes, 1..256
+kernel void lerpPlan(constant LerpUniforms& u [[buffer(0)]], MCW_BINDINGS,
+                     device float4* plan [[buffer(13)]], uint lane [[thread_index_in_simdgroup]]) { ... }
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]], MCW_BINDINGS,
+                        constant float4* plan [[buffer(13)]]) { ... }
+```
+
+It runs as one SIMD group (32 threads; split the work by `lane` and gather it
+with `simd_sum` and the like) on the frame's own command buffer before the
+frame is drawn, from the very uniforms and parameters the frame uses, with
+every world and atlas binding, so a frame is still a pure function of (time,
+seed, parameters). Only world looks have it.
+
+**Example**, a complete look (it circles the best point of interest at the
+shared time of day):
+
+```metal
+// lerp-category: Minecraft
+// lerp-requires: minecraft world:mine
+fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]], MCW_BINDINGS) {
+    McWorld W = MCW_WORLD;
+    float2 uv = lerpUV(pos, u.resolution);
+    const float focal = 1.6;
+    W.pxA = 2.0 / (focal * min(u.resolution.x, u.resolution.y));
+    float3 c = MCW_POI[0].xyz;
+    float a = u.time * 0.02 + u.seed * 6.2832;
+    float3 ro = c + float3(cos(a), 0.0, sin(a)) * 40.0;
+    ro.y = max(c.y + 20.0, mcWorldSurface(W, ro.xz) + 4.0);
+    float3 fwd = normalize(c - ro);
+    float3 right = normalize(cross(fwd, float3(0.0, 1.0, 0.0)));
+    float3 rd = normalize(uv.x * right + uv.y * cross(right, fwd) + focal * fwd);
+    float3 sun = mcWorldSunDir(mcWorldTicks(W, u.time));
+    float fogEnd = mcWorldFogEnd();
+    McWorldHit h = mcWorldTrace(W, ro, rd, fogEnd);
+    float3 col = mcWorldShade(W, h, ro, rd, sun, mcWorldMoonPhase(W, u.time), true, fogEnd, fogEnd);
+    return half4(half3(lerpDither(col, pos)), 1.0h);
+}
+```
+
+**Cost.** A frame over 16.7 ms is a dropped frame; aim for 14 at most at the
+full Retina size (3456 x 2234 on this Mac; `maze` is about 8.9). Measured with
+a plain look and sun shadows: an orbit over the `mine` ice spikes 10.5 ms, its
+open hills 6.7; at eye height on a walk 12 to 15.8 (the dearest: snow layers
+and paths underfoot, a frozen sea to the horizon); a street-level walk through
+the `shared` village 12 to 14.3. At eye height the floor is the trace itself,
+about 12 ms: nearly every pixel lands on a model block (a snow layer, a path,
+a slab, grass) within a few cells, and each costs a chain of reads (voxel,
+material, element, face, texture, light) that no fast path tried here made
+cheaper. Sun shadows add about 2 ms on a walk and 3 in the village (shadow
+rays from among plants and walls), shading 1. So for walking shots: keep
+shadows for shots that need them, or drop them while the camera walks; keep
+the horizon from filling half the frame with flat ground or a frozen sea; and
+never let the camera look straight at a point it stands on (a route can
+double back: a look-ahead target on it can land under the eye, and a NaN ray
+now just misses). A cell visited is cheap; what costs is everything kept
+alive across the march, so a look that adds work inside a loop or a second
+trace pays for it on every pixel: reflections add about 6 ms where half the
+screen is water, clouds 0.2, light shafts 0.7. A ray stops after 24 blocks
+of water (6 behind a translucent layer, the ice over a frozen sea) and shows
+the water body there (`MCW_WATER_REACH`, `_ICE`, `MCW_DEEP_WATER`).
+Measure before and after with
+`./build/LerpPreview --bench --shader NAME --size 3456x2234` and `maze` in the
+same sitting (`--bench` ignores `--param`; it benches the defaults).
+On a 120 Hz panel the frame pacer (`paceIfNeeded` in `LerpMetalView.swift`)
+holds a look at 60 fps only while the p95 of its recent frames is at most
+14.2 ms, so p95 per shot, not the mean, is the number to keep under 14.
+
+**Memory.** A loaded world costs about its files' size on the GPU (`mine`,
+384 x 107 x 384: 122 MiB allocated, of which light 60 and blocks 30), loaded
+once per device and bake when a look that uses it is compiled or about to be
+shown (off the render thread), and shared by every view. It is let go once no
+look that draws it has drawn for 10 s and another look is asked for (in a
+rotation: when the look after next is prepared), and loaded again the next
+time its look comes round.
+
+Source and full comments: `Sources/LerpCore/MinecraftWorld.swift` (loading,
+the clock) and `MinecraftWorldKit.swift` (the tracer).
 
 ## House style
 

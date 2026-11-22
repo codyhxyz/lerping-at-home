@@ -1,5 +1,6 @@
 import Foundation
 import Metal
+import QuartzCore
 import os
 
 /// One line of a look's `// lerp-caption…:` text.
@@ -152,6 +153,7 @@ public struct LerpShader: Sendable {
     ///     // lerp-requires: metal4
     ///     // lerp-requires: minecraft
     ///     // lerp-requires: minecraft mobs
+    ///     // lerp-requires: minecraft world:mine
     public var requirements: [String] {
         var words: [String] = []
         for raw in source.split(separator: "\n", omittingEmptySubsequences: false).prefix(40) {
@@ -162,7 +164,31 @@ public struct LerpShader: Sendable {
     }
 
     /// Whether the shader draws with Minecraft's textures (`MinecraftAssets.swift`).
-    public var requiresMinecraft: Bool { requirements.contains(LerpMinecraft.requirement) }
+    /// A look that draws a baked world (`world:<name>`) draws with them too.
+    public var requiresMinecraft: Bool {
+        requirements.contains(LerpMinecraft.requirement) || !worldNames.isEmpty
+    }
+
+    /// The baked worlds the shader names with `world:<name>`
+    /// (`MinecraftWorld.swift`). A look draws at most one; naming two is a
+    /// compile error.
+    public var worldNames: [String] { LerpMinecraftWorld.worldNames(in: requirements) }
+
+    /// How many float4s of per-frame plan a world look's `lerpPlan` kernel
+    /// writes, from a comment among its first lines (`MinecraftWorld.swift`):
+    ///
+    ///     // lerp-plan: 64
+    ///
+    /// 0 for every other shader. Malformed or out of range (1...256) is -1,
+    /// which the compile refuses.
+    public var planSize: Int {
+        for raw in source.split(separator: "\n", omittingEmptySubsequences: false).prefix(40) {
+            guard let value = LerpParamParser.directiveBody(raw, "lerp-plan:") else { continue }
+            guard let n = Int(value), (1...LerpMinecraftWorld.maxPlan).contains(n) else { return -1 }
+            return n
+        }
+        return 0
+    }
 
     /// Whether this machine can run the shader.
     ///
@@ -182,6 +208,11 @@ public struct LerpShader: Sendable {
             }
             if word == LerpMinecraft.requirement, !LerpMinecraft.isInstalled { return false }
             if word == LerpMinecraft.mobsRequirement, !LerpMinecraft.hasMobs { return false }
+            if word.hasPrefix(LerpMinecraftWorld.requirementPrefix) {
+                guard LerpMinecraft.isInstalled,
+                      LerpMinecraftWorld.isBaked(String(word.dropFirst(LerpMinecraftWorld.requirementPrefix.count)))
+                else { return false }
+            }
         }
         return true
     }
@@ -403,6 +434,12 @@ public final class ShaderLibrary: @unchecked Sendable {
     private let lock = NSLock()
     private var pipelineCache: [String: MTLRenderPipelineState] = [:]
     private var dataProviders: [String: LerpDataProvider] = [:]
+    /// Worlds loaded by a compile, held only until this library's provider for
+    /// the look takes them (`LerpWorldProvider`), by name.
+    private var worlds: [String: LerpMinecraftWorld.World] = [:]
+    /// A world look's `lerpPlan` kernel, by shader name, compiled with its
+    /// render pipeline from the same source.
+    private var plans: [String: MTLComputePipelineState] = [:]
     private let extraSearchURLs: [URL]
 
     private var errors: [String: String] = [:]
@@ -535,6 +572,60 @@ public final class ShaderLibrary: @unchecked Sendable {
     /// owns are allocated once. Throws if the shader named a provider that is
     /// not registered.
     public func dataProvider(for shader: LerpShader) throws -> LerpDataProvider? {
+        releaseIdleWorlds()
+        let inner = try ownDataProvider(for: shader)
+        guard let worldName = shader.worldNames.first else { return inner }
+        // A world look: its textures and clock, wrapped round the look's own
+        // provider. One per library, world and inner provider, like any
+        // provider; handed the bake that is on disk now, so a re-bake (which
+        // also recompiles the look, see `pipeline`) takes effect.
+        let held = locked { worlds[worldName] }
+        let world: LerpMinecraftWorld.World
+        do {
+            if let held, held.stamp == LerpMinecraftWorld.currentStamp(worldName) {
+                world = held
+            } else {
+                world = try LerpMinecraftWorld.load(worldName, device: device)
+            }
+        } catch {
+            try fail(shader, 4, "shader '\(shader.name)': \(error.localizedDescription)")
+        }
+        return locked { () -> LerpDataProvider in
+            // From here the provider holds it; the compile's hold is done.
+            worlds[worldName] = nil
+            let key = LerpMinecraftWorld.requirementPrefix + worldName + "|" + (shader.dataProviderName ?? "")
+            let plan = plans[shader.name].map { (pipeline: $0, size: shader.planSize) }
+            if let cached = dataProviders[key + "|" + shader.name] as? LerpWorldProvider {
+                cached.world = world
+                cached.setPlan(plan, device: device)
+                return cached
+            }
+            let made = LerpWorldProvider(world: world, inner: inner, mode: mode)
+            made.setPlan(plan, device: device)
+            dataProviders[key + "|" + shader.name] = made
+            return made
+        }
+    }
+
+    /// Lets go of the world textures of every world look that has not drawn
+    /// for `LerpWorldProvider.idleRelease` seconds, so a host that rotates
+    /// through many looks in one process (the screensaver) holds a world's
+    /// ~100 MiB only while a look that draws it is on screen or next. Run on
+    /// every look's way in (here), which is the moment another look takes
+    /// over; a released world is loaded again, off the render thread, the next
+    /// time its look is asked for, as the rotation does before it shows one.
+    private func releaseIdleWorlds() {
+        let now = CACurrentMediaTime()
+        locked {
+            for case let provider as LerpWorldProvider in dataProviders.values
+                where now - provider.lastBind > LerpWorldProvider.idleRelease {
+                provider.world = nil
+            }
+        }
+    }
+
+    /// The `// lerp-data:` provider alone, without a world's wrapper.
+    private func ownDataProvider(for shader: LerpShader) throws -> LerpDataProvider? {
         guard let name = shader.dataProviderName else { return nil }
         let provider = locked { () -> LerpDataProvider? in
             if let cached = dataProviders[name] { return cached }
@@ -561,7 +652,11 @@ public final class ShaderLibrary: @unchecked Sendable {
     /// `pipeline(for:)` for a render target of any pixel format. Each format is
     /// its own pipeline and its own cache entry.
     public func pipeline(for shader: LerpShader, pixelFormat: MTLPixelFormat) throws -> MTLRenderPipelineState {
+        // A world look's key carries the bake, so a re-bake recompiles it
+        // with the new `world.metal`.
+        let worldStamp = shader.worldNames.first.map { "|" + (LerpMinecraftWorld.currentStamp($0) ?? "unbaked") } ?? ""
         let cacheKey = shader.name + "|" + String(shader.source.hashValue) + "|" + String(pixelFormat.rawValue)
+            + worldStamp
         if let cached = locked({ pipelineCache[cacheKey] }) { return cached }
         let signpost = LerpSignposts.signposter.beginInterval("compile", "\(shader.name, privacy: .public)")
         defer { LerpSignposts.signposter.endInterval("compile", signpost) }
@@ -573,7 +668,7 @@ public final class ShaderLibrary: @unchecked Sendable {
                 + "\n          // lerp-animate: NAME LOW HIGH [period=SECONDS]")
         }
 
-        var extra = try dataProvider(for: shader)?.metalPrelude ?? ""
+        var extra = try ownDataProvider(for: shader)?.metalPrelude ?? ""
         if shader.requiresMinecraft {
             // Loaded here, on whichever queue is compiling, so the arrays are
             // in place before the look's first frame binds them.
@@ -583,6 +678,15 @@ public final class ShaderLibrary: @unchecked Sendable {
                     extra += try LerpMinecraft.mobsPrelude()
                 }
                 try LerpMinecraft.load(device: device)
+                let names = shader.worldNames
+                if names.count > 1 {
+                    throw LerpMinecraftWorld.Failure(message: "a look draws one world; this one names \(names.joined(separator: ", "))")
+                }
+                if let name = names.first {
+                    let world = try LerpMinecraftWorld.load(name, device: device)
+                    locked { worlds[name] = world }
+                    extra += LerpMinecraftWorld.metalPrelude(for: world)
+                }
             } catch {
                 try fail(shader, 4, "shader '\(shader.name)': \(error.localizedDescription)")
             }
@@ -598,6 +702,23 @@ public final class ShaderLibrary: @unchecked Sendable {
         } catch {
             locked { errors[shader.name] = String(describing: error) }
             throw error
+        }
+
+        // A world look's per-frame plan kernel, from the very same source.
+        if shader.planSize != 0 {
+            do {
+                guard shader.planSize > 0, !shader.worldNames.isEmpty else {
+                    throw LerpMinecraftWorld.Failure(message: "`// lerp-plan: N` takes N in 1...\(LerpMinecraftWorld.maxPlan) and needs a world (`// lerp-requires: minecraft world:NAME`)")
+                }
+                let library = try device.makeLibrary(source: prelude + shader.source, options: nil)
+                guard let function = library.makeFunction(name: "lerpPlan") else {
+                    throw LerpMinecraftWorld.Failure(message: "declares `// lerp-plan:` but defines no `kernel void lerpPlan(...)`")
+                }
+                let plan = try device.makeComputePipelineState(function: function)
+                locked { plans[shader.name] = plan }
+            } catch {
+                try fail(shader, 5, "shader '\(shader.name)': \(error.localizedDescription)")
+            }
         }
 
         locked {

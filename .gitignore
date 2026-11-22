@@ -30,3 +30,5 @@ out/
 /launch-video/recorder/snap/
 /launch-video/hdr-compare/edr-src/
 /launch-video/hdr-compare/chrome/
+scripts/minecraft-world/__pycache__/
+scripts/minecraft-world/logs/
