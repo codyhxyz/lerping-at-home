@@ -35,7 +35,7 @@ let captured = dateText.flatMap { parser.date(from: $0) }
 let display = DateFormatter()
 display.locale = Locale(identifier: "en_US"); display.dateFormat = "MMM d, yyyy '·' h:mm a"
 let camera = tiff[kCGImagePropertyTIFFModel as String] as? String
-let recovery = captured.map { "Recovered \(display.string(from: $0))." } ?? camera.map { "Recovered through a \($0)." } ?? "Recovered from a wandering day."
+let recovery = captured.map { "Taken \(display.string(from: $0))." } ?? camera.map { "Shot on a \($0)." } ?? "Found on your hard drive."
 let context = CIContext()
 let original = CIImage(cgImage: photo)
 let w = photo.width, h = photo.height
@@ -155,7 +155,7 @@ else { fail("cannot create output images") }
 write(colorImage,colorURL); write(depthImage,depthURL)
 let metadata: [String: Any] = [
     "slug": slug, "title": options["--title"] ?? slug.replacingOccurrences(of: "-", with: " ").capitalized,
-    "lore": options["--lore"] ?? "\(recovery) Carrying this memory grants +5 Nostalgia after dusk.",
+    "lore": options["--lore"] ?? "\(recovery) You forgot this was still on your Mac.",
     "capturedAt": captured.map { ISO8601DateFormatter().string(from: $0) } as Any? ?? NSNull(),
     "location": NSNull(), "aspect": Double(width)/Double(height),
     "imagePath": colorURL.lastPathComponent, "depthPath": depthURL.lastPathComponent

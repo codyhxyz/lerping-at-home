@@ -8,9 +8,9 @@
 
 Most screensavers are wallpaper in motion. Most personalization is a settings panel with sliders and file pickers.
 
-**The Loading Screen of Your Life** takes a different premise: your real life and your digital life already do the work. You do not configure a shrine—you live on your Mac, and when you step away, the screen quietly returns pieces of your own life to you with the dramatic lighting, floating stillness, and dry mythic cadence of an RPG loading menu.
+**The Loading Screen of Your Life** takes a different premise: your real life and your digital life already do the work. You do not configure a shrine—you live on your Mac, and when you step away, the screen quietly returns pieces of your own life to you with the dramatic lighting, floating stillness, and observational humor of a loading screen that just states what is actually happening.
 
-Because the **stage** is always the same—pitch-black atmospheric void, drifting low mist, crisp rim light, slow orbit (and drag-to-spin / pinch-to-zoom), a quiet `LEVEL` bar, and deadpan lore on the right—an artifact does not depend on any single rendering technology. A Gaussian splat, a sculpted 3D mesh, a procedural shader object, and an auto-segmented photograph with depth relief all share the exact same dark glass museum case.
+Because the **stage** is always the same—pitch-black atmospheric void, drifting low mist, crisp rim light, slow orbit (and drag-to-spin / pinch-to-zoom), a quiet `LEVEL` bar, and plain observational copy on the right—an artifact does not depend on any single rendering technology. A Gaussian splat, a sculpted 3D mesh, a procedural shader object, and an auto-segmented photograph with depth relief all share the exact same dark glass museum case.
 
 ---
 
@@ -19,7 +19,7 @@ Because the **stage** is always the same—pitch-black atmospheric void, driftin
 ### 1. Auto-Harvested Photo Relics
 Zero manual 3D scanning. macOS Vision's native foreground subject segmentation (`VNGenerateForegroundInstanceMaskRequest`) paired with local monocular depth (`Depth Anything V2` or relief fallback) lifts *just the subject* out of an ordinary photograph—a sleeping dog, a coffee cup on a café table, a street sign from a trip, a pair of sneakers—and suspends it inside the smoky void with edge rim lighting and parallax.
 
-> *"Recovered Oct 14, 2023 · 6:14 PM. Carrying this memory grants +5 Nostalgia after dusk."*
+> *"Taken Oct 14, 2023 · 6:14 PM. You forgot this was still on your Mac."*
 
 ### 2. Digital Life Cast as Worn Physical Objects
 Purely digital habits materialized as scuffed, tangible RPG loot:
@@ -44,14 +44,14 @@ Drop one-line reminders, half-finished ambitions, or personal mantras into:
 
 Each line becomes a live lore / active-quest entry woven into the loading screen alongside your real telemetry—never preachy, always dry and quiet.
 
-### 5. The Lore & Level Bar
-Half the punch is the pairing of a floating mundane object with deadpan RPG text:
+### 5. The Voice: Observational Humor, No Character
+No RPG cosplay, no "in this realm", no mascot voice. Reality is funny enough when stated plainly next to museum lighting:
 
-- **Top-right `LEVEL` bar:** Driven privately on-device by `LerpPulse` (`CritterLedger`), turning accumulated hours, days lived, and focus streaks into quiet RPG progression.
-- **Right-side Lore & Tips:** Three registers mixed together:
-  1. **True telemetry, RPG voice** — *"Streak of 2h 14m in the Terminal. Posture resistance reduced by 30%."*
-  2. **Deadpan life tips** — *"Putting water into a container, such as a cup or mug, can help you drink it."* / *"Closing 43 browser tabs frees RAM, though rarely the mind."*
-  3. **Rare contextual entries** — triggered only by real conditions (past 2 AM, late-week fatigue, full moon, unbroken focus runs).
+- **Top-right `LEVEL` bar:** Driven privately on-device by `LerpPulse` (`CritterLedger`), turning accumulated hours, days lived, and focus streaks into quiet progression.
+- **Right-side Notes:** Straight, specific observations built from your real day:
+  1. **True telemetry, stated plainly** — *"You've been at this computer for 3h 15m today, switched apps 29 times, and took 3 breaks. 42 minutes of that was after midnight."*
+  2. **Everyday habits** — *"You already saved this file twice in the last four seconds. You are going to press it one more time just in case."* / *"You put on music to focus and spent the next twelve minutes reorganizing the queue."*
+  3. **Real moments** — *"There is a full moon outside right now. You are looking at a screensaver."* / *"It is 3:00 AM. Whatever you are fixing right now is going to look much simpler after breakfast."*
 
 ---
 
@@ -81,15 +81,15 @@ Everything here is purely additive alongside the rest of the shader library:
 
 ```sh
 make artifact-photo PHOTO=~/Pictures/coffee.jpg NAME=kyoto-cup \
-  TITLE="Kyoto Espresso" \
-  LORE="Recovered from an afternoon table. Grants +5 Clarity before noon."
+  TITLE="The Espresso Cup" \
+  LORE="Taken Oct 14, 2023. You took four pictures of this cup and never looked at them again."
 ```
 
-### Adding Your Own Quests / Tips
+### Adding Your Own Notes / Reminders
 
 Create `~/Library/Application Support/Lerping/Artifacts/quests.txt` with one line per entry:
 
 ```text
-Active Quest: Finish the lighting pass before Friday.
-Tip: Drinking water from a container restores stamina faster than opening another tab.
+Finish the lighting pass before Friday.
+Put the laundry away before it becomes part of the chair.
 ```

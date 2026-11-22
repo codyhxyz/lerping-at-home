@@ -128,33 +128,44 @@ public enum ArtifactLedger {
         let missing = kind == .photo && t.photoRelics.isEmpty
         if missing { kind = .mug }
         let photo = kind == .photo ? t.photoRelics[index(t.photoRelics.count)] : nil
-        let titles = ["Ceramic Vessel of Late Hours", "Worn Mechanical Keycap", "Weathered Memory Cartridge", "Chrome-Bias Mixtape", "Blue-Ribbon Achievement Trophy", "Cracked Brass Hourglass", "Recovered Memory"]
-        let subtitles = ["NIGHT SHIFT TALISMAN · PERSONAL HISTORY", "TACTILE RELIC · WORKSPACE", "STORAGE CARTRIDGE · ACTIVE BUILD", "ANALOG MEMORY · NIGHT MIX", "STREAK TROPHY · UNBROKEN FOCUS", "TEMPORAL VESSEL · CONTEXT DRIFT", "PHOTOGRAPH RELIC · RECOVERED"]
-        let tips = ["Putting water into a container, such as a cup or mug, can help you drink it.", "Saving before closing prevents loss of progress in this realm.", "This cartridge contains a world. Backups contain a second one.", "Music grants atmosphere. The dishes remain.", "Achievements do not stack with adequate sleep.", "Closing 40 browser tabs frees RAM, though rarely the mind."]
-        var heading = "TIPS & TRICKS"
-        var lore = tips[(kind.rawValue - 1) % tips.count]
+        let titles = ["The Coffee Mug", "Command-S", "The Current Project", "Late-Night Playlist", "Personal Best", "The Hourglass", "Photo"]
+        let subtitles = ["DESK · STILL HALF FULL", "KEYBOARD · MOST PRESSED", "WORKING TREE · STILL OPEN", "AUDIO · ON REPEAT", "FOCUS STREAK · UNINTERRUPTED", "CONTEXT SWITCHES · TODAY", "CAMERA ROLL · STILL ON THIS MAC"]
+        let observations = [
+            "You made this two hours ago, drank half, forgot about it, and will still take one cold sip before washing it.",
+            "You already saved this file twice in the last four seconds. You are going to press it one more time just in case.",
+            "Half of your open files are from a problem you already solved on Tuesday.",
+            "You put on music to focus and spent the next twelve minutes reorganizing the queue.",
+            "Your longest uninterrupted stretch was \(t.longestStreak) minutes. Nobody saw it, so here is a plastic trophy.",
+            "You switched apps \(t.switches) times today, mostly to check whether anything changed in the last ninety seconds."
+        ]
+        var heading = "NOTE"
+        var lore = observations[(kind.rawValue - 1) % observations.count]
         let register = requestedRelic == 0 ? index(3) : ((index(3) + kind.rawValue - 1) % 3)
         if register == 0 {
-            lore = "Today: \(t.todayMinutes / 60)h \(t.todayMinutes % 60)m in this realm. Record focus: \(t.longestStreak) minutes. \(t.switches) changes of discipline; \(t.breaks) breaks taken. \(t.lateMinutes) minutes earned after midnight."
+            if t.lateMinutes > 0 {
+                lore = "You've been at this computer for \(t.todayMinutes / 60)h \(t.todayMinutes % 60)m today, switched apps \(t.switches) times, and took \(t.breaks) breaks. \(t.lateMinutes) minutes of that was after midnight."
+            } else {
+                lore = "You've been at this computer for \(t.todayMinutes / 60)h \(t.todayMinutes % 60)m today, switched apps \(t.switches) times, and took \(t.breaks) breaks. Longest stretch without getting distracted: \(t.longestStreak) minutes."
+            }
         } else if register == 2 {
-            if !t.customQuests.isEmpty { heading = "ACTIVE QUEST:"; lore = t.customQuests[index(t.customQuests.count)] }
-            else if t.hour >= 2 && t.hour < 5 { lore = "The clock reads \(String(format: "%.1f", t.hour)). Tomorrow has already spawned." }
-            else if abs(t.moonPhase - 0.5) < 0.06 { lore = "The moon is full. Your inventory remains unchanged." }
-            else if t.longestStreak >= 120 { lore = "Two hours of unbroken focus unlock the ability to stand up." }
+            if !t.customQuests.isEmpty { heading = "REMINDER"; lore = t.customQuests[index(t.customQuests.count)] }
+            else if t.hour >= 2 && t.hour < 5 { lore = "It is \(String(format: "%.1f", t.hour)) AM. Whatever you are fixing right now is going to look much simpler after breakfast." }
+            else if abs(t.moonPhase - 0.5) < 0.06 { lore = "There is a full moon outside right now. You are looking at a screensaver." }
+            else if t.longestStreak >= 120 { lore = "You went \(t.longestStreak) minutes without standing up. Your lower back has noticed." }
         }
-        if let photo { lore = photo.lore; heading = "RECOVERED MEMORY" }
-        if missing { lore = "No photo relics have been recovered. A familiar mug holds the place." }
-        var primary = "EVERYDAY RELIC", secondary = "LEVEL \(t.level)"
+        if let photo { lore = photo.lore; heading = "PHOTO" }
+        if missing { lore = "No personal photos added yet. Run make artifact-photo to float one here instead of this mug." }
+        var primary = "STILL WARM", secondary = "LEVEL \(t.level)"
         switch kind {
-        case .cartridge: primary = t.activeProject; secondary = "BUILD LOG · LVL \(t.level)"
-        case .cassette: primary = "SIDE A · NIGHT MIX"; secondary = String(format: "%02d:%02d · DAY %d", Int(t.hour), Int(t.hour * 60) % 60, t.weekday)
-        case .trophy: primary = "STREAK RECORD"; secondary = "\(t.longestStreak) MIN"
-        case .keycap: primary = "⌘S"; secondary = "SAVE PROGRESS"
-        case .hourglass: primary = "ONE THING AT A TIME"; secondary = "\(t.switches) SWITCHES"
+        case .cartridge: primary = t.activeProject; secondary = "OPEN TABS · LVL \(t.level)"
+        case .cassette: primary = "SIDE A · FOCUS MIX"; secondary = String(format: "%02d:%02d · DAY %d", Int(t.hour), Int(t.hour * 60) % 60, t.weekday)
+        case .trophy: primary = "PERSONAL BEST"; secondary = "\(t.longestStreak) MIN"
+        case .keycap: primary = "⌘S"; secondary = "JUST IN CASE"
+        case .hourglass: primary = "CONTEXT SWITCHES"; secondary = "\(t.switches) TODAY"
         case .photo: primary = photo?.title ?? ""; secondary = photo?.location ?? ""
-        case .mug: primary = "RESTORE STAMINA"
+        case .mug: primary = "HALF FULL"
         }
-        return ArtifactCard(kind: kind, title: photo?.title ?? titles[kind.rawValue - 1], subtitle: subtitles[kind.rawValue - 1], tipHeading: heading, loreBody: lore, statusLine: ["Loading tomorrow...", "Syncing reality...", "Holding posture...", "Indexing memory..."][index(4)], level: t.level, xpProgress: t.xpProgress, labelPrimary: primary, labelSecondary: secondary, photoRelic: photo)
+        return ArtifactCard(kind: kind, title: photo?.title ?? titles[kind.rawValue - 1], subtitle: subtitles[kind.rawValue - 1], tipHeading: heading, loreBody: lore, statusLine: ["Still here...", "Waiting on you...", "Same desktop as before...", "Taking a second..."][index(4)], level: t.level, xpProgress: t.xpProgress, labelPrimary: primary, labelSecondary: secondary, photoRelic: photo)
     }
 
     public static func selfTest() -> String? {
@@ -174,10 +185,10 @@ public enum ArtifactLedger {
         var live = fixture; live.isLive = true; live.hour = 3; live.switches = 48; live.longestStreak = 150
         guard card(telemetry: live, requestedRelic: 0, time: 96, seed: 0).loreBody.contains("3.0") else { return "Late lore" }
         let trueLore = card(telemetry: live, requestedRelic: 0, time: 0, seed: 0).loreBody
-        guard trueLore.contains("48"), trueLore.contains("150") else { return "Telemetry lore" }
-        live.customQuests = ["Recover the laundry."]
-        guard card(telemetry: live, requestedRelic: 0, time: 96, seed: 0).tipHeading == "ACTIVE QUEST:" else { return "Quest lore" }
-        live.photoRelics = [.init(slug: "test", title: "Memory", lore: "Recovered.", capturedAt: nil, location: nil, aspect: 1, imagePath: "/fixture.png", depthPath: nil)]
+        guard trueLore.contains("48"), trueLore.contains("150") || trueLore.contains("after midnight") else { return "Telemetry lore" }
+        live.customQuests = ["Put the laundry away."]
+        guard card(telemetry: live, requestedRelic: 0, time: 96, seed: 0).tipHeading == "REMINDER" else { return "Quest lore" }
+        live.photoRelics = [.init(slug: "test", title: "Memory", lore: "Taken last fall.", capturedAt: nil, location: nil, aspect: 1, imagePath: "/fixture.png", depthPath: nil)]
         guard card(telemetry: live, requestedRelic: 7, time: 0, seed: 0).photoRelic == live.photoRelics.first else { return "Photo lore" }
         return nil
     }
