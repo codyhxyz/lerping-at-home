@@ -28,7 +28,7 @@
 // three textures at its hit. Measured 10.1 ms at 3456x2234 against maze's
 // 10.0 in the same minute.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft mobs
 //
 // lerp-param: speed        float 0.25 3 = 1    "Walk speed"

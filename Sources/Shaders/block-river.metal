@@ -9,7 +9,7 @@
 // read at run time from the copy of the game installed on this Mac and are not
 // in this file or this repository.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft
 //
 // How it is built:

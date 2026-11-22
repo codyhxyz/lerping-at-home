@@ -3,7 +3,7 @@
 // seconds are a square of redstone lamps, fifteen to a side, and the whole
 // machine stands on a smooth-stone plinth in an ordinary overworld field.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft
 // lerp-data: clock
 //

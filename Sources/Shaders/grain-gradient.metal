@@ -8,7 +8,7 @@
 // enum is not ported — this file is always the "corners" shape. Upstream takes
 // a variable-length `colors` array (max 7); this port fixes four slots.
 //
-// lerp-category: Gradients
+// lerp-category: Meditative
 // lerp-param: color1    color     = (0.451, 0.000, 1.000) "Violet"
 // lerp-param: color2    color     = (0.922, 0.659, 1.000) "Pale orchid"
 // lerp-param: color3    color     = (0.000, 0.749, 1.000) "Sky cyan"
@@ -18,6 +18,9 @@
 // lerp-param: intensity float 0 1 = 0.5  "Intensity"
 // lerp-param: noise     float 0 1 = 0.25 "Noise"
 // lerp-param: speed     float 0 2 = 2    "Speed"
+// lerp-react: intensity <- audio.level 0.5..0.72 smooth=0.65
+// lerp-react: color1 <- music.palette0 mix=0.40
+// lerp-react: color3 <- music.palette2 mix=0.35
 //
 // Palettes from upstream's presets (their shapes are not ported, so only the
 // colour/softness/intensity/noise parts carry over).

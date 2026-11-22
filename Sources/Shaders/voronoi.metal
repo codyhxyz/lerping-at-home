@@ -10,7 +10,7 @@
 // `colorGlow`'s alpha is the glow strength, as upstream. The gap's edge
 // softness stays hardcoded — upstream has no prop for it.
 //
-// lerp-category: Patterns
+// lerp-category: Meditative
 // lerp-param: color1        color       = (0.173, 0.227, 0.388, 1.0) "Slate indigo"
 // lerp-param: color2        color       = (0.090, 0.341, 0.361, 1.0) "Deep teal"
 // lerp-param: color3        color       = (0.325, 0.227, 0.471, 1.0) "Rich violet"
@@ -23,6 +23,9 @@
 // lerp-param: gap           float 0 0.1 = 0.04 "Gap"
 // lerp-param: glow          float 0 1   = 0.6  "Glow"
 // lerp-param: speed         float 0 1   = 0.2  "Speed"
+// lerp-react: glow <- audio.level 0.60..0.80 smooth=0.60
+// lerp-react: color2 <- music.palette0 mix=0.30
+// lerp-react: color3 <- music.palette1 mix=0.30
 //
 // Upstream presets, scale mapped into this port's units and speed scaled to
 // this port's ambience (upstream × 0.4).

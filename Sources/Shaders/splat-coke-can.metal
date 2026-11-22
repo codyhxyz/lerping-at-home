@@ -5,7 +5,7 @@
 // https://superspl.at/scene/e54c6f73. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:coke-can
 // lerp-camera: period=60 angle=0 arc=360 distance=5 height=0.8 lookHeight=0 fov=30 clip=0
 //

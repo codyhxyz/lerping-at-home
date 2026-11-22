@@ -4,7 +4,7 @@
 // Parameters mirror the upstream <Swirl> props. Upstream takes a
 // variable-length `colors` array (max 10); this port fixes four tunable slots.
 //
-// lerp-category: Gradients
+// lerp-category: Sound & Flow
 // lerp-param: color1         color     = (0.043, 0.153, 0.200) "Deep petrol"
 // lerp-param: color2         color     = (0.078, 0.349, 0.369) "Dark teal"
 // lerp-param: color3         color     = (0.196, 0.522, 0.463) "Sea green"
@@ -19,6 +19,9 @@
 // lerp-param: noise          float 0 1 = 0.15  "Noise"
 // lerp-param: noiseFrequency float 0 1 = 0.4   "Noise frequency"
 // lerp-param: speed          float 0 2 = 0.15  "Speed"
+// lerp-react: twist <- audio.bass 0.25..0.52 smooth=0.22
+// lerp-react: color2 <- music.palette0 mix=0.45
+// lerp-react: color3 <- music.palette1 mix=0.40
 //
 // Upstream presets, speed scaled to this port's ambience (upstream × 0.15).
 // lerp-preset: 007     colorBack=#e9e7da, color1=#000000, color2=#000000, color3=#000000

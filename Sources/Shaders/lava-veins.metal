@@ -22,7 +22,7 @@
 // The grid is the simulation's own torus, so the ground repeats exactly where
 // the trail does and the camera can glide over it forever.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft
 // lerp-data: physarum
 //

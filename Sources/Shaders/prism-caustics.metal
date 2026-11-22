@@ -2,7 +2,7 @@
 // prism. Three displaced, warped contours suggest dispersed light on a dark
 // surface. Analytic line widths and fwidth keep the finest edges from aliasing.
 // All motion is a function of time and seed, including in snapshots/scrubs.
-// lerp-category: Abstract
+// lerp-category: Atmosphere
 // lerp-param: speed float 0 2 = 0.35 "Speed"
 // lerp-param: dispersion float 0 1 = 0.55 "Dispersion"
 // lerp-param: intensity float 0 2 = 1.0 "Intensity"

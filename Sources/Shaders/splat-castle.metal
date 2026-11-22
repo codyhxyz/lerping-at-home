@@ -5,7 +5,7 @@
 // Capture: "Castle" by ethan3111 (Ethan), CC BY 4.0,
 // https://superspl.at/scene/d276acb9. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:castle
 // lerp-camera: period=120 angle=150 arc=150 distance=4.3 height=2 lookHeight=0 fov=40 clip=0
 //

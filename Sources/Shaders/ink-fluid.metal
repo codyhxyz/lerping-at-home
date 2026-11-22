@@ -8,7 +8,7 @@
 // Fedkiw, Stam & Jensen, "Visual Simulation of Smoke" (SIGGRAPH 2001). No code
 // is taken from either; the paper's routines are named where they appear.
 //
-// lerp-category: Simulations
+// lerp-category: Sound & Flow
 // lerp-data: ink-fluid
 //
 // Sources/LerpCore/InkFluidData.swift runs the solver on the CPU on a coarse
@@ -39,6 +39,10 @@
 // lerp-param: speed     float 0.25 2   = 1     "Speed"
 // lerp-param: ink       float 0.25 3   = 1     "Ink density"
 // lerp-param: sheen     float 0 1      = 0.5   "Sheen"
+// lerp-react: sheen <- audio.level 0.50..0.90 smooth=0.30
+// lerp-react: colorInk1 <- music.palette0 mix=0.50
+// lerp-react: colorInk2 <- music.palette1 mix=0.45
+// lerp-react: colorInk3 <- music.palette2 mix=0.45
 //
 // viscosity, stir and curl feed the solver (changing one re-runs the epoch);
 // ink, sheen and the colours are display-only.

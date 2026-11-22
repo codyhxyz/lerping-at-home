@@ -2,7 +2,7 @@
 // Dark, 1989), done with the game's own blocks and items. Original code for
 // Lerping@Home; no code or artwork from the original screensaver.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft
 //
 // The idea kept: a formation of winged kitchen appliances, and slices of

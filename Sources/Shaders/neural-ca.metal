@@ -1,6 +1,6 @@
 // Growing Neural Cellular Automata — Mordvintsev et al. (2020).
 // Uses their released ex3_planarian weights; see third_party/growing-ca.
-// lerp-category: Simulations
+// lerp-category: Living Worlds
 // lerp-data: neural-ca
 // lerp-requires: metal4
 

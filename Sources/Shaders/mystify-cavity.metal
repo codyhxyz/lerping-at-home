@@ -2,7 +2,7 @@
 // All positions are functions of time and seed: scrubbing does not depend on
 // previous frames. Inspired by Mystify, not a reconstruction of its physics.
 // The camera and room follow Window Room's fixed-glass convention.
-// lerp-category: Scenes
+// lerp-category: Sound & Flow
 // lerp-param: parallax float 0 2 = 1 "Head parallax"
 // lerp-param: depth float 2 8 = 4 "Room depth"
 // lerp-param: speed float 0 2 = 0.6 "Speed"

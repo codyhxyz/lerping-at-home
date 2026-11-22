@@ -1,6 +1,6 @@
 // Polytope 4D — original work for Lerping@Home, not a port.
 //
-// lerp-category: Abstract
+// lerp-category: Sound & Flow
 // lerp-data: polytope-4d
 //
 // Regular four-dimensional polytopes turning in a double rotation — two

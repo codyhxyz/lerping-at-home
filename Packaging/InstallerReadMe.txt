@@ -6,5 +6,7 @@ The Shader Playground is selected by default. Choose Customize to leave it out. 
 
 The screen saver reads that folder, so saved playground changes are available the next time the screen saver starts.
 
+The standard installer includes licensed 3D captures. A lean installer built from source with MODULES=core omits those captures; it still includes the built-in depth window. Neither edition installs LerpPulse, Minecraft game assets, or the tools for converting photos. Those are separate per-user setup from the source checkout.
+
 Source code, documentation, and notices:
 https://github.com/codyhxyz/lerping-at-home

@@ -6,7 +6,7 @@
 // Decimated to 700k splats and converted by `make splats`
 // (Sources/Splats/captures.json); drawn by SplatData.swift.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:strawberry
 // lerp-camera: period=70 angle=0 arc=360 distance=5.6 height=0.9 lookHeight=0.0 fov=30 clip=0
 //

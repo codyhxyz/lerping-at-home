@@ -5,7 +5,7 @@
 // Parameters mirror the upstream <NeuroNoise> props. `scale` is in this port's
 // units, not upstream's sizing system.
 //
-// lerp-category: Gradients
+// lerp-category: Sound & Flow
 // lerp-param: colorFront color       = (0.494, 0.910, 0.980) "Front"
 // lerp-param: colorMid   color       = (0.129, 0.267, 0.373) "Mid"
 // lerp-param: colorBack  color       = (0.012, 0.020, 0.043) "Background"
@@ -13,6 +13,8 @@
 // lerp-param: brightness float 0 1   = 0.20 "Brightness"
 // lerp-param: contrast   float 0 1   = 0.30 "Contrast"
 // lerp-param: speed      float 0 2   = 0.3  "Speed"
+// lerp-react: brightness <- audio.bass 0.20..0.48 smooth=0.18
+// lerp-react: colorFront <- music.palette0 mix=0.45
 //
 // Upstream presets; scale mapped into this port's units (upstream × 1.4),
 // speed scaled to this port's ambience (upstream × 0.3).

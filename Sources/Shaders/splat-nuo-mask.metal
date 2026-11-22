@@ -5,7 +5,7 @@
 // https://superspl.at/scene/0b382df2. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:nuo-mask
 // lerp-camera: period=90 angle=0 arc=220 distance=5.6 height=1.8 lookHeight=0 fov=30 clip=0
 //

@@ -6,7 +6,7 @@
 // https://superspl.at/scene/6713317b. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:graffiti-tunnel:look
 // lerp-camera: period=90 angle=-15 arc=70 distance=1.375 height=-0.1 lookHeight=0 fov=62 clip=1.25 bob=0.03
 //

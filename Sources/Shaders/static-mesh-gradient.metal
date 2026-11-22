@@ -10,7 +10,7 @@
 // `speed` is this port's own addition — upstream's `positions` is a fixed
 // seed, and `speed` is the rate this port drifts it at.
 //
-// lerp-category: Gradients
+// lerp-category: Meditative
 // lerp-param: color1       color         = (0.035, 0.047, 0.125) "Midnight blue"
 // lerp-param: color2       color         = (0.180, 0.106, 0.353) "Indigo"
 // lerp-param: color3       color         = (0.451, 0.157, 0.392) "Magenta plum"
@@ -27,6 +27,9 @@
 // lerp-param: grainMixer   float 0 1     = 0.5  "Grain mixer"
 // lerp-param: grainOverlay float 0 1     = 0.32 "Grain overlay"
 // lerp-param: speed        float 0 0.5   = 0.035 "Drift speed"
+// lerp-react: mixing <- audio.level 0.60..0.72 smooth=1.2
+// lerp-react: color3 <- music.palette0 mix=0.30
+// lerp-react: color4 <- music.palette1 mix=0.30
 //
 // Upstream presets (their `positions` and wave values carry over verbatim).
 // lerp-preset: 1960s  color1=#000000, color2=#082400, color3=#b1aa91, color4=#8e8c15

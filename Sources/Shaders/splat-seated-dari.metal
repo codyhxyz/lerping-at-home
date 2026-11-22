@@ -6,7 +6,7 @@
 // https://superspl.at/scene/e43c3c94. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:seated-dari
 // lerp-camera: period=80 angle=0 arc=360 distance=5.2 height=1 lookHeight=0 fov=30 clip=0
 //

@@ -2,7 +2,7 @@ import Foundation
 
 /// The shelf a shader sits on in the selector, declared in its own file:
 ///
-///     // lerp-category: Fractals
+///     // lerp-category: Atmosphere
 ///
 /// A hundred cards in one undivided grid is a wall; a handful of named shelves
 /// is something you can scan. The category is the file's to say, like its
@@ -14,11 +14,9 @@ import Foundation
 /// made — or a word not on the list sits on the last shelf, `other`, rather
 /// than vanishing or inventing a shelf for one typo.
 public enum LerpShaderCategory {
-    /// In the order the selector shows them: places first, then the
-    /// photographed captures, then the abstract kinds from most to least
-    /// structured.
-    public static let shelves = ["Scenes", "Minecraft", "Splats", "Fractals", "Simulations",
-                                 "Abstract", "Gradients", "Patterns"]
+    /// In selector order, grouped by what the look feels like rather than
+    /// how it is rendered.
+    public static let shelves = ["Atmosphere", "Living Worlds", "Windows", "Sound & Flow", "Meditative"]
     public static let other = "Other"
 
     public static let directive = "lerp-category:"
@@ -42,9 +40,8 @@ extension LerpShader {
         return LerpShaderCategory.other
     }
 
-    /// The name on its card. Under a Splats heading every card saying
-    /// "Splat …" is the heading again, so the file's `splat-` prefix is left
-    /// off there; everywhere else the shader keeps its `displayName`.
+    /// The name on its card. The `splat-` prefix identifies the capture
+    /// format, not the subject in the window, so leave it off the card.
     public var cardTitle: String {
         guard name.hasPrefix("splat-"), name.count > 6 else { return displayName }
         return displayName.split(separator: " ").dropFirst().joined(separator: " ")

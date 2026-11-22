@@ -51,7 +51,7 @@
 // them spread across the room in x, y and depth), their sizes, sway phases,
 // and which diagonal the pop-out pair takes.
 //
-// lerp-category: Scenes
+// lerp-category: Windows
 // lerp-param: parallax    float 0 2  = 1    "Head parallax"
 // lerp-param: depth       float 1 10 = 4    "Room depth"
 // lerp-param: targets     int   0 12 = 7    "Targets"

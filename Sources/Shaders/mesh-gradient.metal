@@ -6,7 +6,7 @@
 // variable-length `colors` array (max 10); this port fixes five tunable slots.
 // Upstream's grainMixer/grainOverlay are not ported — this file has no grain.
 //
-// lerp-category: Gradients
+// lerp-category: Meditative
 // lerp-param: color1     color     = (0.043, 0.231, 0.290) "Deep teal"
 // lerp-param: color2     color     = (0.106, 0.604, 0.667) "Turquoise"
 // lerp-param: color3     color     = (0.498, 0.847, 0.745) "Seafoam"
@@ -16,6 +16,9 @@
 // lerp-param: swirl      float 0 1 = 0.35 "Swirl"
 // lerp-animate: swirl      0.2 0.5 period=200
 // lerp-param: speed      float 0 2 = 0.22 "Speed"
+// lerp-react: swirl <- audio.level 0.35..0.50 smooth=0.85
+// lerp-react: color2 <- music.palette0 mix=0.35
+// lerp-react: color3 <- music.palette1 mix=0.30
 //
 // Upstream presets, speed scaled to this port's ambience (upstream × 0.22).
 // Beach is the exception: upstream's 0.1 became 0.022, and on its pale

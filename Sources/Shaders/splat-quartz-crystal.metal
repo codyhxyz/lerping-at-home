@@ -5,7 +5,7 @@
 // Capture: "Quartz Crystal" by trilithon (Huib Schippers), CC BY 4.0,
 // https://superspl.at/scene/a91f39a1. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:quartz-crystal
 // lerp-camera: period=80 angle=0 arc=360 distance=5 height=1.1 lookHeight=0 fov=30 clip=0
 //

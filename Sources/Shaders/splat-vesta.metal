@@ -5,7 +5,7 @@
 // Capture: "Dawn @ Vesta" by dtdtdt, CC BY 4.0,
 // https://superspl.at/scene/61f1a877. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:vesta
 // lerp-camera: period=80 angle=8 arc=46 distance=5.8 height=0.3 lookHeight=0 fov=30 clip=0
 //

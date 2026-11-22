@@ -1,7 +1,7 @@
 // Cascade — water stepping down a terraced quarry.
 // Lerping@Home, drawn with Minecraft's own textures (lerp-requires below).
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft mobs
 //
 // A square quarry is cut into a plains meadow in terraces: grass and dirt at

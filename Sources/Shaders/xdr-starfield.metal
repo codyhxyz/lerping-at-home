@@ -2,7 +2,7 @@
 // Each plane is a world-space grid; its cells travel towards the glass, with
 // a fade at each end of the loop. No frame history is needed for scrubbing.
 // Head coupling follows the same fixed-glass camera as Window Room.
-// lerp-category: Scenes
+// lerp-category: Atmosphere
 // lerp-param: parallax float 0 2 = 1 "Head parallax"
 // lerp-param: speed float 0 2 = 0.45 "Speed"
 // lerp-param: density float 0.5 2 = 1 "Density"

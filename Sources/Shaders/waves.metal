@@ -24,7 +24,7 @@
 // upstream Waves has no speed prop because it does not animate. `scale` is in
 // this port's units, not upstream's sizing system.
 //
-// lerp-category: Patterns
+// lerp-category: Sound & Flow
 // lerp-param: colorBack  color        = (0.024, 0.035, 0.071) "Background"
 // lerp-param: colorFront color        = (0.184, 0.596, 0.588) "Front"
 // lerp-param: scale      float 0.25 30 = 3.0  "Scale"
@@ -35,6 +35,8 @@
 // lerp-param: proportion float 0 1    = 0.34  "Proportion"
 // lerp-param: softness   float 0 1    = 0.34  "Softness"
 // lerp-param: speed      float 0 2    = 0.15  "Speed"
+// lerp-react: amplitude <- audio.bass 0.60..0.88 smooth=0.22
+// lerp-react: colorFront <- music.palette0 mix=0.50
 //
 // Upstream presets; scale mapped into this port's units, speed left at the
 // port default since upstream has none.

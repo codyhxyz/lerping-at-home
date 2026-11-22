@@ -36,7 +36,7 @@
 // its head that far below it (or, when peeking, its eyes just above it). So
 // it stays hidden however you lean in, and peeks the same way from anywhere.
 //
-// lerp-category: Scenes
+// lerp-category: Sound & Flow
 // lerp-param: parallax float 0 2 = 1    "Head parallax"
 // lerp-param: shy      float 0 2 = 1    "Hide sensitivity"
 // lerp-param: wander   float 0 1 = 0.55 "Glances away"

@@ -8,7 +8,7 @@
 // https://superspl.at/scene/89f82474 — the 720k-splat level of its streamed
 // level-of-detail set. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:trogir-square:look
 // lerp-camera: period=90 angle=-25 arc=60 distance=1.5 height=0.3 lookHeight=0.9 fov=62 clip=1.3 bob=0.05
 //

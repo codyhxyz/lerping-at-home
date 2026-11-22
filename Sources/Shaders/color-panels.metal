@@ -8,7 +8,7 @@
 // The z clip plane and the 14-panel/density-normalizer table stay fixed:
 // upstream derives them from the colour count, which is fixed here at seven.
 //
-// lerp-category: Abstract
+// lerp-category: Sound & Flow
 // lerp-param: color1    color          = (1.000, 0.616, 0.000, 1.0) "Amber"
 // lerp-param: color2    color          = (0.992, 0.310, 0.188, 1.0) "Coral"
 // lerp-param: color3    color          = (0.502, 0.608, 1.000, 1.0) "Periwinkle"
@@ -27,6 +27,9 @@
 // lerp-param: fadeOut   float 0 1      = 0.3  "Fade out"
 // lerp-param: gradient  float 0 1      = 0.0  "Gradient"
 // lerp-param: speed     float 0 4      = 0.5  "Speed"
+// lerp-react: length <- audio.level 1.5..1.9 smooth=0.30
+// lerp-react: color2 <- music.palette0 mix=0.45
+// lerp-react: color3 <- music.palette1 mix=0.35
 //
 // Upstream presets (their palettes padded out to this port's seven slots).
 // lerp-preset: Glass    colorBack=#ffffff, color1=#00cfff, color2=#ff2d55, color3=#34c759

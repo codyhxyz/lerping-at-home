@@ -6,7 +6,7 @@
 // have); everything else matches upstream's ranges. Defaults are this port's
 // screensaver tuning, not upstream's — see the presets for upstream's looks.
 //
-// lerp-category: Patterns
+// lerp-category: Sound & Flow
 // lerp-param: colorBack      color       = (0.000, 0.078, 0.161) "Background"
 // lerp-param: colorFront     color       = (0.435, 0.765, 0.949) "Stroke"
 // lerp-param: scale          float 0.5 16 = 5.5  "Scale"
@@ -19,6 +19,8 @@
 // lerp-param: noiseFrequency float 0 1   = 0.35  "Noise frequency"
 // lerp-param: softness       float 0 1   = 0.12  "Softness"
 // lerp-param: speed          float 0 2   = 0.3   "Speed"
+// lerp-react: strokeWidth <- audio.beat 0.32..0.52 smooth=0.08
+// lerp-react: colorFront <- music.palette0 mix=0.45
 //
 // Upstream presets, with speed and scale mapped into this port's units.
 // lerp-preset: Jungle  colorBack=#a0ef2a, colorFront=#288b18, scale=7.15, speed=0.225

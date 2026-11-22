@@ -3,7 +3,7 @@
 // drawn with the game's own textures, bound from the copy installed on this
 // Mac (see the "Minecraft looks" section of PORTING.md).
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft mobs
 //
 // The world is sliced along one vertical plane and the screen is the glass laid

@@ -3,7 +3,7 @@
 // transparency (the provider supplies occupancy, not sorted ray intersections).
 // Flow is an animated spatial light pattern, not a transported fluid.
 //
-// lerp-category: Scenes
+// lerp-category: Sound & Flow
 // lerp-data: pipes
 //
 // lerp-param: yaw      float -180 180 = 0 "Turn"

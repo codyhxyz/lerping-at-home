@@ -8,7 +8,7 @@
 // variable-length `colors` array (max 10); this port fixes four tunable slots.
 // `scale` is in this port's units, not upstream's sizing system.
 //
-// lerp-category: Gradients
+// lerp-category: Sound & Flow
 // lerp-param: color1          color        = (0.071, 0.071, 0.078) "Charcoal"
 // lerp-param: color2          color        = (0.580, 0.439, 1.000) "Soft violet"
 // lerp-param: color3          color        = (0.071, 0.071, 0.078) "Charcoal"
@@ -22,6 +22,9 @@
 // lerp-param: swirl           float 0 1    = 0.8  "Swirl"
 // lerp-param: swirlIterations int 1 20     = 10   "Swirl iterations"
 // lerp-param: speed           float 0 20   = 0.5  "Speed"
+// lerp-react: distortion <- audio.bass 0.25..0.48 smooth=0.20
+// lerp-react: color2 <- music.palette0 mix=0.55
+// lerp-react: color4 <- music.palette1 mix=0.50
 //
 // Upstream presets whose shape is "checks", scale mapped into this port's
 // units and speed scaled to this port's ambience (upstream × 0.5).

@@ -8,7 +8,7 @@
 // variable-length `colors` array (max 10); this port fixes five tunable slots.
 // `scale` is in this port's units, not upstream's sizing system.
 //
-// lerp-category: Patterns
+// lerp-category: Sound & Flow
 // lerp-param: color1        color        = (1.000, 0.788, 0.420) "Pale amber"
 // lerp-param: color2        color        = (1.000, 0.384, 0.000) "Orange"
 // lerp-param: color3        color        = (1.000, 0.184, 0.000) "Vermilion"
@@ -21,6 +21,8 @@
 // lerp-param: sizeRange     float 0 1    = 0.0 "Size range"
 // lerp-param: spreading     float 0 1    = 1.0 "Spreading"
 // lerp-param: speed         float 0 8    = 0.55 "Speed"
+// lerp-react: sizeRange <- audio.beat 0.0..0.35 smooth=0.08
+// lerp-react: color2 <- music.palette0 mix=0.50
 //
 // Upstream presets, scale mapped into this port's units and speed scaled to
 // this port's ambience (upstream × 0.367), except Bubbles. Shine's tiny dots on black orbited

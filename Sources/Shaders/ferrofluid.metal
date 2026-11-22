@@ -1,6 +1,6 @@
 // Ferrofluid — a stylized damped-wave heightfield with seeded magnetic forcing,
 // not a physically accurate Rosensweig-instability simulation. See FerrofluidData.
-// lerp-category: Simulations
+// lerp-category: Sound & Flow
 // lerp-data: ferrofluid
 // lerp-param: speed float 0 4 = 1 "Motion speed"
 // lerp-param: parallax float 0 2 = 1 "Head parallax"

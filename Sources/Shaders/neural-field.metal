@@ -12,7 +12,7 @@
 // banks and a point on the latent orbit, so every activation is a different
 // network. See Sources/LerpCore/NeuralFieldData.swift for the weights.
 //
-// lerp-category: Simulations
+// lerp-category: Sound & Flow
 // lerp-data: neural-field
 // lerp-requires: metal4
 //

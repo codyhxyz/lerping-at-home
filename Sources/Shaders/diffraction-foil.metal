@@ -2,7 +2,7 @@
 // gently buckled surface carries view-dependent cosine colour bands. Head or
 // pointer tracking changes their angle; with no tracker, a slow deterministic
 // light drift keeps the saver and stills alive without inventing a head pose.
-// lerp-category: Abstract
+// lerp-category: Sound & Flow
 // lerp-param: speed float 0 2 = 0.35 "Speed"
 // lerp-param: parallax float 0 2 = 1.0 "Viewer response"
 // lerp-param: grooves float 1 12 = 6.0 "Groove density"

@@ -2,7 +2,7 @@
 // the rest of this project). An endless dive down the tunnels of an infinite
 // Menger sponge built out of the game's own stone bricks.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft
 //
 // Written from the published mathematics (Karl Menger, 1926: split a cube

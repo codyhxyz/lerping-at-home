@@ -1,7 +1,7 @@
 // Frost dendrites — a stylized hex-lattice diffusion/deposition toy, not a
 // physically validated snow-crystal model. See FrostData for the source and
 // departures. Bounded epochs make stills independent of playback history.
-// lerp-category: Simulations
+// lerp-category: Atmosphere
 // lerp-data: frost
 // lerp-param: speed float 0 8 = 2 "Growth speed"
 // lerp-param: colorBack color = #081c2b "Glass"

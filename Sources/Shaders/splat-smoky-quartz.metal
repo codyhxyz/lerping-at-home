@@ -6,7 +6,7 @@
 // https://superspl.at/scene/8e3ae31f. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:smoky-quartz
 // lerp-camera: period=90 angle=0 arc=360 distance=4.6 height=1.5 lookHeight=0 fov=30 clip=0
 //

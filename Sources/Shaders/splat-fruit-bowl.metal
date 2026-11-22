@@ -4,7 +4,7 @@
 // Capture: "The Fruit Bowl" by superdelphi (SuperDelphi), CC BY 4.0,
 // https://superspl.at/scene/d8ba72a6. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:fruit-bowl
 // lerp-camera: period=80 angle=0 arc=360 distance=4.8 height=1.9 lookHeight=-0.05 fov=30 clip=0
 //

@@ -27,7 +27,7 @@
 // lets each pixel be drawn exactly by a short walk through the cells under
 // it.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft
 //
 // lerp-param: rows    float 10 48   = 22  "Rows of blocks"

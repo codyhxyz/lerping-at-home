@@ -4,7 +4,7 @@
 // corridors, solved hand-on-the-wall, with spinning polyhedra that turn the
 // world upside down when you walk through them.
 //
-// lerp-category: Scenes
+// lerp-category: Living Worlds
 // lerp-data: maze
 //
 // What it does differently: the walk is one continuous path (quarter-circle

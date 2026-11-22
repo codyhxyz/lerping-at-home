@@ -1,7 +1,7 @@
 // Overworld — a Minecraft world drawn as a top-down map, in the game's own
 // textures (bound from the copy installed on this Mac; see PORTING.md).
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft mobs
 //
 // The screen is a picture plane in cabinet oblique: one block is 16×16 texels

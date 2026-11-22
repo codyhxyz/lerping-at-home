@@ -5,7 +5,7 @@
 // https://superspl.at/scene/f07db9fd. Converted by `make splats`.
 // Played on this machine only; `make package` leaves this look out.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:diosa-justicia
 // lerp-camera: period=100 angle=0 arc=360 distance=5.2 height=1.2 lookHeight=0.1 fov=30 clip=0
 //

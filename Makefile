@@ -10,6 +10,22 @@ SAVER_SRC  := Sources/Saver/LerpSaverView.swift
 PREVIEW    := $(wildcard Sources/Preview/*.swift)
 PLAYGROUND := $(wildcard Sources/Playground/*.swift)
 SHADERS    := $(wildcard Sources/Shaders/*.metal)
+
+# Build the usual saver (with captured Windows and the local Pulse agent), or
+# use `make saver-build MODULES=core` / `make dmg MODULES=core` for a lean bundle
+# with no shipped captures. The DMG never deploys Pulse or local-only assets.
+# `make local-modules MODULES="core minecraft photo-window"` prepares Minecraft
+# assets and/or the SHARP tools on this Mac without touching any installed app.
+MODULES ?= core splats pulse
+MODULE_NAMES := core splats pulse minecraft photo-window
+ifneq ($(filter-out $(MODULE_NAMES),$(MODULES)),)
+$(error Unknown MODULES: $(filter-out $(MODULE_NAMES),$(MODULES)); choose from $(MODULE_NAMES))
+endif
+ifeq ($(filter core,$(MODULES)),)
+$(error MODULES must include core)
+endif
+WITH_SPLATS := $(if $(filter splats,$(MODULES)),splats)
+BUNDLED_SHADERS := $(if $(WITH_SPLATS),$(SHADERS),$(filter-out Sources/Shaders/splat-%.metal,$(SHADERS)))
 # The `critter` look's 3D models. The saver bundle ships them in
 # Resources/Critter; the playground and LerpPreview read them from
 # Sources/Critter in the checkout (CritterAssets in CritterScene.swift).
@@ -232,7 +248,7 @@ define STAGE_DMG
 		-srcfolder "$(RELEASE_DMG_ROOT)" "$(RELEASE_DMG)"
 endef
 
-.PHONY: splats images minecraft depth-window photo-window photo-window-setup all preview playground playground-build saver saver-build midi-deps \
+.PHONY: splats images minecraft depth-window photo-window photo-window-setup local-modules all preview playground playground-build saver saver-build midi-deps \
         verify-rotation pulse uninstall-pulse \
         install install-example install-playground uninstall-playground package dmg release clean \
         FORCE
@@ -470,16 +486,16 @@ critter-assets:
 	"$(BLENDER)" -b --factory-startup --python tools/critter-assets/build.py -- \
 		Sources/Critter $(if $(CRITTER_SHEET),--sheet $(CRITTER_SHEET))
 
-# `saver` means the saver the machine will actually run. Use `saver-build` only
-# when a staging bundle is explicitly wanted.
-saver: install pulse
+# No local-only assets or tools are implicitly downloaded by a build or a DMG.
+local-modules: $(filter minecraft,$(MODULES)) $(if $(filter photo-window,$(MODULES)),photo-window-setup)
 
-# LerpPulse: the LaunchAgent that keeps the `critter` look's ledger — once a
-# minute, is anyone at the keyboard and what kind of app is in front, folded
-# into per-day totals (Sources/LerpCore/CritterLedger.swift). Part of `saver`
-# because the critter has nothing to live on without it. It needs no privacy
-# permission and writes one file:
-#   ~/Library/Application Support/Lerping/Critter/ledger.json
+# `saver` means the saver the machine will actually run. Use `saver-build` only
+# when a staging bundle is explicitly wanted. Omitting pulse skips its install;
+# use `make uninstall-pulse` to stop an agent previously installed on this Mac.
+saver: install $(filter pulse,$(MODULES))
+
+# LerpPulse is a per-user LaunchAgent. Keep deployment in `make pulse`; a
+# system-wide Installer should not enable it for every account on the Mac.
 PULSE_SRC   := Sources/LerpCore/CritterLedger.swift $(wildcard Sources/Pulse/*.swift)
 PULSE_LABEL := com.hergenroeder.lerping.pulse
 PULSE_DIR   := $(HOME)/Library/Application Support/Lerping/Pulse
@@ -498,6 +514,8 @@ $(BUILD)/LerpPulse: $(PULSE_SRC)
 pulse: $(BUILD)/LerpPulse
 	@mkdir -p "$(PULSE_DIR)" "$(HOME)/Library/LaunchAgents"
 	cp $(BUILD)/LerpPulse "$(PULSE_BIN).new"
+	cp scripts/spotapi-bridge.py "$(PULSE_DIR)/spotapi-bridge.py"
+	chmod +x "$(PULSE_DIR)/spotapi-bridge.py"
 	codesign --force -s - --identifier $(PULSE_LABEL) "$(PULSE_BIN).new"
 	@launchctl bootout gui/$$(id -u)/$(PULSE_LABEL) 2>/dev/null || true
 	mv -f "$(PULSE_BIN).new" "$(PULSE_BIN)"
@@ -525,10 +543,10 @@ pulse: $(BUILD)/LerpPulse
 # Stops the sampler. The ledger stays, so the critter is where you left it.
 uninstall-pulse:
 	@launchctl bootout gui/$$(id -u)/$(PULSE_LABEL) 2>/dev/null || true
-	rm -f "$(PULSE_PLIST)" "$(PULSE_BIN)" "$(PULSE_BIN).new"
+	rm -f "$(PULSE_PLIST)" "$(PULSE_BIN)" "$(PULSE_BIN).new" "$(PULSE_DIR)/spotapi-bridge.py"
 
-saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) $(CRITTER_MODELS) Sources/Saver/Info.plist LICENSE NOTICE.txt splats images
-	@mkdir -p $(SAVER_DIR)/Contents/MacOS $(SAVER_DIR)/Contents/Resources/Shaders $(SAVER_DIR)/Contents/Resources/Splats \
+saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(BUNDLED_SHADERS) $(CRITTER_MODELS) Sources/Saver/Info.plist LICENSE NOTICE.txt $(WITH_SPLATS) images
+	@mkdir -p $(SAVER_DIR)/Contents/MacOS $(SAVER_DIR)/Contents/Resources/Shaders \
 		$(SAVER_DIR)/Contents/Resources/Images $(SAVER_DIR)/Contents/Resources/Critter
 	swiftc -O -whole-module-optimization -parse-as-library -emit-object \
 		-target $(TARGET) -module-name LerpSaver \
@@ -546,9 +564,14 @@ saver-build: $(BUILD)/LerpPreview $(CORE) $(SAVER_SRC) $(SHADERS) $(CRITTER_MODE
 	# The topologica-*/multiverse-* families were merged into one shader each,
 	# and their old files went on reaching the screen as 27 extra looks.
 	rm -f $(SAVER_DIR)/Contents/Resources/Shaders/*.metal
-	cp $(SHADERS) $(SAVER_DIR)/Contents/Resources/Shaders/
-	rm -f $(SAVER_DIR)/Contents/Resources/Splats/*.lsplat $(SAVER_DIR)/Contents/Resources/Splats/*.path.json
+	cp $(BUNDLED_SHADERS) $(SAVER_DIR)/Contents/Resources/Shaders/
+	rm -rf $(SAVER_DIR)/Contents/Resources/Splats
+ifeq ($(WITH_SPLATS),splats)
+	mkdir -p $(SAVER_DIR)/Contents/Resources/Splats
 	cp $(SPLAT_OUT)/*.lsplat $(SPLAT_OUT)/*.path.json $(SAVER_DIR)/Contents/Resources/Splats/
+else
+	rm -f $(SAVER_DIR)/Contents/Resources/Thumbnails/splat-*.heic
+endif
 	rm -f $(SAVER_DIR)/Contents/Resources/Images/*.png
 	cp $(IMAGES_OUT)/*.png $(SAVER_DIR)/Contents/Resources/Images/
 	rm -f $(SAVER_DIR)/Contents/Resources/Critter/*.usdz
@@ -718,10 +741,13 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 		plutil -insert LerpStandalone -bool YES "$(RELEASE_PLAYGROUND)/Contents/Info.plist"
 	mkdir -p "$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders" \
 		"$(RELEASE_PLAYGROUND)/Contents/Resources/Thumbnails"
-	cp $(SHADERS) "$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders/"
+	cp "$(RELEASE_SAVER)/Contents/Resources/Shaders/"*.metal \
+		"$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders/"
 	cp "$(RELEASE_SAVER)/Contents/Resources/Thumbnails/"*.heic \
 		"$(RELEASE_PLAYGROUND)/Contents/Resources/Thumbnails/"
+ifeq ($(WITH_SPLATS),splats)
 	cp -R "$(RELEASE_SAVER)/Contents/Resources/Splats" "$(RELEASE_PLAYGROUND)/Contents/Resources/"
+endif
 	cp -R "$(RELEASE_SAVER)/Contents/Resources/Images" "$(RELEASE_PLAYGROUND)/Contents/Resources/"
 	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_SAVER)/Contents/Resources/"
 	cp LICENSE NOTICE.txt PORTING.md "$(RELEASE_PLAYGROUND)/Contents/Resources/"

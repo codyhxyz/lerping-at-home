@@ -1,7 +1,7 @@
 // Doorways — Nether portals standing in the open, each onto another world.
 // Original work for Lerping@Home, drawn with Minecraft's own textures.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft
 //
 // An obsidian portal frame stands on its own in a field. Walk round it and it

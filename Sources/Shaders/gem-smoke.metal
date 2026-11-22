@@ -8,7 +8,7 @@
 // not ported — this file is always the "diamond" shape. Upstream takes a
 // variable-length `colors` array (max 6); this port fixes three tunable slots.
 //
-// lerp-category: Abstract
+// lerp-category: Sound & Flow
 // lerp-param: color1          color        = (0.290, 0.180, 0.760, 1.0) "Outer smoke"
 // lerp-param: color2          color        = (0.220, 0.620, 1.000, 1.0) "Azure"
 // lerp-param: color3          color        = (0.910, 0.965, 1.000, 1.0) "Ice white core"
@@ -23,6 +23,9 @@
 // lerp-param: angle           float 0 360  = 0.0  "Angle"
 // lerp-param: size            float 0.1 1  = 0.8  "Size"
 // lerp-param: speed           float 0 4    = 0.4  "Speed"
+// lerp-react: outerGlow <- audio.beat 0.75..1.0 smooth=0.10
+// lerp-react: color1 <- music.palette1 mix=0.45
+// lerp-react: color2 <- music.palette0 mix=0.50
 //
 // Upstream presets, speed scaled to this port's ambience (upstream × 0.4).
 // lerp-preset: Fire        colorBack=#000000, colorInner=#000000, color1=#fe5b16

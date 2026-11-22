@@ -4,7 +4,7 @@
 // vertexshaderart profile), and "Any art by "gman" is CC0" in the site's
 // LICENSE.md (https://github.com/greggman/vertexshaderart.com).
 //
-// lerp-category: Abstract
+// lerp-category: Sound & Flow
 // lerp-data: string-art
 //
 // Upstream is a *vertex* shader: 500 vertices drawn as LINES, so 250 strings,

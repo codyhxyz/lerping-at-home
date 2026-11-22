@@ -5,7 +5,7 @@
 // Capture: "Burke Museum Triceratops Skull" by lukeshea, CC BY 4.0,
 // https://superspl.at/scene/811dd9ed. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:triceratops
 // lerp-camera: period=110 angle=90 arc=200 distance=4.8 height=0.7 lookHeight=0 fov=32 clip=0
 //

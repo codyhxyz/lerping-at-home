@@ -4,7 +4,7 @@
 // Capture: "Wood & Golden - Sefer Torah" by nathanar (Nathan Arditti), CC BY-SA 4.0,
 // https://superspl.at/scene/bd1449ce. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:sefer-torah
 // lerp-camera: period=80 angle=0 arc=360 distance=5 height=0.8 lookHeight=0 fov=30 clip=0
 //

@@ -3,7 +3,7 @@
 // drawn with the game's own textures from the copy installed on this Mac
 // (see "Minecraft looks" in PORTING.md). The shader code is original.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft
 // lerp-data: maze
 //

@@ -31,7 +31,7 @@
 // Fit: the photo covers the screen (cropped, never stretched; distances are
 // in short-side units), plus `margin` of overscan for the head to look past.
 //
-// lerp-category: Scenes
+// lerp-category: Windows
 // lerp-data: image:depth-window
 //
 // lerp-param: parallax float 0 2   = 1    "Head parallax"

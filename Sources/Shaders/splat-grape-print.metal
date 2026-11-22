@@ -7,7 +7,7 @@
 // https://superspl.at/scene/4ae563ac — focus-stacked macro.
 // Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:grape
 // lerp-camera: period=80 angle=0 arc=360 distance=4.4 height=1.0 lookHeight=0 fov=30
 //

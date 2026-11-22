@@ -11,9 +11,12 @@
         <line choice="screensaver"/>
         <line choice="playground"/>
     </choices-outline>
+    <!-- Captures are selected at build time (MODULES), not installed into
+         an already signed bundle. Pulse and locally generated assets are
+         per-user setup, not system-wide Installer components. -->
     <choice id="screensaver"
             title="Lerping@Home Screen Saver"
-            description="The screen saver and its built-in shaders."
+            description="Required screen saver with the curated looks included in this edition."
             selected="true"
             enabled="false">
         <pkg-ref id="com.hergenroeder.lerping.installer.saver"/>

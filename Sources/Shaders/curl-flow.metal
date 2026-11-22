@@ -34,7 +34,7 @@
 // Cost: CF_STEPS noise evaluations per pixel; `particles` = 0 skips the trace
 // and leaves the threads, at one evaluation.
 //
-// lerp-category: Simulations
+// lerp-category: Sound & Flow
 // lerp-param: colorBack     color          = (0.016, 0.020, 0.042) "Background"
 // lerp-param: color1        color          = (0.180, 0.620, 0.700) "Teal"
 // lerp-param: color2        color          = (0.420, 0.360, 0.820) "Iris"
@@ -49,6 +49,9 @@
 // lerp-param: lineDensity   float 0 30     = 9    "Line density"
 // lerp-param: lineWidth     float 0.3 4    = 1.0  "Line width"
 // lerp-param: lineOpacity   float 0 1      = 0.5  "Line opacity"
+// lerp-react: streakLength <- audio.bass 0.8..1.0 smooth=0.20
+// lerp-react: color1 <- music.palette0 mix=0.45
+// lerp-react: color2 <- music.palette1 mix=0.40
 //
 // lerp-preset: Ember     colorBack=(0.020, 0.008, 0.006), color1=(0.95, 0.42, 0.12)
 // lerp-preset: Ember     color2=(0.98, 0.72, 0.30), color3=(0.70, 0.12, 0.10), color4=(1.0, 0.86, 0.62)

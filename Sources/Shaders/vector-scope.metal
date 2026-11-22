@@ -1,7 +1,7 @@
 // Vector Scope — phosphor traces and a vector clock.
 // Clock is session-anchored by ClockData; stills use midnight. Audio uniforms
 // are zero without capture, leaving a continuously animated silent trace.
-// lerp-category: Abstract
+// lerp-category: Sound & Flow
 // lerp-data: clock
 // lerp-param: clock float -1 24 = -1 "Hour (-1 = now)"
 // lerp-param: speed float 0 2 = 0.35 "Speed"

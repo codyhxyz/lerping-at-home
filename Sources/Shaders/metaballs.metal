@@ -12,7 +12,7 @@
 // `audio`. Every audio uniform is 0 in the saver, in --snapshot and with the
 // toggle off, and then `ballSize` is exactly `size`: the look is unchanged.
 //
-// lerp-category: Abstract
+// lerp-category: Sound & Flow
 // lerp-param: color1    color     = (0.431, 0.200, 0.800, 1.0) "Deep violet"
 // lerp-param: color2    color     = (1.000, 0.333, 0.000, 1.0) "Ember orange"
 // lerp-param: color3    color     = (1.000, 0.757, 0.020, 1.0) "Amber"
@@ -23,6 +23,9 @@
 // lerp-param: size      float 0 1 = 0.83 "Size"
 // lerp-param: speed     float 0 2 = 0.5  "Speed"
 // lerp-param: audio     float 0 1 = 0.6  "Audio response"
+// lerp-react: size <- audio.beat 0.83..0.95 smooth=0.10
+// lerp-react: color2 <- music.palette0 mix=0.50
+// lerp-react: color3 <- music.palette1 mix=0.40
 //
 // Upstream presets, speed scaled to this port's ambience (upstream × 0.5).
 // lerp-preset: "Ink Drops" colorBack=#ffffff, color1=#000000, color2=#000000

@@ -1,7 +1,7 @@
 // Laser Interferometer — artistic interference rings, not a physical optical
 // simulation. Two drifting path-length fields create fine fringes inside a
 // softly bounded beam, with a subdued red instrument-room background.
-// lerp-category: Abstract
+// lerp-category: Sound & Flow
 // lerp-param: speed float 0 2 = 0.35 "Speed"
 // lerp-param: density float 2 35 = 16 "Fringe density"
 // lerp-param: intensity float 0 2 = 1 "Intensity"

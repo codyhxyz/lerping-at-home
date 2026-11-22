@@ -8,7 +8,7 @@
 // https://superspl.at/scene/d59f99ee. Converted, with its camera path, by
 // `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:path:tiny-planet
 //
 // lerp-caption-title: Tiny Planet – Still Life

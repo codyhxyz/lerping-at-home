@@ -5,7 +5,7 @@
 // Capture: "Vanadinite" by doudoid (Yann de Couëssin), CC BY 4.0,
 // https://superspl.at/scene/663d6a97. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:vanadinite
 // lerp-camera: period=90 angle=-20 arc=200 distance=5.8 height=1.2 lookHeight=0 fov=30 clip=0
 //

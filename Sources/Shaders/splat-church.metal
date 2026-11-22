@@ -7,7 +7,7 @@
 // https://superspl.at/scene/aa451b94 — the 660k-splat level of its streamed
 // level-of-detail set. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:shenley-church
 // lerp-camera: period=120 angle=0 arc=360 distance=3.4 height=1.1 lookHeight=0.15 fov=42 clip=0
 //

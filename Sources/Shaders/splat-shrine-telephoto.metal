@@ -13,7 +13,7 @@
 // https://superspl.at/scene/3f8c617d — 1,255 photos; the 750k-splat level of
 // its streamed level-of-detail set. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:dolly:saka-shrine
 // lerp-camera: period=60 angle=130 distance=3 height=0.15 lookHeight=0.4 clip=1.2 wideFov=75 longFov=10 framing=1.5
 //

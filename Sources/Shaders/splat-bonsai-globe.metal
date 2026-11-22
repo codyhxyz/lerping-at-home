@@ -11,7 +11,7 @@
 // Capture: "Bonsai Tree" by garrettknelli, CC BY 4.0,
 // https://superspl.at/scene/4c461e7c. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:bonsai
 // lerp-camera: period=90 distance=6.6 height=0.9 lookHeight=-0.15 fov=30 clip=0
 //

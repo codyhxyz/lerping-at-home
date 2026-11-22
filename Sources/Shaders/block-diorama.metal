@@ -3,7 +3,7 @@
 // Drawn with the game's own textures from the copy installed on this Mac
 // (`make minecraft`); none of them are in this file or this repo.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft mobs
 //
 // On top: a plank cottage with glass windows, an oak door, a torch inside, a

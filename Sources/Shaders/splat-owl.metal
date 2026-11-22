@@ -5,7 +5,7 @@
 // Capture: "Owl Wood Sculpture" by pierrecharpentierdesign, CC BY 4.0,
 // https://superspl.at/scene/ac4eb719. Converted by `make splats`.
 //
-// lerp-category: Splats
+// lerp-category: Windows
 // lerp-data: splat:orbit:owl
 // lerp-camera: period=90 angle=0 arc=360 distance=5.6 height=1.4 lookHeight=0.25 fov=30 clip=0
 //

@@ -6,7 +6,7 @@
 // Parameters mirror the upstream <SmokeRing> props. Upstream takes a
 // variable-length `colors` array (max 10); this port fixes four tunable slots.
 //
-// lerp-category: Abstract
+// lerp-category: Sound & Flow
 // lerp-param: color1          color         = (0.980, 0.980, 0.996, 1.0) "Hot white core"
 // lerp-param: color2          color         = (0.965, 0.678, 0.333, 1.0) "Amber"
 // lerp-param: color3          color         = (0.769, 0.286, 0.580, 1.0) "Magenta"
@@ -18,6 +18,9 @@
 // lerp-param: noiseScale      float 0.01 5  = 5    "Noise scale"
 // lerp-param: noiseIterations int 1 8       = 6    "Noise iterations"
 // lerp-param: speed           float 0 4     = 4         "Speed"
+// lerp-react: radius <- audio.bass 0.819..0.95 smooth=0.18
+// lerp-react: color2 <- music.palette0 mix=0.45
+// lerp-react: color3 <- music.palette1 mix=0.45
 //
 // Upstream presets, speed scaled to this port's ambience (upstream × 1.6).
 // lerp-preset: Line   colorBack=#000000, color1=#4540a4, color2=#1fe8ff, color3=#4540a4
