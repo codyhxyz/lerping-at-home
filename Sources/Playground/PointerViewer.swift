@@ -14,6 +14,11 @@ import simd
 /// not leave the scene peering in from one side. While a button is down the
 /// view holds: a drag on the render is orbiting the camera, not leaning.
 ///
+/// While the camera is following the head, moving the pointer where it steers
+/// takes the view over (`steering(over:head:)`): the eye goes where the
+/// pointer says, and once the pointer has been still for `hold` seconds the
+/// view glides back to the head.
+///
 /// Main thread only: it is polled from the render's display link, and from
 /// each Desktop Mode window's, all on the main run loop. The easing is by
 /// elapsed time, so being asked several times a frame changes nothing.
@@ -26,8 +31,81 @@ final class PointerViewer {
     /// slow enough that a pointer jump does not snap the scene.
     static let response: Double = 0.12
 
+    /// Pointer still this long, seconds, and the head has the view back.
+    static let hold: Double = 1.5
+    /// Time constant of the glide back to the head, seconds.
+    static let release: Double = 0.35
+
     private var value = SIMD3<Float>(repeating: 0)
     private var stamp: CFTimeInterval = 0
+
+    // Taking over from the head.
+    private var lastPoint: NSPoint?
+    private var lastMove: CFTimeInterval = -.infinity
+    /// How much of the view is the pointer's: 1 while it steers, easing to 0.
+    private var share: Float = 0
+    private var shown = SIMD3<Float>(repeating: 0)
+    private var overrideStamp: CFTimeInterval = 0
+
+    /// The eye while the camera follows the head: the head's, unless the
+    /// pointer has just moved over the render (or, with Desktop Mode on, over
+    /// the bare desktop), in which case the pointer's. Depth stays the head's
+    /// either way, so taking over does not zoom.
+    func steering(over view: NSView, desktop: Bool, head: LerpViewer) -> LerpViewer {
+        let now = CACurrentMediaTime()
+        let dt = overrideStamp == 0 ? 0 : now - overrideStamp
+        overrideStamp = now
+        let headEye = SIMD3(head.offset.x, head.offset.y, head.offset.z)
+
+        let point = NSEvent.mouseLocation
+        if point != lastPoint {
+            if lastPoint != nil, NSEvent.pressedMouseButtons == 0,
+               Self.steers(at: point, over: view, desktop: desktop) {
+                if now - lastMove >= Self.hold {
+                    // Pick up from what is on screen, so the take-over is seamless.
+                    value = shown
+                    stamp = now
+                }
+                lastMove = now
+            }
+            lastPoint = point
+        }
+
+        let active = now - lastMove < Self.hold
+        if active {
+            share = 1
+            let pdt = stamp == 0 ? 0 : now - stamp
+            stamp = now
+            if var target = target(over: view, desktop: desktop) {
+                target.z = headEye.z
+                let k = Float(1 - exp(-pdt / Self.response))
+                value += (target - value) * k
+            }
+        } else {
+            share *= Float(exp(-dt / Self.release))
+            if share < 0.001 { share = 0 }
+        }
+        shown = headEye + (value - headEye) * share
+        return LerpViewer(x: shown.x, y: shown.y, z: shown.z)
+    }
+
+    /// Whether a pointer moved to `point` is steering the view: over the
+    /// render, or with Desktop Mode on over the desktop itself — not over an
+    /// app's window, the Dock or the menu bar, where it is just being used.
+    private static func steers(at point: NSPoint, over view: NSView, desktop: Bool) -> Bool {
+        if let window = view.window, window.isVisible,
+           window.convertToScreen(view.convert(view.bounds, to: nil)).contains(point) { return true }
+        guard desktop, let primary = NSScreen.screens.first else { return false }
+        let flipped = CGPoint(x: point.x, y: primary.frame.maxY - point.y)
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                 kCGNullWindowID) as? [[CFString: Any]] ?? []
+        return !windows.contains { info in
+            guard (info[kCGWindowLayer] as? Int ?? 0) >= 0,
+                  let bounds = info[kCGWindowBounds] as? NSDictionary,
+                  let rect = CGRect(dictionaryRepresentation: bounds) else { return false }
+            return rect.contains(flipped)
+        }
+    }
 
     func current(over view: NSView, desktop: Bool) -> LerpViewer {
         let now = CACurrentMediaTime()

@@ -1664,12 +1664,14 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if metalView.viewer == nil {
             metalView.viewer = { [weak self] in
                 guard let self else { return .centered }
-                // A lost face is the estimator's to hold, not the pointer's
-                // to take over: the head is still where it was last seen.
                 guard let tracker = self.headTracker else {
                     return self.pointerViewer.current(over: self.metalView, desktop: self.isDesktopModeOn)
                 }
-                return tracker.pose.sample()
+                // Moving the pointer over the render takes the view from the
+                // head until the pointer rests. A lost face alone does not:
+                // the head is still where it was last seen.
+                return self.pointerViewer.steering(over: self.metalView, desktop: self.isDesktopModeOn,
+                                                   head: tracker.pose.sample())
             }
         }
         if headTracker == nil, cameraUnavailable == nil, !askingForCamera { startCamera() }

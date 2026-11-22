@@ -288,7 +288,10 @@ between camera frames, and on losing the face a 0.6 s hold, then a 1.2 s
 glide to centre. With no camera to use (none, or access refused) the pointer
 stands in for the head: over the
 render, or anywhere with Desktop Mode on, moving it moves the eye, and off the
-render the view eases back to straight on. Everywhere else `u.viewer` is
+render the view eases back to straight on. With the camera running, moving
+the pointer over the render (or over the bare desktop, with Desktop Mode on)
+takes the view from the head; 1.5 s after it stops, the view glides back to
+the head. Everywhere else `u.viewer` is
 exactly 0 — the screensaver, `--snapshot`, the gallery stills.
 
 **Shader › Desktop Mode** puts the open look, with its current values, behind
