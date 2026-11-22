@@ -1,0 +1,6 @@
+{
+  "name": "lerp-platform",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test test/platform.test.mjs" }
+}
