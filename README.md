@@ -2,10 +2,11 @@
 
 ![Aurora, liquid metal, and halftone shaders rendered by Lerping@Home](docs/images/shader-showcase.jpg)
 
-- Screensaver for macOS that renders procedural shaders with Metal.
+- Screensaver, desktop canvas, and shader playground for macOS that renders procedural shaders and 3D Gaussian splats with Metal.
 - Shaders are single `.metal` files compiled at runtime via `MTLDevice.makeLibrary(source:)`.
-- 70 built-in shaders in `Sources/Shaders/`: all 30 of Paper Shaders' looks ported to Metal, 28 photoreal Gaussian splat captures (`splat-*`), most with a museum-style caption, raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
-- Custom `.metal` files are supported without rebuilding the engine.
+- 120 built-in shaders in `Sources/Shaders/`: all 30 Paper Shaders looks ported to Metal, 25 photoreal Gaussian splat captures (`splat-*`, most with museum-style captions), `weather-window` (local daylight and Open-Meteo weather), `life-artifacts` (personal photo relics with lore), `critter` (an island creature shaped by your day), `depth-window` (photos with head-tracked parallax), raymarched fractals (Mandelbulb, Mandelbox, Menger, Kleinian, quaternion Julia, Sierpinski), 4D slices, GPU simulations (reaction-diffusion, physarum, ink fluid, ferrofluid, frost, neural CA, sandpile, Game of Life), licensed Shadertoy / FragCoord / Vertex Shader Art ports, and originals. `NOTICE.txt` credits each one.
+- Editorial web gallery and still-first Live Postcards at `docs/index.html` ([live on GitHub Pages](https://codyhxyz.github.io/lerping-at-home/)), with an optional Cloudflare Workers / D1 / R2 publishing backend in `platform/`.
+- Custom `.metal` files and portable `.lerplook` / `.lerpplaylist` / `.lerppiece` artifacts are supported without rebuilding the engine.
 - No Xcode project. Builds with `swiftc` through a Makefile.
 - No build-time Metal toolchain and no precompiled shader archive.
 
@@ -55,9 +56,12 @@ The playground checks for updates itself — the Sparkle shape, no background
 daemon. On launch and every four hours while it runs, it asks the GitHub
 Releases API for the latest release; when the release tag is newer than the
 installed saver's `LerpBuild` stamp it downloads the prebuilt saver zip,
-verifies the code signature and that the bundle's stamp matches the tag, and
-installs it to `~/Library/Screen Savers` — no checkout update, no compiler on
-the receiving end. Anything that fails verification is refused and logged.
+verifies the Apple-anchored Developer ID Team ID and signer CN against the
+installed canonical saver (or `LERP_EXPECTED_TEAM_ID`) and that the bundle's
+stamp matches the tag, and replaces the canonical install in place — no checkout
+update, no compiler on the receiving end. Anything that fails verification, or
+finds missing, duplicate, or non-writable system installs, fails closed and is
+logged.
 
 The menu-bar item (the circular-arrows icon) is the manual side: **Check for
 Updates** runs the same script on demand and reports the result, **Automatic
@@ -68,13 +72,15 @@ installer asks about automatic checks too (`--with-auto-update` /
 `--without-auto-update`), defaulting to on.
 
 Releases are cut by hand, on the Mac: `scripts/publish-release.sh [tag]`
-builds from a clean checkout, stamps the saver with the tag (default
-`vYYYY.MM.DD.HHMM`), signs and notarizes the saver zip and the installer DMG
-(see [Build a release image](#build-a-release-image)), and uploads them with the
-`gh` CLI. It refuses to run without the Developer ID identities. Run it whenever there
-is something worth shipping — until the first release exists, the updater
-reports "no releases published yet". The playground itself is never updated
-unattended: replacing it could discard unsaved editor state.
+runs `scripts/verify-release-licenses.py` against `Packaging/release-allowlist.json`
+as a preflight gate, builds from a clean checkout, stamps the saver with the tag
+(default `vYYYY.MM.DD.HHMM`), signs and notarizes the saver zip and the installer
+DMG (see [Build a release image](#build-a-release-image)), packages a matching
+AGPL Corresponding Source archive (`LerpingAtHome-<tag>-source.tar.gz`), and
+uploads them with the `gh` CLI. It refuses to run without the Developer ID
+identities. Run it whenever there is something worth shipping — until the first
+release exists, the updater reports "no releases published yet". The playground
+itself is never updated unattended: replacing it could discard unsaved editor state.
 
 ### Screen saver
 
@@ -84,17 +90,18 @@ unattended: replacing it could discard unsaved editor state.
 - First activation can show black briefly while Gatekeeper verifies the bundle.
 - Shader, preset, and render scale are set behind the saver's Options…
   button. Pinning a shader also lets you pin one of its presets.
-- Options… also has an **In rotation** gallery: pick which *looks* Shuffle draws
-  from, by looking at them. Shuffle rotates over (shader, preset) pairs, not just
-  shaders — defaults plus each distinct `// lerp-preset:` look, with a useful
-  preset name replacing an identical “Defaults” tile. That is about 266 looks
-  across the 76 shaders rather than 76. Every look is a portrait still of itself; click
-  a tile to put it in or take it out. They are grouped under a shader heading
-  whose checkbox turns the
-  whole group on or off and carries an *n/m* count, and there is a search field,
-  Select All / Deselect All (which act on what the search is showing), and a
-  status line. New shaders and newly added presets join the rotation
-  automatically; selecting nothing means all.
+- Options… also has a read-only **In rotation** gallery showing the looks the
+  active rotation playlist draws from. Shuffle rotates over `(shader, preset)`
+  pairs, not just shaders — defaults plus each distinct `// lerp-preset:` look,
+  with a useful preset name replacing an identical “Defaults” tile. Every look
+  is a portrait still of itself, grouped under its shader heading with an *n/m*
+  count and a search field. Because `legacyScreenSaver` runs sandboxed and
+  cannot write the user's ByHost plist, all rotation edits and **Named Rotation
+  Playlists** live in `LerpPlayground` (one representation, one writer, one
+  store — see `AGENTS.md`). The ByHost `rotationState` v3 record supports
+  multiple named playlists (`automatic` admission for the default Library
+  Rotation where new looks join automatically, or `closed` admission for curated
+  playlists whose roster stays fixed until you explicitly add a look).
 - Pointing at a tile plays it, starting at the still's own time rather than
   t=0, so the first live frame matches the still already on screen. One shared
   `LerpMetalView` is reparented into the hovered tile; there is no per-tile
@@ -110,13 +117,14 @@ unattended: replacing it could discard unsaved editor state.
   allows" below. Anything the bundle does not have a still for (a custom shader,
   a shader edited since the build) is rendered on the spot, in parallel, into a
   cache inside the sandbox container. Nothing ever blocks the sheet.
-- The same Library of shader cards is the playground's selector (the toolbar's
-  shader button), where the badge writes the screensaver's rotation
-  immediately and a click opens the shader in the editor. Per-preset choices
-  are made in the playground's inspector. It is one implementation, in
+- The same Library of shader cards is the playground's selector (`⌘O`), where
+  the badge writes the screensaver's active rotation immediately and a click
+  opens the shader. Per-preset choices are made in the playground's inspector
+  and **Rotation** menu. It is one implementation, in
   `Sources/LerpCore/RotationGallery.swift`. See "Shader playground".
-- Options… has a **Set desktop picture to the last frame** checkbox, off by default.
-  See "Desktop picture handoff" below.
+- The screen saver never modifies the system desktop picture. For a live desktop
+  background or dedicated display canvas, use **Desktop Mode** or **Frame Mode**
+  in `LerpPlayground`.
 
 ### Playground
 
@@ -218,6 +226,14 @@ make preview && ./build/LerpPreview
 - `./build/LerpPreview --snapshot out/` — render every shader to PNG.
   - Flags: `--size WxH`, `--time T`, `--seed S`, `--shader name`.
   - Exits non-zero if a shader does not compile.
+- Self-tests (always pass a scratch `LERP_DEFAULTS_MODULE` so production
+  rotation defaults are never touched):
+  - `LERP_DEFAULTS_MODULE=com.hergenroeder.lerping.selftest ./build/LerpPreview --rotation-selftest` — checks v3 named playlists, v2 migration, `automatic`/`closed` admission, schedule airtime, and Library shelves.
+  - `LERP_DEFAULTS_MODULE=com.hergenroeder.lerping.selftest ./build/LerpPreview --artifacts-selftest` — checks metadata directives, RFC 8785 canonical JSON / SHA-256 refs, strict Look validation, lineage bounds, `lerp://` URL parsing, and asset safety limits.
+  - `LERP_DEFAULTS_MODULE=com.hergenroeder.lerping.selftest ./build/LerpPreview --export-selftest` — renders and decodes a 300-frame, 10.0s H.264 Rec.709 MP4 loop.
+  - `./build/LerpPreview --critter-selftest` — checks `CritterLedger` and vitals against a synthetic clock.
+  - `make verify-rotation` — audits real-host unified logs against your ByHost rotation plist.
+  - `python3 scripts/verify-release-licenses.py` — verifies every shader/capture against `Packaging/release-allowlist.json` and checks commercial exclusions.
 
 ### GPU cost and profiling
 
@@ -270,7 +286,14 @@ make playground
 - Closing the window quits the app; unsaved edits get Save / Discard / Cancel.
 - The installed app edits the checkout recorded during deployment, so `open`'s
   working directory does not matter. See "Install" above.
-- Split window: `.metal` source on the left, live render on the right.
+- Two workspace modes over one shared document (switching preserves unsaved text, parameter values, undo, clock, and seed):
+  - **Tune** (default, **View → Tune**): canvas-first with tactile parameter sliders, the Look switcher, **Save as Look…** (`⇧⌘S`), **Copy Share Link**, **Export Look File…**, and **Export 10-Second Loop…**.
+  - **Studio** (**View → Studio**, `⇧⌘E`, or **View → Show Code**, `⌥⌘C`): reveals the live `.metal` editor on the left, compile diagnostics, MIDI banks, and authoring menus.
+- **Editorial Discover** (**View → Discover…**): curated shelves with mood, motion, and brightness filters, a single debounced hover live preview, and one-click **Open in Tune** or **Add to Rotation**.
+- **Named Rotation Playlists** (**Rotation** menu): switch active screensaver rotation, create new closed playlists, rename, or delete inactive playlists — every mutation goes through `RotationStore`'s single-writer ByHost store.
+- **Portable sharing & quarantine import**: **File → Copy Share Link** / **Export Look File…** creates content-addressed v1 `.lerplook` artifacts (`https://lerping.app/p/v1/look/<64-hex>`). Opening a `lerp://open/v1/{piece|look|playlist}/{64-hex}` link or a `.lerplook` / `.lerpplaylist` / `.lerppiece` file (**File → Import…** or double-click) opens a read-only quarantine review sheet showing title, artist, remix lineage, license, and eligible vs. missing looks — never auto-compiling untrusted Metal or silently modifying your rotation.
+- **10-Second Loop Export** (**File → Export 10-Second Loop…**): offscreen Metal → `AVAssetWriter` H.264 Rec.709 MP4 (300 frames at 30 fps, 16:9 / 1:1 / 9:16), freezing compiled source, parameters, drift state, and deterministic inputs at job start, with periodic or honestly labeled linear-light crossfade looping and an optional corner museum placard.
+- **Photo import** (**Shader → Import Photo as 3D Window…** or drag-and-drop): turns a photo into a head-tracked depth window right inside the playground.
 - **What it opens on.** The look you last had open, if it is still on disk and
   still compiles — closing the window mid-shader and coming back to a different
   one loses your place, and nothing is worth that. Failing that (a first launch,
@@ -289,21 +312,21 @@ make playground
 - Under the editor, a pill says whether the buffer compiles: green with the compile time, or red with the error count. Compile errors open as rows above it, one per diagnostic with its line number; clicking a row jumps to that line, and `⌘E` (or clicking the red pill) jumps to the first. Other messages — a Learned CC, a save, an input switched on — appear beside the pill and fade, so they never hide the compile state.
 - Metal's reported line numbers match the shader file, because the prelude ends with `#line 1`.
 - Navigation is three controls, each with one job:
-  - **The selector** — the toolbar button, `⌘O`, or **Shader → Open Shader…** —
+  - **The selector** — the toolbar button, `⌘O`, or **View → Library…** —
     is a popover Library of one card per shader, over `Sources/Shaders/` plus
     the custom shader directory, refreshed when files change on disk. Cards sit
-    on shelves — Scenes, Splats, Fractals, Simulations, Abstract, Gradients,
-    Patterns — each shader naming its own with `// lerp-category: Fractals`;
-    one that names none (yours, until you add the line) goes on Other, with
-    the "+" card. ‹ › walk the shelves in the same order. A click
-    opens the shader at its cover (the preset its picture shows). The badge in
-    the corner is the one place anything goes in or out of the screensaver: on
-    a shader with one preset it switches it; on one with several it opens a
-    menu — **In Screensaver** for the whole shader (keeping per-preset picks),
-    then a check per preset. **All** / **None** in the header switch every
-    shader shown. A shader that is out of the rotation is drawn dimmed and
-    opens on the same click. A hand-picked shader's caption says "4 of 11
-    presets" in amber.
+    on six feeling-based shelves — **Atmosphere, Living Worlds, Windows,
+    Artifacts, Sound & Flow, Meditative** — each shader naming its own with
+    `// lerp-category: Atmosphere`; one that names none (yours, until you add
+    the line) goes on **Other**, with the "+" card. ‹ › walk the shelves in the
+    same order. A click opens the shader at its cover (the preset its picture
+    shows). The badge in the corner is the one place anything goes in or out of
+    the active screensaver rotation: on a shader with one preset it switches it;
+    on one with several it opens a menu — **In Screensaver** for the whole shader
+    (keeping per-preset picks), then a check per preset. **All** / **None** in
+    the header switch every shader shown. A shader that is out of the rotation
+    is drawn dimmed and opens on the same click. A hand-picked shader's caption
+    says "4 of 11 presets" in amber.
   - **`‹` `›`** beside the button step to the previous or next shader, in the
     selector's order, wrapping at both ends — `⇧⌘[` / `⇧⌘]`, **Shader → Next
     Shader** / **Previous Shader**.
@@ -320,17 +343,18 @@ make playground
   - Pointing at a card plays it. The card for the shader the editor has open is
     marked.
   - The last thing playing cannot be switched off.
-- **Shortcuts and Spotlight** get three LerpPlayground actions: **Add Preset to
-  Rotation**, **Remove Preset from Rotation** and **List Presets** (all, in the
-  rotation, or switched off). A *Preset* is a shader plus one of its presets, or
-  its Defaults. The actions run inside the playground, launching it if needed,
-  and write through the same path a gallery click does, so the playground is
-  still the rotation's only writer; open grids update straight away. Removing
-  the last look is refused, as it is in the gallery. There is no pin action:
-  the pin belongs to the saver's Options… sheet. The actions need the full
-  Xcode to build, because `appintentsmetadataprocessor` ships with Xcode and
-  not with the command line tools. Without it the app builds the same, minus
-  the actions. See `Sources/Playground/RotationIntents.swift`.
+- **Shortcuts and Spotlight** get four LerpPlayground actions: **Add Preset to
+  Rotation**, **Remove Preset from Rotation**, **List Presets** (all, in the
+  rotation, or switched off), and **Switch Rotation Playlist**. A *Preset* is a
+  shader plus one of its presets, or its Defaults. The actions run inside the
+  playground, launching it if needed, and write through the same path a gallery
+  click does, so the playground is still the rotation's only writer; open grids
+  update straight away. Removing the last look is refused, as it is in the
+  gallery. There is no pin action: the pin belongs to the saver's Options…
+  sheet. The actions need the full Xcode to build, because
+  `appintentsmetadataprocessor` ships with Xcode and not with the command line
+  tools. Without it the app builds the same, minus the actions. See
+  `Sources/Playground/RotationIntents.swift`.
 - **Save** (`⌘S`) overwrites the look that is open, and never asks anything. The
   window changes two things — the text and the values — and both live in the same
   `.metal` file, so one command writes both: with a preset on, the values go back
@@ -382,14 +406,13 @@ make playground
 
 Keys:
 
-- `⌘O` — open the selector; type to filter, ⏎ opens the first match.
-- `⌘N` — scaffold a new starter shader into `Sources/Shaders/`, as the picker's
-  **+** card does.
-- `⌘S` — save the `.metal` file: the text, and the look on screen back into the
-  preset (or the declared defaults) it came from.
-- `⇧⌘S` — Save As: the look on screen under a name, as a new preset or over an
-  existing one.
-- `⌘R` — recompile.
+- `⌘O` — open the Library selector; type to filter, ⏎ opens the first match.
+- `⇧⌘E` — switch to Studio Mode (`⌥⌘C` toggles the code pane; `⌘I` toggles the inspector).
+- `⌃⌘F` — preview full screen (`Esc` returns).
+- `⌘N` — scaffold a new starter shader into `Sources/Shaders/` (Studio Mode), as the picker's **+** card does.
+- `⌘S` — save the `.metal` file (Studio Mode): the text, and the look on screen back into the preset (or the declared defaults) it came from.
+- `⇧⌘S` — **File → Save as Look…**: save the look on screen under a name, as a new preset or over an existing one.
+- `⌘R` — recompile (Studio Mode).
 - `⌘\` — play/pause.
 - `⇧⌘R` — randomize parameters.
 - `⇧⌘[` / `⇧⌘]` — previous/next shader.
@@ -535,8 +558,10 @@ its parameters and presets wherever the file goes.
   playground its slider moves on its own, a small waveform toggle shows it is
   drifting, and dragging the slider (or turning a MIDI knob bound to it) takes
   control until the toggle hands it back. Details in `PORTING.md`.
+- `// lerp-react:` binds a parameter to live local signals — clock, Open-Meteo weather (used by `weather-window`), system audio levels/bass/beat (**Shader → React to System Audio**), optional album-art palette (`scripts/spotapi-bridge.py`), and `LerpPulse` day/activity signals (`~/Library/Application Support/Lerping/world.json`). 21 built-in shaders declare reactive bindings; normal stills and gallery previews do not depend on live inputs.
+- Portable metadata and provenance directives (`Sources/LerpCore/ShaderMetadata.swift`): `// lerp-author:`, `// lerp-remixed-from:` (content-addressed Piece or Look ref), `// lerp-license:` (SPDX), `// lerp-tags:`, `// lerp-mood:`, `// lerp-motion:` (`still|gentle|active`), and `// lerp-brightness:` (`dark|balanced|bright`).
 - A malformed declaration is a compile error naming the line.
-- 75 of the 70 built-in shaders declare parameters (all but `pipes`). The 30
+- 119 of the 120 built-in shaders declare parameters (all but `pipes`). The 30
   Paper Shaders ports mirror the upstream props, with defaults set to this
   project's current look and the upstream looks available as presets.
 - Inspect and drive them from the CLI:
@@ -579,7 +604,10 @@ its parameters and presets wherever the file goes.
   field with membrane lighting, birth pulses, and death glow; the underlying
   automaton remains exact. The cached board's key is its whole input, so
   stepping it forward lands on the bytes a cold rebuild would produce.
-- `heatmap`, `life`, `maze` and `pipes` use one. Every other shader keeps the plain
+- Built-in providers: `artifacts`, `clock`, `critter`, `ferrofluid`, `frost`,
+  `heatmap`, `image`, `ink-fluid`, `life`, `maze`, `neural-ca`, `neural-field`,
+  `physarum`, `pipes`, `polytope-4d`, `reaction-diffusion`, `sandpile`,
+  `splat`, and `string-art`. Every other shader keeps the plain
   `fragment half4 lerpMain(float4, constant LerpUniforms&)` signature.
 - Protocol and registry: `Sources/LerpCore/DataProvider.swift`. Worked examples:
   `Sources/LerpCore/PipesData.swift` (derive every frame),
@@ -656,9 +684,15 @@ its parameters and presets wherever the file goes.
   Gallery stills leave it out. A captioned look's splat
   texture is mipmapped so the label can blur what is behind it; an
   uncaptioned one is drawn exactly as before.
-- Some captures were published with no licence (`"license": "none"` in
-  `captures.json`). They are fetched for this machine's saver, as SuperSplat's
-  viewer streams them, and `make package` leaves them and their looks out.
+- Captures with `"license": "none"` or non-commercial licences (such as
+  `milano-apartment`, `CC BY-NC 4.0`) in `captures.json` are fetched for local
+  builds only; `make package` and `scripts/publish-release.sh` exclude them and
+  their looks, stills, and paths, verified by `scripts/verify-release-licenses.py`.
+- `AssetSafety.swift` enforces pre-allocation and decompression bounds before
+  loading `.lsplat` captures and camera paths: strict `portableIngress` limits
+  (64 MiB archive, 128 MiB decoded, ≤1M splats, ≤4,096 path keyframes) for
+  portable `.lerppiece` imports and custom user captures, and explicit bounded
+  `bundledLegacy` limits for vetted built-in captures.
 - A capture only holds together near where its photos were taken. Cameras
   that leave that region (the dolly backing away, the town square's arc) set
   `clip` in `// lerp-camera:`, which drops every splat nearer than the subject
@@ -715,12 +749,19 @@ taken).
 - The default picture is drawn by `make images` (run by `make preview`,
   `make saver` and the playground targets): a procedural dusk lake with its
   exact depth, so there is no binary art or third-party image in the repo.
-- Your own photo: `make depth-window IMAGE=~/Pictures/beach.jpg NAME=beach`.
+- Your own photo: `make depth-window IMAGE=~/Pictures/beach.jpg NAME=beach` (or **Shader → Import Photo as 3D Window…** in Playground).
   Depth Anything V2 Small, Core ML, runs on this Mac (about 25 ms); the 50 MB
   model is downloaded once into `tools/` (gitignored), pinned by sha256.
   It writes `beach.jpg` and `beach.depth.png` to the Images folder above and a
   look, `depth-window-beach.metal`, to the custom Shaders folder. `make saver`
   bakes that look into the saver like any custom shader.
+
+### Personal artifacts (`life-artifacts`)
+
+- `life-artifacts` renders rotatable, depth-relieved personal relics with a
+  loading-screen HUD and lore driven by `ArtifactData.swift`.
+- `make artifact-photo` (`scripts/artifact-photo.swift`) converts a personal
+  photo into a relic entry for the Artifacts shelf.
 
 ### GLSL → Metal mapping
 
@@ -739,21 +780,28 @@ taken).
 Sources/LerpCore/     shared engine, no ScreenSaver dependency
   Prelude.swift        Metal prelude prepended to every shader at runtime
   ShaderLibrary.swift  shader discovery (bundle + custom dirs) + runtime compilation
-  ShaderParameters.swift  `// lerp-param:` / `// lerp-preset:` parsing, layout and packing
+  ShaderParameters.swift  `// lerp-param:` / `// lerp-preset:` / `// lerp-animate:` / `// lerp-react:` parsing and packing
+  ShaderMetadata.swift portable `// lerp-author:` / `// lerp-remixed-from:` / `// lerp-license:` / tag parser
+  PortableArtifacts.swift  RFC 8785 + SHA-256 v1 Piece/Look/Playlist codecs, lineage, `lerp://` URL parser
+  AssetSafety.swift    bounded ZIP/splat/path validation (`portableIngress` vs `bundledLegacy`)
+  AmbientPolicy.swift  shared battery, Low Power Mode, thermal, and occlusion policy for passive surfaces
+  LoopExport.swift     offscreen Metal -> AVAssetWriter 10-second H.264 Rec.709 MP4 exporter
+  RotationState.swift  single ByHost `rotationState` v3 store (named profiles + v2 migration)
   DataProvider.swift   optional per-frame CPU→GPU data for shaders that need it
-  PipesData.swift      data provider for pipes: deterministic lattice walk
   LerpRenderer.swift   fullscreen-triangle pass encoder
   GPUDiagnostics.swift per-look GPU cost meter + signposts
   LerpMetalView.swift  CAMetalLayer view: CADisplayLink, pacing, occlusion pause
   Snapshot.swift       offscreen render to PNG (HEIC for gallery stills)
-Sources/Shaders/     built-in shaders, shipped as bundle Resources
+Sources/Shaders/     120 built-in shaders, shipped as bundle Resources
 Sources/Saver/       ScreenSaverView shim + Info.plist
-Sources/Pulse/       LerpPulse, the LaunchAgent that keeps the critter's ledger
-Sources/Preview/     LerpPreview dev app / snapshot CLI
-Sources/Playground/  LerpPlayground editor + live render, hot reload
-  Info.plist           the .app's identity: bundle id, name, icon
-Packaging/          Installer choices, copy, and safe-update script
-Templates/          example shader
+Sources/Pulse/       LerpPulse, the LaunchAgent supplying critter ledger and local weather/music/day signals
+Sources/Preview/     LerpPreview dev app, snapshot/bench CLI, and self-test suites
+Sources/Playground/  LerpPlayground (Tune/Studio editor, Discover, Named Playlists, Desktop Mode, Frame Mode, Loop Export, ImportSheet)
+  Info.plist           bundle identity, `lerp://` URL scheme, `.lerplook`/`.lerpplaylist`/`.lerppiece` UTIs
+docs/                Editorial web gallery & still-first Live Postcards (`index.html`, `lerp-web/`)
+platform/            Cloudflare Workers + D1 + private R2 publishing, quarantine, and revocation backend
+Packaging/           Installer choices, release license allowlist (`release-allowlist.json`), copy, and update scripts
+Templates/           example shaders
 ```
 
 `LerpCore` holds the rotation gallery (`RotationGallery.swift`,
@@ -903,62 +951,26 @@ exception for `/` is also why a custom shader in
 `~/Library/Application Support/Lerping/Shaders` shows up in the sheet's gallery
 even before `make saver` bakes it into the bundle.
 
-## Desktop picture handoff
+## Desktop Mode and Frame Mode
 
-- **Off by default.** Enable with **Set desktop picture to the last frame** in Options….
-  Off by default.
-- On `com.apple.screensaver.willstop` the saver reads the exact `shaderName`, `time` and
-  `seed` the view is on, re-renders that frame offscreen at each display's native pixel
-  size via `LerpSnapshot`, writes it to a new PNG, and calls `NSWorkspace.setDesktopImageURL`
-  for each `NSScreen`.
-- Effect: the desktop, the locked session, and the pre-login login window all show the frame
-  the screensaver ended on. macOS propagates it — `wallpaperexportd` mirrors the desktop
-  picture to `/var/db/Wallpapers/<uuid>/Wallpaper.png` and to the Preboot volume, which is
-  what the pre-login window reads. Verified end to end on macOS 27.
-- The export is downscaled to logical points (a 3024x1964 render comes back out as 1512x982),
-  so rendering at native panel resolution is already more than enough.
-- **Where the file goes:** `legacyScreenSaver` is sandboxed and writing to the real
-  `~/Library/Application Support/Lerping/wallpaper/` is denied outright, exactly like the
-  custom shader directory. The stills land in the sandbox container instead:
+The screen saver does **not** set the desktop picture (`NSWorkspace.setDesktopImageURL` was removed from `Sources/Saver/LerpSaverView.swift` — a sandboxed, ephemeral saver host mutating global macOS wallpaper state pinned lock screens across spaces to removed looks). Instead, live desktop and monitor playback live in `LerpPlayground`, as normal windows that leave when the app quits and never touch system wallpaper settings:
 
-```
-~/Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/
-  Library/Application Support/Lerping/wallpaper/<shader>-<id>-<screen>.png
-```
-
-  `setDesktopImageURL` accepts that URL and `wallpaperexportd` mirrors it — verified. The
-  consequence is that the desktop picture points into a sandbox container: if the container
-  is ever reset, the wallpaper breaks until the next screensaver cycle.
-- Every frame is written to a **new** filename. Rewriting the same URL does not refresh the
-  desktop picture.
-- `~/Library/Application Support/com.apple.wallpaper/Store/Index.plist` is never edited
-  directly. `WallpaperAgent` holds an in-memory copy and flushes it back over any edit, and
-  it lags the API call by seconds, so it is not a way to confirm anything either.
-- Generated PNGs older than two minutes are deleted after each successful handoff. Age-based
-  rather than "delete everything I did not just write", because with more than one display
-  macOS can run more than one saver host and a strict keep-set lets one host delete a still
-  another host just handed to the wallpaper agent.
-- Multi-display: each `NSScreen` gets its own render at its own aspect ratio. The Preboot
-  export is per **user** — one file — so the login window only ever shows the primary
-  display's frame. That is a macOS limitation, not something this code can fix.
-
-## Wallpaper mode
-
-- Not implemented; the handoff above is a still image, not a live animated desktop.
-- `LerpMetalView` has no ScreenSaver dependency and can be hosted elsewhere.
-- Path: a menu-bar app placing one `LerpMetalView` per `NSScreen` in a borderless window at `kCGDesktopWindowLevel`, with `ignoresMouseEvents`, `.canJoinAllSpaces`, `.stationary`, and occlusion pausing.
+- **Desktop Mode** (**Shader → Desktop Mode**, `Sources/Playground/DesktopMode.swift`): places one borderless, click-through `LerpMetalView` window per display just beneath Finder's desktop icons (`kCGDesktopWindowLevel`), mirroring the open look, live parameters, and active inputs across displays. Quitting (or crashing) leaves your desktop picture untouched.
+- **Frame Mode** (**Shader → Frame Mode**, `Sources/Playground/FrameMode.swift`): turns any chosen display into a dedicated borderless art frame playing a committed look or rotation with a fading museum placard (title, artist, and optional remix credit, respecting Reduce Motion), leaving the Playground window usable on another display. Pressing `Esc` or choosing **Stop Frame** closes it; disconnecting that display closes the frame instead of jumping onto the primary screen.
+- **Ambient power policy** (`Sources/LerpCore/AmbientPolicy.swift`): passive surfaces (`DesktopMode` and `FrameMode`) prefer SDR and reduced render scale on battery, pause when occluded, and hold the last frame (suspending idle sync and camera/audio inputs) in Low Power Mode, serious/critical thermal states, or sleep.
 
 ## License
 
 - AGPL-3.0-or-later. See `LICENSE`.
 - Copyleft: derivative works and redistributed modified versions must also be released under AGPL-3.0.
-- AGPL-3.0 adds section 13 to GPL-3.0: users interacting with a modified version over a network must be offered its source. This program does no network interaction, so section 13 is inert here.
+- `scripts/publish-release.sh` ships a matching Corresponding Source tarball (`LerpingAtHome-<tag>-source.tar.gz`) beside every release DMG and saver ZIP, and verifies third-party asset eligibility with `scripts/verify-release-licenses.py`.
+- AGPL-3.0 section 13 applies to network interaction with modified versions (relevant if deploying modified server code from `platform/`).
 - Apache-2.0 is one-way compatible with the GPL-3.0 family, so the combined work is conveyed under AGPL-3.0. Apache-2.0 is not compatible with GPL-2.0.
 - `Sources/Shaders/aurora.metal` is original work, additionally offered under MIT in its file header.
 
 ## Sources
 
-- [paper-design/shaders](https://github.com/paper-design/shaders) — Apache-2.0. 30 of the 68 shaders are ports of it; the prelude's hashes, value noise, simplex noise and banding fix derive from it. Per-shader attribution in `NOTICE.txt`.
+- [paper-design/shaders](https://github.com/paper-design/shaders) — Apache-2.0. 30 of the 120 shaders are ports of it; the prelude's hashes, value noise, simplex noise and banding fix derive from it. Per-shader attribution in `NOTICE.txt`.
 - Neuro Noise — original GLSL algorithm by [@zozuar](https://github.com/zozuar), via Paper Shaders.
 - Microsoft 3D Pipes (`sspipes`, Copyright (c) 1994-1995 Microsoft Corporation) — `Sources/Shaders/pipes.metal` is an original raymarched SDF sharing no code with it, and reuses its published numeric constants. See `NOTICE.txt`.
 - Microsoft 3D Maze (`ssmaze`) — `Sources/Shaders/maze.metal` is an original ray-cast homage sharing no code, textures or artwork with it. See `NOTICE.txt`.
