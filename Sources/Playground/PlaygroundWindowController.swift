@@ -79,7 +79,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// parameter is a change, and handing it back undoes the change whatever
     /// the slider was left at.
     private var parametersMoved: Bool {
-        guard let compiled, let live = metalView.parameterValues else { return false }
+        guard let compiled, let live = editableParameters else { return false }
         return !live.rendersSameLook(as: compiled.parameterValues(for: currentEntry))
     }
     /// What Save writes, and therefore what the Save button and ⌘S report. One
@@ -99,6 +99,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                                            target: self, action: #selector(changeWorkspace(_:)))
     private let split = NSSplitViewController()
     private var editorItem: NSSplitViewItem!
+    private var codeItem: NSSplitViewItem { editorItem }
     private lazy var saveLookButton = Chrome.button("Save as Look…", target: self, action: #selector(savePreset(_:)))
     private lazy var copyLinkButton = Chrome.button("Copy Share Link", target: self, action: #selector(copyShareLink(_:)))
     private lazy var exportLoopButton = Chrome.button("Export Loop…", target: self, action: #selector(exportLoop(_:)))
@@ -124,6 +125,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Whether the buffer compiles, the passing notes, and the error rows —
     /// see `StatusStrip`.
     private let statusStrip = StatusStrip()
+    private let photoStatus = Chrome.label("", size: 11)
+    private lazy var photoBanner = Chrome.bar([photoStatus, Chrome.flexible()])
+    private var isImportingPhoto = false
     private let fpsLabel = NSTextField(labelWithString: "— fps")
     /// Playback resolution: a round button that opens Low / Med / High. Only
     /// the icon at High; a lowered resolution says so beside it.
@@ -154,6 +158,13 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// every compile, so editing a `// lerp-animate:` line shows at once.
     /// Empty means every parameter does what the worn look says.
     private var animationState: [String: Bool] = [:]
+    private var reactionOverlay = ReactionOverlay()
+    private var reactionWorld = ReactionWorld()
+    private var reactionReadPending = false
+    private var reactionPollAfter: TimeInterval = 0
+    private var lastReactionRows: [String: ReactionBinding] = [:]
+    private var lastActiveReactions: Set<String> = []
+    private var lastHeldReactions: Set<String> = []
     /// What the inspector currently has controls for.
     private var shownParameters: [LerpParam] = []
     /// What the inspector's preset popup currently lists. Tracked beside the
@@ -288,10 +299,20 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         inspectorItem.canCollapse = true
         inspectorItem.maximumThickness = 460
         inspectorItem.holdingPriority = .init(260)
+        editorItem.canCollapse = true
         let root = NSViewController()
         root.addChild(split)
+        split.view.setContentHuggingPriority(.init(1), for: .vertical)
         root.view = Chrome.pane([workspaceBar(), split.view])
         window?.contentViewController = root
+    }
+
+    @objc func toggleCode(_ sender: Any?) {
+        setCodeVisible(codeItem.isCollapsed)
+    }
+
+    private func setCodeVisible(_ visible: Bool) {
+        setWorkspace(visible ? .studio : .tune)
     }
 
     private func workspaceBar() -> NSView {
@@ -361,9 +382,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func editorPane() -> NSView {
         saveButton.toolTip = "Save (⌘S)"
         revertButton.toolTip = "Discard changes"
-
-        statusStrip.onJump = { [weak self] line in self?.editor.scrollToLine(line) }
-
+        statusStrip.onJump = { [weak self] line in
+            guard let self else { return }
+            if codeItem.isCollapsed { setCodeVisible(true) }
+            editor.scrollToLine(line)
+        }
         editor.onEdit = { [weak self] in self?.scheduleCompile() }
         editor.setContentHuggingPriority(.init(1), for: .vertical)
 
@@ -409,6 +432,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             FileHandle.standardError.write(Data("compile error in \(name):\n\(message)\n".utf8))
         }
         preview = FullScreenPreview(view: metalView)
+        if !hidden { preview.stage.onPhoto = { [weak self] in self?.importPhoto($0) } }
+        photoStatus.lineBreakMode = .byTruncatingTail
         gestures = RenderGestures(view: metalView)
         gestures.accepts = { [weak self] name in
             guard let self else { return false }
@@ -432,10 +457,70 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // Play / Pause is the only control over time. There used to be a
         // one-minute scrubber, a typed clock, minute-paging arrows and a
         // "0:00–1:00" label; nobody needs to seek a screensaver.
-        return Chrome.pane([preview.stage,
-                            playerBar([playButton, gap(4), fpsLabel, gap(4), inputChips, Chrome.flexible(),
-                                       resolutionControl, gap(2),
-                                       edrToggle, fullScreen])])
+        photoBanner.isHidden = true
+        let pane = Chrome.pane([preview.stage, photoBanner, statusStrip.bar,
+                                playerBar([playButton, gap(4), fpsLabel, gap(4), inputChips, Chrome.flexible(),
+                                           resolutionControl, gap(2), edrToggle, fullScreen])])
+        pane.detachesHiddenViews = true
+        return pane
+    }
+
+    @objc func choosePhotoWindow(_ sender: Any?) {
+        guard !isImportingPhoto, let photo = PhotoWindowImport.choosePhoto() else { return }
+        importPhoto(photo)
+    }
+
+    private func importPhoto(_ photo: URL) {
+        guard !isImportingPhoto, PhotoWindowImport.accepts(photo) else { return }
+        let checkout: URL?
+        if case .found(_, let root, _) = RepoLocation.settled() { checkout = root } else { checkout = nil }
+        guard let root = PhotoWindowImport.helperRoot(checkout: checkout) else { return }
+        isImportingPhoto = true
+        showPhotoStatus("Checking photo import tools…")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ready = PhotoWindowImport.readyMode(root: root)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard let mode = ready ?? PhotoWindowImport.offerDepthFallback() else {
+                    isImportingPhoto = false
+                    showPhotoStatus(nil)
+                    return
+                }
+                generatePhotoWindow(photo, root: root, mode: mode)
+            }
+        }
+    }
+
+    private func showPhotoStatus(_ text: String?) {
+        photoStatus.stringValue = text ?? ""
+        photoBanner.isHidden = text == nil
+    }
+
+    private func generatePhotoWindow(_ photo: URL, root: URL, mode: PhotoWindowImport.Mode) {
+        showPhotoStatus("Making a window from \(photo.lastPathComponent)…")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try PhotoWindowImport.generate(photo: photo, root: root, mode: mode) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                isImportingPhoto = false
+                switch result {
+                case .success(let name):
+                    guard let shader = refreshList(metalView.shaderLibrary.discover()).named(name) else {
+                        showPhotoStatus("The photo helper finished, but the new look wasn't found.")
+                        return
+                    }
+                    if confirmDiscardIfDirty(includingLook: true) {
+                        open(shader)
+                        showPhotoStatus(nil)
+                    } else {
+                        showPhotoStatus("Photo window added to the Library.")
+                    }
+                case .failure(let error):
+                    showPhotoStatus(nil)
+                    presentError("Couldn't make a photo window", error.localizedDescription)
+                }
+            }
+        }
     }
 
     /// The parameter controls, driven entirely by callbacks, so they know
@@ -448,6 +533,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         inspector.onSavePreset = { [weak self] in self?.savePreset(nil) }
         inspector.onRandomize = { [weak self] in self?.randomizeParameters(nil) }
         inspector.onAnimate = { [weak self] name, on in self?.setAnimating(name, on) }
+        inspector.onReaction = { [weak self] name, signal in self?.setReaction(name, to: signal) }
         inspector.onMIDICommand = { [weak self] name, component, command in
             self?.midiCommand(name, component, command)
         }
@@ -586,6 +672,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// a look in their own right, not a failure.
     private func open(_ shader: LerpShader, preset: String? = nil) {
         current = shader
+        reactionOverlay = ReactionOverlay()
         parameterState.removeAll()      // a new shader starts at its own defaults
         animationState.removeAll()
         currentPreset = nil
@@ -700,6 +787,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             parameterState = parameterState.filter { declared.contains($0.key) }
             animationState = animationState.filter { declared.contains($0.key) }
             inspector.rebuild(shader: shader)
+            lastReactionRows = [:]
             // A rebuild marks "Defaults"; the preset on screen has not changed,
             // so put the mark back on it rather than letting the one control
             // that names the preset be the one that lies about it.
@@ -707,6 +795,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             inspector.showsMIDIControls = midi.isAvailable
             refreshBindingLabels()
         }
+        let bindings = ReactionBinding.read(shader.source)
+        reactionOverlay = ReactionOverlay(bindings: bindings,
+                                          takenOver: reactionOverlay.takenOver.intersection(Set(bindings.keys)))
         for (name, value) in parameterState { metalView.setParameter(name, value) }
         // Pushing the values back pinned every animated one (a set value is a
         // held value), and `setShader` dropped the worn preset's own drifts.
@@ -720,10 +811,95 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         inspector.show(values: metalView.liveParameterValues)
     }
 
+    /// Rendering sees transitory reaction values, but Save, dirty detection,
+    /// and Randomize use the authored look plus explicit user edits.
+    private var editableParameters: LerpParameterValues? {
+        guard !reactionOverlay.smoothed.isEmpty, let compiled else { return metalView.parameterValues }
+        let authored = compiled.parameterValues(for: currentEntry)
+        var values = authored
+        for (name, value) in parameterState where values[name] != value { values.set(name, value) }
+        for name in values.animations.keys {
+            values.setAnimating(name, animationState[name] ?? authored.isAnimating(name))
+        }
+        return values
+    }
+
+    private func setReaction(_ name: String, to signal: String?) {
+        guard shownParameters.contains(where: { $0.name == name }) else { return }
+        reactionOverlay.takenOver.remove(name)
+        let before = editor.text
+        let currentBinding = ReactionBinding.read(before)[name]
+        // Selecting the checked item hands control back without throwing away
+        // any hand-authored range, smoothing, or color mix.
+        if signal == nil || currentBinding?.signal != signal {
+            let source = ReactionBinding.setting(signal, for: name, in: before)
+            if source != before { editor.replaceTextAsEdit(source) }
+            compileNow()
+        }
+        updateLiveReactions()
+        if isPaused { metalView.renderOnce() }
+        if signal?.hasPrefix("audio.") == true, audioTap == nil {
+            setStatus("Enable Shader › React to System Audio to use this signal.")
+        }
+    }
+
+    private func updateLiveReactions() {
+        let now = CACurrentMediaTime()
+        if !reactionOverlay.bindings.isEmpty, !hidden,
+           reactionOverlay.bindings.values.contains(where: { !$0.signal.hasPrefix("audio.") }),
+           !reactionReadPending, now >= reactionPollAfter {
+            reactionReadPending = true
+            reactionPollAfter = now + 1
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let world = ReactionWorld.read()
+                DispatchQueue.main.async { [weak self] in
+                    self?.reactionWorld = world
+                    self?.reactionReadPending = false
+                }
+            }
+        }
+        let previous = Set(reactionOverlay.smoothed.keys)
+        var active: Set<String> = []
+        if !reactionOverlay.bindings.isEmpty, !hidden, let base = editableParameters {
+            let beat: Float
+            if #available(macOS 14.2, *) { beat = (audioTap as? SystemAudioTap)?.latestBeat ?? 0 }
+            else { beat = 0 }
+            let live = reactionOverlay.step(params: base, world: reactionWorld,
+                                            audio: metalView.audioLevels?(), beat: beat, now: now)
+            active = Set(live.keys)
+            for (name, value) in live {
+                if let clamped = base.parameter(named: name)?.clamp(value), metalView.parameterValues?[name] != clamped {
+                    metalView.setParameter(name, clamped)
+                } else if base.isAnimating(name) {
+                    metalView.setParameterAnimating(name, false)
+                }
+            }
+            for name in previous.subtracting(active) where !reactionOverlay.takenOver.contains(name) {
+                if let value = base[name] { metalView.setParameter(name, value) }
+                metalView.setParameterAnimating(name, base.isAnimating(name))
+            }
+        }
+        if lastReactionRows != reactionOverlay.bindings || lastActiveReactions != active
+            || lastHeldReactions != reactionOverlay.takenOver {
+            lastReactionRows = reactionOverlay.bindings
+            lastActiveReactions = active
+            lastHeldReactions = reactionOverlay.takenOver
+            inspector.showReactions(lastReactionRows, active: active, held: lastHeldReactions)
+        }
+        if !previous.isEmpty || !active.isEmpty {
+            inspector.showReactionValues(metalView.liveParameterValues, for: active.union(previous))
+        }
+    }
+
+    private func holdReaction(_ name: String) {
+        if reactionOverlay.bindings[name] != nil { reactionOverlay.takenOver.insert(name) }
+    }
+
     /// The one place a parameter changes, whatever moved it — mouse, typed
     /// number, preset or knob. On a parameter that is animating this takes
     /// control of it: the drift stops for it until its toggle hands it back.
     func setParameter(_ name: String, _ value: LerpParamValue) {
+        holdReaction(name)
         parameterState[name] = value
         metalView.setParameter(name, value)
         if metalView.parameterValues?.animations[name] != nil {
@@ -756,7 +932,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// meant to move. Colours keep their alpha. Like any moved value this is an
     /// unsaved change to the look; Save or "+" keeps it, Revert drops it.
     @objc func randomizeParameters(_ sender: Any?) {
-        guard let values = metalView.parameterValues, !inspector.parameters.isEmpty else {
+        guard let values = editableParameters, !inspector.parameters.isEmpty else {
             return NSSound.beep()
         }
         var moved = 0
@@ -776,6 +952,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                             .random(in: 0...1), alpha))
             }
             let clamped = param.clamp(value)
+            holdReaction(param.name)
             parameterState[param.name] = clamped
             metalView.setParameter(param.name, clamped)
             moved += 1
@@ -793,6 +970,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// it is on screen *now* — the value on its curve, not the declared
     /// default it was drifting away from — so nothing jumps.
     func setAnimating(_ name: String, _ on: Bool) {
+        holdReaction(name)
         if on {
             metalView.setParameterAnimating(name, true)
         } else if let here = metalView.liveParameterValues?[name] {
@@ -823,6 +1001,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Takes whatever the view now holds as the user's chosen state.
     private func adoptViewValues() {
         parameterState = metalView.parameterValues?.values ?? [:]
+        reactionOverlay.smoothed.removeAll()
+        reactionOverlay.takenOver.removeAll()
         animationState.removeAll()      // the look's own drifts, untouched
         inspector.show(values: metalView.liveParameterValues)
         if isPaused { metalView.renderOnce() }
@@ -1430,6 +1610,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func jumpToFirstError() {
+        if codeItem.isCollapsed { setCodeVisible(true) }
         if let line = firstErrorLine { editor.scrollToLine(line) }
     }
 
@@ -1614,7 +1795,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
                                + "in the error list first — ⌘E jumps to the first one.")
         }
         guard let compiled, compiled.name == current.name, compiled.source == editor.text,
-              let values = metalView.parameterValues else { return .unavailable }
+              let values = editableParameters else { return .unavailable }
 
         // Both of these would come back from the parser as `preset … sets
         // nothing`, so they are refused here, where the reason can be said in
@@ -1788,6 +1969,16 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// instead of letting it go after the look's first seconds.
     @objc func toggleCaptions(_ sender: Any?) {
         captionReveal.pinned.toggle()
+    }
+
+    var isAmbientFrameOn: Bool { preview?.isShown == true }
+
+    @objc func toggleAmbientFrame(_ sender: Any?) {
+        if !isAmbientFrameOn {
+            NSApp.activate(ignoringOtherApps: true)
+            if isPaused { togglePlayPause(nil) }
+        }
+        togglePreview(sender)
     }
 
     @objc func togglePreview(_ sender: Any?) {
@@ -2201,8 +2392,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         // Animated parameters' controls follow the drift. A no-op unless
         // something is animating; the drift is slow, so 20 Hz is smooth.
         timers.append(.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self, inspector.window?.isVisible == true else { return }
-            inspector.showLive(values: metalView.liveParameterValues)
+            guard let self else { return }
+            if !isPaused || isDesktopModeOn { updateLiveReactions() }
+            if inspector.window?.isVisible == true { inspector.showLive(values: metalView.liveParameterValues) }
         })
 
         // Pick up shaders added or edited outside the app (another editor, or
@@ -2360,6 +2552,10 @@ extension PlaygroundWindowController: NSMenuItemValidation {
         switch item.action {
         case #selector(showTune(_:)), #selector(showStudio(_:)):
             item.state = (item.action == #selector(showTune(_:)) ? workspace == .tune : workspace == .studio) ? .on : .off
+            return true
+        case #selector(choosePhotoWindow(_:)): return !isImportingPhoto
+        case #selector(toggleCode(_:)):
+            item.title = codeItem.isCollapsed ? "Show Code" : "Hide Code"
             return true
         case #selector(savePreset(_:)): return saveLookButton.isEnabled
         case #selector(copyShareLink(_:)): return copyLinkButton.isEnabled

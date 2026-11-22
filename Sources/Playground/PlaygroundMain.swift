@@ -208,9 +208,7 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
         controller.showAndStart()
         controller.queueImports(pendingImports)
         pendingImports.removeAll()
-        // The menu-bar home for updates. Nil for the standalone release app,
-        // which has no checkout for the updater to pull.
-        updateStatusItem = UpdateStatusItem.makeIfAppropriate()
+        updateStatusItem = UpdateStatusItem.make(for: controller)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -393,6 +391,7 @@ enum MainMenu {
         main.addItem(submenu("View", [
             item("Tune", #selector(PlaygroundWindowController.showTune(_:)), ""),
             item("Studio", #selector(PlaygroundWindowController.showStudio(_:)), "e", [.command, .shift]),
+            item("Show Code", #selector(PlaygroundWindowController.toggleCode(_:)), "c", [.command, .option]),
             .separator(),
             item("Library…", #selector(PlaygroundWindowController.showShaderPicker(_:)), "o"),
             item("Discover…", #selector(PlaygroundWindowController.showDiscover(_:)), ""),
@@ -400,6 +399,8 @@ enum MainMenu {
         ]))
 
         main.addItem(submenu("Shader", [
+            item("Import Photo as 3D Window…", #selector(PlaygroundWindowController.choosePhotoWindow(_:)), ""),
+            .separator(),
             studio(item("Recompile", #selector(PlaygroundWindowController.recompile(_:)), "r")),
             studio(item("Jump to First Error", #selector(PlaygroundWindowController.jumpToFirstError), "e")),
             studio(midiMenu()),

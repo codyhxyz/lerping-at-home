@@ -18,7 +18,7 @@ final class FullScreenPreview {
 
     /// Where the view lives in the window. Shows a note while the view is away,
     /// which is only visible when the preview is on a different display.
-    let stage = NSView()
+    let stage = PhotoDropStage(frame: .zero)
     private let view: NSView
     private var window: PreviewWindow?
     private var observers: [NSObjectProtocol] = []

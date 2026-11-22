@@ -53,6 +53,7 @@ final class ParameterPanel: NSView {
     /// A row's animation toggle was clicked: true to let the parameter drift
     /// again, false to hold it where it is on screen.
     var onAnimate: ((String, Bool) -> Void)?
+    var onReaction: ((String, String?) -> Void)?
 
     enum MIDICommand {
         case learn
@@ -116,10 +117,12 @@ final class ParameterPanel: NSView {
         let animate: NSButton?
         let view: NSView
         var bindings: [MIDIBinding] = []
+        var reaction: ReactionBinding?
+        let reactionChip: NSImageView
         init(param: LerpParam, label: NSTextField, control: NSControl, field: NSTextField?,
-             midi: NSPopUpButton?, animate: NSButton?, view: NSView) {
+             midi: NSPopUpButton?, animate: NSButton?, reactionChip: NSImageView, view: NSView) {
             self.param = param; self.label = label; self.control = control; self.field = field
-            self.midi = midi; self.animate = animate; self.view = view
+            self.midi = midi; self.animate = animate; self.reactionChip = reactionChip; self.view = view
             contextMenu.title = param.name     // `menuNeedsUpdate` finds the row by it
         }
     }
@@ -318,8 +321,13 @@ final class ParameterPanel: NSView {
         nameColumn.detachesHiddenViews = true
         nameColumn.widthAnchor.constraint(equalToConstant: InspectorStyle.labelWidth).isActive = true
 
+        let reactionChip = NSImageView(image: NSImage(systemSymbolName: "bolt.fill",
+                                                       accessibilityDescription: "Reactive parameter") ?? NSImage())
+        reactionChip.symbolConfiguration = .init(pointSize: 9, weight: .medium)
+        reactionChip.isHidden = true
+        reactionChip.setContentHuggingPriority(.required, for: .horizontal)
         let views: [NSView] = [nameColumn, control,
-                               param.type == .bool ? Chrome.flexible() : nil, field, midi]
+                               param.type == .bool ? Chrome.flexible() : nil, field, midi, reactionChip]
             .compactMap { $0 }
         let stack = NSStackView(views: views)
         stack.spacing = 8
@@ -341,7 +349,7 @@ final class ParameterPanel: NSView {
             stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
         let row = Row(param: param, label: name, control: control, field: field, midi: midi,
-                      animate: animate, view: container)
+                      animate: animate, reactionChip: reactionChip, view: container)
         row.contextMenu.delegate = self
         rows[param.name] = row          // `setBinding` looks the row up to read its colour
         setBinding([], for: param.name)
@@ -352,14 +360,64 @@ final class ParameterPanel: NSView {
         for row in rows.values { refreshMIDI(row) }
     }
 
-    /// The tag shows only on a bound row; the right-click menu is on every row
-    /// whenever MIDI is up. The echo field keeps its own text menu.
+    /// The echo field keeps its own text menu.
     private func refreshMIDI(_ row: Row) {
         row.midi?.isHidden = !showsMIDIControls || row.bindings.isEmpty
-        let menu = showsMIDIControls ? row.contextMenu : nil
-        for view in [row.view, row.label, row.control] { view.menu = menu }
-        row.label.toolTip = "\(row.param.name) — \(row.param.type.rawValue)"
-            + (showsMIDIControls && row.bindings.isEmpty ? "\nRight-click to map a MIDI knob" : "")
+        for view in [row.view, row.label, row.control, row.reactionChip] { view.menu = row.contextMenu }
+        row.label.toolTip = "\(row.param.name) — \(row.param.type.rawValue)\nRight-click for controls"
+    }
+
+    func showReactions(_ bindings: [String: ReactionBinding], active: Set<String>, held: Set<String>) {
+        for (name, row) in rows {
+            row.reaction = bindings[name]
+            row.reactionChip.isHidden = row.reaction == nil
+            guard let binding = row.reaction else { continue }
+            row.reactionChip.contentTintColor = active.contains(name) ? .systemPurple : .secondaryLabelColor
+            let state = active.contains(name) ? "Live" : (held.contains(name) ? "Held manually" : "Waiting for signal")
+            row.reactionChip.toolTip = "\(state): \(binding.title)"
+            row.reactionChip.setAccessibilityLabel(row.reactionChip.toolTip)
+        }
+    }
+
+    /// Reflect the frame without invoking `onChange` or queuing a file save.
+    func showReactionValues(_ values: LerpParameterValues?, for names: Set<String>) {
+        guard let values else { return }
+        isPushing = true
+        defer { isPushing = false }
+        for name in names {
+            guard let row = rows[name], row.field?.currentEditor() == nil, let value = values[name] else { continue }
+            push(value, into: row)
+            showAnimation(of: row, in: values)
+        }
+    }
+
+    private func reactions(for row: Row) -> NSMenuItem {
+        let heading = NSMenuItem(title: "React to…", action: nil, keyEquivalent: "")
+        let menu = NSMenu()
+        heading.submenu = menu
+        func add(_ title: String, _ signal: String?, to menu: NSMenu) {
+            let item = NSMenuItem(title: title, action: #selector(chooseReaction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = [row.param.name, signal ?? ""]
+            item.state = row.reaction?.signal == signal ? .on : .off
+            menu.addItem(item)
+        }
+        add("None", nil, to: menu)
+        for group in ["Clock", "Weather", "Music", "My Day"] {
+            let signals = ReactionBinding.Signal.all.filter { $0.group == group && $0.isColor == (row.param.type == .color) }
+            guard !signals.isEmpty else { continue }
+            let category = NSMenuItem(title: group, action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            category.submenu = submenu
+            for signal in signals { add(signal.title, signal.id, to: submenu) }
+            menu.addItem(category)
+        }
+        return heading
+    }
+
+    @objc private func chooseReaction(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? [String], choice.count == 2 else { return }
+        onReaction?(choice[0], choice[1].isEmpty ? nil : choice[1])
     }
 
     // MARK: - Values in
@@ -519,6 +577,9 @@ final class ParameterPanel: NSView {
         // which would offer Clear and the modes on an unbound parameter.
         menu.autoenablesItems = false
         if menu === row.contextMenu {
+            menu.addItem(reactions(for: row))
+            guard showsMIDIControls else { return }
+            menu.addItem(.separator())
             menu.addItem(.sectionHeader(title: bindings.isEmpty ? "MIDI" : "MIDI · \(title(for: bindings))"))
         } else {
             // A pull-down shows its first item as its title.

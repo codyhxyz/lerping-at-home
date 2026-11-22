@@ -52,6 +52,11 @@ final class AudioBandAnalyzer {
     private var imag = [Float](repeating: 0, count: fftSize / 2)
     private var power = [Float](repeating: 0, count: fftSize / 2)
     private var smoothed = SIMD4<Float>(repeating: 0)
+    private var previousBass: [Float]
+    private var fluxAverage: Float = 0
+    private let beatDecay: Float
+    private let fluxAdaptation: Float
+    private(set) var latestBeat: Float = 0
 
     init(sampleRate: Double) {
         let n = Self.fftSize
@@ -73,6 +78,9 @@ final class AudioBandAnalyzer {
         let dt = Double(Self.hop) / sampleRate
         attackK = Float(1 - exp(-dt / Self.attack))
         releaseK = Float(1 - exp(-dt / Self.release))
+        previousBass = [Float](repeating: 0, count: bins[0].count)
+        beatDecay = Float(exp(-dt / 0.19))
+        fluxAdaptation = Float(1 - exp(-dt / 0.6))
     }
 
     /// Feeds mono samples; calls `emit` once per completed analysis window.
@@ -124,6 +132,20 @@ final class AudioBandAnalyzer {
             let sum = power.withUnsafeBufferPointer { vDSP.sum(UnsafeBufferPointer(rebasing: $0[range])) }
             db[i + 1] = decibels(sum * meanSquareScale)
         }
+        // Half-wave rectified spectral flux in the bass bins. Log compression
+        // reduces level dependence, the adaptive floor rejects sustained bass,
+        // and the envelope snaps to a hit and decays without frame-rate jitter.
+        var flux: Float = 0
+        for (i, bin) in bins[0].enumerated() {
+            let compressed = log1p(power[bin] * meanSquareScale * 1000)
+            flux += max(0, compressed - previousBass[i])
+            previousBass[i] = compressed
+        }
+        flux /= Float(previousBass.count)
+        let hit = min(1, max(0, (flux - fluxAverage * 2.5 - 0.025) / 0.35))
+        fluxAverage += (flux - fluxAverage) * fluxAdaptation
+        latestBeat = max(latestBeat * beatDecay, hit)
+
         let target = simd_clamp((db - Self.floors) / Self.spans, .zero, .one)
         let rising = target .> smoothed
         let k = SIMD4<Float>(repeating: releaseK).replacing(with: attackK, where: rising)
@@ -155,6 +177,8 @@ final class SystemAudioTap {
     }
 
     let levels = AudioLevelBox(idle: .silent, staleAfter: 0.5)
+    let beats = LiveInput<Float>(idle: 0, staleAfter: 0.5)
+    var latestBeat: Float { beats.current }
     /// Told when the default output device changes and the tap is rebuilt, or
     /// when that rebuild fails. Main thread.
     var onRestart: ((Error?) -> Void)?
@@ -201,6 +225,7 @@ final class SystemAudioTap {
         tearDown()
         isRunning = false
         levels.reset()
+        beats.reset()
     }
 
     /// The aggregate is clocked by the output device it was built on, so a
@@ -264,6 +289,7 @@ final class SystemAudioTap {
         // analyzer and nothing outside the IO queue ever touches this one.
         let analyzer = AudioBandAnalyzer(sampleRate: format.mSampleRate)
         let box = levels
+        let beats = self.beats
         var mono = [Float](repeating: 0, count: 4096)
         try check("AudioDeviceCreateIOProcIDWithBlock",
                   AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, ioQueue) { _, input, _, _, _ in
@@ -288,7 +314,10 @@ final class SystemAudioTap {
                 }
                 let scale = 1 / Float(channels)
                 for f in 0..<frames { out[f] *= scale }
-                analyzer.process(UnsafeBufferPointer(rebasing: out[0..<frames])) { box.publish($0) }
+                analyzer.process(UnsafeBufferPointer(rebasing: out[0..<frames])) {
+                    box.publish($0)
+                    beats.publish(analyzer.latestBeat)
+                }
             }
         })
         try check("AudioDeviceStart", AudioDeviceStart(aggregateID, procID))

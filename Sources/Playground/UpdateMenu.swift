@@ -2,8 +2,8 @@ import AppKit
 
 // MARK: - Updates from the menu bar
 
-/// The menu-bar home for updates: a manual "Check for Updates", the
-/// automatic-updates toggle, and a shortcut to the update log.
+/// Ambient Frame and Desktop Mode shortcuts, plus update controls in a
+/// checkout build.
 ///
 /// Updates are in-app, the Sparkle shape — no background daemon. (A LaunchAgent
 /// briefly existed on 2026-09-16; it was ripped out the same day. Chrome and
@@ -27,31 +27,32 @@ import AppKit
 /// Automatic updates are on by default. Turning the toggle off stops the
 /// background checks; it is the supported off-switch.
 ///
-/// A copy with no checkout behind it (the standalone release app) gets no
-/// status item: there is nothing `git pull` could update.
-final class UpdateStatusItem: NSObject {
-
-    /// Creates the item when this copy has a checkout to update. Nil for the
-    /// standalone release app and for a copy whose checkout cannot be resolved.
-    static func makeIfAppropriate() -> UpdateStatusItem? {
-        UpdateSettings.registerDefaults()
-        // Retire the LaunchAgent from the brief daemon experiment, when present.
-        // A leftover agent would double-install beside the in-app checks.
-        UpdateAgent.removeLegacyLaunchAgent()
-        guard !RepoLocation.isStandalone else { return nil }
-        let root: URL
+/// Standalone copies still get the display controls, but not checkout updates.
+final class UpdateStatusItem: NSObject, NSMenuDelegate {
+    static func make(for controller: PlaygroundWindowController) -> UpdateStatusItem {
+        let root: URL?
         switch RepoLocation.settled() {
         case let .found(_, foundRoot, _): root = foundRoot
-        case .standalone, .missing, .unset: return nil
+        case .standalone, .missing, .unset: root = nil
         }
-        let item = UpdateStatusItem(repoRoot: root)
+        let item = UpdateStatusItem(repoRoot: root, controller: controller)
+        if root != nil {
+            UpdateSettings.registerDefaults()
+            // A leftover agent would double-install beside the in-app checks.
+            UpdateAgent.removeLegacyLaunchAgent()
+        }
         item.show()
-        item.refreshFooterFromLog()
-        item.beginAutomaticChecks()
+        if root != nil {
+            item.refreshFooterFromLog()
+            item.beginAutomaticChecks()
+        }
         return item
     }
 
-    private let repoRoot: URL
+    private let repoRoot: URL?
+    private weak var controller: PlaygroundWindowController?
+    private var ambientItem: NSMenuItem?
+    private var desktopItem: NSMenuItem?
     private var statusItem: NSStatusItem?
     private var checkItem: NSMenuItem?
     private var toggleItem: NSMenuItem?
@@ -59,7 +60,18 @@ final class UpdateStatusItem: NSObject {
     private var checkTimer: Timer?
     private var checkRunning = false
 
-    private init(repoRoot: URL) { self.repoRoot = repoRoot }
+    private init(repoRoot: URL?, controller: PlaygroundWindowController) {
+        self.repoRoot = repoRoot
+        self.controller = controller
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        ambientItem?.state = controller?.isAmbientFrameOn == true ? .on : .off
+        desktopItem?.state = controller?.isDesktopModeOn == true ? .on : .off
+    }
+
+    @objc private func toggleAmbient(_ sender: Any?) { controller?.toggleAmbientFrame(sender) }
+    @objc private func toggleDesktop(_ sender: Any?) { controller?.toggleDesktopMode(sender) }
 
     // MARK: Automatic checks
 
@@ -72,7 +84,7 @@ final class UpdateStatusItem: NSObject {
             [weak self] _ in self?.performCheck(announce: false)
         }
         checkTimer?.tolerance = 10 * 60
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             self?.performCheck(announce: false)
         }
     }
@@ -85,12 +97,24 @@ final class UpdateStatusItem: NSObject {
             NSStatusBar.system.removeStatusItem(item)
             return
         }
-        let image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath",
-                            accessibilityDescription: "Lerping@Home updates")
+        let image = NSImage(systemSymbolName: "sparkles.rectangle.stack",
+                            accessibilityDescription: "Lerping@Home")
         image?.isTemplate = true
         button.image = image
+        if image == nil { button.title = "L" }
 
         let menu = NSMenu()
+        menu.delegate = self
+        let ambient = menu.addItem(withTitle: "Ambient Frame", action: #selector(toggleAmbient(_:)), keyEquivalent: "")
+        let desktop = menu.addItem(withTitle: "Desktop Mode", action: #selector(toggleDesktop(_:)), keyEquivalent: "")
+        ambient.target = self
+        desktop.target = self
+        ambientItem = ambient
+        desktopItem = desktop
+        item.menu = menu
+        statusItem = item
+        guard repoRoot != nil else { return }
+        menu.addItem(.separator())
 
         let check = NSMenuItem(title: "Check for Updates", action: #selector(checkForUpdates(_:)),
                                keyEquivalent: "")
@@ -115,9 +139,6 @@ final class UpdateStatusItem: NSObject {
         let log = NSMenuItem(title: "Show Update Log", action: #selector(showLog(_:)), keyEquivalent: "")
         log.target = self
         menu.addItem(log)
-
-        item.menu = menu
-        statusItem = item
     }
 
     // MARK: Actions
@@ -133,7 +154,7 @@ final class UpdateStatusItem: NSObject {
         UpdateSettings.isEnabled.toggle()
         toggleItem?.state = UpdateSettings.isEnabled ? .on : .off
         if UpdateSettings.isEnabled {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
                 self?.performCheck(announce: false)
             }
         }
@@ -158,7 +179,7 @@ final class UpdateStatusItem: NSObject {
     /// that needed no decision gets no dialog. The outcome comes from the
     /// script's single `LERP_RESULT=` stdout line.
     private func performCheck(announce: Bool) {
-        guard !checkRunning else { return }
+        guard !checkRunning, let repoRoot else { return }
         if !announce, !UpdateSettings.isEnabled { return }
         let script = repoRoot.appendingPathComponent("scripts/release-update.sh")
         guard FileManager.default.isExecutableFile(atPath: script.path) else {
