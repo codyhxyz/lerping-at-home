@@ -97,6 +97,7 @@ public enum LerpDataProviders {
     public typealias Factory = (MTLDevice, LerpRenderMode) -> LerpDataProvider
 
     nonisolated(unsafe) private static var factories: [String: Factory] = [
+        "artifacts": { ArtifactData(device: $0, mode: $1) },
         "clock": { _, mode in ClockData(mode: mode) },
         "critter": { CritterData(device: $0, mode: $1) },
         "ferrofluid": { d, _ in FerrofluidData(device: d) },
