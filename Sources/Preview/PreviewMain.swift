@@ -35,6 +35,11 @@ enum PreviewMain {
         let extraSearch = ShaderLocations.repoSearchURLs()
         GPUTrace.prepare(args)
 
+        if args.contains("--artifacts-selftest") {
+            PortableArtifactsSelfTest.run()
+            return
+        }
+
         if args.contains("--nca-selftest") {
             NeuralCASelfTest.run()
             return
