@@ -13,6 +13,7 @@ import AppKit
 /// Not `NSView.enterFullScreenMode`: it puts a view back with `addSubview`,
 /// which takes it out of the pane's stack and drops its constraints. The view
 /// sits in a `stage` instead, and leaves and returns to that.
+@MainActor
 final class FullScreenPreview {
 
     /// Where the view lives in the window. Shows a note while the view is away,
@@ -27,7 +28,7 @@ final class FullScreenPreview {
     /// entering, on changing look, and when the mouse moves — then gone, like
     /// a video player's title.
     private let hud = PreviewHUD()
-    private var hudFade: DispatchWorkItem?
+    private lazy var hudReveal = TransientOverlay(view: hud, linger: 2.4)
     /// The look's still behind the stage's note, so the empty pane left behind
     /// on the other display still says what is playing.
     private let backdrop = StillBackdrop()
@@ -92,13 +93,13 @@ final class FullScreenPreview {
         // app ends it rather than leaving a black screen behind that app.
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.hide() })
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.hide() } })
         // Opening a shader from the keyboard can hand the key back to the
         // playground window behind; take it straight back.
         if let home = stage.window {
             observers.append(NotificationCenter.default.addObserver(
                 forName: NSWindow.didBecomeKeyNotification, object: home, queue: .main
-            ) { [weak preview] _ in preview?.makeKey() })
+            ) { [weak preview] _ in MainActor.assumeIsolated { preview?.makeKey() } })
         }
         // Esc wherever the key is, so it cannot land in the editor instead.
         // Plain typing is swallowed too — it would edit a buffer nobody can
@@ -127,7 +128,7 @@ final class FullScreenPreview {
         keyMonitor = nil
         mouseMonitor.map(NSEvent.removeMonitor)
         mouseMonitor = nil
-        hudFade?.cancel()
+        hudReveal.reset()
         hud.removeFromSuperview()
 
         view.removeFromSuperview()
@@ -151,23 +152,7 @@ final class FullScreenPreview {
         if changed, isShown { flashHUD() }
     }
 
-    private func flashHUD() {
-        hudFade?.cancel()
-        if hud.alphaValue < 1 {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.2
-                hud.animator().alphaValue = 1
-            }
-        }
-        let fade = DispatchWorkItem { [weak self] in
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.8
-                self?.hud.animator().alphaValue = 0
-            }
-        }
-        hudFade = fade
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: fade)
-    }
+    private func flashHUD() { hudReveal.flash() }
 
     private static func pin(_ view: NSView, in host: NSView) {
         view.translatesAutoresizingMaskIntoConstraints = false
