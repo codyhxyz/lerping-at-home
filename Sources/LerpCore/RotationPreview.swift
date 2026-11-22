@@ -101,7 +101,7 @@ public final class RotationPreviewPlayer {
 
     private func install(_ tile: RotationTile, shader: LerpShader) {
         pending = nil
-        guard tile.window != nil, tile.isLive, !tile.isHidden else { return }
+        guard tile.window != nil, tile.isLive, !tile.isHiddenOrHasHiddenAncestor else { return }
         guard let view = makeView() else { return }
         detach()
 

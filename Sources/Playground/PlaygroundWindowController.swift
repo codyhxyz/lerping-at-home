@@ -2,6 +2,7 @@ import AppKit
 import Metal
 import MIDIDeps
 import QuartzCore
+import UniformTypeIdentifiers
 
 extension NSWindow {
     /// Takes the window off the user's screen without taking it off *a* screen.
@@ -91,13 +92,25 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// GPU, and therefore what the inspector is showing controls for.
     private var compiled: LerpShader?
 
+    private enum Workspace: String { case tune, studio }
+    private static let workspaceKey = "PlaygroundWorkspace"
+    private var workspace = Workspace.tune
+    private lazy var workspaceControl = NSSegmentedControl(labels: ["Tune", "Studio"], trackingMode: .selectOne,
+                                                           target: self, action: #selector(changeWorkspace(_:)))
     private let split = NSSplitViewController()
+    private var editorItem: NSSplitViewItem!
+    private lazy var saveLookButton = Chrome.button("Save as Look…", target: self, action: #selector(savePreset(_:)))
+    private lazy var copyLinkButton = Chrome.button("Copy Share Link", target: self, action: #selector(copyShareLink(_:)))
+    private let studioDraftLabel = Chrome.label("Studio draft", size: 11, color: .secondaryLabelColor)
+    private var discover: DiscoverController?
+    private var importQueue: [URL] = []
+    private var isReviewingImport = false
     /// Opens the shader picker. Where a plain `NSPopUpButton` listing every look
     /// *names* used to be — see `ShaderPicker` for why a grid of stills replaced
     /// it, and for what the dropdown did better and had to be kept.
     /// The selector's button and its ‹ › — see `LookSwitcher`.
     private let switcher = LookSwitcher()
-    private static let switcherWidth: CGFloat = 520
+    private static let switcherWidth: CGFloat = 390
     private lazy var saveButton = PlayerTextButton("Save", prominent: true,
                                                    target: self, action: #selector(saveShader))
     private lazy var revertButton = PlayerTextButton("Revert", prominent: false,
@@ -218,13 +231,15 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1500, height: 900),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
-        window.minSize = NSSize(width: 900, height: 500)
+        window.minSize = NSSize(width: 940, height: 500)
         super.init(window: window)
         window.delegate = self
         if hidden { window.hideForCapture() }
 
         buildUI()
         startMIDI()
+        setWorkspace(Workspace(rawValue: UserDefaults.standard.string(forKey: Self.workspaceKey) ?? "") ?? .tune,
+                     remember: false, focus: false)
         let shaders = refreshList(metalView.shaderLibrary.discover())
         if let entry = openingEntry(among: shaders), let shader = shaders.named(entry.shader) {
             open(shader, preset: entry.preset)
@@ -264,25 +279,25 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             item.minimumThickness = minimum
             split.addSplitViewItem(item)
         }
+        editorItem = split.splitViewItems[0]
         // The inspector keeps its width when the window resizes, and folds away
         // entirely for anyone who only wants the editor and the render.
         inspectorItem = split.splitViewItems[2]
         inspectorItem.canCollapse = true
         inspectorItem.maximumThickness = 460
         inspectorItem.holdingPriority = .init(260)
-        window?.contentViewController = split
+        let root = NSViewController()
+        root.addChild(split)
+        root.view = Chrome.pane([workspaceBar(), split.view])
+        window?.contentViewController = root
     }
 
-    private func editorPane() -> NSView {
+    private func workspaceBar() -> NSView {
         switcher.current.target = self
         switcher.current.action = #selector(showShaderPicker)
-        switcher.current.toolTip = "Shaders (⌘O)"
+        switcher.current.toolTip = "Library (⌘O)"
         switcher.current.identifier = NSUserInterfaceItemIdentifier("shader-picker-button")
-        // One width, whatever the name. It used to be sized to the title, so
-        // every click on › moved › under the pointer: a short name pulled it
-        // left, a long one pushed it right. Now it takes the bar's room up to
-        // `switcherWidth` and only a narrower pane makes it give way (before
-        // Save and Revert do). The arrows stay put; the title truncates.
+        // Keep the arrows in the same places as the look name changes.
         switcher.current.setContentHuggingPriority(.init(1), for: .horizontal)
         switcher.current.setContentCompressionResistancePriority(.init(2), for: .horizontal)
         switcher.widthAnchor.constraint(greaterThanOrEqualToConstant: 230).isActive = true
@@ -303,10 +318,44 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         switcher.next.target = self
         switcher.next.action = #selector(nextShader)
 
-        // No New… here any more: making a shader is something you do *among the
-        // looks*, so it is the first card in the picker's grid — where you are
-        // already looking when you want one that does not exist yet. File → New
-        // Shader… (⌘N) is unchanged.
+        workspaceControl.segmentStyle = .rounded
+        workspaceControl.setAccessibilityLabel("Workspace")
+        workspaceControl.setToolTip("Tune controls without the source editor", forSegment: 0)
+        workspaceControl.setToolTip("Studio source editor (⇧⌘E)", forSegment: 1)
+        let library = Chrome.button("Library", target: self, action: #selector(showShaderPicker(_:)))
+        let discover = Chrome.button("Discover", target: self, action: #selector(showDiscover(_:)))
+        copyLinkButton.toolTip = "A link to the saved look; no shader source is included"
+        return Chrome.bar([workspaceControl, switcher, library, discover, Chrome.flexible(),
+                           studioDraftLabel, saveLookButton, copyLinkButton], height: 46)
+    }
+
+    @objc private func changeWorkspace(_ sender: NSSegmentedControl) {
+        setWorkspace(sender.selectedSegment == 1 ? .studio : .tune)
+    }
+
+    @objc func showTune(_ sender: Any?) { setWorkspace(.tune) }
+    @objc func showStudio(_ sender: Any?) { setWorkspace(.studio) }
+
+    /// Only the presentation changes. The editor, renderer, inspector and their
+    /// backing state all stay alive, so switching does not compile or reopen a look.
+    private func setWorkspace(_ mode: Workspace, remember: Bool = true, focus: Bool = true) {
+        let changed = workspace != mode
+        workspace = mode
+        let studio = mode == .studio
+        if changed, focus, !studio { window?.makeFirstResponder(nil) }
+        if !studio { learnTarget = nil }
+        workspaceControl.selectedSegment = studio ? 1 : 0
+        editorItem.isCollapsed = !studio
+        inspector.showsMIDIControls = studio && midi.isAvailable
+        fpsLabel.isHidden = !studio
+        refreshInputs()
+        MainMenu.showStudioCommands(studio)
+        updateChrome()
+        if remember, !hidden { UserDefaults.standard.set(mode.rawValue, forKey: Self.workspaceKey) }
+        if changed, focus, studio { window?.makeFirstResponder(editor.textView) }
+    }
+
+    private func editorPane() -> NSView {
         saveButton.toolTip = "Save (⌘S)"
         revertButton.toolTip = "Discard changes"
 
@@ -315,9 +364,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         editor.onEdit = { [weak self] in self?.scheduleCompile() }
         editor.setContentHuggingPriority(.init(1), for: .vertical)
 
-        let pane = Chrome.pane([Chrome.bar([switcher,
-                                        saveButton, revertButton,
-                                        Chrome.flexible()]),
+        let pane = Chrome.pane([Chrome.bar([saveButton, revertButton, Chrome.flexible()]),
                             editor,
                             statusStrip.errors,
                             statusStrip.bar])
@@ -787,7 +834,6 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         mappings = MIDIMappingStore.load()
         activeMapping = mappings.first
         router.load(activeMapping?.bindings ?? [])
-        inspector.showsMIDIControls = midi.isAvailable
         midiSourcesChanged()
         NSApp.mainMenu?.items.lazy.compactMap(\.submenu)
             .compactMap { $0.items.first { $0.identifier == MainMenu.midiMenuID } }
@@ -1120,19 +1166,170 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         return RotationStore.selection(discovered: entries, from: rotationDefaults)
     }
 
-    /// The one place the playground writes the rotation: through
-    /// `RotationStore`, into the saver's own ByHost domain, the moment you
-    /// click. The selector's badges are the only control that changes it.
+    /// Library writes through the same store as Discover, Import and Shortcuts.
     private func persistRotation(_ selection: LerpRotationSelection) {
         RotationStore.save(selection, to: rotationDefaults)
     }
 
-    /// A Shortcuts action wrote the rotation (see `RotationIntents.swift`).
     /// The selector holds the selection in memory, so it is handed what is now
     /// on disk — otherwise its next click would save its stale copy straight
     /// over the action's change.
+    @objc func showDiscover(_ sender: Any?) {
+        picker?.close()
+        let gallery = discover ?? DiscoverController()
+        discover = gallery
+        gallery.onOpen = { [weak self] entry in self?.openEditorialLook(entry) }
+        gallery.onAdd = { [weak self] entry in
+            guard let self else { throw ImportReviewRequest.ReviewError.rotationNotSaved }
+            return try addToRotation([entry])
+        }
+        let shaders = metalView.shaderLibrary.discover()
+        gallery.present(shaders: shaders,
+                        selection: RotationStore.selection(discovered: shaders.rotationEntries(), from: rotationDefaults))
+    }
+
+    private func openEditorialLook(_ entry: LerpRotationEntry) {
+        raise()
+        guard let shader = metalView.shaderLibrary.shader(named: entry.shader), shader.isBuiltIn,
+              [shader].rotationEntries().contains(entry) else {
+            return presentError("Look no longer available", "Reopen Discover to refresh the installed collection.")
+        }
+        if entry != currentEntry {
+            guard confirmDiscardIfDirty() else { return }
+            open(shader, preset: entry.preset)
+        }
+        showTune(nil)
+        if inspectorItem.isCollapsed { inspectorItem.isCollapsed = false }
+    }
+
+    private func addToRotation(_ requested: Set<LerpRotationEntry>) throws -> LerpRotationSelection {
+        let entries = metalView.shaderLibrary.discover().rotationEntries()
+        guard requested.isSubset(of: entries) else { throw ImportReviewRequest.ReviewError.noLongerAvailable }
+        let before = RotationStore.selection(discovered: entries, from: rotationDefaults)
+        let newlyEnabled = requested.filter { !before.plays($0) }
+        guard !newlyEnabled.isEmpty else { return before }
+        let after = before.applying { update in
+            update.setLooks(newlyEnabled, on: true)
+            // Enabling an individual look can clear a whole-shader exclusion.
+            // Keep siblings that were off out unless the user chose them too.
+            let siblings = entries.filter { !requested.contains($0) && !before.plays($0) && update.plays($0) }
+            update.setLooks(siblings, on: false)
+        }
+        let written = RotationStore.save(after, to: rotationDefaults)
+        let result = LerpRotation.selection(discovered: entries, in: written)
+        guard result.disabled == after.disabled else { throw ImportReviewRequest.ReviewError.rotationNotSaved }
+        NotificationCenter.default.post(name: RotationStore.changedElsewhere, object: nil)
+        return result
+    }
+
+    @objc func copyShareLink(_ sender: Any?) {
+        guard !isDirty, !parametersMoved else {
+            return presentError("Save the look before sharing", "A Share Link refers to an exact saved look. Unsaved source and control changes are not included.")
+        }
+        guard let url = ImportReviewRequest.shareLink(for: currentEntry, in: current) else { return }
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(url.absoluteString, forType: .string) else {
+            return presentError("Could not copy Share Link", "The clipboard was not available.")
+        }
+        setStatus("Share link copied", .success)
+        if let button = sender as? NSButton {
+            button.title = "Link Copied"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak button] in
+                button?.title = "Copy Share Link"
+            }
+        }
+    }
+
+    @objc func importFiles(_ sender: Any?) {
+        guard let window, window.attachedSheet == nil else { return }
+        let panel = NSOpenPanel()
+        panel.message = "Review portable Lerping looks, playlists, or pieces."
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = ImportReviewRequest.extensions.compactMap { UTType(filenameExtension: $0) }
+        panel.beginSheetModal(for: window) { [weak self] result in
+            if result == .OK { self?.queueImports(panel.urls) }
+        }
+    }
+
+    func queueImports(_ urls: [URL]) {
+        importQueue.append(contentsOf: urls.filter(ImportReviewRequest.accepts))
+        DispatchQueue.main.async { [weak self] in self?.reviewNextImport() }
+    }
+
+    func windowDidEndSheet(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in self?.reviewNextImport() }
+    }
+
+    private func reviewNextImport() {
+        guard !isReviewingImport, !importQueue.isEmpty, let window, window.attachedSheet == nil else { return }
+        isReviewingImport = true
+        picker?.close()
+        discover?.close()
+        preview.hide()
+        raise()
+        let url = importQueue.removeFirst()
+        let shaders = metalView.shaderLibrary.discover()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try ImportReviewRequest.review(url, shaders: shaders) }
+            DispatchQueue.main.async { [weak self] in self?.presentImport(result, url: url) }
+        }
+    }
+
+    private func presentImport(_ result: Result<ImportReviewSummary, Error>, url: URL) {
+        guard let window, !terminationApproved else { return }
+        if window.attachedSheet != nil {
+            importQueue.insert(url, at: 0)
+            return endImport()
+        }
+        switch result {
+        case .success(let summary):
+            ImportSheet.present(summary, on: window) { [weak self] action in
+                DispatchQueue.main.async { self?.finishImport(action) }
+            }
+        case .failure(let error):
+            let alert = NSAlert(error: error)
+            alert.beginSheetModal(for: window) { [weak self] _ in self?.endImport() }
+        }
+    }
+
+    private func finishImport(_ action: ImportSheet.Action) {
+        guard let window else { return endImport() }
+        func installed(_ match: ImportReviewMatch) throws -> LerpShader {
+            guard let shader = metalView.shaderLibrary.shader(named: match.entry.shader), match.matches(shader) else {
+                throw ImportReviewRequest.ReviewError.noLongerAvailable
+            }
+            return shader
+        }
+        do {
+            switch action {
+            case .close: break
+            case .preview(let match):
+                let shader = try installed(match)
+                try ImportSheet.preview(match.entry, of: shader, on: window) { [weak self] in self?.endImport() }
+                return
+            case .add(let matches):
+                for match in matches { _ = try installed(match) }
+                _ = try addToRotation(Set(matches.map(\.entry)))
+            }
+            endImport()
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.beginSheetModal(for: window) { [weak self] _ in self?.endImport() }
+        }
+    }
+
+    private func endImport() {
+        isReviewingImport = false
+        DispatchQueue.main.async { [weak self] in self?.reviewNextImport() }
+    }
+
     @objc private func rotationChangedElsewhere(_ note: Notification) {
-        picker?.showSelection(storedSelection())
+        if picker != nil || discover?.window?.isVisible == true {
+            let selection = storedSelection()
+            picker?.showSelection(selection)
+            discover?.showSelection(selection)
+        }
     }
 
     /// A shader was saved, or changed on disk. The selector keys its stills on
@@ -1140,6 +1337,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// the edited shader's card — and only that one — to be drawn again.
     private func refreshRotation(_ shaders: [LerpShader]) {
         if let picker, picker.isShown { loadPicker(picker, shaders: shaders) }
+        if let discover, discover.window?.isVisible == true {
+            discover.showSelection(RotationStore.selection(discovered: shaders.rotationEntries(), from: rotationDefaults))
+        }
     }
 
     // MARK: - Actions
@@ -1277,6 +1477,15 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// rotation entry keeps the same key, so its enabled/disabled choice stays
     /// intact while its values change.
     @objc func savePreset(_ sender: Any?) {
+        if workspace == .tune, isDirty {
+            let alert = NSAlert()
+            alert.messageText = "This look uses an unsaved Studio draft"
+            alert.informativeText = "Save as Look does not save source edits in Tune. Return to Studio to review the draft. Nothing has been changed."
+            alert.addButton(withTitle: "Go to Studio")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn { showStudio(nil) }
+            return
+        }
         let overrides: LookOverrides
         switch liveValues() {
         case .ready(let values): overrides = values
@@ -1286,7 +1495,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         guard let compiled else { return }
 
         let detail = isDirty ? "Your code changes will be saved too." : ""
-        guard let name = prompt("New Preset", detail, currentPreset ?? "",
+        guard let name = prompt("Save as Look", detail, workspace == .studio ? currentPreset ?? "" : "",
                                 placeholder: "Lagoon") else { return }
         if let problem = LerpPresetWriter.problem(withName: name) {
             return presentError("“\(name)” cannot be a preset name", problem)
@@ -1471,6 +1680,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         }
         if let made = refreshList(metalView.shaderLibrary.discover()).first(where: { $0.name == stem }) {
             open(made)
+            showStudio(nil)
         }
         window?.makeFirstResponder(editor.textView)
     }
@@ -1828,10 +2038,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             let why = cameraUnavailable ?? "Waiting for the camera"
             live[.head] = ("Pointer", "\(why); the pointer steers the view — click to stop")
         }
-        if hands != nil {
+        if workspace == .studio, hands != nil {
             live[.hands] = ("Hands", "Hand control — click to stop")
         }
-        if midi.isAvailable, !midi.sources.isEmpty {
+        if workspace == .studio, midi.isAvailable, !midi.sources.isEmpty {
             live[.midi] = (activeMapping?.name ?? "MIDI",
                            "\(midi.summary) — click for MIDI banks")
         }
@@ -1878,6 +2088,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private func updateChrome() {
         let dirty = isDirty, unsaved = hasUnsavedChanges
         saveButton.isEnabled = unsaved
+        saveLookButton.isEnabled = !current.name.isEmpty
+        copyLinkButton.isEnabled = !current.name.isEmpty
+        studioDraftLabel.isHidden = workspace != .tune || !dirty
         revertButton.isEnabled = unsaved && current.url != nil
         // Only there when they would do something: two greyed-out buttons
         // permanently on the bar are noise, not information.
@@ -2012,8 +2225,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         preview.hide()
-        guard asksBeforeClosing else { terminationApproved = true; return true }
-        terminationApproved = confirmDiscardIfDirty(includingLook: true)
+        terminationApproved = !asksBeforeClosing || confirmDiscardIfDirty(includingLook: true)
+        if terminationApproved { discover?.close() }
         return terminationApproved
     }
 
@@ -2033,15 +2246,15 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     func showAndStart() {
         window?.makeKeyAndOrderFront(nil)
         metalView.start()
-        window?.makeFirstResponder(editor.textView)
+        if workspace == .studio { window?.makeFirstResponder(editor.textView) }
         // Editor / render / inspector, but never fight a divider the user has
         // already dragged (NSSplitView autosaves that).
         guard UserDefaults.standard
             .object(forKey: "NSSplitView Subview Frames " + Self.splitAutosave) == nil else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let width = window?.contentView?.bounds.width else { return }
-            split.splitView.setPosition(width * 0.40, ofDividerAt: 0)
-            split.splitView.setPosition(width - 330, ofDividerAt: 1)
+            if workspace == .studio { split.splitView.setPosition(width * 0.40, ofDividerAt: 0) }
+            if !inspectorItem.isCollapsed { split.splitView.setPosition(width - 330, ofDividerAt: 1) }
         }
     }
 }
@@ -2054,6 +2267,11 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 extension PlaygroundWindowController: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        case #selector(showTune(_:)), #selector(showStudio(_:)):
+            item.state = (item.action == #selector(showTune(_:)) ? workspace == .tune : workspace == .studio) ? .on : .off
+            return true
+        case #selector(savePreset(_:)): return saveLookButton.isEnabled
+        case #selector(copyShareLink(_:)): return copyLinkButton.isEnabled
         case #selector(saveShader(_:)): return saveButton.isEnabled
         case #selector(revertShader(_:)): return revertButton.isEnabled
         case #selector(toggleHandControl(_:)):
