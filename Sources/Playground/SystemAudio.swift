@@ -178,8 +178,6 @@ final class SystemAudioTap {
     }
 
     let levels = AudioLevelBox(idle: .silent, staleAfter: 0.5)
-    let beats = LiveInput<Float>(idle: 0, staleAfter: 0.5)
-    var latestBeat: Float { beats.current }
     /// Told when the default output device changes and the tap is rebuilt, or
     /// when that rebuild fails. Main thread.
     var onRestart: ((Error?) -> Void)?
@@ -226,7 +224,6 @@ final class SystemAudioTap {
         tearDown()
         isRunning = false
         levels.reset()
-        beats.reset()
     }
 
     /// The aggregate is clocked by the output device it was built on, so a
@@ -290,7 +287,6 @@ final class SystemAudioTap {
         // analyzer and nothing outside the IO queue ever touches this one.
         let analyzer = AudioBandAnalyzer(sampleRate: format.mSampleRate)
         let box = levels
-        let beats = self.beats
         var mono = [Float](repeating: 0, count: 4096)
         try check("AudioDeviceCreateIOProcIDWithBlock",
                   AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, ioQueue) { _, input, _, _, _ in
@@ -317,7 +313,6 @@ final class SystemAudioTap {
                 for f in 0..<frames { out[f] *= scale }
                 analyzer.process(UnsafeBufferPointer(rebasing: out[0..<frames])) {
                     box.publish($0)
-                    beats.publish(analyzer.latestBeat)
                 }
             }
         })
