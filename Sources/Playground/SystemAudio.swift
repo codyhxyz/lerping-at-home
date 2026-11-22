@@ -151,7 +151,8 @@ final class AudioBandAnalyzer {
         let k = SIMD4<Float>(repeating: releaseK).replacing(with: attackK, where: rising)
         smoothed += (target - smoothed) * k
         return LerpAudioLevels(level: smoothed[0], bass: smoothed[1],
-                               mid: smoothed[2], treble: smoothed[3])
+                               mid: smoothed[2], treble: smoothed[3],
+                               beat: latestBeat)
     }
 }
 

@@ -303,6 +303,9 @@ class DesktopMode {
         }
         for (name, value) in values.values { view.setParameter(name, value) }
         for name in values.animations.keys { view.setParameterAnimating(name, values.isAnimating(name)) }
+        for param in values.parameters where param.reaction != nil {
+            view.setReacting(param.name, values.isReacting(param.name))
+        }
     }
 
     /// Whether two sets of values are the same state — held values, drifts and

@@ -158,10 +158,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// every compile, so editing a `// lerp-animate:` line shows at once.
     /// Empty means every parameter does what the worn look says.
     private var animationState: [String: Bool] = [:]
-    private var reactionOverlay = ReactionOverlay()
-    private var reactionWorld = ReactionWorld()
-    private var reactionReadPending = false
-    private var reactionPollAfter: TimeInterval = 0
+    private var reactionState: [String: Bool] = [:]
     private var lastReactionRows: [String: ReactionBinding] = [:]
     private var lastActiveReactions: Set<String> = []
     private var lastHeldReactions: Set<String> = []
@@ -672,7 +669,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// a look in their own right, not a failure.
     private func open(_ shader: LerpShader, preset: String? = nil) {
         current = shader
-        reactionOverlay = ReactionOverlay()
+        reactionState.removeAll()
         parameterState.removeAll()      // a new shader starts at its own defaults
         animationState.removeAll()
         currentPreset = nil
@@ -786,6 +783,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             let declared = Set(shader.parameters.map(\.name))
             parameterState = parameterState.filter { declared.contains($0.key) }
             animationState = animationState.filter { declared.contains($0.key) }
+            reactionState = reactionState.filter { declared.contains($0.key) }
             inspector.rebuild(shader: shader)
             lastReactionRows = [:]
             // A rebuild marks "Defaults"; the preset on screen has not changed,
@@ -795,47 +793,47 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
             inspector.showsMIDIControls = midi.isAvailable
             refreshBindingLabels()
         }
-        let bindings = ReactionBinding.read(shader.source)
-        reactionOverlay = ReactionOverlay(bindings: bindings,
-                                          takenOver: reactionOverlay.takenOver.intersection(Set(bindings.keys)))
         for (name, value) in parameterState { metalView.setParameter(name, value) }
-        // Pushing the values back pinned every animated one (a set value is a
-        // held value), and `setShader` dropped the worn preset's own drifts.
-        // Both come back from the buffer — the look's drift, as the text now
-        // declares it — and then the user's own take-control choices on top.
+        // Pushing the values back pinned every animated and reactive parameter
+        // (a set value is a held value), and `setShader` dropped the worn
+        // preset's own drifts. Both come back from the buffer — as the text
+        // now declares them — and then the user's own take-control choices on top.
         let look = shader.parameterValues(for: currentEntry)
         for (name, animation) in look.animations {
             metalView.animateParameter(name, with: animation)
             metalView.setParameterAnimating(name, animationState[name] ?? look.isAnimating(name))
         }
+        for param in shader.parameters where param.reaction != nil {
+            metalView.setReacting(param.name, reactionState[param.name] ?? look.isReacting(param.name))
+        }
+        updateLiveReactions()
         inspector.show(values: metalView.liveParameterValues)
     }
 
-    /// Rendering sees transitory reaction values, but Save, dirty detection,
-    /// and Randomize use the authored look plus explicit user edits.
+    /// Authored look plus explicit user edits (LerpRenderer evaluates reactions
+    /// transiently without mutating `parameterValues`).
     private var editableParameters: LerpParameterValues? {
-        guard !reactionOverlay.smoothed.isEmpty, let compiled else { return metalView.parameterValues }
-        let authored = compiled.parameterValues(for: currentEntry)
-        var values = authored
-        for (name, value) in parameterState where values[name] != value { values.set(name, value) }
-        for name in values.animations.keys {
-            values.setAnimating(name, animationState[name] ?? authored.isAnimating(name))
-        }
-        return values
+        metalView.parameterValues
     }
 
     private func setReaction(_ name: String, to signal: String?) {
         guard shownParameters.contains(where: { $0.name == name }) else { return }
-        reactionOverlay.takenOver.remove(name)
+        reactionState[name] = signal != nil
         let before = editor.text
-        let currentBinding = ReactionBinding.read(before)[name]
+        let currentBinding = compiled?.parameters.first(where: { $0.name == name })?.reaction
         // Selecting the checked item hands control back without throwing away
         // any hand-authored range, smoothing, or color mix.
         if signal == nil || currentBinding?.signal != signal {
-            let source = ReactionBinding.setting(signal, for: name, in: before)
-            if source != before { editor.replaceTextAsEdit(source) }
+            let reaction = signal.map { LerpParamReaction(paramName: name, signal: $0) }
+            if let source = try? LerpReactionWriter.writing(reaction, for: name, in: before),
+               source != before {
+                editor.replaceTextAsEdit(source)
+            }
             compileNow()
+        } else {
+            _ = metalView.setReacting(name, true)
         }
+        metalView.refreshLiveSignals()
         updateLiveReactions()
         if isPaused { metalView.renderOnce() }
         if signal?.hasPrefix("audio.") == true, audioTap == nil {
@@ -844,55 +842,39 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func updateLiveReactions() {
-        let now = CACurrentMediaTime()
-        if !reactionOverlay.bindings.isEmpty, !hidden,
-           reactionOverlay.bindings.values.contains(where: { !$0.signal.hasPrefix("audio.") }),
-           !reactionReadPending, now >= reactionPollAfter {
-            reactionReadPending = true
-            reactionPollAfter = now + 1
-            DispatchQueue.global(qos: .utility).async { [weak self] in
-                let world = ReactionWorld.read()
-                DispatchQueue.main.async { [weak self] in
-                    self?.reactionWorld = world
-                    self?.reactionReadPending = false
-                }
-            }
-        }
-        let previous = Set(reactionOverlay.smoothed.keys)
+        var rows: [String: ReactionBinding] = [:]
         var active: Set<String> = []
-        if !reactionOverlay.bindings.isEmpty, !hidden, let base = editableParameters {
-            let beat: Float
-            if #available(macOS 14.2, *) { beat = (audioTap as? SystemAudioTap)?.latestBeat ?? 0 }
-            else { beat = 0 }
-            let live = reactionOverlay.step(params: base, world: reactionWorld,
-                                            audio: metalView.audioLevels?(), beat: beat, now: now)
-            active = Set(live.keys)
-            for (name, value) in live {
-                if let clamped = base.parameter(named: name)?.clamp(value), metalView.parameterValues?[name] != clamped {
-                    metalView.setParameter(name, clamped)
-                } else if base.isAnimating(name) {
-                    metalView.setParameterAnimating(name, false)
+        var held: Set<String> = []
+        if let compiled, let values = metalView.parameterValues {
+            for param in compiled.parameters {
+                guard let reaction = param.reaction else { continue }
+                var binding = ReactionBinding(signal: reaction.signal)
+                if let lo = reaction.min, let hi = reaction.max { binding.range = (lo, hi) }
+                if let smooth = reaction.smooth { binding.smoothing = smooth }
+                if let mix = reaction.mix { binding.mix = mix }
+                rows[param.name] = binding
+                if values.isReacting(param.name) {
+                    active.insert(param.name)
+                } else {
+                    held.insert(param.name)
                 }
             }
-            for name in previous.subtracting(active) where !reactionOverlay.takenOver.contains(name) {
-                if let value = base[name] { metalView.setParameter(name, value) }
-                metalView.setParameterAnimating(name, base.isAnimating(name))
-            }
         }
-        if lastReactionRows != reactionOverlay.bindings || lastActiveReactions != active
-            || lastHeldReactions != reactionOverlay.takenOver {
-            lastReactionRows = reactionOverlay.bindings
+        if lastReactionRows != rows || lastActiveReactions != active || lastHeldReactions != held {
+            lastReactionRows = rows
             lastActiveReactions = active
-            lastHeldReactions = reactionOverlay.takenOver
-            inspector.showReactions(lastReactionRows, active: active, held: lastHeldReactions)
+            lastHeldReactions = held
+            inspector.showReactions(rows, active: active, held: held)
         }
-        if !previous.isEmpty || !active.isEmpty {
-            inspector.showReactionValues(metalView.liveParameterValues, for: active.union(previous))
+        if !active.isEmpty {
+            inspector.showReactionValues(metalView.liveParameterValues, for: active)
         }
     }
 
     private func holdReaction(_ name: String) {
-        if reactionOverlay.bindings[name] != nil { reactionOverlay.takenOver.insert(name) }
+        if compiled?.parameters.first(where: { $0.name == name })?.reaction != nil {
+            reactionState[name] = false
+        }
     }
 
     /// The one place a parameter changes, whatever moved it — mouse, typed
@@ -1001,9 +983,9 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     /// Takes whatever the view now holds as the user's chosen state.
     private func adoptViewValues() {
         parameterState = metalView.parameterValues?.values ?? [:]
-        reactionOverlay.smoothed.removeAll()
-        reactionOverlay.takenOver.removeAll()
+        reactionState.removeAll()
         animationState.removeAll()      // the look's own drifts, untouched
+        updateLiveReactions()
         inspector.show(values: metalView.liveParameterValues)
         if isPaused { metalView.renderOnce() }
     }

@@ -145,6 +145,9 @@ public struct LerpSignalValues: Sendable {
     public func scalar(for name: String) -> Double? {
         guard let domain = Self.scalarDomain(for: name) else { return nil }
         let c = world?.clock ?? clock
+        let weather = world?.weather.flatMap {
+            $0.label.caseInsensitiveCompare("Unavailable") == .orderedSame ? nil : $0
+        }
         let value: Double?
         if let explicit = overrides[name] { value = explicit.scalarValue }
         else {
@@ -156,14 +159,14 @@ public struct LerpSignalValues: Sendable {
             case "clock.twilight": value = c?.twilight
             case "clock.moonPhase": value = c?.moonPhase
             case "clock.season": value = c?.season
-            case "weather.rain": value = world?.weather?.rain
-            case "weather.snow": value = world?.weather?.snow
-            case "weather.clouds": value = world?.weather?.clouds
-            case "weather.wind": value = world?.weather?.wind
-            case "weather.fog": value = world?.weather?.fog
-            case "weather.thunder": value = world?.weather?.thunder
-            case "weather.temp": value = world?.weather?.temp
-            case "weather.precip": value = world?.weather?.precip
+            case "weather.rain": value = weather?.rain
+            case "weather.snow": value = weather?.snow
+            case "weather.clouds": value = weather?.clouds
+            case "weather.wind": value = weather?.wind
+            case "weather.fog": value = weather?.fog
+            case "weather.thunder": value = weather?.thunder
+            case "weather.temp": value = weather?.temp
+            case "weather.precip": value = weather?.precip
             case "music.playing": value = world?.music.map { $0.playing ? 1 : 0 }
             case "audio.level": value = audio.map { Double($0.level) }
             case "audio.bass": value = audio.map { Double($0.bass) }
