@@ -30,6 +30,8 @@ import plistlib
 import re
 import subprocess
 import sys
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 SUBSYSTEM = "com.hergenroeder.lerping"
@@ -39,6 +41,45 @@ BYHOST = Path.home() / "Library/Preferences/ByHost"
 # arguments".
 LOG = "/usr/bin/log"
 PLAYING = re.compile(r"playing (.+?) \((\d+) in rotation of (\d+) discovered\)")
+PROFILE_TAG = re.compile(r"^\s*(?:crossfade\s+)?profile=(\S+)")
+LIBRARY_PROFILE_ID = "00000000-0000-4000-8000-000000000001"
+
+
+@dataclass
+class Profile:
+    name: str
+    admission: str
+    disabled: set
+    roster: dict
+
+    def excludes(self, look):
+        shader, _, preset = look.partition("/")
+        # Closed rosters list Defaults explicitly as the empty preset name.
+        not_admitted = self.admission == "closed" and preset not in self.roster.get(shader, [])
+        return not_admitted or look in self.disabled or f"{shader}/*" in self.disabled
+
+
+def parse_state(state):
+    """(version, active profile ID, policies by UUID), from the one record."""
+    def profile(record):
+        admission = record["admission"]
+        if admission not in ("automatic", "closed"):
+            raise ValueError(f"unknown admission: {admission!r}")
+        return Profile(record["name"], admission, set(record["disabled"]), record["roster"])
+
+    version = state["version"]
+    if version == 2:
+        return version, LIBRARY_PROFILE_ID, {
+            LIBRARY_PROFILE_ID: Profile("Library Rotation", "automatic",
+                                        set(state.get("disabled", [])), state.get("roster", {}))}
+    if version == 3:
+        active_id = str(uuid.UUID(state["activeID"]))
+        records = state["profiles"]
+        profiles = {str(uuid.UUID(p["id"])): profile(p) for p in records}
+        if len(profiles) != len(records) or active_id not in profiles:
+            raise ValueError("invalid profile IDs")
+        return version, active_id, profiles
+    raise ValueError(f"unsupported rotationState version: {version!r}")
 
 
 # Exactly `<subsystem>.<hardware UUID>.plist` and nothing else. A bare
@@ -52,21 +93,21 @@ UUID_SEGMENT = re.compile(r"^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$", re.I)
 
 
 def rotation():
-    """(disabled set, source path). The v2 record is the only representation."""
+    """Read the one persisted record. Never query a defaults cache or write it."""
     hits = sorted(p for p in BYHOST.glob(f"{SUBSYSTEM}.*.plist")
                   if UUID_SEGMENT.match(p.name[len(SUBSYSTEM) + 1:-len(".plist")]))
     if not hits:
-        sys.exit(f"no {SUBSYSTEM} ByHost plist under {BYHOST}")
+        raise ValueError(f"no {SUBSYSTEM} ByHost plist under {BYHOST}")
     with hits[0].open("rb") as handle:
         plist = plistlib.load(handle)
 
     state = plist.get("rotationState")
     if not state:
-        sys.exit(f"{hits[0]} has no rotationState — nothing has ever been saved")
+        raise ValueError(f"{hits[0]} has no rotationState — nothing has ever been saved")
 
     stale = [k for k in ("enabledEntries", "knownEntries",
                          "enabledShaders", "knownShaders") if k in plist]
-    return set(state.get("disabled", [])), hits[0], stale
+    return parse_state(state), hits[0], stale
 
 
 # The saver's host process. The predicate has to name it: LerpPlayground logs
@@ -86,8 +127,17 @@ def played(days):
          f'subsystem == "{SUBSYSTEM}" AND process == "{SAVER_PROCESS}"',
          "--style", "compact"],
         capture_output=True, text=True, check=True).stdout
-    return [(m.group(1), int(m.group(2)), int(m.group(3)))
-            for m in (PLAYING.search(line) for line in out.splitlines()) if m]
+    return [pick for line in out.splitlines() if (pick := parse_play(line)) is not None]
+
+
+def parse_play(line):
+    m = PLAYING.search(line)
+    if m is None:
+        return None
+    # Search only after the pick's closing parenthesis. Preset and playlist
+    # names can contain spaces or the literal text “profile=”.
+    tag = PROFILE_TAG.match(line[m.end():])
+    return m[1], tag[1].lower() if tag else None
 
 
 def main():
@@ -95,49 +145,53 @@ def main():
     ap.add_argument("--days", type=int, default=7)
     args = ap.parse_args()
 
-    disabled, source, stale = rotation()
-    looks = played(args.days)
+    try:
+        (version, active_id, profiles), source, stale = rotation()
+        looks = played(args.days)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+        print(f"Cannot judge rotation: {error}", file=sys.stderr)
+        return 2
 
-    # `shader/*` switches a whole shader off, on top of whatever is recorded
-    # about its looks one at a time — see LerpRotationSelection. A look is off
-    # if it is named, or if its shader is.
-    shaders_off = {key[:-2] for key in disabled if key.endswith("/*")}
-
-    def switched_off(look):
-        return look in disabled or look.split("/", 1)[0] in shaders_off
-
-    print(f"rotation: {source}")
-    print(f"          {len(disabled) - len(shaders_off)} looks switched off, "
-          f"{len(shaders_off)} whole shaders switched off")
+    active = profiles[active_id]
+    print(f"rotation: {source} (v{version})")
+    print(f"          active: {active.name} ({active_id}, {active.admission})")
     if stale:
-        # Not fatal, but it is the shape of the bug this file exists for: a
-        # second representation of the rotation that something could still read.
         print(f"  WARNING: legacy keys still present: {', '.join(stale)}")
         print("           they are no longer written; the next save deletes them.")
 
-    if not looks:
-        print(f"\nno screensaver sessions in the last {args.days} days.")
-        print("Nothing to judge. Let the saver run, or raise --days.")
+    # Compare each tagged session with its own saved profile, not whichever is
+    # active today. A deleted profile or a pre-v3 untagged session cannot be
+    # attributed; report missing evidence rather than guessing. As before, the
+    # plist describes today's choices, not a history of edits to a profile.
+    seen, bad, skipped = {}, set(), 0
+    for look, profile_id in looks:
+        if profile_id is None and version == 2:
+            profile_id = LIBRARY_PROFILE_ID
+        if profile_id not in profiles:
+            skipped += 1
+            continue
+        pick = (profile_id, look)
+        seen[pick] = seen.get(pick, 0) + 1
+        if profiles[profile_id].excludes(look):
+            bad.add(pick)
+
+    if skipped:
+        print(f"  Skipped {skipped} play(s) without a matching saved playlist ID.")
+    if not seen:
+        print(f"\nNo attributable screensaver plays in the last {args.days} days. Nothing to judge.")
         return 2
 
-    seen, bad = {}, []
-    for look, _, _ in looks:
-        seen[look] = seen.get(look, 0) + 1
-        if switched_off(look) and look not in bad:
-            bad.append(look)
-
-    print(f"\n{len(looks)} plays over {args.days}d, {len(seen)} distinct looks:")
-    for look in sorted(seen):
-        mark = "PLAYED WHILE SWITCHED OFF" if switched_off(look) else ""
-        print(f"  {seen[look]:3d}x  {look}  {mark}")
+    print(f"\n{sum(seen.values())} plays over {args.days}d, {len(seen)} distinct playlist/look pairs:")
+    for profile_id, look in sorted(seen):
+        pick = (profile_id, look)
+        mark = "PLAYED WHILE SWITCHED OFF OR OUTSIDE ROSTER" if pick in bad else ""
+        print(f"  {seen[pick]:3d}x  {look}  [{profiles[profile_id].name}, {profile_id}]  {mark}")
 
     if bad:
-        print(f"\nFAIL: {len(bad)} switched-off look(s) reached the screen:")
-        for look in bad:
-            print(f"  {look}")
+        print(f"\nFAIL: {len(bad)} out-of-rotation playlist/look pair(s) reached the screen.")
         return 1
 
-    print("\nOK: every look that played was in the rotation.")
+    print("\nOK: every attributable look was in its saved playlist.")
     return 0
 
 

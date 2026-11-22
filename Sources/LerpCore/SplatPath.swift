@@ -52,8 +52,7 @@ struct LerpSplatPath: Decodable {
         if loopMode == "repeat", n >= 2 {
             // supersplat-viewer: one more frame of length when the duration
             // ends exactly on the last key, so that key is not the first again.
-            let extra: Float = abs(duration - t[n - 1] / frameRate) < 1e-4 ? 1 : 0
-            let length = (duration + extra) * frameRate
+            let length = Self.repeatLength(duration: duration, frameRate: frameRate, last: t[n - 1])
             t = [t[n - 2] - length, t[n - 1] - length] + t + [length + t[0], length + t[1]]
             p = [p[n - 2], p[n - 1]] + p + [p[0], p[1]]
         }
@@ -94,11 +93,81 @@ struct LerpSplatPath: Decodable {
         return pose(v)
     }
 
-    static func load(_ url: URL) -> LerpSplatPath? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        do { return try JSONDecoder().decode(LerpSplatPath.self, from: data) }
-        catch {
-            NSLog("Lerping: camera path %@ is unreadable: %@", url.lastPathComponent, "\(error)")
+    private enum CodingKeys: String, CodingKey {
+        case duration, frameRate, loopMode, smoothness, up, times, position, target, fov
+    }
+
+    private static let limitsKey = CodingUserInfoKey(rawValue: "lerp.splat-path-limits")!
+
+    static func decode(_ bytes: Data, limits: AssetSafetyLimits = .portableIngress) throws -> Self {
+        guard bytes.count <= limits.maxPathBytes else { throw PortableArtifactError.invalid("Camera path exceeds byte limit") }
+        let decoder = JSONDecoder()
+        decoder.userInfo[limitsKey] = limits
+        return try decoder.decode(Self.self, from: bytes)
+    }
+
+    init(from decoder: Decoder) throws {
+        let limits = (decoder.userInfo[Self.limitsKey] as? AssetSafetyLimits) ?? .portableIngress
+        let data = try decoder.container(keyedBy: CodingKeys.self)
+        duration = try data.decode(Float.self, forKey: .duration)
+        frameRate = try data.decode(Float.self, forKey: .frameRate)
+        loopMode = try data.decode(String.self, forKey: .loopMode)
+        smoothness = try data.decode(Float.self, forKey: .smoothness)
+        up = try data.decode(SIMD3<Float>.self, forKey: .up)
+        let invalid = PortableArtifactError.invalid("Invalid camera path timing, keyframes or field of view")
+        guard duration.isFinite, duration > 0, (2 * duration).isFinite,
+              frameRate.isFinite, frameRate > 0, (duration * frameRate).isFinite,
+              smoothness.isFinite, Self.isFinite(up), up != .zero else { throw invalid }
+
+        // Reject the count before allocating the arrays we will interpolate.
+        // Some decoders do not supply a count; still cap each incremental read.
+        func bounded<T: Decodable>(_ type: T.Type, _ key: CodingKeys, max count: Int) throws -> [T] {
+            var input = try data.nestedUnkeyedContainer(forKey: key)
+            if let size = input.count, size > count { throw invalid }
+            var values: [T] = []
+            values.reserveCapacity(input.count ?? 0)
+            while !input.isAtEnd {
+                guard values.count < count else { throw invalid }
+                values.append(try input.decode(type))
+            }
+            return values
+        }
+        times = try bounded(Float.self, .times, max: limits.maxPathKeyframes)
+        guard !times.isEmpty, times.allSatisfy(\.isFinite),
+              zip(times, times.dropFirst()).allSatisfy({ $0 < $1 && ($1 - $0).isFinite }) else { throw invalid }
+        let count = times.count
+        if loopMode == "repeat", count >= 2 {
+            let length = Self.repeatLength(duration: duration, frameRate: frameRate, last: times[count - 1])
+            // The four synthetic knots must also be finite and strictly ordered.
+            let before = [times[count - 2] - length, times[count - 1] - length, times[0]]
+            let after = [times[count - 1], length + times[0], length + times[1]]
+            for keys in [before, after] {
+                guard keys.allSatisfy(\.isFinite), zip(keys, keys.dropFirst()).allSatisfy({ $0 < $1 }) else { throw invalid }
+            }
+        }
+        position = try bounded(SIMD3<Float>.self, .position, max: count)
+        target = try bounded(SIMD3<Float>.self, .target, max: count)
+        fov = try bounded(Float.self, .fov, max: count)
+        guard position.count == count, target.count == count, fov.count == count,
+              position.allSatisfy(Self.isFinite), target.allSatisfy(Self.isFinite),
+              fov.allSatisfy({ $0.isFinite && $0 > 0 && $0 < 180 }) else { throw invalid }
+    }
+
+    private static func repeatLength(duration: Float, frameRate: Float, last: Float) -> Float {
+        let extra: Float = abs(duration - last / frameRate) < 1e-4 ? 1 : 0
+        return (duration + extra) * frameRate
+    }
+
+    private static func isFinite(_ value: SIMD3<Float>) -> Bool {
+        value.x.isFinite && value.y.isFinite && value.z.isFinite
+    }
+
+    static func load(_ location: LerpSplatAssets.Location) -> LerpSplatPath? {
+        do {
+            let (data, limits) = try AssetSafety.readSplatFile(location, isPath: true)
+            return try decode(data, limits: limits)
+        } catch {
+            NSLog("Lerping: camera path %@ is unreadable: %@", location.url.lastPathComponent, "\(error)")
             return nil
         }
     }

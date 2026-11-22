@@ -35,6 +35,11 @@ enum PreviewMain {
         let extraSearch = ShaderLocations.repoSearchURLs()
         GPUTrace.prepare(args)
 
+        if args.contains("--artifacts-selftest") {
+            PortableArtifactsSelfTest.run()
+            return
+        }
+
         if args.contains("--nca-selftest") {
             NeuralCASelfTest.run()
             return
@@ -52,8 +57,16 @@ enum PreviewMain {
         }
 
         if args.contains("--rotation-selftest") {
+            guard !LerpDefaults.isProduction else {
+                fail("--rotation-selftest requires \(LerpDefaults.moduleOverrideVariable) set to a scratch domain")
+            }
             ShelfSelfTest.run(extraSearch)
             RotationSelfTest.run(extraSearch)
+            return
+        }
+
+        if args.contains("--export-selftest") {
+            LoopExportSelfTest.run()
             return
         }
 

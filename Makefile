@@ -689,7 +689,8 @@ FORCE:
 # by default and can be unchecked on Installer's Customize screen.
 package: saver-build playground-build Packaging/Distribution.xml Packaging/InstallerReadMe.txt \
          Packaging/saver-scripts/preinstall Packaging/saver-scripts/postinstall \
-         Packaging/playground-scripts/preinstall Packaging/LerpPlayground.entitlements LICENSE NOTICE.txt
+         Packaging/playground-scripts/preinstall Packaging/LerpPlayground.entitlements LICENSE NOTICE.txt \
+         Packaging/release-allowlist.json scripts/verify-release-licenses.py
 	@printf '%s' '$(RELEASE_VERSION)' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$$' || { \
 		echo "package: RELEASE_VERSION must look like 1.2.3"; exit 1; }
 	rm -rf "$(RELEASE_DIR)"
@@ -710,6 +711,8 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 		"$(RELEASE_PLAYGROUND)/Contents/Info.plist"
 	plutil -replace CFBundleVersion -string "$(RELEASE_BUILD)" \
 		"$(RELEASE_PLAYGROUND)/Contents/Info.plist"
+	plutil -replace LerpBuild -string "$(LERP_BUILD)" \
+		"$(RELEASE_PLAYGROUND)/Contents/Info.plist"
 	@plutil -remove LerpRepoRoot "$(RELEASE_PLAYGROUND)/Contents/Info.plist" 2>/dev/null || true
 	plutil -replace LerpStandalone -bool YES "$(RELEASE_PLAYGROUND)/Contents/Info.plist" 2>/dev/null || \
 		plutil -insert LerpStandalone -bool YES "$(RELEASE_PLAYGROUND)/Contents/Info.plist"
@@ -726,17 +729,9 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 		cp third_party/growing-ca/LICENSE "$$app/Contents/Resources/NEURAL-CA-CC-BY-4.0.txt"; \
 		cp third_party/growing-ca/APACHE-2.0.txt "$$app/Contents/Resources/NEURAL-CA-APACHE-2.0.txt"; \
 	done
-	# Splat captures published with no licence play on this machine only:
-	# drop them, the looks that draw them, and those looks' stills.
-	@python3 -I scripts/splat-convert.py unlicensed | while read -r look capture; do \
-		for app in "$(RELEASE_SAVER)" "$(RELEASE_PLAYGROUND)"; do \
-			rm -f "$$app/Contents/Resources/Shaders/$$look.metal" \
-				"$$app/Contents/Resources/Splats/$$capture.lsplat" \
-				"$$app/Contents/Resources/Splats/$$capture.path.json" \
-				"$$app/Contents/Resources/Thumbnails/$$look"-*.heic; \
-		done; \
-		echo "package: left out $$look (capture $$capture has no licence)"; \
-	done
+	# Keep unlicensed/noncommercial captures, their shaders, paths and stills
+	# local. The updater ZIP uses this same commercial saver staging tree.
+	python3 -I scripts/verify-release-licenses.py --filter-staged "$(RELEASE_SAVER)" "$(RELEASE_PLAYGROUND)"
 	@if [ "$(APP_SIGN_IDENTITY)" = "-" ]; then \
 		codesign --force -s - "$(RELEASE_SAVER)"; \
 		codesign --force -s - "$(RELEASE_PLAYGROUND)"; \
@@ -747,8 +742,6 @@ package: saver-build playground-build Packaging/Distribution.xml Packaging/Insta
 	fi
 	codesign --verify --deep --strict "$(RELEASE_SAVER)"
 	codesign --verify --deep --strict "$(RELEASE_PLAYGROUND)"
-	@src_count="$$(find "$(RELEASE_PLAYGROUND)/Contents/Resources/Shaders" -name '*.metal' | wc -l | tr -d ' ')"; \
-		test "$$src_count" = "$$(( $$(find Sources/Shaders -name '*.metal' | wc -l) - $$(python3 -I scripts/splat-convert.py unlicensed | wc -l) ))"
 	"$(RELEASE_PLAYGROUND)/Contents/MacOS/LerpPlayground" --shaders
 	pkgbuild --analyze --root "$(RELEASE_SAVER_ROOT)" "$(RELEASE_DIR)/saver-components.plist"
 	plutil -replace 0.BundleIsRelocatable -bool NO "$(RELEASE_DIR)/saver-components.plist"

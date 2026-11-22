@@ -31,6 +31,7 @@ enum RotationSelfTest {
 
         selection(check)
         storage(check)
+        namedRotations(check)
         schedule(check)
         reserved(check)
         gallery(extraSearch, check)
@@ -45,7 +46,8 @@ enum RotationSelfTest {
             for failure in failures { FileHandle.standardError.write(("FAIL  " + failure + "\n").data(using: .utf8)!) }
             PreviewMain.fail("rotation self-test: \(failures.count) check\(failures.count == 1 ? "" : "s") failed")
         }
-        print("OK    rotation: shader switch keeps picks, shader/* round trip, per-shader airtime, "
+        print("OK    rotation: v3 named playlists, v2 migration, exact admission and active floor, "
+              + "shader switch keeps picks, shader/* round trip, per-shader airtime, "
               + "no back-to-back repeats, * reserved, Library cards/search/floor, "
               + "stills ignore host inputs, hover draws at the still's size")
     }
@@ -128,8 +130,12 @@ enum RotationSelfTest {
         s.setShader("pair", on: false)
         let written = LerpRotation.write(s, writer: "selftest", to: defaults)
         check(written.disabled == s.disabled, "write stores the selection's off set as it stands")
-        let stored = defaults.dictionary(forKey: LerpRotation.stateKey)?["disabled"] as? [String] ?? []
-        check(stored == ["many/P4", "pair/*"], "the plist holds plain keys, shader/* among them: \(stored)")
+        let record = defaults.dictionary(forKey: LerpRotation.stateKey)
+        let profiles = record?["profiles"] as? [[String: Any]]
+        let activeID = record?["activeID"] as? String
+        let stored = profiles?.first { ($0["id"] as? String) == activeID }?["disabled"] as? [String] ?? []
+        check(record?["version"] as? Int == 3 && record?["disabled"] == nil
+                && stored == ["many/P4", "pair/*"], "v3 stores its off keys once, in the active profile: \(stored)")
 
         let read = LerpRotation.read(defaults, discovered: fixture)
         check(LerpRotation.playable(discovered: fixture, in: read) == s.playable,
@@ -159,6 +165,123 @@ enum RotationSelfTest {
         check(!LerpRotation.selection(discovered: absorbed, in: LerpRotation.read(defaults, discovered: absorbed))
                 .plays(look("pair", "Classic")) && carried.disabled.contains(look("pair", "Classic")),
               "the stand-in's off survives the next write")
+    }
+
+    // MARK: - Named rotations
+
+    static func namedRotations(_ check: (Bool, @autoclosure () -> String) -> Void) {
+        guard !LerpDefaults.isProduction else { return check(false, "named rotations need scratch defaults") }
+        let suite = LerpDefaults.module + ".named-rotations.\(getpid())"
+        guard let defaults = UserDefaults(suiteName: suite) else { return check(false, "scratch defaults missing") }
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let roster = ["many": ["P1", "P4"], "pair": ["Other"], "missing": ["Old"]]
+        let disabled = ["many/P4", "pair/*", "missing/Old"]
+        defaults.set(["version": 2, "updatedAt": 42.0, "writer": "playground",
+                      "disabled": disabled, "roster": roster] as [String: Any], forKey: LerpRotation.stateKey)
+        var state = LerpRotation.read(defaults, discovered: fixture)
+        let libraryID = state.activeID
+        check(state.version == 3 && state.profiles.count == 1
+                && state.activeProfile.name == "Library Rotation" && state.activeProfile.admission == .automatic
+                && state.disabled == Set(disabled.map(LerpRotationEntry.init(key:))) && state.roster == roster,
+              "v2 migrates losslessly including missing keys and ordered rosters")
+        check(defaults.dictionary(forKey: LerpRotation.stateKey)?["version"] as? Int == 2
+                && LerpRotation.read(defaults, discovered: []).activeID == libraryID,
+              "v2 migration never writes and has a stable identity")
+
+        let solo = look("solo"), exact = look("pair", "Other")
+        let fresh = look("many", "New"), freshShader = look("new-shader"), barePair = look("pair")
+        // Pair has no bare Defaults when the playlist is captured.
+        let original = fixture.filter { $0 != barePair }
+        let expanded = fixture + [fresh, freshShader]
+        let librarySelection = LerpRotation.selection(discovered: expanded, in: state)
+        check(librarySelection.plays(fresh) && librarySelection.plays(freshShader),
+              "automatic admits fresh presets and shaders")
+
+        do {
+            // Exact add lifts a whole switch for one look, not all its siblings.
+            var automatic = LerpRotation.selection(discovered: expanded, in: state)
+            automatic.addExactLook(exact)
+            check(automatic.plays(exact) && !automatic.plays(barePair) && !automatic.isSwitchedOff("pair"),
+                  "automatic exact add preserves the siblings' off state")
+            var automaticState = state
+            try automaticState.addExactLook(exact, toProfile: libraryID, catalog: original)
+            check(!LerpRotation.selection(discovered: expanded, in: automaticState).plays(barePair),
+                  "a formerly covered Defaults look stays off when it reappears")
+
+            let named = try state.createProfile(name: "Night Shift", admission: .closed,
+                                                initialLooks: [solo], catalog: original)
+            let draft = try state.createProfile(name: "Draft", admission: .closed,
+                                                initialLooks: [], catalog: original)
+            check(state.activeID == libraryID && named.roster["many"] == ["", "P1", "P2", "P3", "P4", "P5", "P6"]
+                    && named.roster["pair"] == ["Other"], "closed creation captures exact looks in catalog order")
+            check(LerpRotation.selection(discovered: expanded, in: draft).playable.isEmpty,
+                  "a closed draft may remain empty while inactive")
+            do {
+                try state.setActiveProfile(id: draft.id, catalog: expanded)
+                check(false, "activating an empty draft should throw")
+            } catch RotationProfileError.emptyPlaylist {
+                check(state.activeID == libraryID, "failed switch must leave the old playlist active")
+            }
+            try state.setActiveProfile(id: named.id, catalog: expanded)
+            try state.renameProfile(id: named.id, to: "Night Shift II")
+            let closed = LerpRotation.selection(discovered: expanded, in: state)
+            check(closed.playable == [solo] && !closed.plays(fresh) && !closed.plays(freshShader) && !closed.plays(barePair),
+                  "closed admits neither unpicked nor newly discovered looks, including Defaults")
+
+            // Turn off an entire shader that has picks, then add one exact look.
+            var curated = closed
+            curated.setLook(look("many", "P4"), on: true)
+            curated.setShader("many", on: false)
+            state.disabled = curated.disabled
+            let missingSibling = expanded.filter { $0 != look("many", "P4") }
+            try state.addExactLook(fresh, toProfile: named.id, catalog: missingSibling)
+            check(Set(LerpRotation.playable(discovered: expanded, in: state)) == [solo, fresh],
+                  "exact add records admission without restoring even temporarily missing siblings")
+
+            let saved = LerpRotation.persist(&state, writer: "selftest", to: defaults)
+            check(saved, "persist the v3 record")
+            let roundTrip = LerpRotation.read(defaults, discovered: expanded)
+            check(roundTrip == state && roundTrip.activeID == named.id && roundTrip.activeProfile.name == "Night Shift II"
+                    && roundTrip.profiles.first?.roster == roster, "v3 round trips all profiles without modifying inactive data")
+            _ = LerpRotation.write(librarySelection, writer: "selftest", to: defaults)
+            check(LerpRotation.read(defaults, discovered: expanded) == roundTrip,
+                  "a stale edit to the old active profile cannot overwrite the new one")
+            let emptyEdit = LerpRotation.selection(discovered: expanded, in: roundTrip).applying {
+                $0.setLooks([solo, fresh], on: false)
+            }
+            _ = LerpRotation.write(emptyEdit, writer: "selftest", to: defaults)
+            check(LerpRotation.read(defaults, discovered: expanded) == roundTrip,
+                  "saving a selection cannot remove the active profile's last playable look")
+
+            // Read from the same plist-shaped input and pass through the same
+            // renderer filter as the saver, including when our picks disappear.
+            let plist = defaults.dictionaryRepresentation()
+            let saverState = LerpRotation.read(plist: plist, discovered: expanded)
+            let chosen = LerpRotation.enabled(discovered: expanded, in: saverState)
+            check(LerpMetalView.Config.rotation(of: chosen, from: expanded) == [solo, fresh],
+                  "saver shuffle receives exactly the active closed profile")
+            let reduced = expanded.filter { ![solo, fresh].contains($0) }
+            let staleCatalog = LerpRotation.enabled(discovered: reduced, in: saverState)
+            check(staleCatalog == [] && LerpMetalView.Config.rotation(of: staleCatalog, from: reduced).isEmpty,
+                  "saver gets an explicit empty selection when picks disappear; never all looks")
+
+            try state.addExactLook(exact, toProfile: draft.id, catalog: expanded)
+            try state.setActiveProfile(id: draft.id, catalog: expanded)
+            check(LerpRotation.playable(discovered: expanded, in: state) == [exact],
+                  "an exact add makes the draft eligible to activate")
+            try state.setActiveProfile(id: libraryID, catalog: expanded)
+            check(LerpRotation.selection(discovered: expanded, in: state) == librarySelection,
+                  "switching back restores the Library's automatic choices")
+            do {
+                try state.deleteProfile(id: libraryID)
+                check(false, "deleting the active playlist should throw")
+            } catch RotationProfileError.deleteActive { }
+            try state.deleteProfile(id: draft.id)
+            check(!state.profiles.contains { $0.id == draft.id }, "an inactive playlist can be deleted")
+        } catch {
+            check(false, "unexpected playlist operation error: \(error)")
+        }
     }
 
     // MARK: - Schedule

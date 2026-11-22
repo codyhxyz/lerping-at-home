@@ -182,7 +182,13 @@ enum PlaygroundMain {
 
 final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
     private var controller: PlaygroundWindowController?
+    private var pendingImports: [URL] = []
     private var updateStatusItem: UpdateStatusItem?
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if let controller { controller.queueImports(urls) }
+        else { pendingImports.append(contentsOf: urls) }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build()
@@ -200,6 +206,8 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
         }
         self.controller = controller
         controller.showAndStart()
+        controller.queueImports(pendingImports)
+        pendingImports.removeAll()
         // The menu-bar home for updates. Nil for the standalone release app,
         // which has no checkout for the updater to pull.
         updateStatusItem = UpdateStatusItem.makeIfAppropriate()
@@ -216,6 +224,10 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
     /// window, so Cancel leaves the process and installed bundle untouched.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         controller?.approveTermination() == false ? .terminateCancel : .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        controller?.stopFrameMode(nil)
     }
 
     /// A Dock click, or the re-open LaunchServices sends instead of launching a
@@ -350,10 +362,14 @@ enum MainMenu {
         ]))
 
         main.addItem(submenu("File", [
-            item("New Shader…", Selector(("newShader:")), "n"),
-            .separator(),
-            item("Save", Selector(("saveShader:")), "s"),
-            item("Revert to Saved", Selector(("revertShader:")), ""),
+            studio(item("New Shader…", #selector(PlaygroundWindowController.newShader(_:)), "n")),
+            studio(item("Save", #selector(PlaygroundWindowController.saveShader(_:)), "s")),
+            studio(item("Revert to Saved", #selector(PlaygroundWindowController.revertShader(_:)), "")),
+            item("Save as Look…", #selector(PlaygroundWindowController.savePreset(_:)), "s", [.command, .shift]),
+            item("Copy Share Link", #selector(PlaygroundWindowController.copyShareLink(_:)), ""),
+            item("Export Look File…", #selector(PlaygroundWindowController.exportLookFile(_:)), ""),
+            item("Export 10-Second Loop…", #selector(PlaygroundWindowController.exportLoop(_:)), ""),
+            item("Import…", #selector(PlaygroundWindowController.importFiles(_:)), ""),
             .separator(),
             item("Close", #selector(NSWindow.performClose(_:)), "w"),
             item("Ask to Save Before Closing",
@@ -374,16 +390,19 @@ enum MainMenu {
             find("Find Previous", .previousMatch, "G"),
         ]))
 
-        main.addItem(submenu("Shader", [
-            item("Open Shader…", #selector(PlaygroundWindowController.showShaderPicker(_:)), "o"),
-            // ⇧⌘S is Save As everywhere on the platform and is what this is —
-            // the buffer's Save is ⌘S in the File menu, and this saves it *plus*
-            // a name for the values the file cannot otherwise remember. The
-            // Presets list's "+" sends the same action.
-            item("Save as Preset…", #selector(PlaygroundWindowController.savePreset(_:)), "s",
-                 [.command, .shift]),
+        main.addItem(submenu("View", [
+            item("Tune", #selector(PlaygroundWindowController.showTune(_:)), ""),
+            item("Studio", #selector(PlaygroundWindowController.showStudio(_:)), "e", [.command, .shift]),
             .separator(),
-            item("Recompile", Selector(("recompile:")), "r"),
+            item("Library…", #selector(PlaygroundWindowController.showShaderPicker(_:)), "o"),
+            item("Discover…", #selector(PlaygroundWindowController.showDiscover(_:)), ""),
+            item("Show / Hide Inspector", #selector(PlaygroundWindowController.toggleInspector(_:)), "i"),
+        ]))
+
+        main.addItem(submenu("Shader", [
+            studio(item("Recompile", #selector(PlaygroundWindowController.recompile(_:)), "r")),
+            studio(item("Jump to First Error", #selector(PlaygroundWindowController.jumpToFirstError), "e")),
+            studio(midiMenu()),
             item("Play / Pause", Selector(("togglePlayPause:")), "\\"),
             // ⌃⌘F is full screen everywhere on the platform. The window's own
             // full screen gives up the key: it would only enlarge the editor.
@@ -393,6 +412,7 @@ enum MainMenu {
             // screen, in windows that leave with the app; never the
             // desktop picture. See DesktopMode.
             item("Desktop Mode", #selector(PlaygroundWindowController.toggleDesktopMode(_:)), ""),
+            dynamicMenu("Frame Mode", id: frameMenuID),
             // Off at launch: a look's caption shows for its first seconds and
             // when the pointer moves over the picture; this keeps it up.
             item("Show Captions", #selector(PlaygroundWindowController.toggleCaptions(_:)), ""),
@@ -407,7 +427,6 @@ enum MainMenu {
             item("Track Head with Camera",
                  #selector(PlaygroundWindowController.toggleHeadTracking(_:)), ""),
             item("Recentre Head", #selector(PlaygroundWindowController.recenterHead(_:)), ""),
-            midiMenu(),
             .separator(),
             // Shaders on ⇧⌘, presets of the open shader on ⌥⌘: the toolbar's
             // ‹ › and the inspector's Presets list, from the keyboard.
@@ -419,11 +438,9 @@ enum MainMenu {
                  [.command, .option]),
             item("Previous Preset", #selector(PlaygroundWindowController.previousPreset(_:)), "[",
                  [.command, .option]),
-            .separator(),
-            item("Jump to First Error", Selector(("jumpToFirstError")), "e"),
-            .separator(),
-            item("Show / Hide Inspector", #selector(PlaygroundWindowController.toggleInspector(_:)), "i"),
         ]))
+
+        main.addItem(dynamicMenu("Rotation", id: rotationMenuID))
 
         main.addItem(submenu("Window", [
             item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
@@ -433,10 +450,31 @@ enum MainMenu {
         return main
     }
 
+    private static let studioCommandTag = 0x5354_5544
+
+    private static func studio(_ item: NSMenuItem) -> NSMenuItem {
+        item.tag = studioCommandTag
+        return item
+    }
+
+    static func showStudioCommands(_ show: Bool) {
+        for menu in NSApp.mainMenu?.items.compactMap(\.submenu) ?? [] {
+            for item in menu.items where item.tag == studioCommandTag { item.isHidden = !show }
+        }
+    }
+
     /// Marks the items `PlaygroundWindowController.menuNeedsUpdate` puts at
     /// the top of Shader › MIDI, so it can take its own back out.
     static let midiDynamicTag = 0x4D49_4449
     static let midiMenuID = NSUserInterfaceItemIdentifier("midi-menu")
+    static let frameMenuID = NSUserInterfaceItemIdentifier("frame-menu")
+    static let rotationMenuID = NSUserInterfaceItemIdentifier("rotation-menu")
+
+    private static func dynamicMenu(_ title: String, id: NSUserInterfaceItemIdentifier) -> NSMenuItem {
+        let holder = submenu(title, [NSMenuItem(title: title, action: nil, keyEquivalent: "")])
+        holder.identifier = id
+        return holder
+    }
 
     /// Everything MIDI that is not on a parameter row, out of the way for the
     /// many who never plug a controller in. The device line and bank list are

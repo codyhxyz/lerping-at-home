@@ -80,6 +80,8 @@ public final class RotationTile: NSView {
 
     public let entry: LerpRotationEntry
     public let shaderTitle: String
+    /// Editorial cards use the same picture and preview without Library’s rotation chrome.
+    public let showsRotationBadge: Bool
 
     /// Put this look in or take it out of the screensaver's rotation.
     public var onToggle: ((LerpRotationEntry) -> Void)?
@@ -153,9 +155,11 @@ public final class RotationTile: NSView {
     private var preview: NSView?
     private var chrome: Overlay?
 
-    public init(entry: LerpRotationEntry, shaderTitle: String, size: NSSize = RotationTile.size) {
+    public init(entry: LerpRotationEntry, shaderTitle: String, size: NSSize = RotationTile.size,
+                showsRotationBadge: Bool = true) {
         self.entry = entry
         self.shaderTitle = shaderTitle
+        self.showsRotationBadge = showsRotationBadge
         super.init(frame: NSRect(origin: .zero, size: size))
         updateToolTip()
     }
@@ -219,7 +223,7 @@ public final class RotationTile: NSView {
     /// being switched off, not against being edited.
     public override func mouseDown(with event: NSEvent) {
         guard isLive, event.clickCount == 1 else { return }
-        if badgeHitRect.contains(convert(event.locationInWindow, from: nil)) {
+        if showsRotationBadge, badgeHitRect.contains(convert(event.locationInWindow, from: nil)) {
             if let onBadge { onBadge(self) } else if isToggleable { onToggle?(entry) }
         } else {
             onOpen?(entry)
@@ -305,9 +309,9 @@ public final class RotationTile: NSView {
     public override func isAccessibilityElement() -> Bool { true }
     public override func accessibilityRole() -> NSAccessibility.Role? { .button }
     public override func accessibilityLabel() -> String? {
-        lookLabel + (isOn ? "" : " (not in the screensaver)")
+        lookLabel + (showsRotationBadge && !isOn ? " (not in the screensaver)" : "")
     }
-    public override func accessibilityValue() -> Any? { isOn ? 1 : 0 }
+    public override func accessibilityValue() -> Any? { showsRotationBadge ? (isOn ? 1 : 0) : nil }
     public override func isAccessibilityEnabled() -> Bool { isLive }
     public override func accessibilityPerformPress() -> Bool {
         guard isLive else { return false }
@@ -315,7 +319,7 @@ public final class RotationTile: NSView {
         return true
     }
     public override func accessibilityPerformShowMenu() -> Bool {
-        guard isToggleable else { return false }
+        guard showsRotationBadge, isToggleable else { return false }
         onToggle?(entry)
         return true
     }
@@ -357,6 +361,13 @@ public final class RotationTile: NSView {
     private func drawChrome(in frame: NSRect) {
         let path = NSBezierPath(roundedRect: frame, xRadius: Self.cornerRadius,
                                 yRadius: Self.cornerRadius)
+
+        if !showsRotationBadge {
+            (isHot ? NSColor.secondaryLabelColor : .separatorColor).setStroke()
+            path.lineWidth = 1
+            path.stroke()
+            return
+        }
 
         // Off looks off: a scrim over the picture, not a tint of it. Lifted while
         // a preview is playing — you pointed at it to see it, and the grey frame

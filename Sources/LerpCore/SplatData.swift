@@ -70,11 +70,11 @@ public final class SplatData: LerpDataProvider {
     /// The `path` move's keyframes: input, read once like the capture.
     private lazy var path: LerpSplatPath? = {
         guard move == .path else { return nil }
-        guard let url = LerpSplatAssets.url(for: captureName, extension: "path.json") else {
+        guard let location = LerpSplatAssets.location(for: captureName, extension: "path.json") else {
             NSLog("Lerping: %@ has no camera path (run `make splats`)", captureName)
             return nil
         }
-        return LerpSplatPath.load(url)
+        return LerpSplatPath.load(location)
     }()
 
     // Sort scratch, reused every frame.
@@ -819,10 +819,10 @@ final class LerpSplatAsset {
         self.shRotation = shRotation
     }
 
-    static func load(_ url: URL, device: MTLDevice) throws -> LerpSplatAsset {
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+    static func load(_ location: LerpSplatAssets.Location, device: MTLDevice) throws -> LerpSplatAsset {
+        let (data, limits) = try AssetSafety.readSplatFile(location)
         guard data.count >= 48, data.prefix(4) == Data("LSPL".utf8) else {
-            throw LerpSplatError.format("\(url.lastPathComponent) is not an .lsplat file")
+            throw LerpSplatError.format("\(location.url.lastPathComponent) is not an .lsplat file")
         }
         func u32(_ o: Int) -> UInt32 { data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt32.self) } }
         func f32(_ o: Int) -> Float { data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: Float.self) } }
@@ -835,6 +835,9 @@ final class LerpSplatAsset {
         let floatPositions = u32(12) & 1 != 0
         let posBytes = floatPositions ? 12 : 6
         let lo = SIMD3(f32(16), f32(20), f32(24)), hi = SIMD3(f32(28), f32(32), f32(36))
+        guard (0..<3).allSatisfy({ lo[$0].isFinite && hi[$0].isFinite && hi[$0] >= lo[$0] && (hi[$0] - lo[$0]).isFinite }) else {
+            throw LerpSplatError.format("invalid splat bounds")
+        }
         let payloadSize = Int(u32(40))
         // Version 2 carries view-dependent colour; its header grows by
         // rotation (9 floats, row-major), coefficient count, palette size and
@@ -849,13 +852,33 @@ final class LerpSplatAsset {
             shCoeffs = Int(u32(84))
             paletteCount = Int(u32(88))
             for k in 0..<256 { codebook[k] = f32(92 + 4 * k) }
+            guard codebook.allSatisfy(\.isFinite), rotation.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }) else {
+                throw LerpSplatError.format("non-finite splat color data")
+            }
         }
         let start = 48 + extra
-        guard data.count >= start + payloadSize else { throw LerpSplatError.format("truncated") }
-        let planes = try (data.subdata(in: start..<(start + payloadSize)) as NSData).decompressed(using: .zlib) as Data
-        let expected = n * (posBytes + 4 + 3 + 4) + (shCoeffs > 0 ? n * 3 + paletteCount * shCoeffs * 3 : 0)
-        guard planes.count == expected else {
-            throw LerpSplatError.format("payload is \(planes.count) bytes, expected \(expected)")
+        guard data.count == start + payloadSize else { throw LerpSplatError.format("invalid payload length") }
+        let expected = try AssetSafety.splatPayloadSize(count: n, positionBytes: posBytes,
+                                                       coefficients: shCoeffs, paletteCount: paletteCount, limits: limits)
+        let planes = try AssetSafety.inflateRaw(data, range: start..<(start + payloadSize), expectedBytes: expected, limits: limits)
+        if floatPositions {
+            let valid = planes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                (0..<(n * 3)).allSatisfy { raw.loadUnaligned(fromByteOffset: $0 * 4, as: Float.self).isFinite }
+            }
+            guard valid else { throw LerpSplatError.format("non-finite splat position") }
+        }
+        if shCoeffs > 0 {
+            // A palette label is used as a GPU pointer offset. Validate it
+            // before the bytes are uploaded, even if the payload size is right.
+            let valid = planes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                let labels = raw.bindMemory(to: UInt8.self).baseAddress! + (posBytes + 11) * n
+                for i in 0..<n {
+                    let label = Int(labels[i]) | Int(labels[n + i]) << 8 | Int(labels[2 * n + i]) << 16
+                    if label >= paletteCount { return false }
+                }
+                return true
+            }
+            guard valid else { throw LerpSplatError.format("splat palette label is out of range") }
         }
         guard let posBuf = device.makeBuffer(length: max(16, n * 16), options: .storageModeShared),
               let covBuf = device.makeBuffer(length: max(32, n * 32), options: .storageModeShared),
@@ -944,8 +967,54 @@ public enum LerpSplatAssets {
         LerpFileLocations.homeDirectories(appending: "Library/Application Support/Lerping/Splats")
     }
 
+    struct Location {
+        let url: URL
+        let cataloguedCheckout: Bool
+
+        fileprivate init(url: URL, cataloguedCheckout: Bool) {
+            self.url = url
+            self.cataloguedCheckout = cataloguedCheckout
+        }
+
+        static func external(_ url: URL) -> Self { Self(url: url, cataloguedCheckout: false) }
+    }
+
+    private struct SourceDirectory {
+        private struct Catalog: Decodable {
+            struct Capture: Decodable { let title: String }
+            let captures: [String: Capture]
+        }
+
+        let url: URL
+        let knownCaptures: Set<String>
+
+        init(shaders: URL) {
+            let shaders = shaders.resolvingSymlinksInPath().standardizedFileURL
+            let root = shaders.deletingLastPathComponent().deletingLastPathComponent()
+            url = root.appending(path: "build/splats")
+            let manifest = root.appending(path: "Sources/Splats/captures.json")
+            // Only the checkout's own capture catalog grants the higher
+            // ceilings. An arbitrary extra search directory is still strict.
+            if shaders.pathComponents.suffix(2) == ["Sources", "Shaders"],
+               FileManager.default.fileExists(atPath: root.appending(path: ".git").path),
+               manifest.path == manifest.resolvingSymlinksInPath().path,
+               let data = try? AssetSafety.readFile(manifest, limit: 256 * 1024),
+               let catalog = try? JSONDecoder().decode(Catalog.self, from: data) {
+                knownCaptures = Set(catalog.captures.keys)
+            } else {
+                knownCaptures = []
+            }
+        }
+
+        func location(_ name: String, suffix: String) -> Location {
+            let file = url.appendingPathComponent(name + "." + suffix).standardizedFileURL
+            let builtIn = knownCaptures.contains(name) && file.deletingLastPathComponent().path == url.path
+            return Location(url: file, cataloguedCheckout: builtIn)
+        }
+    }
+
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var extraDirectories: [URL] = []
+    nonisolated(unsafe) private static var extraDirectories: [SourceDirectory] = []
     nonisolated(unsafe) private static var cache: [String: LerpSplatAsset] = [:]
     nonisolated(unsafe) private static var recent: [String] = []
     nonisolated(unsafe) private static var loading: [String: NSCondition] = [:]
@@ -954,25 +1023,34 @@ public enum LerpSplatAssets {
 
     /// Called by `ShaderLibrary` with its source-tree search URLs.
     static func addSourceRoots(_ shaderDirectories: [URL]) {
+        let directories = shaderDirectories.map(SourceDirectory.init)
         lock.lock(); defer { lock.unlock() }
-        for dir in shaderDirectories {
-            let splats = dir.deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("build/splats").standardizedFileURL
-            if !extraDirectories.contains(splats) { extraDirectories.append(splats) }
+        for dir in directories where !extraDirectories.contains(where: { $0.url == dir.url }) {
+            extraDirectories.append(dir)
         }
     }
 
-    static func url(for name: String, extension ext: String = "lsplat") -> URL? {
+    static func location(for name: String, extension ext: String = "lsplat") -> Location? {
+        guard !name.isEmpty, !name.utf8.contains(where: { $0 == 0 || $0 == 47 || $0 == 92 }) else { return nil }
         lock.lock()
         var dirs = extraDirectories
         lock.unlock()
         if let repo = ShaderLocations.repoShaderDirectory() {
-            dirs.append(repo.deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("build/splats"))
+            let checkout = SourceDirectory(shaders: repo)
+            if !dirs.contains(where: { $0.url == checkout.url }) { dirs.append(checkout) }
         }
-        dirs = LerpBundleResources.directories(named: "Splats") + dirs + userDirectories()
-        return dirs.map { $0.appendingPathComponent(name + "." + ext) }
-            .first { FileManager.default.fileExists(atPath: $0.path) }
+        let filename = name + "." + ext
+        // A standalone preview's Bundle.main can have build/ as its resource
+        // root. On case-insensitive volumes "Splats" then aliases build/splats
+        // and would shadow the same file's catalogued checkout location.
+        let bundled = LerpBundleResources.directories(named: "Splats").filter { directory in
+            let contents = directory.deletingLastPathComponent().deletingLastPathComponent()
+            return contents.lastPathComponent == "Contents"
+                && ["app", "saver"].contains(contents.deletingLastPathComponent().pathExtension)
+        }.map { Location.external($0.appendingPathComponent(filename)) }
+        let user = userDirectories().map { Location.external($0.appendingPathComponent(filename)) }
+        return (bundled + dirs.map { $0.location(name, suffix: ext) } + user)
+            .first { FileManager.default.fileExists(atPath: $0.url.path) }
     }
 
     static func prefetch(_ name: String, device: MTLDevice) {
@@ -1003,8 +1081,8 @@ public enum LerpSplatAssets {
         lock.unlock()
 
         var loaded: LerpSplatAsset?
-        if let url = url(for: name) {
-            do { loaded = try LerpSplatAsset.load(url, device: device) }
+        if let location = location(for: name) {
+            do { loaded = try LerpSplatAsset.load(location, device: device) }
             catch { NSLog("Lerping: splat capture %@ failed to load: %@", name, "\(error)") }
         } else {
             NSLog("Lerping: splat capture %@.lsplat not found (run `make splats`)", name)

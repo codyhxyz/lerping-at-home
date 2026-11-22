@@ -1,5 +1,5 @@
 {
-  "_comment": "Photoreal 3DGS captures for the splat looks. Each is downloaded and converted by `make splats` (scripts/splat-convert.py); none is stored in git. Every one is CC BY 4.0 on SuperSplat (credit in NOTICE.txt). The transform puts each subject at the origin, y up, radius about 1.",
+  "_comment": "Photoreal 3DGS captures for the splat looks. Each is downloaded and converted by `make splats` (scripts/splat-convert.py); none is stored in git. See each capture's SuperSplat license and NOTICE.txt. Unlicensed and noncommercial captures are local-only. Sefer Torah's CC BY-SA 4.0 adaptation is a separable asset distributed under its own license, not the program's AGPL. The transform puts each subject at the origin, y up, radius about 1.",
   "captures": {
     "strawberry": {
       "title": "Strawberry",

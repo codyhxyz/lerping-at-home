@@ -51,3 +51,74 @@ final class CaptionReveal: NSResponder {
 
     private func update() { view.captionHeld = moving || pinned }
 }
+
+/// The timed title-card reveal shared by the two picture-only window modes.
+@MainActor
+final class TransientOverlay {
+    private weak var view: NSView?
+    private let linger: TimeInterval
+    private var timer: Timer?
+    private var deadline: TimeInterval?
+    private var remaining: TimeInterval?
+    private var paused = false
+
+    init(view: NSView, linger: TimeInterval) {
+        self.view = view
+        self.linger = linger
+        view.alphaValue = 0
+    }
+
+    deinit { timer?.invalidate() }
+
+    func flash() {
+        cancelTimer()
+        remaining = linger
+        if !paused { present(for: linger) }
+    }
+
+    func setPaused(_ paused: Bool) {
+        guard paused != self.paused else { return }
+        self.paused = paused
+        if paused {
+            remaining = deadline.map { max(0, $0 - ProcessInfo.processInfo.systemUptime) }
+            cancelTimer()
+        } else if let remaining {
+            present(for: remaining)
+        }
+    }
+
+    func reset() {
+        cancelTimer()
+        remaining = nil
+        view?.alphaValue = 0
+    }
+
+    private func present(for seconds: TimeInterval) {
+        setAlpha(1, duration: 0.2)
+        deadline = ProcessInfo.processInfo.systemUptime + seconds
+        let timer = Timer(timeInterval: max(seconds, 0.01), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.cancelTimer()
+                self?.remaining = nil
+                self?.setAlpha(0, duration: 0.8)
+            }
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func cancelTimer() {
+        timer?.invalidate()
+        timer = nil
+        deadline = nil
+    }
+
+    private func setAlpha(_ alpha: CGFloat, duration: TimeInterval) {
+        guard let view else { return }
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduceMotion ? 0 : duration
+            view.animator().alphaValue = alpha
+        }
+    }
+}
