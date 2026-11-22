@@ -1,0 +1,156 @@
+{
+  "_comment": "Commercial release allowlist. Shader groups record the primary upstream license for adapted shaders (see NOTICE.txt for details and additional upstream terms); original shader code is AGPL. Splat shaders are classified dynamically via their capture IDs.",
+  "captures": {
+    "bonsai": "CC BY 4.0",
+    "castle": "CC BY 4.0",
+    "fruit-bowl": "CC BY 4.0",
+    "grape": "CC BY 4.0",
+    "medinet-habu": "CC BY 4.0",
+    "owl": "CC BY 4.0",
+    "quartz-crystal": "CC BY 4.0",
+    "saka-shrine": "CC BY 4.0",
+    "sefer-torah": "CC BY-SA 4.0",
+    "shenley-church": "CC BY 4.0",
+    "strawberry": "CC BY 4.0",
+    "tiny-planet": "CC BY 4.0",
+    "triceratops": "CC BY 4.0",
+    "trogir-square": "CC BY 4.0",
+    "vanadinite": "CC BY 4.0",
+    "vesta": "CC BY 4.0"
+  },
+  "shaders_by_license": {
+    "AGPL-3.0-or-later": [
+      "agate",
+      "aurora",
+      "block-diorama",
+      "block-flip",
+      "block-river",
+      "block-weather",
+      "cascade",
+      "critter",
+      "curl-flow",
+      "depth-window",
+      "diffraction-foil",
+      "doorways",
+      "ferrofluid",
+      "frost-dendrites",
+      "game-of-life",
+      "glass-pipes",
+      "hedge-maze",
+      "ink-fluid",
+      "kleinian",
+      "lamplight",
+      "lantern-hill",
+      "laser-interferometer",
+      "lava-veins",
+      "little-planet",
+      "mandelbox",
+      "mandelbulb",
+      "maze",
+      "menger-sponge",
+      "mystify-cavity",
+      "neural-field",
+      "overworld",
+      "peek",
+      "physarum",
+      "pipes",
+      "piston-clock",
+      "polytope-4d",
+      "prism-caustics",
+      "quaternion-julia",
+      "reaction-diffusion",
+      "sandpile",
+      "sierpinski-pyramid",
+      "sponge-descent",
+      "strata",
+      "toaster-flight",
+      "vector-scope",
+      "village-timelapse",
+      "window-room",
+      "xdr-starfield"
+    ],
+    "Apache-2.0": [
+      "color-panels",
+      "dithering",
+      "dot-grid",
+      "dot-orbit",
+      "fluted-glass",
+      "gem-smoke",
+      "god-rays",
+      "grain-gradient",
+      "halftone-cmyk",
+      "halftone-dots",
+      "heatmap",
+      "image-dithering",
+      "lens-distortion",
+      "liquid-metal",
+      "mesh-gradient",
+      "metaballs",
+      "neuro-noise",
+      "paper-texture",
+      "perlin-noise",
+      "pulsing-border",
+      "simplex-noise",
+      "smoke-ring",
+      "spiral",
+      "static-mesh-gradient",
+      "static-radial-gradient",
+      "swirl",
+      "voronoi",
+      "warp",
+      "water",
+      "waves"
+    ],
+    "MIT": [
+      "castle-to-castle",
+      "fractal-d",
+      "fractal-multiverse",
+      "simulated-reality",
+      "star-nest"
+    ],
+    "CC-BY-4.0": [
+      "axes",
+      "cutout-shadows",
+      "halo",
+      "neural-ca",
+      "torque"
+    ],
+    "CC0-1.0": [
+      "pulse-rings",
+      "sea-and-moon",
+      "string-art",
+      "topologica"
+    ],
+    "Unlicense": [
+      "dusk-terrain"
+    ]
+  },
+  "dependency_notices": {
+    "Paper Shaders": [
+      "Copyright Paper Design",
+      "paper-design/shaders"
+    ],
+    "SwiftMIDI": [
+      "swift-midi-core",
+      "swift-midi-io",
+      "Copyright (c) 2026 Steffan Andrews"
+    ],
+    "MediaPipe": [
+      "@mediapipe/tasks-vision 0.10.35",
+      "Copyright Google LLC",
+      "hand and face landmarker"
+    ],
+    "Growing Neural Cellular Automata": [
+      "ex3_planarian",
+      "NEURAL-CA-APACHE-2.0.txt",
+      "NEURAL-CA-CC-BY-4.0.txt"
+    ],
+    "Critter models": [
+      "tools/critter-assets"
+    ],
+    "Minecraft": [
+      "Mojang",
+      "not redistributed"
+    ]
+  }
+}
