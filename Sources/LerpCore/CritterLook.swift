@@ -298,7 +298,7 @@ public enum CritterLook {
         var light = SIMD4<Float>(0, 1, 0, 0)
         var sun = SIMD4<Float>(1.12, 1.04, 0.92, 0)
         var amb = SIMD4<Float>(0.55, 0.7, 0.95, 0)
-        var bend = SIMD4<Float>(0.011, 0, 0, 14.5)
+        var bend = SIMD4<Float>(0.008, 0, 0, 14.5)
         var face = SIMD4<Float>(0.5, 0, 0, 0)
         var eyes = SIMD4<Float>(1, 0, 0, 0)
         var who = SIMD4<Float>(0, 0.85, 0.31, 2)

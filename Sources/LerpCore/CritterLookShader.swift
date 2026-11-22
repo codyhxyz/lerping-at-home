@@ -4,7 +4,7 @@ import Foundation
 // material (the kind is a per-material uniform), so SceneKit compiles a
 // handful of variants rather than one program per kind.
 //
-//   geometry        the rolled world (every vertex but the sky's drops by
+//   geometry        the rolled world (every vertex but the sky's and its clouds' drops by
 //                   bend·|xz − focus|², its normal tilts to match) and, on an
 //                   ink hull, the push along the normal. Hands the fragment the
 //                   unbent world, object and critter-local positions.
@@ -94,19 +94,43 @@ enum CritterLookShader {
         float3 day = mix(float3(0.87, 0.95, 1.0), float3(1.0, 0.7, 0.46), u.sun.w);
         return mix(day, float3(0.12, 0.15, 0.3), u.light.w);
     }
-    static inline float3 lkSky(float3 rd, LookU u) {
+    // The sky as seen from `cam`. The rolled world drops the sea's horizon
+    // well below eye level (and further at the sides of the frame than in
+    // the middle), so the only sky ever on screen is the part a flat world
+    // would hide under its horizon. The dome is therefore drawn from the
+    // horizon that is actually there: `rd` becomes the same bearing at its
+    // height above the visible horizon, and the gradient, the sun, the moon
+    // and the stars are all placed by that.
+    static inline float3 lkSkyRay(float3 rd, float3 cam, LookU u) {
+        float b = u.bend.x;
+        float2 c = cam.xz - u.bend.yz;
+        float hl = max(length(rd.xz), 1e-4);
+        float2 h = rd.xz / hl;
+        // slope of the line from the camera that just grazes the rolled sea
+        float graze = -(2.0 * sqrt(max(b * (cam.y + 0.2) + b * b * dot(c, c), 0.0)) + 2.0 * b * dot(c, h));
+        float e = atan2(rd.y, hl) - atan(graze);
+        return float3(h.x * cos(e), sin(e), h.y * cos(e));
+    }
+    static inline float3 lkSky(float3 ray, float3 cam, LookU u) {
         float night = u.light.w, golden = u.sun.w, t = u.amb.w;
-        float y = clamp(rd.y, -0.2, 1.0);
-        float3 top = mix(mix(float3(0.45, 0.76, 0.95), float3(0.5, 0.52, 0.85), golden), float3(0.025, 0.04, 0.12), night);
+        float3 rd = lkSkyRay(ray, cam, u);
+        float y = max(rd.y, 0.0);
+        float3 top = mix(mix(float3(0.27, 0.6, 0.95), float3(0.42, 0.44, 0.84), golden), float3(0.02, 0.035, 0.115), night);
         float3 hor = lkHorizon(u);
-        float3 c = mix(hor, top, smoothstep(-0.02, 0.75, y));
+        // most of the climb happens in the band the camera sees
+        float3 c = mix(hor, top, 1.0 - exp(-3.4 * y));
+        // a warm band hugging the horizon at dusk and dawn
+        c = mix(c, float3(1.0, 0.56, 0.36), golden * 0.55 * exp(-14.0 * y));
         float3 sd3 = normalize(u.sunDir.xyz);
         float sd = dot(rd, sd3);
         float day = 1.0 - night;
         c += day * pow(max(sd, 0.0), 14.0) * mix(float3(0.16, 0.13, 0.06), float3(0.5, 0.26, 0.08), golden);
         float sun = lkFill(0.9993 - sd);
         c = mix(c, mix(float3(1.0, 0.98, 0.9), float3(1.0, 0.86, 0.6), golden), sun * day);
-        float3 md3 = normalize(u.moonDir.xyz);
+        // The moon is drawn low, on the bearing its light comes from, where
+        // a camera that looks down at the island can find it.
+        float3 md3 = normalize(float3(u.moonDir.x, 0.0, u.moonDir.z));
+        md3 = normalize(md3 + float3(0.0, 0.115, 0.0));
         float md = dot(rd, md3);
         float moon = lkFill(0.99955 - md);
         // a crescent: the disc less one nudged toward the sun's side
@@ -122,7 +146,7 @@ enum CritterLookShader {
             float r = length(fract(st) - 0.5 - o * 0.6);
             float star = lkFill(r - 0.07 - 0.05 * fract(h * 13.0)) * step(0.955, h);
             star *= 0.65 + 0.35 * sin(lkPhase(t, 1.0 + 3.0 * h) + h * 40.0);
-            c += night * star * smoothstep(0.02, 0.2, rd.y) * float3(0.95, 0.95, 1.0);
+            c += night * star * smoothstep(0.015, 0.12, rd.y) * float3(0.95, 0.95, 1.0);
         }
         return c;
     }
@@ -147,7 +171,7 @@ enum CritterLookShader {
     out.lookO = _geometry.position.xyz;
     out.lookC = (lookU.critterInv * lkWp).xyz;
     int lkKind = int(lookMat.x + 0.5);
-    if (lkKind != LK_SKY) {
+    if (lkKind != LK_SKY && lkKind != LK_SKYCLOUD) {
         float lkB = lookU.bend.x;
         float2 lkD = lkWp.xz - lookU.bend.yz;
         lkWp.y -= lkB * dot(lkD, lkD);
@@ -217,7 +241,7 @@ enum CritterLookShader {
 
     if (kind == LK_SKY) {
         unlit = true;
-        flat = lkSky(normalize(W - camW), u);
+        flat = lkSky(normalize(W - camW), camW, u);
     } else if (kind == LK_BODY || kind == LK_LIMB) {
         alb = bodyCol;
         float3 rel = C - float3(0.0, 0.95, 0.0);
@@ -433,7 +457,16 @@ enum CritterLookShader {
         // by night colours fade toward moonlit blue (not for its own glow)
         float lum = dot(alb, float3(0.3, 0.55, 0.15));
         alb = mix(alb, lum * float3(0.55, 0.75, 1.25), night * 0.55);
-        float3 lin = alb * (amb + key * lit);
+        float3 shade = alb;
+        if (kind == LK_BODY || kind == LK_LIMB) {
+            // Its own shade keeps its colour — deeper and warmer rather than
+            // greyed by the sky — and a soft fill from where we stand keeps
+            // its face readable when the sun is behind it.
+            float l = max(dot(alb, float3(0.3, 0.55, 0.15)), 1e-3);
+            shade = mix(alb, alb * alb / l, 0.5) * float3(1.1, 1.0, 1.0);
+            amb *= 1.0 + 0.4 * max(dot(N, V), 0.0);
+        }
+        float3 lin = mix(shade, alb, lit) * amb + alb * key * lit;
         float fr = pow(clamp(1.0 - dot(N, V), 0.0, 1.0), 3.0);
         lin += lkLin(lkHorizon(u)) * rim * fr * (0.35 + 0.4 * lit) * alb * 1.6;
         if (spec > 0.0) {

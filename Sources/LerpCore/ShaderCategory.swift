@@ -16,7 +16,7 @@ import Foundation
 public enum LerpShaderCategory {
     /// In selector order, grouped by what the look feels like rather than
     /// how it is rendered.
-    public static let shelves = ["Atmosphere", "Living Worlds", "Windows", "Sound & Flow", "Meditative"]
+    public static let shelves = ["Atmosphere", "Living Worlds", "Windows", "Artifacts", "Sound & Flow", "Meditative"]
     public static let other = "Other"
 
     public static let directive = "lerp-category:"

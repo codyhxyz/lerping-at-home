@@ -545,6 +545,9 @@ enum CritterSelfTest {
         if !((0...9).contains(f.act) && (0...9).contains(f.prevAct)) { return "act \(f.act)/\(f.prevAct)" }
         if !(f.hour >= 0 && f.hour < 24) { return "hour = \(f.hour)" }
         if !(f.flap >= 0 && f.flap <= 1.33) { return "flap = \(f.flap)" }
+        if !(abs(f.sproutSway.x) <= 0.8 && abs(f.sproutSway.y) <= 0.8) { return "sproutSway = \(f.sproutSway)" }
+        if !(abs(f.leafFlap) <= 0.65) { return "leafFlap = \(f.leafFlap)" }
+        if f.stage == 0 && (f.sproutSway != .zero || f.leafFlap != 0) { return "an egg has no sprout to sway" }
         if f.trees.count != f.treeCount || f.treeBase.count != f.treeCount || !(2...8).contains(f.treeCount) {
             return "trees \(f.trees.count)/\(f.treeCount)"
         }
@@ -796,13 +799,30 @@ enum CritterSelfTest {
         // over (dtake = 1 − smoothstep(3.4, 4.3, 5) = 0), BUILD's face weight is
         // 0, so the camera sits at the bare azimuth 2π·0.31 + 5·0.02·0.35.
         let x = B.frame(vitals: fixture, time: 5, seed: 0, params: nil)
-        let wantCam = SIMD3<Float>(2.5935002, 2.0058287, -1.0662413)
+        let wantCam = SIMD3<Float>(2.5935002, 1.6348328, -1.0662413)
         let wantTarget = SIMD3<Float>(-0.0103949, 0.5455256, 0.0716622)
         let camErr = simd_length(x.camPos - wantCam) + simd_length(x.camTarget - wantTarget)
         check(x.act == B.actBuild && x.stage == 2 && abs(x.size - 0.3595687) < 1e-5 && camErr < 1e-4
               && x.treeCount == 5 && x.night == 0 && x.golden == 0 && x.dtake == 0,
               "behaviour: matches the shader worked by hand at t = 5 (BUILD, s 0.3596, camera "
               + "(\(f(x.camPos.x)), \(f(x.camPos.y)), \(f(x.camPos.z))), error \(String(format: "%.1e", camErr)), 5 trees, day)")
+
+        // Follow-through. Sitting, the sprout stirs in the breeze and with
+        // the odd sneeze; a hop's landing sets the leaves bouncing; and what
+        // the spring remembers is a function of the time alone, so nothing
+        // it does arrives in a single frame.
+        var still: Float = 0, bounce: Float = 0, jump: Float = 0
+        for i in 0..<240 {
+            let t = 40 + Float(i) / 60
+            let sat = at(B.actSit, t)
+            still = max(still, max(abs(sat.sproutSway.x), abs(sat.sproutSway.y), abs(sat.leafFlap)))
+            let hop = at(B.actHop, t), next = at(B.actHop, t + 1 / 60)
+            bounce = max(bounce, abs(hop.leafFlap))
+            jump = max(jump, abs(next.leafFlap - hop.leafFlap), simd_length(next.sproutSway - hop.sproutSway))
+        }
+        check(still < 0.2 && bounce > 0.15 && jump < 0.1,
+              "behaviour: the sprout stirs sitting (\(f(still)) rad), bounces hopping (\(f(bounce)) rad), "
+              + "and never jumps (\(f(jump)) rad a frame)")
 
         // The orientation helper composes as critterWorld does.
         var orientErr: Float = 0

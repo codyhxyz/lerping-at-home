@@ -70,56 +70,20 @@ public enum CritterBehavior {
         f.stage = stage; f.size = s; f.season = season; f.identity = ident
         f.health = S.health; f.bloom = S.bloom; f.ageDays = S.ageDays
         f.hatch = hatch; f.wobble = wobble; f.droop = droop
-        f.bend = 0.011
+        f.bend = 0.008
 
-        // ---- tellStory: what it is doing
-        let az = twoPi * fract(seed * 7.31 + ident) + time * 0.02 * drift
-        let right = SIMD2<Float>(cos(az), -sin(az))
-        let tl = time + seed * 997.0
+        // ---- tellStory, poseCritter: what it is doing, and how it stands
+        let who = Who(vitals: S, weights: w, seed: seed, drift: drift, actParam: actParam, stage: stage, size: s)
+        let told = tell(who, time)
+        let P = told.pose
+        let az = told.az, act = told.act, prevAct = told.prevAct, k = told.k, dtake = told.dtake
         let chapter = floor(time / chapterLength)
         let inCh = time - chapter * chapterLength
-        let castle2 = right * 0.5 + SIMD2<Float>(sin(az), cos(az)) * 0.35
-        let act = stage == 0 ? actIdle : (actParam >= 0 ? Int(actParam) : pickActivity(chapter, seed, w))
-        // DEVIATION (bug): the shader picked an egg's previous activity like
-        // anyone's, so each chapter opened with a castle sinking, a butterfly
-        // or a cloud fading round the egg. An egg was idle then too.
-        let prevAct = (chapter < 0.5 || actParam >= 0 || stage == 0) ? act : pickActivity(chapter - 1.0, seed, w)
-        let rr = hash11(chapter * 3.7 + seed * 17.0)
-        let rp = hash11((chapter - 1.0) * 3.7 + seed * 17.0)
-        let k = chapter < 0.5 ? 1.0 : smoothstep(0.0, 2.5, inCh)
-        let dtake: Float = (stage > 0 && act != actSleep && chapter < 0.5) ? 1.0 - smoothstep(3.4, 4.3, time) : 0.0
+        let tl = time + seed * 997.0
+        let castle2 = told.castle
         let sick = (act == actSick ? k : 0.0) + (prevAct == actSick ? 1.0 - k : 0.0)
         let storm = (act == actPace ? k : 0.0) + (prevAct == actPace ? 1.0 - k : 0.0)
         f.act = act; f.prevAct = prevAct; f.k = k
-
-        // ---- poseCritter
-        var P = makePose(act, tl, rr, s, az, right, castle2, S)
-        if k < 1.0 {
-            // DEVIATION (continuity): the turn between the two poses is
-            // unwrapped from where it stood when the blend began, so a facing
-            // that swings through the half-turn mid-blend (a chase, a pace)
-            // no longer snaps by 2π·k. Identical to the shader otherwise.
-            let tl0 = chapter * chapterLength + seed * 997.0
-            let ref = makePose(act, tl0, rr, s, az, right, castle2, S).yaw
-                    - makePose(prevAct, tl0, rp, s, az, right, castle2, S).yaw
-            P = blendPose(makePose(prevAct, tl, rp, s, az, right, castle2, S), P, k, turnFrom: ref)
-        }
-        // DEVIATION (continuity): the shader faded a beat in with k² but never
-        // out, so a beat under way when a chapter ended vanished in a frame
-        // (a mouth snapping from a smile to a frown). The last chapter's beat
-        // now fades out with (1 − k)² as this one's fades in.
-        if k < 1.0 && beats(prevAct) { addBeat(&P, tl, seed, prevAct, (1.0 - k) * (1.0 - k)) }
-        if beats(act) { addBeat(&P, tl, seed, act, k * k) }
-        if dtake > 0.0 {
-            // Unwrapped from 3.4 s, where the blend out of the double-take starts.
-            var ref: Float? = nil
-            if dtake < 1.0 {
-                let t0: Float = 3.4
-                ref = doubleTake(P, t0, az, s).yaw - makePose(act, t0 + seed * 997.0, rr, s, az, right, castle2, S).yaw
-            }
-            P = blendPose(P, doubleTake(P, time, az, s), dtake, turnFrom: ref)
-        }
-        if stage == 0 { P.pos = .zero; P.yaw = az }
         let cxz = SIMD2<Float>(P.pos.x, P.pos.z)
         var cpos = SIMD3<Float>(cxz.x, groundHeight(cxz, identity: ident) + P.pos.y, cxz.y)
         let sag = clamp((0.65 - S.health) / 0.45, 0.0, 1.0)
@@ -148,6 +112,20 @@ public enum CritterBehavior {
         f.armDirL = simd_normalize(SIMD3<Float>(-aL.x * (1.0 - rc) - 0.15 * rc, -aL.y, mix(0.3, aL.x, rc)))
         f.armDirR = simd_normalize(SIMD3<Float>(aR.x * (1.0 - rc) + 0.15 * rc, -aR.y, mix(0.3, aR.x, rc)))
 
+        // The sprout: trailing the head's motion, and never quite still in
+        // the breeze. Angles; the leaves' flap is positive downward.
+        if stage > 0 {
+            let lag = followThrough(who, time)
+            let c = cos(f.yaw), sn = sin(f.yaw)
+            let side = c * lag.x - sn * lag.z, fwd = sn * lag.x + c * lag.z
+            let stem = 0.4 * s, gain: Float = 0.6
+            f.sproutSway = SIMD2(
+                clamp(gain * side / stem, -0.7, 0.7) + 0.05 * sin(tphase(time, 1.3) + ident * 9.0)
+                    + 0.025 * sin(tphase(time, 2.9)),
+                clamp(gain * fwd / stem, -0.7, 0.7) + 0.035 * sin(tphase(time, 0.9) + 1.0))
+            f.leafFlap = clamp(-gain * lag.y / (0.3 * s), -0.6, 0.6) + 0.04 * sin(tphase(time, 3.3) + ident * 5.0)
+        }
+
         // ---- placeProps: its cloud and its sandcastle
         f.cloud = max(sick, storm) * mix(0.8, 1.0, s)
         f.cloudDark = storm
@@ -161,7 +139,9 @@ public enum CritterBehavior {
         let zoom = mix(1.0, fsz / 0.5, 0.75)
         let target = SIMD3<Float>(cpos.x * 0.65, 0.15 + 1.1 * fsz + 0.35 * f.cloud, cpos.z * 0.65)
         f.focus = SIMD2(target.x, target.z)
-        let dist = 3.6 * zoom, height = 1.85 * zoom
+        // Low enough that a third of the frame is sky and the trees stand
+        // against it, high enough that the sea still shows past the far shore.
+        let dist = 3.6 * zoom, height = 1.38 * zoom
         let faceW = mix(camFaceWeight(prevAct), camFaceWeight(act), k)
         let caz = az + faceW * sin(f.yaw - az)
         var ro = target + SIMD3<Float>(sin(caz) * dist, height, cos(caz) * dist)
@@ -255,6 +235,117 @@ public enum CritterBehavior {
         return f
     }
 
+    // ------------------------------------------------------------ the story
+
+    /// Everything about the critter that holds for a whole session.
+    struct Who {
+        var vitals: CritterVitals
+        var weights: [Float]
+        var seed: Float, drift: Float
+        var actParam: Int32
+        var stage: Int
+        var size: Float
+    }
+
+    /// What it is doing at one moment, and the pose that makes.
+    struct Told {
+        var pose = Pose()
+        var az: Float = 0
+        var act = 0, prevAct = 0
+        var k: Float = 1, dtake: Float = 0
+        var castle = SIMD2<Float>(0, 0)
+    }
+
+    /// tellStory and poseCritter at `time`: a pure function, so the frame can
+    /// ask where it stood a moment ago (see `followThrough`).
+    static func tell(_ who: Who, _ time: Float) -> Told {
+        let S = who.vitals, seed = who.seed, s = who.size, stage = who.stage, actParam = who.actParam
+        let ident = S.identity
+        let az = twoPi * fract(seed * 7.31 + ident) + time * 0.02 * who.drift
+        let right = SIMD2<Float>(cos(az), -sin(az))
+        let tl = time + seed * 997.0
+        let chapter = floor(time / chapterLength)
+        let inCh = time - chapter * chapterLength
+        let castle2 = right * 0.5 + SIMD2<Float>(sin(az), cos(az)) * 0.35
+        let act = stage == 0 ? actIdle : (actParam >= 0 ? Int(actParam) : pickActivity(chapter, seed, who.weights))
+        // DEVIATION (bug): the shader picked an egg's previous activity like
+        // anyone's, so each chapter opened with a castle sinking, a butterfly
+        // or a cloud fading round the egg. An egg was idle then too.
+        let prevAct = (chapter < 0.5 || actParam >= 0 || stage == 0) ? act : pickActivity(chapter - 1.0, seed, who.weights)
+        let rr = hash11(chapter * 3.7 + seed * 17.0)
+        let rp = hash11((chapter - 1.0) * 3.7 + seed * 17.0)
+        let k = chapter < 0.5 ? 1.0 : smoothstep(0.0, 2.5, inCh)
+        let dtake: Float = (stage > 0 && act != actSleep && chapter < 0.5) ? 1.0 - smoothstep(3.4, 4.3, time) : 0.0
+
+        var P = makePose(act, tl, rr, s, az, right, castle2, S)
+        if k < 1.0 {
+            // DEVIATION (continuity): the turn between the two poses is
+            // unwrapped from where it stood when the blend began, so a facing
+            // that swings through the half-turn mid-blend (a chase, a pace)
+            // no longer snaps by 2π·k. Identical to the shader otherwise.
+            let tl0 = chapter * chapterLength + seed * 997.0
+            let ref = makePose(act, tl0, rr, s, az, right, castle2, S).yaw
+                    - makePose(prevAct, tl0, rp, s, az, right, castle2, S).yaw
+            P = blendPose(makePose(prevAct, tl, rp, s, az, right, castle2, S), P, k, turnFrom: ref)
+        }
+        // DEVIATION (continuity): the shader faded a beat in with k² but never
+        // out, so a beat under way when a chapter ended vanished in a frame
+        // (a mouth snapping from a smile to a frown). The last chapter's beat
+        // now fades out with (1 − k)² as this one's fades in.
+        if k < 1.0 && beats(prevAct) { addBeat(&P, tl, seed, prevAct, (1.0 - k) * (1.0 - k)) }
+        if beats(act) { addBeat(&P, tl, seed, act, k * k) }
+        if dtake > 0.0 {
+            // Unwrapped from 3.4 s, where the blend out of the double-take starts.
+            var ref: Float? = nil
+            if dtake < 1.0 {
+                let t0: Float = 3.4
+                ref = doubleTake(P, t0, az, s).yaw - makePose(act, t0 + seed * 997.0, rr, s, az, right, castle2, S).yaw
+            }
+            P = blendPose(P, doubleTake(P, time, az, s), dtake, turnFrom: ref)
+        }
+        if stage == 0 { P.pos = .zero; P.yaw = az }
+        return Told(pose: P, az: az, act: act, prevAct: prevAct, k: k, dtake: dtake, castle: castle2)
+    }
+
+    /// The top of its head (where the sprout grows), in the world, as the
+    /// body carries it. Squash is left out: a landing squashes in a single
+    /// frame, on purpose, and a spring fed that would be fed a teleport.
+    static func crown(_ P: Pose, size s: Float, identity: Float) -> SIMD3<Float> {
+        var f = CritterFrame()
+        let xz = SIMD2<Float>(P.pos.x, P.pos.z)
+        f.position = SIMD3(xz.x, groundHeight(xz, identity: identity) + P.pos.y, xz.y)
+        f.yaw = P.yaw; f.lean = P.lean; f.roll = P.roll
+        return f.critterWorld(SIMD3(0, 1.9 * s, 0))
+    }
+
+    /// How far the tip of the sprout trails its root, in the world: the
+    /// sprout as a damped spring (2 Hz, a few bounces) carried by the head.
+    /// A spring keeps a memory, and a frame may not, so the memory is
+    /// recomputed: the head's path over the last 0.9 s (the pose is a pure
+    /// function of time) is run through the spring's own response. A hop's
+    /// landing, a step, a sneeze, the jolt of noticing you each leave the
+    /// leaves bouncing for a moment after the body has stopped.
+    static func followThrough(_ who: Who, _ time: Float) -> SIMD3<Float> {
+        let n = 27
+        let dt: Float = 1.0 / 30.0
+        let omega: Float = 13.0, zeta: Float = 0.22
+        let wd = omega * (1.0 - zeta * zeta).squareRoot()
+        var path: [SIMD3<Float>] = []
+        path.reserveCapacity(n + 1)
+        for i in 0...n {
+            // A session has no past before its first frame.
+            let then = time >= 0 ? max(time - Float(i) * dt, 0) : time - Float(i) * dt
+            path.append(crown(tell(who, then).pose, size: who.size, identity: who.vitals.identity))
+        }
+        var lag = SIMD3<Float>(0, 0, 0)
+        for i in 1..<n {
+            let tau = Float(i) * dt
+            let accel = (path[i - 1] - 2.0 * path[i] + path[i + 1]) / (dt * dt)
+            lag -= accel * (exp(-zeta * omega * tau) * sin(wd * tau) / wd * dt)
+        }
+        return lag
+    }
+
     // ------------------------------------------------------------ behaviour
 
     struct Pose {
@@ -339,7 +430,9 @@ public enum CritterBehavior {
             let x = 1.15 * sin(t * 0.8 + r * 6.0)
             let vx = cos(t * 0.8 + r * 6.0)
             P.pos = SIMD3(right.x * x, abs(sin(t * 7.0)) * 0.05 * s, right.y * x)
-            P.yaw = az + 1.5708 * clamp(vx * 3.0, -1.0, 1.0)
+            // Not side-on: turned half toward us as it goes, as an actor is.
+            // A face on a ball is gone from view by 60° of turn.
+            P.yaw = az + 0.85 * clamp(vx * 3.0, -1.0, 1.0)
             P.stride = 1.0
             P.lean = 0.16
             P.armL = 0.45 + 0.25 * sin(t * 7.0); P.armR = 0.45 - 0.25 * sin(t * 7.0)

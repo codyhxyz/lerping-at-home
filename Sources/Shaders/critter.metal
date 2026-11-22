@@ -9,8 +9,8 @@
 // tools/critter-assets) and renders them with SceneKit into a texture before
 // this pass runs. See CritterFrame.swift for how the parts fit.
 //
-// This file is the compositor: the rendered island (CritterLook draws the
-// sky dome; the gradient here only fills what the scene left empty), then the 2D things that float over it — Zzz, hearts,
+// This file is the compositor: the rendered island under CritterLook's sky
+// dome, then the 2D things that float over it — Zzz, hearts,
 // sparkles, rain, lightning, the scribble of a frazzled mind, a sweat drop,
 // the "!" of noticing you, fireflies — then the season in the air, a gentle
 // vignette and dither. Every overlay hangs off an anchor CritterData projects
@@ -94,23 +94,6 @@ struct FX {
     float  zzz, love, glee, sick, storm, flash, sweat, bang, frazzle, butterfly;
     float  night;
 };
-
-// ---- the sky, where the scene drew none
-
-static float3 skyColor(float3 rd, float3 sunDir, float night, float golden) {
-    float y = clamp(rd.y, -0.2, 1.0);
-    float3 top = mix(mix(float3(0.494, 0.784, 0.949), float3(0.40, 0.42, 0.76), golden), float3(0.02, 0.035, 0.11), night);
-    float3 hor = mix(mix(float3(0.867, 0.953, 1.0), float3(1.0, 0.70, 0.52), golden), float3(0.09, 0.12, 0.26), night);
-    float3 c = mix(hor, top, pow(smoothstep(-0.05, 0.65, y), 0.7));
-    float sd = max(dot(rd, sunDir), 0.0);
-    c += (1.0 - night) * (float3(1.0, 0.9, 0.7) * 0.25 * pow(sd, 24.0) + float3(1.0, 0.97, 0.9) * smoothstep(0.9993, 0.9996, sd));
-    // A few stars at night.
-    float2 sp = float2(atan2(rd.z, rd.x) * 40.0, rd.y * 60.0);
-    float2 cell = floor(sp);
-    float star = step(0.985, hash21(cell)) * smoothstep(0.25, 0.05, length(fract(sp) - 0.5));
-    c += star * night * smoothstep(0.02, 0.2, rd.y) * 0.8;
-    return c;
-}
 
 // ---- overlays: the floating 2D things, each drawn over `col`
 
@@ -347,13 +330,9 @@ fragment half4 lerpMain(float4 pos [[position]],
     cam.fw = S.cam1.xyz; cam.rt = S.cam2.xyz; cam.up = S.cam3.xyz;
     float zNear = S.cam1.w, zFar = S.cam2.w;
 
-    // The scene, gamma-encoded and premultiplied; the sky behind it.
-    float4 scene = sceneTex.sample(linearClamp, suv);
-    float3 col = scene.rgb;
-    if (S.cam3.w < 0.5 && scene.a < 0.999) {
-        float3 rd = normalize(uv.x * cam.rt + uv.y * cam.up + cam.focal * cam.fw);
-        col += (1.0 - scene.a) * skyColor(rd, S.light.xyz, S.sky.x, S.sky.y);
-    }
+    // The scene, display-encoded. CritterLook's sky dome fills every pixel
+    // the island does not.
+    float3 col = sceneTex.sample(linearClamp, suv).rgb;
     uint2 dsz = uint2(depthTex.get_width(), depthTex.get_height());
     uint2 dp = min(uint2(suv * float2(dsz)), dsz - 1);
     float zb = depthTex.read(dp).r;

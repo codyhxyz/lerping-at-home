@@ -86,6 +86,11 @@ enum PreviewMain {
             return
         }
 
+        if args.contains("--artifact-selftest") {
+            ArtifactSelfTest.run(extraSearch)
+            return
+        }
+
         if args.contains("--ferrofluid-selftest") {
             ferrofluidSelfTest(extraSearch)
             return

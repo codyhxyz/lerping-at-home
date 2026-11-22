@@ -475,6 +475,20 @@ depth-window: $(BUILD)/DepthWindow $(DEPTH_MODEL_STAMP)
 		} > "$$look" && echo "depth-window: wrote $$look"; \
 	fi
 
+$(BUILD)/ArtifactPhoto: scripts/artifact-photo.swift
+	@mkdir -p $(BUILD)
+	swiftc -O -target $(TARGET) -o $@ scripts/artifact-photo.swift \
+		-framework AppKit -framework Vision -framework CoreImage -framework CoreML -framework ImageIO
+
+ARTIFACTS_OUT ?= $(HOME)/Library/Application Support/Lerping/Artifacts
+.PHONY: artifact-photo
+artifact-photo: $(BUILD)/ArtifactPhoto
+	@test -n "$(PHOTO)" -a -n "$(NAME)" || { \
+		echo "usage: make artifact-photo PHOTO=path/to/photo.jpg NAME=slug [TITLE=...] [LORE=...]"; exit 2; }
+	$(BUILD)/ArtifactPhoto "$(PHOTO)" "$(NAME)" "$(ARTIFACTS_OUT)" \
+		$(if $(TITLE),--title "$(TITLE)") $(if $(LORE),--lore "$(LORE)") \
+		$(if $(wildcard $(DEPTH_MODEL)),--depth-model "$(DEPTH_MODEL)")
+
 # The `critter` look's 3D models (Sources/Critter/*.usdz), built procedurally
 # in Blender by tools/critter-assets. The committed .usdz files are what ships,
 # so this is not part of `saver`: run it after changing the scripts, look at

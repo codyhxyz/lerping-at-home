@@ -241,8 +241,8 @@ final class CritterScene {
         seaNode.simdPosition = SIMD3(0, Self.seaLevel, 0)
         seaNode.castsShadow = false
 
-        // Far-off sky clouds: a few puffs round the horizon.
-        for _ in 0..<6 {
+        // Far-off sky clouds: banks round the horizon.
+        for _ in 0..<10 {
             let puff = templates["cloudPuff"]!.clone()
             puff.name = "cloudPuff"
             puff.enumerateHierarchy { n, _ in n.castsShadow = false }
@@ -473,11 +473,12 @@ final class CritterScene {
             let dir = SIMD2<Float>(1 - 0.75 * f.droop, 0.1 + 1.3 * f.droop)
             let bend = atan2(dir.y, dir.x) - atan2(Float(0.1), Float(1))
             let grow = (0.95 + 0.2 * Float(min(max(f.stage, 1), 3))) / 1.35
-            p.node.simdTransform = translate(p.restPosition) * rotX(bend) * p.restLinear * scale(SIMD3(repeating: grow))
+            p.node.simdTransform = translate(p.restPosition) * rotX(bend + f.sproutSway.y) * rotZ(-f.sproutSway.x)
+                * p.restLinear * scale(SIMD3(repeating: grow))
         }
         for (name, droop) in [("leafL", 0.8 * f.droop), ("leafR", 1.9 * f.droop)] {
             guard let p = parts[name] else { continue }
-            p.node.simdTransform = translate(p.restPosition) * rotZ(-p.side * droop) * p.restLinear
+            p.node.simdTransform = translate(p.restPosition) * rotZ(-p.side * (droop + f.leafFlap)) * p.restLinear
         }
         parts["blossom"]?.node.isHidden = f.stage < 3
     }
@@ -611,14 +612,22 @@ final class CritterScene {
         }
     }
 
+    /// Cloud banks standing on the horizon, drifting slowly round the island.
+    /// They are placed where the rolled world would draw them and are not
+    /// bent by CritterLook (LK_SKYCLOUD): SceneKit culls a node by where it
+    /// is before any shader moves it, and a bank left for the shader to roll
+    /// down sits above the frame and is never drawn.
     private func placeSky(_ f: CritterFrame) {
+        let n = Float(skyClouds.count)
         for (i, puff) in skyClouds.enumerated() {
             let fi = Float(i)
-            let a = fi * 1.047 + f.identity * 3 + 0.004 * f.time + 0.3 * CritterHash.h11(fi * 7.7)
-            let r = 17 + 5 * CritterHash.h11(fi * 3.1 + 1)
-            let y = 6.5 + 2.5 * CritterHash.h11(fi * 5.3 + 2)
-            let s = 0.9 + 0.8 * CritterHash.h11(fi * 1.9 + 3)
-            puff.simdTransform = translate(SIMD3(cos(a) * r, y, sin(a) * r)) * rotY(-a) * scale(SIMD3(repeating: s))
+            let a = (fi + 0.7 * CritterHash.h11(fi * 7.7)) / n * 2 * .pi + f.identity * 3 + 0.003 * f.time
+            let r = 24 + 9 * CritterHash.h11(fi * 3.1 + 1)
+            // slope from the eye: the sea's edge is near −0.21; the banks stand on it
+            let slope = -0.215 + 0.05 * CritterHash.h11(fi * 5.3 + 2)
+            let s = 1.8 + 2.3 * CritterHash.h11(fi * 1.9 + 3)
+            puff.simdTransform = translate(SIMD3(cos(a) * r, 1.8 + r * slope, sin(a) * r)) * rotY(.pi / 2 - a)
+                * scale(SIMD3(s, s * 0.8, s))
         }
     }
 
