@@ -1,6 +1,6 @@
 import AppKit
 
-/// The editor bar's way into the selector, and its two steps through it.
+/// The workspace toolbar's way into the Library, and its two steps through it.
 ///
 /// It used to be a text dropdown ("◱ fractal-multiverse · Lattice ▾") and two
 /// bare ‹ › buttons. Both undersold what they lead to. The selector is a wall

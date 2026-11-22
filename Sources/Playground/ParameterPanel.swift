@@ -164,9 +164,9 @@ final class ParameterPanel: NSView {
         empty.lineBreakMode = .byWordWrapping
         empty.maximumNumberOfLines = 0
 
-        let add = InspectorHeaderButton(symbol: "plus", title: nil, accessibility: "New preset",
+        let add = InspectorHeaderButton(symbol: "plus", title: nil, accessibility: "Save as Look",
                                         target: self, action: #selector(addPreset))
-        add.toolTip = "New preset (⇧⌘S)"
+        add.toolTip = "Save as Look (⇧⌘S)"
         add.identifier = NSUserInterfaceItemIdentifier("preset-add")
         // Beside the parameters it moves, not over the render: it is an edit to
         // these sliders, so it sits on their heading the way "+" sits on the
