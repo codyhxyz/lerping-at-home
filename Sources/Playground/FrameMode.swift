@@ -79,7 +79,7 @@ final class FrameMode {
         let resolved = try sequence.map { look in
             let entry = look.entry
             guard let shader = shaders.first(where: { $0.name == entry.shader }),
-                  entry.preset.map({ shader.preset(named: $0) != nil }) ?? true else {
+                  entry.preset.map({ name in shader.presets.contains { $0.name.utf8.elementsEqual(name.utf8) } }) ?? true else {
                 throw Failure.missingLook(entry.key)
             }
             return Resolved(entry: entry, shader: shader,

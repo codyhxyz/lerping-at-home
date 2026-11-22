@@ -102,6 +102,18 @@ enum RotationStore {
         try update(defaults) { try $0.addExactLook(LerpRotationEntry(key: key), toProfile: id, catalog: catalog) }
     }
 
+    /// Discover and Import add exact looks to whichever profile is active at
+    /// the time of the write, without overwriting concurrent Shortcuts edits.
+    static func addLooks(_ looks: Set<LerpRotationEntry>, catalog: [LerpRotationEntry],
+                         defaults: UserDefaults?) throws -> LerpRotationSelection {
+        try update(defaults) { state in
+            for look in catalog where looks.contains(look) {
+                try state.addExactLook(look, toProfile: state.activeID, catalog: catalog)
+            }
+            return LerpRotation.selection(discovered: catalog, in: state)
+        }
+    }
+
     // MARK: - One look at a time
 
     @discardableResult

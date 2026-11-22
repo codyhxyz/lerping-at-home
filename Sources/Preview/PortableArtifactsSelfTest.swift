@@ -17,8 +17,9 @@ enum PortableArtifactsSelfTest {
             try artifacts()
             try lineage()
             try links()
+            try installedLook()
             try assets()
-            print("OK    artifacts: metadata, RFC 8785 and SHA-256, strict v1 models and Look application, lineage, links, ZIP/DEFLATE and splat/path bounds")
+            print("OK    artifacts: metadata, RFC 8785 and SHA-256, strict v1 models and Look application, lineage, links, saved postcard quarantine, ZIP/DEFLATE and splat/path bounds")
         } catch { PreviewMain.fail("artifacts self-test: \(error)") }
     }
 
@@ -198,7 +199,13 @@ enum PortableArtifactsSelfTest {
     private static func links() throws {
         for ref in [pieceRef, lookRef, reference(.playlist, 3)] {
             try expect(PortableLinks.parse(PortableLinks.deepLink(for: ref).absoluteString) == ref, "valid deep-link rejected")
-            try expect(PortableLinks.postcard(for: ref).absoluteString == "https://lerping.app/p/v1/\(ref.kind.rawValue)/\(ref.sha256)", "wrong postcard origin or route")
+            let postcard = PortableLinks.postcard(for: ref).absoluteString
+            try expect(postcard == "https://lerping.app/p/v1/\(ref.kind.rawValue)/\(ref.sha256)", "wrong postcard origin or route")
+            try expect(PortableLinks.parsePostcard(postcard) == ref, "postcard not accepted for quarantine")
+            for invalid in [postcard + "?", postcard + "#", postcard + "/", postcard.replacingOccurrences(of: "lerping.app", with: "lerping.app@elsewhere.test"),
+                            postcard.replacingOccurrences(of: "/p/", with: "/%70/")] {
+                try expect(PortableLinks.parsePostcard(invalid) == nil, "accepted malformed postcard: \(invalid)")
+            }
             try expect(PortableLinks.artifact(for: ref).absoluteString == "https://lerping.app/api/v1/artifacts/\(ref.kind.rawValue)/\(ref.sha256)", "wrong artifact origin or route")
         }
         try expect(PortableLinks.blob(sha256: hash)?.absoluteString == "https://lerping.app/api/v1/blobs/\(hash)"
@@ -214,6 +221,34 @@ enum PortableArtifactsSelfTest {
                     "lerp://open/v1/./look/\(hash)", "lerp://open\\evil/v1/look/\(hash)"] {
             try expect(PortableLinks.parse(bad) == nil, "accepted hostile URL \(bad.debugDescription)")
         }
+    }
+
+    private static func installedLook() throws {
+        let shader = LerpShader(name: "study", source: """
+        // lerp-author: Ada
+        // lerp-license: MIT
+        // lerp-caption-title: A Study
+        // lerp-param: gain float 0 1 = 0.5
+        // lerp-animate: gain 0.2 0.8
+        // lerp-preset: Dusk gain=0.8
+        """, isBuiltIn: true, url: nil)
+        let piece = try PortableInstalledPiece(shader)
+        let entry = LerpRotationEntry(shader: shader.name, preset: "Dusk")
+        let look = try piece.look(for: entry)
+        let ref = try look.reference()
+        try expect(PortableLinks.postcard(for: ref).absoluteString ==
+                   "https://lerping.app/p/v1/look/7ac3a0581f0b25a95fb723f371283ad505afda3f18f0bf2d3bbed2b92d9bc6d8",
+                   "saved Look does not match independent canonical postcard fixture")
+        let imported = try PortableLook.decode(look.canonicalJSON())
+        try expect(try piece.entry(matching: imported) == entry, "exported saved Look did not round trip into quarantine")
+        let tuned = try PortableLook(title: "Variation", piece: piece.reference, preset: "Dusk",
+                                     tuning: ["gain": .number(0.5)], authors: [])
+        try expect(try piece.entry(matching: tuned) == nil, "quarantine silently discarded imported tuning")
+        let defaults = try piece.look(for: LerpRotationEntry(shader: shader.name))
+        try expect(try piece.entry(matching: defaults)?.preset == nil && piece.entry(matching: defaults) != nil,
+                   "the committed Defaults drift did not round trip")
+        let placard = LerpMuseumPlacard(shader: shader, preset: "Dusk")
+        try expect(placard.title == "A Study · Dusk" && placard.artist == "Ada", "placard lost the shader title or metadata credit")
     }
 
     private static func assets() throws {
@@ -255,6 +290,7 @@ enum PortableArtifactsSelfTest {
 
         let mandatory = [Member("piece.json", Data("{}".utf8)), Member("piece.metal", payload, deflated: true, descriptor: true)]
         let valid = try AssetSafety.preflightPieceArchive(zip(mandatory + [Member("assets/image.png", payload)]))
+        try rejects("member over its review limit") { try valid.decodedMember("assets/image.png", limit: payload.count - 1) }
         try expect(valid.paths == ["piece.json", "piece.metal", "assets/image.png"] && (try valid.decodedMember("piece.metal")) == payload
                    && (try valid.decodedMember("missing")) == nil, "ZIP whitelist or bounded member read")
         for extra in [[Member("../piece.metal", payload)], [Member("piece.json", payload)], [Member("assets\\image.png", payload)],

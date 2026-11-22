@@ -239,7 +239,14 @@ public enum PortableLinks {
 
     /// Match the input bytes, not a URLComponents-normalized representation.
     public static func parse(_ text: String) -> PortableReference? {
-        let prefix = "lerp://open/v1/"
+        parse(text, prefix: "lerp://open/v1/")
+    }
+
+    public static func parsePostcard(_ text: String) -> PortableReference? {
+        parse(text, prefix: "https://lerping.app/p/v1/")
+    }
+
+    private static func parse(_ text: String, prefix: String) -> PortableReference? {
         guard text.utf8.starts(with: prefix.utf8), text.utf8.allSatisfy({ $0 < 128 }) else { return nil }
         let parts = text.dropFirst(prefix.count).split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 2, let kind = PortableReference.Kind(rawValue: String(parts[0])) else { return nil }

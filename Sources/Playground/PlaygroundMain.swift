@@ -226,6 +226,10 @@ final class PlaygroundAppDelegate: NSObject, NSApplicationDelegate {
         controller?.approveTermination() == false ? .terminateCancel : .terminateNow
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        controller?.stopFrameMode(nil)
+    }
+
     /// A Dock click, or the re-open LaunchServices sends instead of launching a
     /// second copy. Either way the answer is the window that already exists.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -363,6 +367,8 @@ enum MainMenu {
             studio(item("Revert to Saved", #selector(PlaygroundWindowController.revertShader(_:)), "")),
             item("Save as Look…", #selector(PlaygroundWindowController.savePreset(_:)), "s", [.command, .shift]),
             item("Copy Share Link", #selector(PlaygroundWindowController.copyShareLink(_:)), ""),
+            item("Export Look File…", #selector(PlaygroundWindowController.exportLookFile(_:)), ""),
+            item("Export 10-Second Loop…", #selector(PlaygroundWindowController.exportLoop(_:)), ""),
             item("Import…", #selector(PlaygroundWindowController.importFiles(_:)), ""),
             .separator(),
             item("Close", #selector(NSWindow.performClose(_:)), "w"),
@@ -406,6 +412,7 @@ enum MainMenu {
             // screen, in windows that leave with the app; never the
             // desktop picture. See DesktopMode.
             item("Desktop Mode", #selector(PlaygroundWindowController.toggleDesktopMode(_:)), ""),
+            dynamicMenu("Frame Mode", id: frameMenuID),
             // Off at launch: a look's caption shows for its first seconds and
             // when the pointer moves over the picture; this keeps it up.
             item("Show Captions", #selector(PlaygroundWindowController.toggleCaptions(_:)), ""),
@@ -433,6 +440,8 @@ enum MainMenu {
                  [.command, .option]),
         ]))
 
+        main.addItem(dynamicMenu("Rotation", id: rotationMenuID))
+
         main.addItem(submenu("Window", [
             item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
             item("Zoom", #selector(NSWindow.performZoom(_:)), ""),
@@ -458,6 +467,14 @@ enum MainMenu {
     /// the top of Shader › MIDI, so it can take its own back out.
     static let midiDynamicTag = 0x4D49_4449
     static let midiMenuID = NSUserInterfaceItemIdentifier("midi-menu")
+    static let frameMenuID = NSUserInterfaceItemIdentifier("frame-menu")
+    static let rotationMenuID = NSUserInterfaceItemIdentifier("rotation-menu")
+
+    private static func dynamicMenu(_ title: String, id: NSUserInterfaceItemIdentifier) -> NSMenuItem {
+        let holder = submenu(title, [NSMenuItem(title: title, action: nil, keyEquivalent: "")])
+        holder.identifier = id
+        return holder
+    }
 
     /// Everything MIDI that is not on a parameter row, out of the way for the
     /// many who never plug a controller in. The device line and bank list are

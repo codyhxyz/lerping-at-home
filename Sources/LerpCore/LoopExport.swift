@@ -26,7 +26,9 @@ struct LerpMuseumPlacard: Sendable {
     init(shader: LerpShader, preset: String?) {
         let name = shader.captionLines.first { $0.role == .title }?.text ?? shader.displayName
         title = name + (preset.map { " · \($0)" } ?? "")
-        artist = shader.captionLines.first { $0.role == .credit }?.text ?? "Artist not credited"
+        let authors = ShaderMetadata.parse(source: shader.source).authors
+        artist = authors.isEmpty ? (shader.captionLines.first { $0.role == .credit }?.text ?? "Artist not credited")
+                                 : authors.joined(separator: ", ")
     }
 }
 

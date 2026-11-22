@@ -168,8 +168,11 @@ public enum AssetSafety {
 
         public var paths: Set<String> { Set(members.keys) }
 
-        public func decodedMember(_ path: String) throws -> Data? {
+        public func decodedMember(_ path: String, limit: Int? = nil) throws -> Data? {
             guard let member = members[path] else { return nil }
+            if let limit, member.decodedSize > limit {
+                throw PortableArtifactError.invalid("Piece archive member exceeds \(limit) bytes")
+            }
             let result: Data
             if member.method == 0 {
                 let start = data.startIndex

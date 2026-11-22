@@ -101,6 +101,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
     private var editorItem: NSSplitViewItem!
     private lazy var saveLookButton = Chrome.button("Save as Look…", target: self, action: #selector(savePreset(_:)))
     private lazy var copyLinkButton = Chrome.button("Copy Share Link", target: self, action: #selector(copyShareLink(_:)))
+    private lazy var exportLoopButton = Chrome.button("Export Loop…", target: self, action: #selector(exportLoop(_:)))
     private let studioDraftLabel = Chrome.label("Studio draft", size: 11, color: .secondaryLabelColor)
     private var discover: DiscoverController?
     private var importQueue: [URL] = []
@@ -237,6 +238,7 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if hidden { window.hideForCapture() }
 
         buildUI()
+        configureDynamicMenus()
         startMIDI()
         setWorkspace(Workspace(rawValue: UserDefaults.standard.string(forKey: Self.workspaceKey) ?? "") ?? .tune,
                      remember: false, focus: false)
@@ -324,9 +326,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         workspaceControl.setToolTip("Studio source editor (⇧⌘E)", forSegment: 1)
         let library = Chrome.button("Library", target: self, action: #selector(showShaderPicker(_:)))
         let discover = Chrome.button("Discover", target: self, action: #selector(showDiscover(_:)))
-        copyLinkButton.toolTip = "A link to the saved look; no shader source is included"
+        copyLinkButton.toolTip = "Copy the saved look’s postcard address. This does not publish it."
+        exportLoopButton.toolTip = "Export the live look as a 10-second loop"
         return Chrome.bar([workspaceControl, switcher, library, discover, Chrome.flexible(),
-                           studioDraftLabel, saveLookButton, copyLinkButton], height: 46)
+                           studioDraftLabel, saveLookButton, copyLinkButton, exportLoopButton], height: 46)
     }
 
     @objc private func changeWorkspace(_ sender: NSSegmentedControl) {
@@ -1202,41 +1205,98 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         if inspectorItem.isCollapsed { inspectorItem.isCollapsed = false }
     }
 
+    @objc private func selectPlaylist(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        let catalog = metalView.shaderLibrary.discover().rotationEntries()
+        do { try RotationStore.setActiveProfile(id: id, catalog: catalog, defaults: rotationDefaults) }
+        catch { presentError("Could not switch playlists", error.localizedDescription) }
+    }
+
+    @objc private func createPlaylist(_ sender: NSMenuItem) {
+        let catalog = metalView.shaderLibrary.discover().rotationEntries()
+        let fromRotation = sender.tag == 1
+        let looks = fromRotation ? RotationStore.rotation(discovered: catalog, from: rotationDefaults)
+                                 : catalog.filter { $0 == currentEntry }
+        guard !looks.isEmpty else { return presentError("No looks to add", "Choose an installed look first.") }
+        let detail = fromRotation ? "Start with the \(looks.count) looks enabled in the active rotation."
+                                  : "Start with the current saved look."
+        guard let name = prompt("New Playlist", detail + " New looks won’t be added automatically.", "",
+                                placeholder: "Playlist name") else { return }
+        do {
+            try RotationStore.createProfile(name: name, admission: .closed, initialLooks: looks,
+                                            catalog: catalog, defaults: rotationDefaults)
+            setStatus("Created playlist “\(name)”", .success)
+        } catch { presentError("Could not create playlist", error.localizedDescription) }
+    }
+
+    @objc private func renamePlaylist(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID,
+              let name = prompt("Rename Playlist", "Only the name will change.", sender.title) else { return }
+        do { try RotationStore.renameProfile(id: id, to: name, defaults: rotationDefaults) }
+        catch { presentError("Could not rename playlist", error.localizedDescription) }
+    }
+
+    @objc private func deletePlaylist(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete “\(sender.title)”?"
+        alert.informativeText = "This removes the playlist, not its looks or shaders."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete").hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        do { try RotationStore.deleteProfile(id: id, defaults: rotationDefaults) }
+        catch { presentError("Could not delete playlist", error.localizedDescription) }
+    }
+
     private func addToRotation(_ requested: Set<LerpRotationEntry>) throws -> LerpRotationSelection {
         let entries = metalView.shaderLibrary.discover().rotationEntries()
         guard requested.isSubset(of: entries) else { throw ImportReviewRequest.ReviewError.noLongerAvailable }
-        let before = RotationStore.selection(discovered: entries, from: rotationDefaults)
-        let newlyEnabled = requested.filter { !before.plays($0) }
-        guard !newlyEnabled.isEmpty else { return before }
-        let after = before.applying { update in
-            update.setLooks(newlyEnabled, on: true)
-            // Enabling an individual look can clear a whole-shader exclusion.
-            // Keep siblings that were off out unless the user chose them too.
-            let siblings = entries.filter { !requested.contains($0) && !before.plays($0) && update.plays($0) }
-            update.setLooks(siblings, on: false)
+        do { return try RotationStore.addLooks(requested, catalog: entries, defaults: rotationDefaults) }
+        catch RotationProfileError.notSaved { throw ImportReviewRequest.ReviewError.rotationNotSaved }
+    }
+
+    private func savedPortableLook() -> PortableLook? {
+        guard !current.name.isEmpty else { return nil }
+        guard !hasUnsavedChanges else {
+            presentError("Save the look before sharing", "A portable look refers to an exact saved look. Unsaved source and control changes are not included.")
+            return nil
         }
-        let written = RotationStore.save(after, to: rotationDefaults)
-        let result = LerpRotation.selection(discovered: entries, in: written)
-        guard result.disabled == after.disabled else { throw ImportReviewRequest.ReviewError.rotationNotSaved }
-        NotificationCenter.default.post(name: RotationStore.changedElsewhere, object: nil)
-        return result
+        do { return try PortableInstalledPiece(current).look(for: currentEntry) }
+        catch {
+            presentError("Could not share this look", error.localizedDescription)
+            return nil
+        }
     }
 
     @objc func copyShareLink(_ sender: Any?) {
-        guard !isDirty, !parametersMoved else {
-            return presentError("Save the look before sharing", "A Share Link refers to an exact saved look. Unsaved source and control changes are not included.")
-        }
-        guard let url = ImportReviewRequest.shareLink(for: currentEntry, in: current) else { return }
+        guard let look = savedPortableLook() else { return }
+        let url: URL
+        do { url = PortableLinks.postcard(for: try look.reference()) }
+        catch { return presentError("Could not copy Share Link", error.localizedDescription) }
         NSPasteboard.general.clearContents()
         guard NSPasteboard.general.setString(url.absoluteString, forType: .string) else {
             return presentError("Could not copy Share Link", "The clipboard was not available.")
         }
-        setStatus("Share link copied", .success)
+        setStatus("Postcard address copied · not published", .success)
         if let button = sender as? NSButton {
             button.title = "Link Copied"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak button] in
                 button?.title = "Copy Share Link"
             }
+        }
+    }
+
+    @objc func exportLookFile(_ sender: Any?) {
+        guard let window, window.attachedSheet == nil, let look = savedPortableLook() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "lerplook") ?? .json]
+        panel.nameFieldStringValue = "\(current.name).lerplook"
+        panel.beginSheetModal(for: window) { [weak self] result in
+            guard result == .OK, let url = panel.url else { return }
+            do {
+                try look.canonicalJSON().write(to: url, options: .atomic)
+                self?.setStatus("Exported \(url.lastPathComponent)", .success)
+            } catch { self?.presentError("Could not export the look file", error.localizedDescription) }
         }
     }
 
@@ -1965,6 +2025,29 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
 
     var isDesktopModeOn: Bool { desktopMode?.isOn ?? false }
 
+    private let frameMode = FrameMode()
+
+    @objc private func startFrameMode(_ sender: NSMenuItem) {
+        guard !current.name.isEmpty else { return }
+        let display = (sender.representedObject as? NSNumber)?.uint32Value
+        do {
+            try frameMode.start([.init(entry: currentEntry)], on: display, selectedScreen: window?.screen)
+        } catch { presentError("Could not start Frame Mode", error.localizedDescription) }
+    }
+
+    @objc func stopFrameMode(_ sender: Any?) { frameMode.stop() }
+
+    private lazy var loopExporter: ExportController = {
+        let exporter = ExportController()
+        exporter.onStatus = { [weak self] text in self?.setStatus(text) }
+        return exporter
+    }()
+
+    @objc func exportLoop(_ sender: Any?) {
+        guard let window else { return }
+        loopExporter.present(for: metalView, in: window)
+    }
+
     // MARK: - Hands
 
     @objc func toggleHandControl(_ sender: Any?) {
@@ -2090,6 +2173,8 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         saveButton.isEnabled = unsaved
         saveLookButton.isEnabled = !current.name.isEmpty
         copyLinkButton.isEnabled = !current.name.isEmpty
+        exportLoopButton.isHidden = workspace != .tune
+        exportLoopButton.isEnabled = metalView.currentShader != nil
         studioDraftLabel.isHidden = workspace != .tune || !dirty
         revertButton.isEnabled = unsaved && current.url != nil
         // Only there when they would do something: two greyed-out buttons
@@ -2230,6 +2315,10 @@ final class PlaygroundWindowController: NSWindowController, NSWindowDelegate {
         return terminationApproved
     }
 
+    func windowWillClose(_ notification: Notification) {
+        frameMode.stop()
+    }
+
     func approveTermination() -> Bool {
         if terminationApproved || !asksBeforeClosing { return true }
         terminationApproved = confirmDiscardIfDirty(includingLook: true)
@@ -2272,6 +2361,11 @@ extension PlaygroundWindowController: NSMenuItemValidation {
             return true
         case #selector(savePreset(_:)): return saveLookButton.isEnabled
         case #selector(copyShareLink(_:)): return copyLinkButton.isEnabled
+        case #selector(exportLookFile(_:)): return copyLinkButton.isEnabled && window?.attachedSheet == nil
+        case #selector(exportLoop(_:)):
+            return metalView.currentShader != nil && window?.attachedSheet == nil && !loopExporter.isPresenting
+        case #selector(startFrameMode(_:)): return !current.name.isEmpty && !NSScreen.screens.isEmpty
+        case #selector(createPlaylist(_:)): return rotationDefaults != nil && (item.tag == 1 || !current.name.isEmpty)
         case #selector(saveShader(_:)): return saveButton.isEnabled
         case #selector(revertShader(_:)): return revertButton.isEnabled
         case #selector(toggleHandControl(_:)):
@@ -2308,7 +2402,71 @@ extension PlaygroundWindowController: NSMenuItemValidation {
 /// key equivalents work whether or not it has been opened; what is connected
 /// and which bank is live are read here, each time it opens.
 extension PlaygroundWindowController: NSMenuDelegate {
+    private func configureDynamicMenus() {
+        guard let main = NSApp.mainMenu else { return }
+        let items = main.items + main.items.compactMap(\.submenu).flatMap(\.items)
+        for item in items where item.identifier == MainMenu.frameMenuID || item.identifier == MainMenu.rotationMenuID {
+            item.submenu?.delegate = self
+        }
+    }
+
+    private func menuItem(_ title: String, action: Selector, object: Any? = nil) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.representedObject = object
+        return item
+    }
+
+    private func updateFrameMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        if frameMode.isOn {
+            menu.addItem(menuItem("Stop Frame Mode", action: #selector(stopFrameMode(_:))))
+        }
+        let screens = NSScreen.screens
+        if screens.count > 1 {
+            if frameMode.isOn { menu.addItem(.separator()) }
+            for screen in screens {
+                guard let id = AmbientSurfacePolicy.displayID(of: screen) else { continue }
+                let item = menuItem(screen.localizedName, action: #selector(startFrameMode(_:)), object: NSNumber(value: id))
+                item.state = frameMode.displayID == id ? .on : .off
+                menu.addItem(item)
+            }
+        } else if !frameMode.isOn {
+            menu.addItem(menuItem("Start Frame Mode", action: #selector(startFrameMode(_:))))
+        }
+    }
+
+    private func updateRotationMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let state = RotationStore.state(discovered: [], from: rotationDefaults)
+        for profile in state.profiles {
+            let item = menuItem(profile.name, action: #selector(selectPlaylist(_:)), object: profile.id)
+            item.state = profile.id == state.activeID ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(menuItem("New Playlist from Current Look…", action: #selector(createPlaylist(_:))))
+        let fromRotation = menuItem("New Playlist from Active Rotation…", action: #selector(createPlaylist(_:)))
+        fromRotation.tag = 1
+        menu.addItem(fromRotation)
+
+        func addActions(_ title: String, profiles: [RotationProfile], action: Selector) {
+            guard !profiles.isEmpty else { return }
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: title)
+            for profile in profiles { submenu.addItem(menuItem(profile.name, action: action, object: profile.id)) }
+            item.submenu = submenu
+            menu.addItem(item)
+        }
+        addActions("Rename Playlist", profiles: state.profiles, action: #selector(renamePlaylist(_:)))
+        addActions("Delete Inactive Playlist", profiles: state.profiles.filter { $0.id != state.activeID },
+                   action: #selector(deletePlaylist(_:)))
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
+        let id = menu.supermenu?.items.first { $0.submenu === menu }?.identifier
+        if id == MainMenu.frameMenuID { return updateFrameMenu(menu) }
+        if id == MainMenu.rotationMenuID { return updateRotationMenu(menu) }
         while let first = menu.items.first, first.tag == MainMenu.midiDynamicTag {
             menu.removeItem(first)
         }
