@@ -147,10 +147,11 @@ public struct LerpParam: Sendable, Equatable {
     /// still. Part of the declaration — and therefore of the Defaults look —
     /// exactly as `defaultValue` is.
     public let animation: LerpParamAnimation?
+    public let reaction: LerpParamReaction?
 
     public init(name: String, type: LerpParamType, min: Double, max: Double,
                 defaultValue: LerpParamValue, label: String, line: Int = 0,
-                animation: LerpParamAnimation? = nil) {
+                animation: LerpParamAnimation? = nil, reaction: LerpParamReaction? = nil) {
         self.name = name
         self.type = type
         self.min = min
@@ -159,6 +160,7 @@ public struct LerpParam: Sendable, Equatable {
         self.label = label
         self.line = line
         self.animation = animation
+        self.reaction = reaction
     }
 
     /// This declaration with `animation` attached. The parser reads
@@ -166,7 +168,12 @@ public struct LerpParam: Sendable, Equatable {
     /// come in either order in the file.
     func withAnimation(_ animation: LerpParamAnimation?) -> LerpParam {
         LerpParam(name: name, type: type, min: min, max: max, defaultValue: defaultValue,
-                  label: label, line: line, animation: animation)
+                  label: label, line: line, animation: animation, reaction: reaction)
+    }
+
+    func withReaction(_ reaction: LerpParamReaction) -> LerpParam {
+        LerpParam(name: name, type: type, min: min, max: max, defaultValue: defaultValue,
+                  label: label, line: line, animation: animation, reaction: reaction)
     }
 
     /// Clamps to the declared range and snaps int/bool to whole numbers.
@@ -327,14 +334,18 @@ public enum LerpParamLayout {
     /// Members of the fixed header, which a `// lerp-param:` may not reuse.
     public static let builtInFields: Set<String> = [
         "resolution", "time", "seed", "audioLevel", "audioBass", "audioMid", "audioTreble",
-        "viewer",
+        "audioBeat", "viewer",
     ]
 
     public static let headerSize: Int = {
         let stride = MemoryLayout<LerpUniforms>.stride
         // A multiple of 16 is what lets the first `float4` parameter sit
         // flush against the header; growing the head means padding it to one.
-        precondition(stride == 48, "Swift LerpUniforms must match Metal's 48-byte fixed header")
+        precondition(stride == 64 && MemoryLayout<LerpUniforms>.size == stride
+                     && MemoryLayout<LerpUniforms>.offset(of: \.audio) == 16
+                     && MemoryLayout<LerpAudioLevels>.offset(of: \.beat) == 16
+                     && MemoryLayout<LerpUniforms>.offset(of: \.viewer) == 48,
+                     "Swift LerpUniforms must match Metal's 64-byte fixed header")
         return stride
     }()
 
@@ -397,6 +408,18 @@ public struct LerpParameterValues: Sendable {
     /// Parameters with an animation that are being held at their value
     /// instead — by a preset that set them, or by a person who moved them.
     public private(set) var pinned: Set<String> = []
+    public private(set) var takenOverReactions: Set<String> = []
+
+    public func isReacting(_ name: String) -> Bool {
+        parameter(named: name)?.reaction != nil && !takenOverReactions.contains(name)
+    }
+
+    @discardableResult
+    public mutating func setReacting(_ name: String, _ on: Bool) -> Bool {
+        guard parameter(named: name)?.reaction != nil else { return false }
+        if on { takenOverReactions.remove(name) } else { takenOverReactions.insert(name) }
+        return true
+    }
 
     public init(_ parameters: [LerpParam]) {
         self.parameters = parameters
@@ -433,6 +456,7 @@ public struct LerpParameterValues: Sendable {
         guard let param = parameter(named: name) else { return false }
         values[name] = param.clamp(value)
         if animations[name] != nil { pinned.insert(name) }
+        if param.reaction != nil { takenOverReactions.insert(name) }
         repack()
         return true
     }
@@ -481,11 +505,38 @@ public struct LerpParameterValues: Sendable {
         return copy
     }
 
+    /// Apply reactions over the animation result. When a signal disappears,
+    /// the held or animated value underneath is still available unchanged.
+    func reacting(to signals: LerpSignalValues, at time: Float,
+                  smoothing: LerpReactionSmoothing? = nil, updateHistory: Bool = true) -> Self {
+        var copy = self
+        var changed = false
+        for param in parameters {
+            guard let reaction = param.reaction else { continue }
+            guard !takenOverReactions.contains(param.name), let base = values[param.name],
+                  var value = reaction.target(in: signals, base: base) else {
+                if updateHistory { smoothing?.reset(param.name) }
+                continue
+            }
+            if case .scalar(let target) = value {
+                let scalar = smoothing?.resolve(target, for: reaction, at: time,
+                                                 updateHistory: updateHistory) ?? target
+                value = .scalar(param.type == .bool ? (scalar >= 0.5 ? 1 : 0) : scalar)
+            }
+            copy.values[param.name] = param.clamp(value)
+            changed = true
+        }
+        if changed { copy.repack() }
+        return copy
+    }
+
     /// Whether two sets of values draw the same frames: the same drift on the
     /// same parameters, and the same bytes everywhere else. A held value under
     /// an animation is never seen, so it is not compared.
     public func rendersSameLook(as other: LerpParameterValues) -> Bool {
         activeAnimations == other.activeAnimations
+            && parameters.compactMap { isReacting($0.name) ? $0.reaction : nil }
+                == other.parameters.compactMap { other.isReacting($0.name) ? $0.reaction : nil }
             && resolved(time: 0, seed: 0).packedTail == other.resolved(time: 0, seed: 0).packedTail
     }
 
@@ -497,13 +548,16 @@ public struct LerpParameterValues: Sendable {
         values = Self.declaredDefaults(parameters)
         animations = Self.declaredAnimations(parameters)
         pinned = []
+        takenOverReactions = []
         for (name, value) in preset.values {
             guard let param = parameter(named: name) else { continue }
             values[name] = param.clamp(value)
             if animations[name] != nil { pinned.insert(name) }
+            if param.reaction != nil { takenOverReactions.insert(name) }
         }
         for (name, animation) in preset.animations where parameter(named: name) != nil {
             animations[name] = animation
+            if parameter(named: name)?.reaction != nil { takenOverReactions.insert(name) }
         }
         repack()
     }
@@ -516,6 +570,7 @@ public struct LerpParameterValues: Sendable {
         guard parameter(named: name) != nil else { return false }
         animations[name] = animation
         pinned.remove(name)
+        if parameter(named: name)?.reaction != nil { takenOverReactions.insert(name) }
         return true
     }
 
@@ -554,6 +609,7 @@ public enum LerpParamParser {
     public static let paramDirective = "lerp-param:"
     public static let presetDirective = "lerp-preset:"
     public static let animateDirective = "lerp-animate:"
+    public static let reactDirective = "lerp-react:"
 
     /// One assignment in a `// lerp-preset:` line: a value, which pins, or
     /// `animate` / `animate(…)`, which sets the parameter drifting.
@@ -614,12 +670,28 @@ public enum LerpParamParser {
     /// them have been seen, so declaration order in the file doesn't matter.
     public static func parse(source: String) -> Output {
         var scan = DirectiveScan()
-        for (index, raw) in source.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+        for (index, raw) in source.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
             scan.read(raw, line: index + 1)
         }
 
         var out = Output(parameters: scan.parameters, errors: scan.errors)
         attachAnimations(scan.animateLines, to: &out)
+        for item in scan.reactionLines {
+            do {
+                let reaction = try LerpParamReaction.parse(item.text, line: item.line,
+                                                           parameters: out.parameters)
+                if let index = out.parameters.firstIndex(where: { $0.name == reaction.paramName }) {
+                    guard out.parameters[index].reaction == nil else {
+                        throw LerpParamError(line: item.line, message: "duplicate reaction for '\(reaction.paramName)'", text: item.text)
+                    }
+                    out.parameters[index] = out.parameters[index].withReaction(reaction)
+                }
+            } catch let error as LerpParamError {
+                out.errors.append(error)
+            } catch {
+                out.errors.append(LerpParamError(line: item.line, message: "\(error)", text: item.text))
+            }
+        }
         for name in scan.presetOrder {
             out.presets.append(checkPreset(name, settings: scan.presetValues[name] ?? [:],
                                            line: scan.presetLine[name] ?? 0,
@@ -648,6 +720,7 @@ public enum LerpParamParser {
         var presetValues: [String: [String: PresetSetting]] = [:]
         var presetLine: [String: Int] = [:]
         var animateLines: [AnimateLine] = []
+        var reactionLines: [(text: String, line: Int)] = []
 
         typealias Reader = (inout DirectiveScan, String, Int) throws -> Void
 
@@ -657,6 +730,7 @@ public enum LerpParamParser {
             (paramDirective, { try $0.declareParam($1, line: $2) }),
             (presetDirective, { try $0.mergePreset($1, line: $2) }),
             (animateDirective, { try $0.collectAnimate($1, line: $2) }),
+            (reactDirective, { $0.reactionLines.append(($1, $2)) }),
         ]
 
         mutating func read(_ raw: Substring, line: Int) {

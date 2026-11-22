@@ -131,6 +131,15 @@ public final class LerpMetalView: NSView {
     /// renders with `.silent`, byte-for-byte what it rendered before the
     /// fields existed.
     public var audioLevels: (() -> LerpAudioLevels)?
+    /// Explicit fixtures override matching live signals, and work in still mode.
+    public var signalOverrides: [String: LerpParamValue] = [:]
+    private var liveSignals = LerpSignalValues()
+    private var nextSignalRead: CFTimeInterval = 0
+    private var reactionSmoothing = LerpReactionSmoothing()
+
+    /// Invalidate the cached world; the next reactive frame reads it once.
+    public func refreshLiveSignals() { nextSignalRead = 0 }
+
     /// Polled once per drawn frame for `u.viewer`, the same way. Nil — the
     /// saver, and the playground on a look without `parallax` — means `.centered`,
     /// which every look renders exactly as it did before the field existed.
@@ -202,6 +211,7 @@ public final class LerpMetalView: NSView {
         let pipeline: MTLRenderPipelineState
         let data: LerpDataProvider?
         let params: LerpParameterValues?
+        let reactionSmoothing: LerpReactionSmoothing
     }
 
     /// Serial, so a burst of requests compiles one shader at a time and a
@@ -437,6 +447,7 @@ public final class LerpMetalView: NSView {
     public func start() {
         guard !running else { return }
         running = true
+        refreshLiveSignals()
         frozen = false
         parked = false
         clockHeld = false
@@ -1057,7 +1068,8 @@ public final class LerpMetalView: NSView {
                                       pixelFormat: shaderPixelFormat) != nil
         var data = try? library.dataProvider(for: shader)    // cached by now
         if fade, let outgoing = pipeline {
-            fadingOut = Look(pipeline: outgoing, data: dataProvider, params: parameterValues)
+            fadingOut = Look(pipeline: outgoing, data: dataProvider, params: parameterValues,
+                             reactionSmoothing: reactionSmoothing)
             fadeStart = time
             if let shared = data, shared === dataProvider, let name = shader.dataProviderName {
                 data = spareProvider(named: name) ?? shared
@@ -1068,6 +1080,7 @@ public final class LerpMetalView: NSView {
         pipeline = compiled
         dataProvider = data
         parameterValues = shader.parameterValues(for: entry)
+        reactionSmoothing = LerpReactionSmoothing()
         currentShader = shader
         currentShaderName = shader.name
         currentEntry = entry
@@ -1113,7 +1126,17 @@ public final class LerpMetalView: NSView {
     /// frame; call `renderOnce()` to see it while paused.
     @discardableResult
     public func setParameter(_ name: String, _ value: LerpParamValue) -> Bool {
-        parameterValues?.set(name, value) ?? false
+        guard parameterValues?.set(name, value) == true else { return false }
+        reactionSmoothing.reset(name)
+        return true
+    }
+
+    /// Return a manually held parameter (or a preset pin) to its live input.
+    @discardableResult
+    public func setReacting(_ name: String, _ on: Bool) -> Bool {
+        guard parameterValues?.setReacting(name, on) == true else { return false }
+        reactionSmoothing.reset(name)
+        return true
     }
 
     /// Starts or stops one parameter's `// lerp-animate:` drift. False when the
@@ -1135,7 +1158,11 @@ public final class LerpMetalView: NSView {
     /// animated parameters at their place on the curve. What a host's
     /// controls should show; `parameterValues` is what they hold.
     public var liveParameterValues: LerpParameterValues? {
-        parameterValues?.resolved(time: Float(time), seed: seed)
+        guard let parameterValues else { return nil }
+        let frameTime = Float(time)
+        return parameterValues.resolved(time: frameTime, seed: seed)
+            .reacting(to: signalsForFrame(now: CACurrentMediaTime()), at: frameTime,
+                      smoothing: usesLiveSignals ? reactionSmoothing : nil, updateHistory: false)
     }
 
     /// Steps to the next (or, for a negative `direction`, previous) discovered
@@ -1347,15 +1374,18 @@ public final class LerpMetalView: NSView {
                 guard drawable.presentedTime > 0 else { return }
                 displayed.withLock { $0 = CACurrentMediaTime() }
             }
+            let signals = signalsForFrame(now: now)
             let uniforms = liveUniforms(width: Int(metalLayer.drawableSize.width),
-                                        height: Int(metalLayer.drawableSize.height), at: time)
+                                        height: Int(metalLayer.drawableSize.height), at: time, signals: signals)
             applyCaptionOpacity(at: time)
             if isEDRActive, let post = edrPostPipeline {
-                drawEDR(drawable: drawable, pipeline: pipeline, post: post, uniforms: uniforms)
+                drawEDR(drawable: drawable, pipeline: pipeline, post: post, uniforms: uniforms,
+                        signals: signals, at: time)
             } else {
-                let overlay = encodeOutgoing(at: time, like: drawable.texture)
+                let overlay = encodeOutgoing(at: time, like: drawable.texture, signals: signals)
                 renderer.draw(drawable: drawable, pipeline: pipeline, uniforms: uniforms,
-                              params: parameterValues, data: dataProvider, overlay: overlay)
+                              params: parameterValues, data: dataProvider, overlay: overlay,
+                              signals: signals, reactionSmoothing: usesLiveSignals ? reactionSmoothing : nil)
             }
             drewCurrentLook = true
         }
@@ -1364,7 +1394,8 @@ public final class LerpMetalView: NSView {
     /// Shader into an rgba16Float scratch texture, then `LerpEDR`'s expand pass
     /// into the drawable, on one command buffer.
     private func drawEDR(drawable: CAMetalDrawable, pipeline: MTLRenderPipelineState,
-                         post: MTLRenderPipelineState, uniforms: LerpUniforms) {
+                         post: MTLRenderPipelineState, uniforms: LerpUniforms,
+                         signals: LerpSignalValues, at time: CFTimeInterval) {
         let target = drawable.texture
         if edrSource?.width != target.width || edrSource?.height != target.height {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -1377,11 +1408,12 @@ public final class LerpMetalView: NSView {
         guard let source = edrSource else { return }
         // Mid-crossfade, the outgoing look is blended onto the float source,
         // before the expand pass, so both looks get the same highlight lift.
-        let overlay = encodeOutgoing(at: time, like: source)
+        let overlay = encodeOutgoing(at: time, like: source, signals: signals)
         guard let commandBuffer = renderer.encodePass(target: source, pipeline: pipeline,
                                                       uniforms: uniforms,
                                                       params: parameterValues,
-                                                      data: dataProvider) else { return }
+                                                      data: dataProvider, signals: signals,
+                                                      reactionSmoothing: usesLiveSignals ? reactionSmoothing : nil) else { return }
         if let overlay { LerpCrossfade.encode(overlay, onto: source, in: commandBuffer) }
         // Read every frame: macOS ramps the headroom up after EDR content
         // appears and moves it with the brightness slider.
@@ -1402,11 +1434,33 @@ public final class LerpMetalView: NSView {
     /// seed, and whatever live input a host is feeding. The one place they are
     /// built, so the incoming look and a crossfade's outgoing one always see
     /// the same frame.
-    private func liveUniforms(width: Int, height: Int, at time: CFTimeInterval) -> LerpUniforms {
+    private func liveUniforms(width: Int, height: Int, at time: CFTimeInterval,
+                              signals: LerpSignalValues) -> LerpUniforms {
         LerpUniforms(resolution: SIMD2<Float>(Float(width), Float(height)),
                      time: Float(time), seed: seed,
-                     audio: audioLevels?() ?? .silent,
-                     viewer: viewer?() ?? .centered)
+                     audio: signals.audio ?? .silent, viewer: viewer?() ?? .centered)
+    }
+
+    private var usesLiveSignals: Bool {
+        LerpSignalValues.permitsLive(mode: library.mode, bundleIdentifier: Bundle.main.bundleIdentifier)
+    }
+
+    private func signalsForFrame(now: CFTimeInterval) -> LerpSignalValues {
+        guard usesLiveSignals else { return LerpSignalValues(overrides: signalOverrides) }
+        func needsWorld(_ params: LerpParameterValues?) -> Bool {
+            params?.parameters.contains { param in
+                param.reaction.map { !$0.signal.hasPrefix("audio.") } == true
+                    && params?.isReacting(param.name) == true
+            } == true
+        }
+        if now >= nextSignalRead, needsWorld(parameterValues) || needsWorld(fadingOut?.params) {
+            liveSignals = .live(mode: library.mode)
+            nextSignalRead = now + 5
+        }
+        var result = liveSignals
+        result.overrides = signalOverrides
+        result.audio = audioLevels?()
+        return result
     }
 
     /// Keeps a captioned look's label up while a host holds it
@@ -1436,7 +1490,7 @@ public final class LerpMetalView: NSView {
     /// incoming look's are, so it keeps animating on the same clock and seed
     /// it was playing on rather than freezing on its last frame.
     private func encodeOutgoing(at time: CFTimeInterval,
-                                like target: MTLTexture) -> LerpCrossfade.Overlay? {
+                                like target: MTLTexture, signals: LerpSignalValues) -> LerpCrossfade.Overlay? {
         guard let outgoing = fadingOut else { return nil }
         let progress = (time - fadeStart) / LerpCrossfade.duration
         guard progress >= 0, progress < 1,
@@ -1447,11 +1501,12 @@ public final class LerpMetalView: NSView {
             || fadeScratch?.pixelFormat != target.pixelFormat {
             fadeScratch = LerpCrossfade.makeScratch(device: renderer.device, like: target)
         }
-        let uniforms = liveUniforms(width: target.width, height: target.height, at: time)
+        let uniforms = liveUniforms(width: target.width, height: target.height, at: time, signals: signals)
         guard let scratch = fadeScratch,
               let commandBuffer = renderer.encodePass(target: scratch, pipeline: outgoing.pipeline,
                                                       uniforms: uniforms, params: outgoing.params,
-                                                      data: outgoing.data)
+                                                      data: outgoing.data, signals: signals,
+                                                      reactionSmoothing: usesLiveSignals ? outgoing.reactionSmoothing : nil)
         else { endCrossfade(); return nil }
         commandBuffer.label = "Lerping/crossfade.outgoing"
         commandBuffer.commit()

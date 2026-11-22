@@ -43,6 +43,7 @@ public enum LerpSnapshot {
                               hdrPeak: Float? = nil,
                               viewer: LerpViewer = .centered,
                               captions: Bool = true,
+                              signalOverrides: [String: LerpParamValue] = [:],
                               to url: URL) -> Result {
         let format: MTLPixelFormat = hdrPeak == nil ? .bgra8Unorm : LerpEDR.shaderPixelFormat
         let pipeline: MTLRenderPipelineState
@@ -69,7 +70,8 @@ public enum LerpSnapshot {
                 uniforms: LerpUniforms(resolution: SIMD2<Float>(Float(width), Float(height)),
                                       time: time, seed: seed, viewer: viewer),
                 params: params ?? shader.defaultParameterValues(),
-                data: data) else {
+                data: data,
+                signals: LerpSignalValues(overrides: signalOverrides)) else {
             return Result(shader: shader.name, url: nil, error: "failed to create texture/command buffer", meanLuminance: 0)
         }
 

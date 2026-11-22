@@ -11,11 +11,11 @@ public struct LerpUniforms {
     public var time: Float
     public var seed: Float
     /// Smoothed loudness of whatever the Mac is playing. Laid out flat as
-    /// `audioLevel, audioBass, audioMid, audioTreble` straight after `seed`.
+    /// `audioLevel, audioBass, audioMid, audioTreble, audioBeat` after `seed`.
     /// Zero unless a host feeds it — see `LerpAudioLevels`.
     public var audio: LerpAudioLevels
     /// The watcher's head, for looks that draw the screen as a window. A
-    /// `float4` at byte 32, after the audio levels. `.centered` unless a host
+    /// `float4` at byte 48, after the audio levels. `.centered` unless a host
     /// feeds it — see `LerpViewer`.
     public var viewer: LerpViewer
 
@@ -29,23 +29,21 @@ public struct LerpUniforms {
     }
 }
 
-/// The four audio uniforms, each roughly 0…1. `.silent` is what every render
-/// gets unless a host opts in: the saver, `--snapshot` and the gallery stills
-/// never do, so they stay a pure function of (shader, time, seed, parameters).
-/// Only the playground's live view, with its toggle on, ever sees non-zero
-/// values — audio is live input, the one thing a frame may depend on that is
-/// not in that tuple, and it is never recorded into anything that persists.
+/// Audio uniforms, each roughly 0…1. The saver and gallery are silent;
+/// offscreen fixtures and the live playground may supply audio explicitly.
 public struct LerpAudioLevels: Equatable, Sendable {
     public var level: Float
     public var bass: Float
     public var mid: Float
     public var treble: Float
+    public var beat: Float
 
-    public init(level: Float = 0, bass: Float = 0, mid: Float = 0, treble: Float = 0) {
+    public init(level: Float = 0, bass: Float = 0, mid: Float = 0, treble: Float = 0, beat: Float = 0) {
         self.level = level
         self.bass = bass
         self.mid = mid
         self.treble = treble
+        self.beat = beat
     }
 
     public static let silent = LerpAudioLevels()
@@ -85,10 +83,18 @@ public final class LerpRenderer {
                            pipeline: MTLRenderPipelineState,
                            uniforms: LerpUniforms,
                            params held: LerpParameterValues? = nil,
-                           data: LerpDataProvider? = nil) -> MTLCommandBuffer? {
+                           data: LerpDataProvider? = nil,
+                           signals: LerpSignalValues = .init(),
+                           reactionSmoothing: LerpReactionSmoothing? = nil) -> MTLCommandBuffer? {
         let signpost = LerpSignposts.frames.beginInterval("encode")
         defer { LerpSignposts.frames.endInterval("encode", signpost) }
+        var uniforms = uniforms
+        var signals = signals
+        if let audio = signals.audio { uniforms.audio = audio }
+        else if uniforms.audio != .silent { signals.audio = uniforms.audio }
+        if !signals.overrides.isEmpty { uniforms.audio = signals.applyingAudioOverrides(to: uniforms.audio) }
         let params = held?.resolved(time: uniforms.time, seed: uniforms.seed)
+            .reacting(to: signals, at: uniforms.time, smoothing: reactionSmoothing)
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
         gpuCost.attach(to: commandBuffer, width: target.width, height: target.height)
         // Compute work a provider needs finished before the fragment shader
@@ -135,12 +141,15 @@ public final class LerpRenderer {
                      uniforms: LerpUniforms,
                      params: LerpParameterValues? = nil,
                      data: LerpDataProvider? = nil,
-                     overlay: LerpCrossfade.Overlay? = nil) {
+                     overlay: LerpCrossfade.Overlay? = nil,
+                     signals: LerpSignalValues = .init(),
+                     reactionSmoothing: LerpReactionSmoothing? = nil) {
         guard let commandBuffer = encodePass(target: drawable.texture,
                                              pipeline: pipeline,
                                              uniforms: uniforms,
                                              params: params,
-                                             data: data) else { return }
+                                             data: data, signals: signals,
+                                             reactionSmoothing: reactionSmoothing) else { return }
         // Mid-crossfade only: the outgoing look, laid over the finished frame.
         if let overlay { LerpCrossfade.encode(overlay, onto: drawable.texture, in: commandBuffer) }
         commandBuffer.present(drawable)

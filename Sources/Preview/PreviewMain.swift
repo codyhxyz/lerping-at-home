@@ -8,10 +8,11 @@ import Metal
 ///   LerpPreview --params [NAME]     print declared parameters, animations and presets
 ///   LerpPreview --nca-selftest      check neural CA replay, growth and wound response
 ///   LerpPreview --animate-selftest  check the `// lerp-animate:` contract
+///   LerpPreview --signals-selftest  check world signals and `// lerp-react:`
 ///   LerpPreview --critter-selftest  check the critter ledger and vitals (CPU only)
 ///   LerpPreview --snapshot DIR      render every shader to PNG in DIR
 ///       [--size WxH] [--time T] [--seed S] [--shader NAME]
-///       [--preset NAME] [--param name=value ...] [--viewer x,y,z]
+///       [--preset NAME] [--param name=value ...] [--viewer x,y,z] [--signal key=value ...]
 ///       [--hdr [--hdr-format exr|heic|avif|png] [--edr-peak P]]
 ///                                   extended-range stills through the EDR
 ///                                   path (default exr, peak 4× SDR white)
@@ -67,6 +68,11 @@ enum PreviewMain {
 
         if args.contains("--export-selftest") {
             LoopExportSelfTest.run()
+            return
+        }
+
+        if args.contains("--signals-selftest") {
+            SignalsSelfTest.run()
             return
         }
 
@@ -341,7 +347,36 @@ enum PreviewMain {
 
     // MARK: - Snapshot mode
 
+    static func signalOverrides(_ args: [String]) -> [String: LerpParamValue] {
+        var overrides: [String: LerpParamValue] = [:]
+        for (index, arg) in args.enumerated() where arg == "--signal" {
+            guard args.indices.contains(index + 1) else { fail("--signal expects key=value") }
+            let raw = args[index + 1]
+            let parts = raw.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else { fail("--signal expects key=value, got '\(raw)'") }
+            let (name, value) = (String(parts[0]), String(parts[1]))
+            if let domain = LerpSignalValues.scalarDomain(for: name) {
+                guard let number = Double(value), domain.contains(number) else {
+                    fail("--signal \(name) expects a number in \(domain)")
+                }
+                overrides[name] = .scalar(number)
+            } else if LerpSignalValues.colorNames.contains(name) {
+                do {
+                    let parsed = try LerpParamParser.parseColor(value, line: 0, text: raw)
+                    guard let rgba = parsed.colorValue, (0..<4).allSatisfy({ (0...1).contains(rgba[$0]) }) else {
+                        fail("--signal \(name) expects color components in 0...1")
+                    }
+                    overrides[name] = parsed
+                } catch { fail("--signal \(raw): \(error)") }
+            } else {
+                fail("--signal unknown key '\(name)'")
+            }
+        }
+        return overrides
+    }
+
     static func snapshotAll(outDir: String, args: [String], extraSearch: [URL]) {
+        let signals = signalOverrides(args)
         let (renderer, library) = makeLibrary(extraSearch)
 
         let (width, height) = size(args, default: (1200, 750))
@@ -377,6 +412,7 @@ enum PreviewMain {
                                             params: parameterValues(for: shader, args: args),
                                             hdrPeak: hdrPeak,
                                             viewer: viewer,
+                                            signalOverrides: signals,
                                             to: url)
             if let error = result.error {
                 failed = true

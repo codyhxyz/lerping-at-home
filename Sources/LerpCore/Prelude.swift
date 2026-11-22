@@ -38,6 +38,7 @@ public enum LerpPrelude {
             float  audioBass;   // ~20-250 Hz band, ~0..1
             float  audioMid;    // ~250-4000 Hz band, ~0..1
             float  audioTreble; // ~4-16 kHz band, ~0..1
+            float  audioBeat;   // onset envelope, ~0..1
             float4 viewer;      // watcher's head, xyz (0 = centred); see lerpViewerRay
         """
         if !parameters.isEmpty {
