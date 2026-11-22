@@ -33,59 +33,73 @@ final class PointerViewer {
 
     /// Pointer still this long, seconds, and the head has the view back.
     static let hold: Double = 1.5
-    /// Time constant of the glide back to the head, seconds.
-    static let release: Double = 0.35
+    /// How long the glide back to the head takes, seconds.
+    static let release: Double = 0.5
 
     private var value = SIMD3<Float>(repeating: 0)
     private var stamp: CFTimeInterval = 0
 
     // Taking over from the head.
     private var lastPoint: NSPoint?
-    private var lastMove: CFTimeInterval = -.infinity
-    /// How much of the view is the pointer's: 1 while it steers, easing to 0.
-    private var share: Float = 0
+    /// When the pointer stops steering and the glide back to the head begins.
+    private var releaseAt: CFTimeInterval = -.infinity
     private var shown = SIMD3<Float>(repeating: 0)
-    private var overrideStamp: CFTimeInterval = 0
 
     /// The eye while the camera follows the head: the head's, unless the
     /// pointer has just moved over the render (or, with Desktop Mode on, over
     /// the bare desktop), in which case the pointer's. Depth stays the head's
     /// either way, so taking over does not zoom.
     func steering(over view: NSView, desktop: Bool, head: LerpViewer) -> LerpViewer {
-        let now = CACurrentMediaTime()
-        let dt = overrideStamp == 0 ? 0 : now - overrideStamp
-        overrideStamp = now
+        let point = NSEvent.mouseLocation
+        return steering(head: head, point: point, buttonDown: NSEvent.pressedMouseButtons != 0,
+                        now: CACurrentMediaTime(),
+                        steers: { Self.steers(at: point, over: view, desktop: desktop) },
+                        target: { self.target(over: view, desktop: desktop) })
+    }
+
+    /// `steering(over:desktop:head:)` with its inputs passed in. `steers` is
+    /// asked only when the pointer has moved; `target` is where the pointer
+    /// puts the eye, or nil to hold.
+    func steering(head: LerpViewer, point: NSPoint, buttonDown: Bool, now: CFTimeInterval,
+                  steers: () -> Bool, target: () -> SIMD3<Float>?) -> LerpViewer {
         let headEye = SIMD3(head.offset.x, head.offset.y, head.offset.z)
 
-        let point = NSEvent.mouseLocation
         if point != lastPoint {
-            if lastPoint != nil, NSEvent.pressedMouseButtons == 0,
-               Self.steers(at: point, over: view, desktop: desktop) {
-                if now - lastMove >= Self.hold {
-                    // Pick up from what is on screen, so the take-over is seamless.
-                    value = shown
-                    stamp = now
+            if lastPoint != nil, !buttonDown {
+                if steers() {
+                    if now >= releaseAt {
+                        // Pick up from what is on screen, so the take-over is seamless.
+                        value = shown
+                        stamp = now
+                    }
+                    releaseAt = now + Self.hold
+                } else {
+                    // Off the render (into the editor, onto another app's
+                    // window): it is not steering any more, so the head has
+                    // the view back now rather than after the pointer rests.
+                    releaseAt = min(releaseAt, now)
                 }
-                lastMove = now
             }
             lastPoint = point
         }
 
-        let active = now - lastMove < Self.hold
-        if active {
+        // How much of x/y is the pointer's: 1 while it steers, then a
+        // smoothstep down to 0 over `release`, which starts and lands flat.
+        let share: Float
+        if now < releaseAt {
             share = 1
-            let pdt = stamp == 0 ? 0 : now - stamp
+            let dt = now - stamp
             stamp = now
-            if var target = target(over: view, desktop: desktop) {
-                target.z = headEye.z
-                let k = Float(1 - exp(-pdt / Self.response))
+            if let target = target() {
+                let k = Float(1 - exp(-dt / Self.response))
                 value += (target - value) * k
             }
         } else {
-            share *= Float(exp(-dt / Self.release))
-            if share < 0.001 { share = 0 }
+            let f = Float(min(1, (now - releaseAt) / Self.release))
+            share = 1 - f * f * (3 - 2 * f)
         }
         shown = headEye + (value - headEye) * share
+        shown.z = headEye.z
         return LerpViewer(x: shown.x, y: shown.y, z: shown.z)
     }
 
