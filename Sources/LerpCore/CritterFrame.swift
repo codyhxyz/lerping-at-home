@@ -76,7 +76,7 @@ public struct CritterFrame: Equatable, Sendable {
     public var camTarget = SIMD3<Float>(0, 0.6, 0)
     public var camFocal: Float = 2.7
     public var focus = SIMD2<Float>(0, 0) // centre of the rolled world
-    public var bend: Float = 0.011        // world y drops by bend·|xz − focus|²
+    public var bend: Float = 0.008        // world y drops by bend·|xz − focus|²
 
     // ---- light from the clock
     public var hour: Float = 14.5
@@ -126,6 +126,12 @@ public struct CritterFrame: Equatable, Sendable {
     public var rockBase: [Float] = []
     /// The butterfly's dotted trail, oldest last (world, unbent).
     public var butterflyTrail: [SIMD3<Float>] = []
+
+    /// The sprout's sway, radians: x toward its own +X, y toward its face.
+    /// Follow-through from the head's motion plus a little breeze.
+    public var sproutSway = SIMD2<Float>(0, 0)
+    /// Extra hang of both leaves, radians (negative lifts them).
+    public var leafFlap: Float = 0
 
     public init() {}
 }
