@@ -25,7 +25,7 @@
 //   provider; `clock` pins the hour on an equinox day. Stills are midnight.
 // - GPU cost: 8 analytic waves per pixel, about the cheapest shader here.
 //
-// lerp-category: Scenes
+// lerp-category: Atmosphere
 // lerp-data: clock
 // lerp-param: gravity      float 0.2 4  = 1.0  "Gravity"
 // lerp-param: waterTension float 0 0.1  = 0.01 "Water tension"
@@ -40,6 +40,8 @@
 // lerp-param: pitch    float -30 30   = 0 "Tilt"
 // lerp-param: magnify  float -1 1.5 = 0 "Zoom"
 // lerp-param: clock    float -1 24 = -1 "Hour (-1 = now)"
+//
+// lerp-react: waterTension <- weather.wind 0.006..0.035 smooth=12
 //
 // lerp-preset: "Old sunset" clock=18
 // lerp-preset: Upstream speed=1.0

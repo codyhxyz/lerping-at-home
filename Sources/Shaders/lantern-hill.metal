@@ -3,7 +3,7 @@
 // the game's own mobs on their own models (lerp-requires: minecraft mobs; see
 // PORTING.md).
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft mobs
 //
 // Villagers step one by one out of a nether portal at the foot of a terraced
@@ -39,6 +39,8 @@
 // lerp-param: yaw      float -180 180 = 0 "Turn"
 // lerp-param: pitch    float -25 35   = 0 "Tilt"
 // lerp-param: magnify  float -1 0.9   = 0 "Zoom"
+//
+// lerp-react: light <- clock.twilight 0.9..1.25 smooth=10
 //
 // lerp-preset: "Lantern Hill" crowd=1
 // lerp-preset: "Soul Lanterns" soul=true, crowd=1.4

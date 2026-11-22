@@ -2,7 +2,7 @@
 // Original work for Lerping@Home, drawn with Minecraft's own textures
 // (Mojang's, bound at run time; see the "Minecraft looks" section of PORTING.md).
 //
-// lerp-category: Minecraft
+// lerp-category: Atmosphere
 // lerp-requires: minecraft
 // lerp-data: clock
 //
@@ -51,6 +51,9 @@
 // lerp-param: pitch    float -30 40  = 0 "Tilt"
 // lerp-param: magnify  float -1 1.2  = 0 "Zoom"
 // lerp-param: parallax float 0 2     = 1 "Head parallax"
+//
+// lerp-react: showers <- weather.rain smooth=8
+// lerp-react: wind    <- weather.wind 0.25..2.6 smooth=12
 //
 // lerp-preset: "Day in Ten Minutes" pace=144
 // lerp-preset: "Winter Day" winter=1, clock=11

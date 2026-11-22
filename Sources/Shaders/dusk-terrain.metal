@@ -39,7 +39,7 @@
 // a few seconds of mist, which keeps coordinates — and float precision —
 // bounded however long the look stays on screen.
 //
-// lerp-category: Scenes
+// lerp-category: Atmosphere
 // lerp-param: timeOfDay  float 0 1 = 0.30 "Time of day"
 // lerp-animate: timeOfDay  0.22 0.4 period=300
 // lerp-param: palette    float 0 1 = 0.0  "Palette"
@@ -54,6 +54,10 @@
 //
 // Blue Hour flies at the default camera speed: at 0.7, over a dark, misty
 // scene, 1-11% of the frame changed per 2 s and most windows read as still.
+// lerp-react: timeOfDay <- clock.daylight 0..1 smooth=5
+// lerp-react: cloudCover <- weather.clouds smooth=10
+// lerp-react: haze <- weather.fog 0.25..0.85 smooth=10
+//
 // lerp-preset: "Blue Hour"      timeOfDay=0.12, palette=1.0, cloudSea=0.6, cloudCover=0.3
 // lerp-preset: "Blue Hour"      haze=0.65
 // lerp-preset: "Golden Hour"    timeOfDay=0.55, cloudSea=0.15, cloudCover=0.35, haze=0.4

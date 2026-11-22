@@ -3,7 +3,7 @@
 // block drawn with the game's textures, and everyone in it one of the game's
 // mobs (`lerp-requires: minecraft mobs`).
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft mobs
 // lerp-data: clock
 //
