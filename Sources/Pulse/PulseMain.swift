@@ -12,11 +12,13 @@ import os
 // to `CritterLedger.fold`. See Sources/LerpCore/CritterLedger.swift for what is
 // kept and why it is only per-day totals; everything that decides what a
 // minute means lives there, where `LerpPreview --critter-selftest` can reach
-// it. This file is only the system probes and the timer.
+// it. The same minute tick also publishes live signals through WorldUpdater.
 //
 //     LerpPulse            run (what launchd does)
 //     LerpPulse --report   print the critter's vitals from the current ledger
-//     LerpPulse --probe    print what one sample would see right now
+//     LerpPulse --probe        print what one sample would see right now
+//     LerpPulse --world-probe  print one world snapshot without writing it
+//     LerpPulse --world-selftest  check deterministic world signal fixtures
 //
 // Nothing here needs a privacy permission: idle time comes from the HID
 // system's registry entry, lock state from the window server's session
@@ -35,6 +37,8 @@ enum PulseMain {
         }
         if CommandLine.arguments.contains("--report") { report(url) }
         if CommandLine.arguments.contains("--probe") { probe() }
+        if CommandLine.arguments.contains("--world-probe") { worldProbe(url) }
+        if CommandLine.arguments.contains("--world-selftest") { exit(WorldSelfTest.run() ? 0 : 1) }
 
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
@@ -66,6 +70,23 @@ enum PulseMain {
         exit(0)
     }
 
+    static func worldProbe(_ url: URL) -> Never {
+        let ledger = CritterLedger.load(from: url)
+        let idle = Pulse.hidIdleSeconds() ?? 0
+        let folder = WorldUpdater.folder
+        Task.detached {
+            do {
+                let data = try await WorldUpdater.probe(folder: folder, ledger: ledger, idleSeconds: idle)
+                FileHandle.standardOutput.write(data + Data([0x0a]))
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("LerpPulse: world probe failed\n".utf8))
+                exit(1)
+            }
+        }
+        dispatchMain()
+    }
+
     static func probe() -> Never {
         let front = NSWorkspace.shared.frontmostApplication
         print("idle \(Pulse.hidIdleSeconds().map { String(format: "%.0f s", $0) } ?? "?"), "
@@ -84,6 +105,7 @@ final class Pulse {
     private var ledger: CritterLedger?
     private var switches = CritterSwitchCounter(front: .other, at: Date().timeIntervalSince1970)
     private var timer: Timer?
+    private let world = WorldUpdater(folder: WorldUpdater.folder)
 
     init(url: URL) {
         self.url = url
@@ -122,6 +144,7 @@ final class Pulse {
             else { return }
             self.switches.activate(kind, at: Date().timeIntervalSince1970)
         }
+        world.start()
         // A restarted agent ticks at once; `fold` ignores it if the last
         // sample was under 45 s ago.
         tick()
@@ -132,13 +155,15 @@ final class Pulse {
     }
 
     private func tick() {
+        let now = Date()
+        let idleSeconds = Self.hidIdleSeconds() ?? 0
+        defer { world.tick(now: now, ledger: ledger, idleSeconds: idleSeconds) }
         if ledger == nil { open() }
         guard var ledger else { return }
-        let now = Date()
         switches.settle(at: now.timeIntervalSince1970)
         let onCall = Self.microphoneInUse()
         let folded = ledger.fold(now: now,
-                                 idleSeconds: Self.hidIdleSeconds() ?? 0,
+                                 idleSeconds: idleSeconds,
                                  locked: Self.screenLocked(),
                                  kind: onCall ? .chat : switches.front,
                                  switches: switches.pending,
