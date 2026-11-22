@@ -179,7 +179,13 @@ export function transpile(src) {
   // lerpMain signature -> plain GLSL function. Handles multi-line signatures.
   s = s.replace(/fragment\s+half4\s+lerpMain\s*\([\s\S]*?\)\s*\{/, "vec4 lerpMain(vec4 pos){");
 
-  // u.field -> u_field
+  // Boolean parameters are 0/1 *integers* in LerpUniforms. Keep explicit
+  // integer comparisons intact, and translate Metal's implicit truth tests.
+  for (const { name, type } of params) {
+    if (type === "bool") {
+      s = s.replace(new RegExp(`\\b(if|while)(\\s*\\(\\s*!?\\s*)u\\.${name}(?=\\s*\\))`, "g"), "$1$2bool(u." + name + ")");
+    }
+  }
   s = s.replace(/\bu\.([A-Za-z_]\w*)/g, "u_$1");
 
   // mix() -> lerpMix() (scalar-splat-tolerant overloads live in the prelude)
@@ -233,7 +239,7 @@ export function transpile(src) {
     "uniform float u_audioMid;",
     "uniform float u_audioTreble;",
     ...params.map((p) => (p.type === "color" ? `uniform vec4 u_${p.name};`
-      : p.type === "int" ? `uniform int u_${p.name};`
+      : p.type === "int" || p.type === "bool" ? `uniform int u_${p.name};`
       : `uniform float u_${p.name};`)),
   ];
 
@@ -399,7 +405,119 @@ export function seedFor(id) {
 }
 
 export function defaultParamValues(params) {
-  const v = {};
-  for (const p of params) v[p.name] = p.type === "color" ? parseColor(p.def) : parseFloat(p.def);
-  return v;
+  return Object.fromEntries(params.map(({ name, type, def }) => [name,
+    type === "color" ? parseColor(def) : type === "bool" ? Number(def === "true") : Number(def),
+  ]));
+}
+
+const VERTEX = `#version 300 es
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+const CONTEXT = { antialias: false, alpha: false, depth: false, stencil: false, powerPreference: "low-power" };
+const FRAME_MS = 1000 / 30;
+
+export function previewSize(cssWidth, cssHeight, dpr = 1, maxDimension = 4096) {
+  const width = Math.max(1, cssWidth * Math.min(dpr, 2));
+  const height = Math.max(1, cssHeight * Math.min(dpr, 2));
+  const scale = Math.min(1, Math.sqrt(1_000_000 / (width * height)), maxDimension / Math.max(width, height));
+  return [Math.max(1, Math.floor(width * scale)), Math.max(1, Math.floor(height * scale))];
+}
+
+// Probe only on explicit play. The returned context is the one the player uses,
+// not a separate context left over from feature detection.
+export function detectPreviewCapability({ canvas, shader, video, videoType, motionAllowed }) {
+  if (!motionAllowed) return { mode: "still" };
+  if (shader && canvas) {
+    try {
+      const gl = canvas.getContext("webgl2", CONTEXT);
+      if (gl && !gl.isContextLost()) return { mode: "webgl2", gl };
+    } catch { /* WebGL2 is unavailable in this browser or session. */ }
+  }
+  if (video && videoType && video.canPlayType(videoType)) return { mode: "video" };
+  return { mode: "still" };
+}
+
+function compileProgram(gl, fragment) {
+  const shaders = [];
+  let program;
+  try {
+    for (const [type, source] of [[gl.VERTEX_SHADER, VERTEX], [gl.FRAGMENT_SHADER, fragment]]) {
+      const sh = gl.createShader(type);
+      if (!sh) throw new Error("WebGL could not allocate a shader.");
+      shaders.push(sh);
+      gl.shaderSource(sh, source);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+    }
+    program = gl.createProgram();
+    if (!program) throw new Error("WebGL could not allocate a program.");
+    for (const sh of shaders) gl.attachShader(program, sh);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+    return program;
+  } catch (error) {
+    if (program) gl.deleteProgram(program);
+    throw error;
+  } finally {
+    for (const sh of shaders) gl.deleteShader(sh);
+  }
+}
+
+export function playShader(canvas, gl, { glsl, params }, values, clock, onLoss) {
+  let program, raf = 0, disposed = false;
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    cancelAnimationFrame(raf);
+    canvas.removeEventListener("webglcontextlost", lost);
+    if (!gl.isContextLost()) {
+      gl.useProgram(null);
+      if (program) gl.deleteProgram(program);
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    }
+    canvas.width = canvas.height = 1;
+    canvas.remove();
+  }
+  function lost() { dispose(); onLoss(); }
+  canvas.addEventListener("webglcontextlost", lost);
+  try {
+    program = compileProgram(gl, glsl);
+    gl.useProgram(program);
+    const location = (key) => gl.getUniformLocation(program, `u_${key}`);
+    const [resolution, time, seed] = ["resolution", "time", "seed"].map(location);
+    const paramLocations = params.map((p) => location(p.name));
+    const maxSize = Math.min(...gl.getParameter(gl.MAX_VIEWPORT_DIMS), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
+    const start = performance.now();
+    let last = -Infinity;
+    function frame(now) {
+      if (disposed) return;
+      const delta = now - last;
+      // Retain the fractional frame interval across refresh rates.
+      if (delta >= FRAME_MS - 0.25) {
+        last = Number.isFinite(last) ? now - Math.max(0, delta - FRAME_MS) % FRAME_MS : now;
+        const [w, h] = previewSize(canvas.clientWidth, canvas.clientHeight, globalThis.devicePixelRatio || 1, maxSize);
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+        gl.viewport(0, 0, w, h);
+        gl.uniform2f(resolution, w, h);
+        gl.uniform1f(time, (now - start) / 1000 + clock.time);
+        gl.uniform1f(seed, clock.seed);
+        for (const [i, p] of params.entries()) {
+          const value = values[p.name];
+          if (p.type === "color") gl.uniform4fv(paramLocations[i], value);
+          else if (p.type === "bool") gl.uniform1i(paramLocations[i], Number(Boolean(value)));
+          else if (p.type === "int") gl.uniform1i(paramLocations[i], Math.round(value));
+          else gl.uniform1f(paramLocations[i], value);
+        }
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+      raf = requestAnimationFrame(frame);
+    }
+    raf = requestAnimationFrame(frame);
+    return dispose;
+  } catch (error) {
+    dispose();
+    throw error;
+  }
 }

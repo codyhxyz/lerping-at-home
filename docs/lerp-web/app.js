@@ -1,288 +1,436 @@
-import { transpile, parseShader, titleize, seedFor, defaultParamValues, MAC_ONLY, SHADER_IDS } from "./engine.js";
+import { defaultParamValues, detectPreviewCapability, playShader, transpile } from "./engine.js";
 
-const RAW = "https://raw.githubusercontent.com/codyhxyz/lerping-at-home/main/Sources/Shaders/";
-const VERTEX = `#version 300 es
-void main() {
-    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
-    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-}`;
+const MAIN = document.querySelector("main");
+const HOME = new URL("../", import.meta.url);
+const PLATFORM = "https://lerping.app";
+const hosted = location.origin === PLATFORM || document.documentElement.dataset.platform === "true";
+const API = hosted ? location.origin : PLATFORM;
+const ROUTE = /^\/p\/v1\/(piece|look|playlist)\/([0-9a-f]{64})$/;
+const kinds = { piece: "Piece", look: "Look", playlist: "Playlist" };
+const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+const artistPanel = document.querySelector("#artist-panel");
+const reportPanel = document.querySelector("#report-panel");
+const install = document.querySelector("#install");
+const filters = { mood: "", motion: "", brightness: "", medium: "" };
+let editorial, navigation, player, installTimer;
 
-let shaders = [];        // {id, title, description, macOnly, params, glsl, thumbValues, thumbProgram, values, heroProgram}
-let activeId = null;
-let raf = 0;
-let t0 = performance.now();
+document.querySelector("#home").href = HOME.href;
 
-function getGL(canvas) {
-  const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
-  if (!gl) {
-    document.getElementById("nogl").style.display = "flex";
-    document.getElementById("hero").style.display = "none";
-    return null;
-  }
-  return gl;
+function el(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text != null) node.textContent = text;
+  if (className) node.className = className;
+  return node;
 }
-
-function compileProgram(gl, fsSrc) {
-  const compile = (type, src) => {
-    const sh = gl.createShader(type);
-    gl.shaderSource(sh, src);
-    gl.compileShader(sh);
-    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-      const log = gl.getShaderInfoLog(sh);
-      gl.deleteShader(sh);
-      throw new Error("shader compile failed: " + log);
+function link(text, href, className) {
+  const node = el("a", text, className);
+  node.href = href;
+  return node;
+}
+function button(text, onClick, className) {
+  const node = el("button", text, className);
+  node.type = "button";
+  node.addEventListener("click", onClick);
+  return node;
+}
+function pathFor(kind, id) { return `/p/v1/${kind}/${id}`; }
+function postcardLink(kind, id) { return hosted ? pathFor(kind, id) : `${HOME.href}#${pathFor(kind, id)}`; }
+function artifactPath(kind, id) { return `/api/v1/artifacts/${kind}/${id}`; }
+function kindOf(entry) { return entry.record.kind; }
+function httpsURL(value) {
+  try { const url = new URL(value); return url.protocol === "https:" ? url.href : null; }
+  catch { return null; }
+}
+function assetURL(value, medium) {
+  if (typeof value !== "string") return null;
+  if (/^\/api\/v1\/blobs\/[0-9a-f]{64}$/.test(value)) return API + value;
+  if (medium === "image" && /^data:image\/webp;base64,/.test(value)) return value;
+  if (medium === "video" && /^data:video\/mp4;base64,/.test(value)) return value;
+  return null;
+}
+function image(entry, eager = false) {
+  const src = assetURL(entry.still, "image");
+  if (!src) {
+    const blank = el("div", "", "image");
+    blank.setAttribute("aria-hidden", "true");
+    return blank;
+  }
+  const img = el("img", null, "image");
+  img.alt = `Still from ${entry.title}`;
+  if (!eager) img.loading = "lazy";
+  img.src = src;
+  return img;
+}
+async function fetchJSON(url, signal) {
+  const res = await fetch(url, { signal, cache: "no-store", headers: { Accept: "application/json" } });
+  if (!res.ok) throw Object.assign(new Error("Couldn't load this postcard."), { status: res.status });
+  return res.json();
+}
+function collection() {
+  // The platform filters revoked records before returning a collection. Static
+  // GitHub Pages builds are a snapshot; they don't serve community assets.
+  return editorial ??= fetchJSON(hosted ? `${API}/api/v1/editorial` : new URL("editorial.json", import.meta.url))
+    .catch((error) => { editorial = null; throw error; });
+}
+function stopPlayer(message) {
+  if (!player) return;
+  const old = player;
+  player = null;
+  old.abort.abort();
+  old.dispose?.();
+  old.stage.querySelector(".image")?.removeAttribute("aria-hidden");
+  old.controls.hidden = true;
+  old.play.textContent = "Play";
+  old.status.textContent = message || "Preview paused. Showing the still.";
+}
+function closeOverlays() {
+  clearTimeout(installTimer);
+  artistPanel.close();
+  reportPanel.close();
+  install.hidePopover?.();
+}
+function artistButton(artist) {
+  return button(artist.name, () => {
+    const title = el("h2", artist.name);
+    title.id = "artist-title";
+    const close = button("Close", () => artistPanel.close(), "sheet-close");
+    artistPanel.replaceChildren(close, el("p", "Artist profile", "label"), title);
+    if (artist.bio) artistPanel.append(el("p", artist.bio));
+    const url = httpsURL(artist.url);
+    if (url) artistPanel.append(link("Visit artist’s website ↗", url));
+    artistPanel.showModal();
+  }, "quiet");
+}
+function reportButton(entry) {
+  const path = pathFor(kindOf(entry), entry.id);
+  if (!hosted) return link("Report", `${PLATFORM}${path}#report`);
+  return button("Report", () => showReport(entry), "quiet");
+}
+function showReport(entry) {
+  const title = el("h2", "Report this postcard");
+  title.id = "report-title";
+  const form = el("form");
+  const input = el("textarea");
+  input.name = "reason";
+  input.required = true;
+  input.maxLength = 1200;
+  input.rows = 4;
+  const label = el("label", "What should we look into?");
+  label.append(input);
+  const submit = el("button", "Send report");
+  const status = el("p", "", "status");
+  status.setAttribute("role", "status");
+  reportPanel.replaceChildren(button("Close", () => reportPanel.close(), "sheet-close"), title, form);
+  form.append(label, submit, status);
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    try {
+      const res = await fetch(`${API}/api/v1/reports`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: `${kindOf(entry)}:sha256:${entry.id}`, reason: input.value }),
+      });
+      if (!res.ok) throw new Error();
+      status.textContent = "Thank you. The report was sent to the editors.";
+      input.disabled = true;
+    } catch {
+      status.textContent = "We couldn't send your report. Please try again later.";
+      submit.disabled = false;
     }
-    return sh;
   };
-  const vs = compile(gl.VERTEX_SHADER, VERTEX);
-  const fs = compile(gl.FRAGMENT_SHADER, fsSrc);
-  const prog = gl.createProgram();
-  gl.attachShader(prog, vs);
-  gl.attachShader(prog, fs);
-  gl.linkProgram(prog);
-  gl.deleteShader(vs);
-  gl.deleteShader(fs);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-    const log = gl.getProgramInfoLog(prog);
-    gl.deleteProgram(prog);
-    throw new Error("program link failed: " + log);
-  }
-  return prog;
+  if (!reportPanel.open) reportPanel.showModal();
 }
 
-function drawScene(gl, prog, rec, values, w, h, time, seed) {
-  gl.viewport(0, 0, w, h);
-  gl.useProgram(prog);
-  gl.uniform2f(gl.getUniformLocation(prog, "u_resolution"), w, h);
-  gl.uniform1f(gl.getUniformLocation(prog, "u_time"), time);
-  gl.uniform1f(gl.getUniformLocation(prog, "u_seed"), seed);
-  for (const p of rec.params) {
-    const loc = gl.getUniformLocation(prog, "u_" + p.name);
-    const v = values[p.name];
-    if (p.type === "color") gl.uniform4fv(loc, v);
-    else if (p.type === "int" || p.type === "bool") gl.uniform1i(loc, Math.round(v));
-    else gl.uniform1f(loc, v);
-  }
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-}
-
-async function boot() {
-  const grid = document.getElementById("grid");
-
-  // Load + transpile in parallel. Check HTTP status before trusting the body.
-  const loaded = await Promise.all(SHADER_IDS.map(async (id) => {
-    const res = await fetch(RAW + id + ".metal");
-    if (!res.ok) throw new Error(`${id}: HTTP ${res.status}`);
-    const src = await res.text();
-    const { glsl, params, dataProvider } = transpile(src);
-    const { description } = parseShader(src);
-    return { id, title: titleize(id), description, macOnly: MAC_ONLY.has(id) || !!dataProvider,
-             params, glsl, values: defaultParamValues(params), thumbValues: null,
-             heroProgram: null, seed: seedFor(id) };
-  }));
-
-  // Deterministic order: web shaders first (alphabetical), then Mac-only.
-  const web = loaded.filter((s) => !s.macOnly).sort((a, b) => a.id.localeCompare(b.id));
-  const mac = loaded.filter((s) => s.macOnly).sort((a, b) => a.id.localeCompare(b.id));
-  shaders = [...web, ...mac];
-  for (const s of web) s.thumbValues = { ...s.values };
-
-  // Drop skeletons, build cards in final order.
-  grid.innerHTML = "";
-  for (const s of shaders) {
-    const card = document.createElement("button");
-    card.className = "card" + (s.macOnly ? " mac-only" : "");
-    card.id = "card-" + s.id;
-    if (s.macOnly) {
-      card.innerHTML = `<div class="mac-chip">Mac app only</div>
-        <div class="mac-body"><div class="mac-title">${s.title}</div>
-        <div class="mac-desc">${s.description || "Needs the native engine."}</div></div>`;
-    } else {
-      card.innerHTML = `<canvas width="320" height="200"></canvas>
-        <div class="card-label"><span class="card-title">${s.title}</span></div>`;
-      card.addEventListener("click", () => selectShader(s.id));
-    }
-    grid.appendChild(card);
-  }
-
-  // Render thumbnails lazily as cards scroll into view.
-  const io = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      if (!e.isIntersecting) continue;
-      const id = e.target.id.replace("card-", "");
-      const rec = shaders.find((s) => s.id === id);
-      io.unobserve(e.target);
-      if (rec && !rec.macOnly) renderThumb(rec);
-    }
-  }, { rootMargin: "200px" });
-  document.querySelectorAll(".card:not(.mac-only)").forEach((c) => io.observe(c));
-
-  selectShader(web[0].id);
-}
-
-// Thumbnails share one offscreen WebGL2 context: programs are cached per
-// shader, pixels are read back synchronously and painted into each card's
-// plain 2D canvas. This never hits the browser's per-page GL context limit
-// and never races context loss against presentation.
-let thumbGL = null;
-const thumbProgs = new Map();
-function renderThumb(rec) {
-  const dest = document.querySelector(`#card-${rec.id} canvas`);
-  if (!dest) return;
-  if (!thumbGL) {
-    const off = document.createElement("canvas");
-    off.width = 320; off.height = 200;
-    thumbGL = getGL(off);
-    if (!thumbGL) return;
-  }
-  const gl = thumbGL;
-  try {
-    if (!thumbProgs.has(rec.id)) thumbProgs.set(rec.id, compileProgram(gl, rec.glsl));
-  } catch (e) {
-    console.warn(rec.id, e.message);
-    return;
-  }
-  const w = 320, h = 200;
-  // Freeze a flattering moment: t=8s catches most animations mid-flow.
-  drawScene(gl, thumbProgs.get(rec.id), rec, rec.thumbValues, w, h, 8, rec.seed);
-  // readPixels forces GPU completion, so the capture can't race anything.
-  const pixels = new Uint8Array(w * h * 4);
-  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-  const ctx = dest.getContext("2d");
-  const img = ctx.createImageData(w, h);
-  for (let y = 0; y < h; y++) {
-    img.data.set(pixels.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
-  }
-  ctx.putImageData(img, 0, 0);
-}
-
-function selectShader(id) {
-  const rec = shaders.find((s) => s.id === id);
-  if (!rec || rec.macOnly) return;
-  activeId = id;
-  document.querySelectorAll(".card").forEach((c) => c.classList.remove("active"));
-  document.getElementById("card-" + id)?.classList.add("active");
-
-  document.getElementById("heroTitle").textContent = rec.title;
-  document.getElementById("heroDesc").textContent = rec.description || "";
-  document.getElementById("shaderFile").textContent = `Sources/Shaders/${id}.metal`;
-  document.getElementById("shaderFile").href = `https://github.com/codyhxyz/lerping-at-home/blob/main/Sources/Shaders/${id}.metal`;
-  const i = shaders.filter((s) => !s.macOnly).indexOf(rec);
-  const n = shaders.filter((s) => !s.macOnly).length;
-  document.getElementById("heroCount").textContent = `${i + 1} / ${n}`;
-
-  buildSliders(rec);
-
-  const canvas = document.getElementById("hero");
-  const gl = getGL(canvas);
-  if (!gl) return;
-  try {
-    if (rec.heroProgram) gl.deleteProgram(rec.heroProgram);
-    rec.heroProgram = compileProgram(gl, rec.glsl);
-  } catch (e) {
-    document.getElementById("heroError").textContent = "Couldn't compile this shader on your GPU: " + e.message;
-    document.getElementById("heroError").style.display = "block";
-    return;
-  }
-  document.getElementById("heroError").style.display = "none";
-
-  cancelAnimationFrame(raf);
-  t0 = performance.now();
-  const frame = () => {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    drawScene(gl, rec.heroProgram, rec, rec.values, canvas.width, canvas.height,
-              (performance.now() - t0) / 1000, rec.seed);
-    raf = requestAnimationFrame(frame);
+function renderCollection({ entries, shelves, edition, feature }) {
+  document.title = "Lerping@Home — Works for idle screens";
+  const items = new Map(entries.map((entry) => [entry.slug, entry]));
+  const front = el("section", null, "feature");
+  const intro = el("div");
+  intro.append(el("p", `Postcard collection / ${edition}`, "label"), el("h1", "Works for idle screens."),
+    el("p", "A small exhibition of light, texture, and places. Look first; play when you’re ready.", "intro"));
+  front.append(intro);
+  if (items.has(feature)) front.append(card(items.get(feature), true));
+  const controls = el("div", null, "filters");
+  controls.setAttribute("role", "group");
+  controls.setAttribute("aria-label", "Filter the collection");
+  const options = {
+    mood: [...new Set(entries.map((entry) => entry.tags.mood))].sort(),
+    motion: ["still", "slow", "moderate", "brisk"], brightness: ["dim", "balanced", "bright"],
+    medium: ["procedural", "simulation", "splat"],
   };
-  frame();
+  const gallery = el("div");
+  const count = el("p", "", "status");
+  count.setAttribute("role", "status");
+  for (const key of Object.keys(filters)) {
+    const select = el("select");
+    for (const value of ["", ...options[key]]) {
+      const option = el("option", value ? value[0].toUpperCase() + value.slice(1) : "All");
+      option.value = value;
+      select.append(option);
+    }
+    select.value = filters[key];
+    select.addEventListener("change", () => { filters[key] = select.value; renderShelves(); });
+    const label = el("label");
+    label.append(el("span", key, "label"), select);
+    controls.append(label);
+  }
+  function renderShelves() {
+    const shown = new Set();
+    gallery.replaceChildren();
+    for (const shelf of shelves) {
+      const visible = shelf.entries.map((slug) => items.get(slug)).filter((entry) => entry &&
+        Object.entries(filters).every(([key, value]) => !value || value === entry.tags[key]));
+      if (!visible.length) continue;
+      const section = el("section", null, "shelf");
+      const header = el("div", null, "shelf-header");
+      header.append(el("h2", shelf.name), el("p", shelf.note, "muted"));
+      if (shelf.artist) header.append(artistButton(shelf.artist));
+      const cards = el("div", null, "cards");
+      for (const entry of visible) { cards.append(card(entry)); shown.add(entry.id); }
+      section.append(header, cards);
+      gallery.append(section);
+    }
+    count.textContent = shown.size ? `${shown.size} ${shown.size === 1 ? "work" : "works"} on view` : "No works match these filters.";
+  }
+  MAIN.replaceChildren(front, controls, count, gallery);
+  renderShelves();
+}
+function card(entry, feature = false) {
+  const figure = el("figure");
+  const caption = el("figcaption");
+  caption.append(el("strong", entry.title), el("span", feature ? "Featured postcard ↗" : entry.tags.medium));
+  figure.append(image(entry, feature), caption);
+  const node = link(null, postcardLink(kindOf(entry), entry.id), "card");
+  node.append(figure);
+  return node;
 }
 
-function buildSliders(rec) {
-  const wrap = document.getElementById("sliders");
-  wrap.innerHTML = "";
-  for (const p of rec.params) {
-    const row = document.createElement("div");
-    row.className = "slider-row";
-    const lab = document.createElement("label");
-    lab.innerHTML = `<span>${p.label}</span><span class="val" id="val-${p.name}"></span>`;
-    row.appendChild(lab);
-    const showVal = () => {
-      const v = rec.values[p.name];
-      document.getElementById("val-" + p.name).textContent =
-        p.type === "color" ? rgbaToHex(v) : p.type === "int" || p.type === "bool" ? String(Math.round(v))
-        : Number(v).toFixed(3).replace(/\.?0+$/, "");
+async function runPreview(entry, view) {
+  if (player) { stopPlayer(); return; }
+  if (document.hidden || reduced.matches) return;
+  const session = { ...view, abort: new AbortController() };
+  const signal = session.abort.signal;
+  player = session;
+  session.play.textContent = "Pause";
+  session.status.textContent = "Preparing preview…";
+  let canvas, video;
+  try {
+    // Recheck visibility before Play so a postcard open during a withdrawal
+    // cannot start a fresh preview. Blob requests check the same state.
+    if (hosted || !entry.slug) await fetchJSON(`${API}${artifactPath(kindOf(entry), entry.id)}`, signal);
+    let shader;
+    if (entry.webShader) {
+      try {
+        const url = new URL(entry.webShader.url);
+        const hash = entry.record.source.split(":").at(-1);
+        if (url.origin !== "https://raw.githubusercontent.com") throw new Error();
+        const res = await fetch(url, { signal });
+        if (!res.ok) throw new Error();
+        const bytes = await res.arrayBuffer();
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        if (Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("") !== hash) throw new Error();
+        const converted = transpile(new TextDecoder().decode(bytes));
+        if (!converted.dataProvider) shader = converted;
+      } catch (error) { if (signal.aborted) throw error; }
+    }
+    if (signal.aborted) return;
+    const videoSrc = assetURL(entry.video?.url, "video");
+    if (videoSrc) {
+      video = el("video", null, "surface");
+      video.muted = true;
+      video.playsInline = true;
+      video.loop = true;
+      video.setAttribute("aria-label", `Preview of ${entry.title}`);
+    }
+    if (shader) {
+      canvas = el("canvas", null, "surface");
+      canvas.setAttribute("aria-label", `Live preview of ${entry.title}`);
+    }
+    let cap = detectPreviewCapability({ canvas, shader, video, videoType: entry.video?.type, motionAllowed: true });
+    if (cap.mode === "webgl2") {
+      try {
+        const values = defaultParamValues(shader.params);
+        session.stage.append(canvas);
+        session.dispose = playShader(canvas, cap.gl, shader, values, entry.webShader,
+          () => stopPlayer("Live preview ended. Showing the still."));
+        buildParameters(session.controls, shader.params, values);
+        session.controls.hidden = !shader.params.length;
+        session.stage.querySelector(".image")?.setAttribute("aria-hidden", "true");
+        session.status.textContent = "Live WebGL2 preview · 30 fps max";
+        return;
+      } catch {
+        // playShader has released the context. Try a clip if one exists.
+        session.dispose?.();
+        session.dispose = undefined;
+        cap = detectPreviewCapability({ video, videoType: entry.video?.type, motionAllowed: true });
+      }
+    }
+    if (cap.mode === "video") {
+      session.dispose = () => { video.pause(); video.removeAttribute("src"); video.load(); video.remove(); };
+      video.addEventListener("error", () => { if (player === session) stopPlayer("Video unavailable. Showing the still."); });
+      video.addEventListener("loadedmetadata", () => {
+        if (player === session && video.videoWidth * video.videoHeight > 1_000_000) {
+          stopPlayer("The preview is too large. Showing the still.");
+        }
+      });
+      video.src = videoSrc;
+      session.stage.append(video);
+      await video.play();
+      if (!signal.aborted) {
+        session.stage.querySelector(".image")?.setAttribute("aria-hidden", "true");
+        session.status.textContent = "Recorded preview";
+      }
+      return;
+    }
+    stopPlayer("No moving preview is available on this device. Showing the still.");
+  } catch (error) {
+    if (signal.aborted) return;
+    stopPlayer("Preview unavailable. Showing the still.");
+    if (error.status === 404 || error.status === 410) renderUnavailable(error.status);
+  }
+}
+
+function buildParameters(wrapper, params, values) {
+  wrapper.replaceChildren(el("summary", "Preview settings"));
+  const fields = el("div");
+  const reset = button("Reset settings", () => {
+    Object.assign(values, defaultParamValues(params));
+    buildParameters(wrapper, params, values);
+    wrapper.querySelector("button").focus();
+  });
+  wrapper.append(fields, reset);
+  for (const p of params) {
+    const field = el("div", null, "parameter");
+    fields.append(field);
+    const control = (text, type, value, onInput) => {
+      const label = el("label", text);
+      const input = el("input");
+      input.type = type;
+      if (type === "checkbox") input.checked = Boolean(value);
+      else if (type !== "range") input.value = value;
+      input.addEventListener("input", () => onInput(input));
+      label.append(input);
+      field.append(label);
+      return input;
     };
-
-    if (p.type === "color") {
-      const cur = rec.values[p.name];
-      const picker = document.createElement("input");
-      picker.type = "color";
-      picker.value = rgbaToHex(cur);
-      const alpha = document.createElement("input");
-      alpha.type = "range"; alpha.min = 0; alpha.max = 1; alpha.step = 0.01; alpha.value = cur[3];
-      alpha.title = "Alpha";
-      picker.addEventListener("input", () => { const c = hexToRgba(picker.value); c[3] = parseFloat(alpha.value); rec.values[p.name] = c; showVal(); });
-      alpha.addEventListener("input", () => { rec.values[p.name][3] = parseFloat(alpha.value); showVal(); });
-      const ctl = document.createElement("div");
-      ctl.className = "color-ctl";
-      ctl.appendChild(picker); ctl.appendChild(alpha);
-      row.appendChild(ctl);
-    } else if (p.type === "bool") {
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = !!Math.round(rec.values[p.name]);
-      box.addEventListener("change", () => { rec.values[p.name] = box.checked ? 1 : 0; showVal(); });
-      row.appendChild(box);
+    if (p.type === "bool") control(p.label, "checkbox", values[p.name], (x) => { values[p.name] = Number(x.checked); });
+    else if (p.type === "color") {
+      const rgb = values[p.name].slice(0, 3).map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, "0"));
+      control(p.label, "color", `#${rgb.join("")}`, (x) => {
+        for (let i = 0; i < 3; i++) values[p.name][i] = parseInt(x.value.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+      });
+      const alpha = control(`${p.label} opacity`, "range", null, (x) => { values[p.name][3] = x.valueAsNumber; });
+      Object.assign(alpha, { min: 0, max: 1, step: 0.01, value: values[p.name][3] });
     } else {
-      const input = document.createElement("input");
-      input.type = "range";
-      input.min = p.min; input.max = p.max;
-      input.step = p.type === "int" ? 1 : (p.max - p.min) / 200;
-      input.value = rec.values[p.name];
-      input.addEventListener("input", () => { rec.values[p.name] = parseFloat(input.value); showVal(); });
-      row.appendChild(input);
+      const value = el("output", String(values[p.name]));
+      const slider = control(p.label, "range", null, (x) => {
+        values[p.name] = x.valueAsNumber;
+        value.textContent = String(Number(x.valueAsNumber.toFixed(3)));
+      });
+      Object.assign(slider, { min: p.min, max: p.max, step: p.type === "int" ? 1 : ((p.max - p.min) / 200 || "any"), value: values[p.name] });
+      field.append(value);
     }
-    showVal();
-    wrap.appendChild(row);
   }
-  if (!rec.params.length) wrap.innerHTML = `<p class="muted">No adjustable parameters.</p>`;
 }
 
-function rgbaToHex([r, g, b]) {
-  const h = (x) => Math.round(x * 255).toString(16).padStart(2, "0");
-  return "#" + h(r) + h(g) + h(b);
-}
-function hexToRgba(hex) {
-  return [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255,
-          parseInt(hex.slice(5, 7), 16) / 255, 1];
+function renderPostcard(entry) {
+  const kind = kindOf(entry);
+  document.title = `${entry.title} — Lerping@Home`;
+  const back = el("nav", null, "breadcrumb");
+  back.setAttribute("aria-label", "Collection");
+  back.append(link("← All postcards", HOME.href));
+  const postcard = el("article", null, "postcard");
+  const preview = el("div");
+  const stage = el("div", null, "stage");
+  stage.append(image(entry, true));
+  const status = el("p", "", "status");
+  status.setAttribute("role", "status");
+  preview.append(stage, status);
+  const placard = el("div", null, "placard");
+  const artistLine = el("p", "By ");
+  artistLine.append(artistButton(entry.artist));
+  placard.append(el("p", `${kinds[kind]} / Postcard`, "label"), el("h1", entry.title), artistLine);
+  if (entry.description) placard.append(el("p", entry.description));
+  for (const parent of entry.lineage ?? []) {
+    const credit = el("p", "Remixed from ", "muted");
+    credit.append(parent.kind && parent.id ? link(parent.title, postcardLink(parent.kind, parent.id)) : document.createTextNode(parent.title),
+      document.createTextNode(" by "), artistButton(parent.artist));
+    placard.append(credit);
+  }
+  if (entry.members?.length) {
+    const list = el("ol");
+    for (const member of entry.members) {
+      const item = el("li");
+      item.append(link(member.title, postcardLink(member.kind, member.id)));
+      list.append(item);
+    }
+    placard.append(list);
+  }
+  if (entry.license) placard.append(el("p", `License: ${entry.license}`, "muted"));
+  const tags = el("ul", null, "tags");
+  tags.setAttribute("aria-label", "Postcard tags");
+  for (const key of ["mood", "motion", "brightness", "medium"]) if (entry.tags?.[key]) tags.append(el("li", entry.tags[key]));
+  placard.append(tags);
+  const controls = el("details", null, "parameters");
+  controls.hidden = true;
+  const play = button("Play", () => runPreview(entry, { stage, play, status, controls }));
+  const motionPossible = Boolean(entry.webShader || entry.video);
+  const syncMotion = () => {
+    if (reduced.matches && player) stopPlayer("Reduced motion is on. Showing the still.");
+    play.disabled = reduced.matches || !motionPossible;
+    if (play.disabled) status.textContent = reduced.matches ? "Reduced motion is on. Showing the still." : "Still preview · open in Lerping to view the work.";
+    else if (!player) status.textContent = "Still preview";
+  };
+  reduced.addEventListener("change", syncMotion, { signal: navigation.signal });
+  syncMotion();
+  const open = link("Open in Lerping", `lerp://open/v1/${kind}/${entry.id}`, "button primary");
+  const help = button("Need the Mac app?", () => install.showPopover(), "quiet");
+  open.addEventListener("click", () => {
+    clearTimeout(installTimer);
+    installTimer = setTimeout(() => { if (!document.hidden && document.hasFocus()) install.showPopover?.(); }, 1300);
+  });
+  const actions = el("div", null, "actions");
+  actions.append(play, open);
+  const secondary = el("div", null, "secondary");
+  secondary.append(install.showPopover ? help : link("Download for Mac", "https://github.com/codyhxyz/lerping-at-home/releases/latest"), reportButton(entry));
+  placard.append(actions, secondary, controls);
+  postcard.append(preview, placard);
+  MAIN.replaceChildren(back, postcard);
+  if (hosted && location.hash === "#report") showReport(entry);
 }
 
-function stepShader(dir) {
-  const web = shaders.filter((s) => !s.macOnly);
-  const i = web.findIndex((s) => s.id === activeId);
-  selectShader(web[(i + dir + web.length) % web.length].id);
+function renderUnavailable(status) {
+  document.title = "Postcard unavailable — Lerping@Home";
+  MAIN.replaceChildren(link("← All postcards", HOME.href), el("h1", "Postcard unavailable"),
+    el("p", status === 410 ? "This work has been withdrawn." : status === 404 ? "There’s no postcard at this address." : "The collection could not be reached. Please try again.", "muted"));
 }
-
-document.getElementById("prevBtn").addEventListener("click", () => stepShader(-1));
-document.getElementById("nextBtn").addEventListener("click", () => stepShader(1));
-document.getElementById("shuffleBtn").addEventListener("click", () => {
-  const rec = shaders.find((s) => s.id === activeId);
-  if (rec) { rec.seed = Math.random(); }
+async function navigate(focus = false) {
+  stopPlayer();
+  closeOverlays();
+  navigation?.abort();
+  const nav = navigation = new AbortController();
+  const route = location.hash.startsWith("#/p/") ? location.hash.slice(1) : location.pathname;
+  const parsed = route.match(ROUTE);
+  try {
+    if (parsed) {
+      const [, kind, id] = parsed;
+      let entry = !hosted ? (await collection().catch(() => null))?.entries
+        .find((x) => x.record.kind === kind && x.id === id) : null;
+      entry ??= await fetchJSON(`${API}${artifactPath(kind, id)}?view=postcard`, nav.signal);
+      if (!nav.signal.aborted) renderPostcard(entry);
+    } else if (route.startsWith("/p/")) renderUnavailable(404);
+    else {
+      const data = hosted ? await fetchJSON(`${API}/api/v1/editorial`, nav.signal) : await collection();
+      if (!nav.signal.aborted) renderCollection(data);
+    }
+  } catch (error) {
+    if (!nav.signal.aborted) renderUnavailable(error.status);
+  }
+  if (focus && !nav.signal.aborted) { window.scrollTo(0, 0); MAIN.focus({ preventScroll: true }); }
+}
+window.addEventListener("hashchange", () => navigate(true));
+window.addEventListener("pagehide", () => { stopPlayer(); closeOverlays(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { clearTimeout(installTimer); stopPlayer(); }
 });
-document.getElementById("resetBtn").addEventListener("click", () => {
-  const rec = shaders.find((s) => s.id === activeId);
-  if (rec) { rec.values = defaultParamValues(rec.params); buildSliders(rec); }
-});
-document.addEventListener("keydown", (e) => {
-  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
-  if (e.key === "ArrowRight") stepShader(1);
-  else if (e.key === "ArrowLeft") stepShader(-1);
-  else if (e.key === " ") { e.preventDefault(); document.getElementById("shuffleBtn").click(); }
-});
-
-boot().catch((e) => {
-  document.getElementById("grid").innerHTML =
-    `<p class="muted">Couldn't load the shaders (${e.message}). Check your connection and reload.</p>`;
-});
+navigate();

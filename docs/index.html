@@ -1,206 +1,87 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lerping@Home — every shader, live in your browser</title>
-<meta name="description" content="All 31 Lerping@Home screensaver shaders, transpiled from Metal to WebGL and rendered live on your device.">
+<title>Lerping@Home — Works for idle screens</title>
+<meta name="description" content="An editorial collection of works for idle screens. Look first, play when you’re ready.">
 <style>
-  :root {
-    --bg: #0b0d12;
-    --panel: #141821;
-    --panel2: #1a2030;
-    --text: #e8ecf4;
-    --muted: #8b93a7;
-    --accent: #7dd3fc;
-    --accent2: #c084fc;
-    --border: #262d3d;
-    --radius: 14px;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: radial-gradient(1200px 600px at 20% -10%, #16203233, transparent),
-                radial-gradient(1000px 500px at 90% 0%, #2a1a3d33, transparent),
-                var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, sans-serif;
-    line-height: 1.5;
-  }
-  header {
-    display: flex; align-items: center; gap: 14px;
-    padding: 20px 28px;
-    border-bottom: 1px solid var(--border);
-  }
-  .logo {
-    width: 38px; height: 38px; border-radius: 10px; flex: none;
-    background: conic-gradient(from 40deg, var(--accent), var(--accent2), #f472b6, var(--accent));
-    box-shadow: 0 0 24px #7dd3fc44;
-  }
-  header h1 { font-size: 20px; margin: 0; letter-spacing: 0.2px; }
-  header h1 .at { color: var(--accent); }
-  header p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
-  header .spacer { flex: 1; }
-  .gh-link {
-    color: var(--muted); text-decoration: none; font-size: 13px;
-    border: 1px solid var(--border); border-radius: 999px; padding: 8px 16px;
-    transition: color .15s, border-color .15s;
-  }
-  .gh-link:hover { color: var(--text); border-color: var(--accent); }
-  main { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
-
-  /* Stage */
-  #stage {
-    display: grid; grid-template-columns: 1.65fr 1fr; gap: 22px;
-    margin-bottom: 44px;
-  }
-  @media (max-width: 860px) { #stage { grid-template-columns: 1fr; } }
-  #heroWrap {
-    position: relative; border-radius: var(--radius); overflow: hidden;
-    border: 1px solid var(--border); background: #000;
-    aspect-ratio: 16 / 10; min-height: 280px;
-  }
-  #hero { width: 100%; height: 100%; display: block; }
-  #nogl {
-    display: none; position: absolute; inset: 0; align-items: center; justify-content: center;
-    text-align: center; padding: 30px; color: var(--muted); background: var(--panel);
-  }
-  #heroError {
-    display: none; position: absolute; left: 12px; right: 12px; bottom: 12px;
-    background: #3d1a1acc; border: 1px solid #7f2d2d; border-radius: 10px;
-    padding: 10px 14px; font-size: 13px;
-  }
-  #heroInfo { display: flex; flex-direction: column; min-width: 0; }
-  #heroCount { color: var(--muted); font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; }
-  #heroTitle { margin: 4px 0 8px; font-size: 30px; letter-spacing: -0.3px; }
-  #heroDesc { color: var(--muted); margin: 0 0 16px; font-size: 14.5px; }
-  .transport { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
-  .btn {
-    appearance: none; border: 1px solid var(--border); background: var(--panel2);
-    color: var(--text); border-radius: 10px; padding: 9px 15px; font-size: 14px;
-    cursor: pointer; transition: border-color .15s, transform .05s;
-  }
-  .btn:hover { border-color: var(--accent); }
-  .btn:active { transform: translateY(1px); }
-  .btn.primary { background: linear-gradient(135deg, #0ea5e955, #a855f755); border-color: #7dd3fc55; }
-  #sliders { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: 340px; padding-right: 4px; }
-  .slider-row label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; }
-  .slider-row .val { color: var(--accent); font-variant-numeric: tabular-nums; }
-  .slider-row input[type="range"] { width: 100%; accent-color: var(--accent); }
-  .slider-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); }
-  .color-ctl { display: flex; gap: 10px; align-items: center; }
-  .color-ctl input[type="color"] { width: 52px; height: 34px; border: 1px solid var(--border); border-radius: 8px; background: none; padding: 2px; cursor: pointer; }
-  .color-ctl input[type="range"] { flex: 1; }
-  #shaderFile { margin-top: 16px; font-size: 12.5px; color: var(--muted); text-decoration: none; font-family: ui-monospace, monospace; }
-  #shaderFile:hover { color: var(--accent); }
-  .muted { color: var(--muted); font-size: 13px; }
-
-  /* Gallery */
-  #gallery h2 { font-size: 18px; margin: 0 0 4px; }
-  #gallery .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 18px; }
-  #grid {
-    display: grid; gap: 16px;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  }
-  .card {
-    appearance: none; border: 1px solid var(--border); background: var(--panel);
-    border-radius: var(--radius); overflow: hidden; cursor: pointer; padding: 0;
-    color: var(--text); text-align: left; font: inherit;
-    transition: border-color .15s, transform .12s;
-  }
-  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
-  .card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 8px 28px #7dd3fc22; }
-  .card canvas { width: 100%; aspect-ratio: 8 / 5; display: block; background: #000; }
-  .card-label { padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; }
-  .card-title { font-size: 14px; font-weight: 600; }
-  .card.skeleton { cursor: default; }
-  .card.skeleton:hover { transform: none; border-color: var(--border); }
-  .sk-thumb { aspect-ratio: 8 / 5; background: linear-gradient(100deg, var(--panel2) 40%, #222a3d 50%, var(--panel2) 60%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
-  .sk-label { height: 18px; margin: 12px 14px; border-radius: 6px; background: var(--panel2); }
-  @keyframes shimmer { to { background-position: -200% 0; } }
-
-  .card.mac-only { cursor: default; display: flex; flex-direction: column; }
-  .card.mac-only:hover { transform: none; border-color: var(--border); }
-  .mac-chip {
-    align-self: flex-start; margin: 12px 0 0 12px; font-size: 11px; letter-spacing: 0.6px;
-    text-transform: uppercase; color: var(--accent2);
-    border: 1px solid #c084fc55; border-radius: 999px; padding: 4px 10px;
-  }
-  .mac-body { padding: 12px 14px 16px; }
-  .mac-title { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
-  .mac-desc { color: var(--muted); font-size: 13px; }
-
-  footer {
-    border-top: 1px solid var(--border); padding: 22px 28px; color: var(--muted);
-    font-size: 13px; display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
-  }
-  footer a { color: var(--muted); }
-  footer a:hover { color: var(--accent); }
-  footer .spacer { flex: 1; }
+  :root { color-scheme: light; --paper:#f7f5ef; --ink:#222522; --muted:#575d55; --line:#cfcec2; --white:#fffdfa; --serif:Iowan Old Style, Palatino Linotype, Book Antiqua, Georgia, serif; --sans:system-ui,sans-serif }
+  * { box-sizing:border-box }
+  body { margin:0; color:var(--ink); background:var(--paper); font:15px/1.55 var(--sans) }
+  a { color:inherit; text-underline-offset:.23em }
+  button, select, textarea { font:inherit; color:inherit }
+  button, select, .button { padding:.48rem .8rem; border:1px solid var(--line); background:var(--white); border-radius:2px }
+  button, select { cursor:pointer }
+  button:hover, .button:hover { border-color:var(--ink) }
+  button:disabled { cursor:default; opacity:.65 }
+  :focus-visible { outline:2px solid #365444; outline-offset:4px }
+  .button { display:inline-block; text-decoration:none }
+  .primary { color:var(--white); background:var(--ink); border-color:var(--ink) }
+  .quiet { padding:0; background:none; border:0; text-decoration:underline; text-underline-offset:.23em }
+  .wrap { max-width:1260px; margin:auto; padding-inline:clamp(1.2rem,5vw,4.4rem) }
+  .masthead, footer { border-block-end:1px solid var(--line) }
+  .masthead .wrap, footer .wrap { display:flex; align-items:center; justify-content:space-between; gap:.7rem 2rem; flex-wrap:wrap; padding-block:1rem }
+  .wordmark { font-weight:750; text-decoration:none; letter-spacing:-.025em }
+  .label { text-transform:uppercase; letter-spacing:.14em; font-size:.72rem; font-weight:650; color:var(--muted) }
+  .muted { color:var(--muted) }
+  main { min-height:60vh; padding-block:clamp(2rem,5vw,5rem) }
+  h1, h2 { font-family:var(--serif); font-weight:400; line-height:1.04; margin:0; letter-spacing:-.035em; overflow-wrap:anywhere }
+  h1 { font-size:clamp(2.8rem,7.5vw,7.2rem) }
+  h2 { font-size:clamp(1.8rem,3.5vw,3rem) }
+  p { margin:.55rem 0 1rem }
+  .feature { display:grid; grid-template-columns:4fr 5fr; gap:clamp(1.6rem,5vw,5rem); align-items:center }
+  .feature .intro { max-width:28ch; font-size:1.1rem; margin:1.2rem 0 0 }
+  .image, .stage { display:block; width:100%; aspect-ratio:8 / 5; object-fit:cover; background:#dfded4 }
+  .feature figure, .card figure { margin:0 }
+  figcaption { padding-block:.5rem; font-size:.83rem; color:var(--muted) }
+  .filters { display:flex; flex-wrap:wrap; gap:.7rem 1rem; margin:clamp(2.5rem,6vw,5rem) 0 1rem; align-items:end }
+  .filters label { display:grid; gap:.22rem }
+  .filters select { min-width:7.4rem }
+  .shelf { padding-block:2.25rem 2.85rem; border-top:1px solid var(--line) }
+  .shelf-header { display:flex; align-items:baseline; gap:.5rem 1.5rem; flex-wrap:wrap; margin-bottom:1.15rem }
+  .shelf-header p { margin:0 }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr)); gap:1.3rem; max-width:900px }
+  .card { text-decoration:none; min-width:0 }
+  .card:hover strong, .feature a:hover strong { text-decoration:underline; text-underline-offset:.25em }
+  .card strong { color:var(--ink) }
+  .card figcaption { display:flex; justify-content:space-between; gap:.5rem }
+  .breadcrumb { margin-bottom:1.5rem; font-size:.87rem }
+  .postcard { display:grid; grid-template-columns:minmax(0,8fr) minmax(0,4fr); gap:clamp(1.5rem,4vw,4rem); align-items:start }
+  .postcard h1 { font-size:clamp(2.3rem,5vw,4.55rem) }
+  .stage { position:relative; overflow:hidden }
+  .stage .image, .stage .surface { position:absolute; inset:0; width:100%; height:100%; object-fit:contain }
+  .stage .surface { background:#1f211f }
+  .status { min-height:1.55em; color:var(--muted); font-size:.87rem }
+  .placard { border-block:1px solid var(--line); padding:1.15rem 0; min-width:0 }
+  .placard hr { border:0; border-top:1px solid var(--line); margin-block:1rem }
+  .tags { display:flex; flex-wrap:wrap; column-gap:.55rem; padding:0; list-style:none; margin:.75rem 0 1.1rem }
+  .tags li { border:1px solid var(--line); padding:.12rem .45rem; font-size:.78rem; text-transform:capitalize }
+  .actions { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin:.9rem 0 }
+  .secondary { display:flex; flex-wrap:wrap; gap:.25rem 1rem; margin-top:1rem; color:var(--muted); font-size:.82rem }
+  .parameters { padding-top:.9rem; margin-top:1rem; border-top:1px solid var(--line) }
+  .parameters summary { cursor:pointer }
+  .parameter { display:grid; gap:.3rem; margin:.75rem 0 }
+  .parameter label { display:flex; justify-content:space-between; gap:.5rem }
+  .parameter input { accent-color:#365444 }
+  .parameter input[type=range] { width:100% }
+  dialog, [popover] { max-width:min(28rem,calc(100% - 2rem)); border:1px solid var(--line); background:var(--white); color:var(--ink); padding:1.5rem }
+  dialog::backdrop { background:#1c201b66 }
+  #artist-panel[open] { position:fixed; inset:0 0 0 auto; margin:0; height:100%; max-height:100%; width:min(100%,28rem); padding:clamp(1.3rem,4vw,3rem) }
+  .sheet-close { display:block; margin:0 0 1.4rem auto }
+  textarea { display:block; width:100%; resize:vertical; margin:.45rem 0 .75rem }
+  footer { border-block:1px solid var(--line) 0; color:var(--muted); font-size:.82rem }
+  [hidden] { display:none !important }
+  @media (max-width:720px) { .feature, .postcard { grid-template-columns:1fr } }
 </style>
 </head>
 <body>
-<header>
-  <div class="logo"></div>
-  <div>
-    <h1>Lerping<span class="at">@</span>Home</h1>
-    <p>Every shader, live in your browser — transpiled from Metal to WebGL on the fly.</p>
-  </div>
-  <div class="spacer"></div>
-  <a class="gh-link" href="https://github.com/codyhxyz/lerping-at-home">GitHub</a>
-</header>
-
-<main>
-  <section id="stage">
-    <div id="heroWrap">
-      <canvas id="hero"></canvas>
-      <div id="nogl">
-        <div>
-          <p style="font-size:18px;color:var(--text)">WebGL2 isn't available here.</p>
-          <p>These shaders need a browser with WebGL2 enabled — try a recent Chrome, Edge, Firefox, or Safari.</p>
-        </div>
-      </div>
-      <div id="heroError"></div>
-    </div>
-    <div id="heroInfo">
-      <div id="heroCount"></div>
-      <h2 id="heroTitle"></h2>
-      <p id="heroDesc"></p>
-      <div class="transport">
-        <button class="btn" id="prevBtn" title="Previous shader (←)">← Prev</button>
-        <button class="btn" id="nextBtn" title="Next shader (→)">Next →</button>
-        <button class="btn primary" id="shuffleBtn" title="New random seed (space)">Shuffle seed</button>
-        <button class="btn" id="resetBtn" title="Restore default parameters">Reset</button>
-      </div>
-      <div id="sliders"></div>
-      <a id="shaderFile" href="#"></a>
-    </div>
-  </section>
-
-  <section id="gallery">
-    <h2>All shaders</h2>
-    <p class="sub">Thumbnails render on your device the moment they scroll into view. Three shaders need the Mac app's native engine — they're marked below.</p>
-    <div id="grid">
-      <!-- skeleton cards, replaced on load -->
-      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
-      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
-      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
-      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
-      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
-      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
-      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
-      <div class="card skeleton"><div class="sk-thumb"></div><div class="sk-label"></div></div>
-    </div>
-  </section>
-</main>
-
-<footer>
-  <span>Lerping@Home — a screensaver that never sits still.</span>
-  <div class="spacer"></div>
-  <a href="https://github.com/codyhxyz/lerping-at-home">Source</a>
-  <a href="https://github.com/codyhxyz/lerping-at-home/tree/main/Sources/Shaders">All 31 shaders</a>
-</footer>
-
+<header class="masthead"><div class="wrap"><a class="wordmark" href="./" id="home">Lerping@Home</a><span class="label">The Postcard Collection</span></div></header>
+<main class="wrap" id="main" tabindex="-1"><!-- main:start --><p role="status">Opening the collection…</p><noscript>Turn on JavaScript to browse and play postcards.</noscript><!-- main:end --></main>
+<footer><div class="wrap"><span>Works for idle screens.</span><a href="https://github.com/codyhxyz/lerping-at-home/releases">Lerping for Mac</a><a href="https://github.com/codyhxyz/lerping-at-home">Source &amp; credits</a></div></footer>
+<dialog id="artist-panel" aria-labelledby="artist-title"></dialog>
+<dialog id="report-panel" aria-labelledby="report-title"></dialog>
+<div id="install" popover aria-labelledby="install-title"><h2 id="install-title">Lerping for Mac</h2><p>If the app didn't open, download the latest Mac release and install it, then try again.</p><a href="https://github.com/codyhxyz/lerping-at-home/releases/latest">View Mac downloads ↗</a> <button class="quiet" type="button" popovertarget="install" popovertargetaction="hide">Close</button></div>
 <script type="module" src="lerp-web/app.js"></script>
 </body>
 </html>
