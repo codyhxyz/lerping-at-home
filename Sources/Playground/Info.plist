@@ -26,6 +26,59 @@
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>com.hergenroeder.lerping.open</string>
+			<key>CFBundleURLSchemes</key>
+			<array><string>lerp</string></array>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key><string>Lerp Look</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSItemContentTypes</key><array><string>com.hergenroeder.lerping.look</string></array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key><string>Lerp Playlist</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSItemContentTypes</key><array><string>com.hergenroeder.lerping.playlist</string></array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key><string>Lerp Piece</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSItemContentTypes</key><array><string>com.hergenroeder.lerping.piece</string></array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key><string>com.hergenroeder.lerping.look</string>
+			<key>UTTypeDescription</key><string>Lerp Look</string>
+			<key>UTTypeConformsTo</key><array><string>public.json</string></array>
+			<key>UTTypeTagSpecification</key>
+			<dict><key>public.filename-extension</key><array><string>lerplook</string></array></dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key><string>com.hergenroeder.lerping.playlist</string>
+			<key>UTTypeDescription</key><string>Lerp Playlist</string>
+			<key>UTTypeConformsTo</key><array><string>public.json</string></array>
+			<key>UTTypeTagSpecification</key>
+			<dict><key>public.filename-extension</key><array><string>lerpplaylist</string></array></dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key><string>com.hergenroeder.lerping.piece</string>
+			<key>UTTypeDescription</key><string>Lerp Piece</string>
+			<key>UTTypeConformsTo</key><array><string>public.zip-archive</string></array>
+			<key>UTTypeTagSpecification</key>
+			<dict><key>public.filename-extension</key><array><string>lerppiece</string></array></dict>
+		</dict>
+	</array>
 	<!-- Deployment may ask this app to quit because the delegate protects dirty
 	     editor text with Save / Discard / Cancel. Older builds lack that hook and
 	     are refused until the user closes them once. -->
