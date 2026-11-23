@@ -504,7 +504,7 @@ A look on the Minecraft shelf draws with the game's own textures. It says so
 on one of its first 40 lines and takes the texture arrays it reads:
 
 ```metal
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft
 
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]],
@@ -687,7 +687,7 @@ the box `[0, MCW_SIZE)`, +x east, +y up, +z south. `scripts/minecraft-world/FORM
 **Time.** Every Mac shows the same moment. The clock is UTC, read once per
 session and anchored to `u.time == 0`, as `clock` is, so a frame is still a
 pure function of `(time, seed, parameters)` and scrubbing works. Gallery stills
-and `LerpPreview` (no bundle identifier) get 2026-01-01T00:00Z; declare
+and `LerpPreview` (no bundle identifier) get 2026-01-01T00:08:20Z (tick 10000); declare
 `// lerp-param: utc float -1 24 = -1` and `--param utc=13.5` pins the hour
 for testing.
 
@@ -815,7 +815,7 @@ seed, parameters). Only world looks have it.
 shared time of day):
 
 ```metal
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft world:mine
 fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buffer(0)]], MCW_BINDINGS) {
     McWorld W = MCW_WORLD;

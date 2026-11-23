@@ -3,7 +3,7 @@
 // textures (`make minecraft`, scripts/minecraft-world/); none of it is in
 // this file or this repo.
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft world:mine
 // lerp-plan: 4
 //

@@ -2,9 +2,9 @@
 // Original work for Lerping@Home, on the game's own world generator, blocks,
 // light, sky and mobs (PORTING.md "Minecraft looks", "Worlds").
 //
-// lerp-category: Minecraft
+// lerp-category: Living Worlds
 // lerp-requires: minecraft mobs world:shared
-// lerp-plan: 160
+// lerp-plan: 176
 //
 // The world is `shared`: seed "Lerping@Home", generated headless by the
 // installed game and baked on this Mac. A frame is a pure function of the
@@ -1026,7 +1026,7 @@ __attribute__((noinline)) static OwMob owMob(McWorld W, int i, OwTime T, float3 
 struct OwPacked {
     float4 a;   // feet, cos(heading)
     float4 b;   // sin(heading), walk, speed, head yaw
-    float4 c;   // graze, wag, type + 64 * (shown + 2 * lying), shadow radius
+    float4 c;   // graze, wag, type + 64 * (shown + 2 * lying + 4 * charged) + 512 * coat, how much sun reaches it
     float4 d;   // the trader's field end, the trap horse's spot (w > 0 when there is one)
 };
 
@@ -1257,12 +1257,18 @@ static inline bool owSees(McWorld W, float3 e, float3 t) {
 }
 
 // The first of eight bearings round `at`, from a0 on, where a camera `r`
-// out and `up` up has room and sees `at`.
-static inline float owClearAngle(McWorld W, float3 at, float r, float up, float a0) {
+// out and `up` up has room and sees `at`, and still does `spread` radians
+// either side (the shot's drift).
+static inline float owClearAngle(McWorld W, float3 at, float r, float up, float a0, float spread = 0.0) {
     for (int j = 0; j < 8; ++j) {
         float a = a0 + float(j) * (M_PI_F / 4.0);
-        float3 e = at + float3(sin(a) * r, up, cos(a) * r);
-        if (owRoom(W, e) && owSees(W, e, at)) return a;
+        bool ok = true;
+        for (int q = -1; q <= 1 && ok; ++q) {
+            float b = a + float(q) * spread;
+            float3 e = at + float3(sin(b) * r, up, cos(b) * r);
+            ok = owRoom(W, e) && owSees(W, e, at);
+        }
+        if (ok) return a;
     }
     return a0;
 }
@@ -1281,7 +1287,7 @@ __attribute__((noinline)) static OwCam owRecipe(McWorld W, int k, float p, float
     if (k == 0) {
         // The meeting place from over the roofs round it, drifting sideways.
         c.at = meet + float3(0.0, 1.0, 0.0);
-        float a = owClearAngle(W, c.at, 13.0, 6.5, v * 6.2832) + drift * 0.35;
+        float a = owClearAngle(W, c.at, 13.0, 6.5, v * 6.2832, 0.175) + drift * 0.35;
         c.eye = c.at + float3(owDir(a).x * 13.0, 6.5, owDir(a).y * 13.0);
         c.focal = 1.8;
     } else if (k == 1) {
@@ -1352,9 +1358,9 @@ __attribute__((noinline)) static OwCam owRecipe(McWorld W, int k, float p, float
         // a clear bearing found where the subject is halfway through the shot
         OwTime Th = Tp; Th.sec = subj.sec0 + 0.5 * OW_SHOT; Th.tick = Th.sec * 20.0;
         float3 mid = owMob(W, max(subj.mob, 0), Th, meet + float3(0.0, 2.5, 0.0), extra).p + float3(0.0, 1.1 * big, 0.0);
-        float a = owClearAngle(W, mid, 9.0 * big, 1.8, v * 6.2832) + drift * 0.5;
+        float a = owClearAngle(W, mid, 9.0 * big, 3.5, v * 6.2832) + drift * 0.5;
         c.at = m.p + float3(0.0, 1.1 * big, 0.0);
-        c.eye = c.at + float3(owDir(a).x * 9.0 * big, 1.8, owDir(a).y * 9.0 * big);
+        c.eye = c.at + float3(owDir(a).x * 9.0 * big, 3.5, owDir(a).y * 9.0 * big);   // from a little above: steeper rays cross fewer crop and grass cells
         c.focal = 1.9;
     } else {
         // The shore: low over the water's edge, toward a low sun (or the moon)
@@ -1435,9 +1441,9 @@ __attribute__((noinline)) static bool owCheck(McWorld W, int k, float v, float3 
 // Which shots suit the hour (and the village's doings), as weights.
 static inline float owWeight(int k, float tick, float sunY, int subject, bool wet) {
     // Rain costs about 3.5 ms a frame (the game's rain quads round the camera),
-    // so under rain only the shots that leave room for it: the market, streets,
-    // the village from above and portraits.
-    if (wet && (k == 1 || k == 4 || k == 5 || k == 7)) return 0.0;
+    // so under rain only the shots that leave room for it: streets, the
+    // village from above and portraits.
+    if (wet && (k == 0 || k == 1 || k == 4 || k == 5 || k == 7)) return 0.0;
     // After dark and in storms the director keeps to what has its own light:
     // the lamp-lit square, lit streets and doorways (each checked for lamplight
     // in owCheck), and the whole village's lights from the hill or from above.
@@ -1461,6 +1467,11 @@ static inline int owDraw(int slot, uint key, int tries, float tick, float sunY, 
     // A rare visitor may be filmed slot after slot; any other shot not twice running.
     bool event = subject == OW_TRAP || subject == OW_CREEPER;
     if (event && avoid == 8) avoid = -1;
+    // The gathering at the bell is the village's own daily event: while it
+    // lasts every Mac's first try is the market square (from its own bearing),
+    // and only a market shot that fails its checks gives way to another kind.
+    // (The gallery's still instant falls in it: LerpWorldClock.fixed.)
+    if (tries == 0 && !event && !wet && tick >= 9000.0 && tick < 11000.0) return 0;
     float total = 0.0;
     for (int k = 0; k < OW_RECIPES; ++k) total += k == avoid ? 0.0 : owWeight(k, tick, sunY, subject, wet);
     float x = float(owH(slot * 7 + tries, key) % 10000u) / 10000.0 * total;
@@ -1495,14 +1506,25 @@ __attribute__((noinline)) static int owChoose(McWorld W, int slot, uint key, flo
         OwCam c = owRecipe(W, myK, float(min(part, 2)) * 0.5, myV, meet, sunAt, subj);
         float3 f = normalize(c.at - c.eye);
         bool near = false;
+        // and no crowd filling the frame: each mob is tested by every pixel
+        // its screen circle covers, so a crowd at eye level (as the gathering
+        // breaks up) runs over the 60 fps budget. The circles are generous
+        // (1.2 blocks round a villager); summed, they may cover at most 35%
+        // of the screen, which the market shot of the whole gathering meets.
+        float cover = 0.0;
         for (int mi = 0; mi < OW_MOBS; ++mi) {
             float4 q0 = simd_shuffle(pm0, ushort(mi)), q1 = simd_shuffle(pm1, ushort(mi)), q2 = simd_shuffle(pm2, ushort(mi));
             float4 q = part == 0 ? q0 : part == 1 ? q1 : q2;
             float3 d = q.xyz + float3(0.0, 1.0, 0.0) - c.eye;
             float L = length(d);
-            if (part < 3 && q.w > 0.5 && L < 2.5 && dot(d, f) > -0.5) near = true;
+            float z = dot(d, f);
+            if (part < 3 && q.w > 0.5 && L < 2.5 && z > -0.5) near = true;
+            if (part < 3 && q.w > 0.5 && z > 1.0) {
+                float r = 1.2 * c.focal / z;
+                if (length(d - f * z) * c.focal / z < 1.8) cover += M_PI_F * r * r;
+            }
         }
-        myOK = myOK && !near;
+        myOK = myOK && !near && cover < 0.35 * 6.2;
     }
     okBits = ulong(simd_vote::vote_t(simd_ballot(myOK)));
     variant = float(owH(slot * 13, key ^ 0x5bd1e995u) % 1000u) / 1000.0;
@@ -1526,7 +1548,9 @@ constant int OWP_SKY = 2;      // rain, thunder, moon phase, open doors (bits)
 constant int OWP_BOLT = 3;     // strike point, 1 while a bolt shows
 constant int OWP_MISC = 4;     // bolt seed (bits), mobs in view (bits)
 constant int OWP_MOBS = 5;     // four float4s a mob: OwPacked a, b, c, and where it is on screen
-constant int OWP_TILES = OWP_MOBS + 4 * 32;   // 64 screen tiles (8 x 8): which mobs each may show, a uint each
+constant int OWP_TILES = OWP_MOBS + 4 * 32;   // 64 screen tiles (8 x 8): which mobs each may show (bits by depth rank), a uint each
+constant int OWP_ORDER = OWP_TILES + 16;      // 32 uints: the mob at each depth rank, nearest first
+constant int OWP_RANK  = OWP_ORDER + 8;       // 32 uints: each mob's depth rank
 
 kernel void lerpPlan(constant LerpUniforms& u [[buffer(0)]], MCW_BINDINGS,
                      device float4* plan [[buffer(13)]], uint lane [[thread_index_in_simdgroup]]) {
@@ -1541,6 +1565,13 @@ kernel void lerpPlan(constant LerpUniforms& u [[buffer(0)]], MCW_BINDINGS,
     // Each lane one mob.
     int mine = min(int(lane), OW_MOBS - 1);
     OwPacked own = owPack(W, mine, T, bell);
+    // How much sun reaches each mob: one shadow ray from its middle, once a
+    // frame, rather than one from every pixel of it.
+    {
+        float3 Ls = sun.y > -0.05 ? sun : -sun;
+        float3 mid = own.a.xyz + float3(0.0, 0.9, 0.0);
+        own.c.w = sun.y > -0.08 && wx.x < 0.98 ? mix(mcWorldShadow(W, mid, Ls, Ls), 1.0, wx.x) : 1.0;
+    }
     if (int(lane) < OW_MOBS) {
         plan[OWP_MOBS + 4 * lane] = own.a;
         plan[OWP_MOBS + 4 * lane + 1] = own.b;
@@ -1648,15 +1679,25 @@ kernel void lerpPlan(constant LerpUniforms& u [[buffer(0)]], MCW_BINDINGS,
     // tile), so most pixels of a wide shot look at none.
     float aspect = u.resolution.x / max(u.resolution.y, 1.0);
     float2 ext = float2(max(aspect, 1.0), max(1.0 / aspect, 1.0));
+    // The tiles' bits are by depth rank, nearest first, so a pixel tests the
+    // nearest mob first and the hit it finds cuts short the rest of a crowd.
+    float myDepth = seen ? dist : 1e9 + float(lane);
+    uint rank = 0u;
+    for (int j = 0; j < 32; ++j) {
+        float dj = simd_shuffle(myDepth, ushort(j));
+        if (dj < myDepth || (dj == myDepth && j < int(lane))) rank++;
+    }
     uint tileLo = 0u, tileHi = 0u;   // this lane keeps tiles `lane` and `lane + 32`
     for (int t = 0; t < 64; ++t) {
         float2 lo = -ext + 2.0 * ext * float2(float(t % 8), float(t / 8)) / 8.0;
         float2 hi = lo + 2.0 * ext / 8.0;
         bool hit = seen && distance(clamp(circle.xy, lo, hi), circle.xy) <= circle.z;
-        uint m = uint(ulong(simd_vote::vote_t(simd_ballot(hit))) & 0xFFFFFFFFul);
+        uint m = simd_or(hit ? (1u << rank) : 0u);
         if (int(lane) == (t & 31)) { if (t < 32) tileLo = m; else tileHi = m; }
     }
     device float* planF = (device float*)plan;
+    planF[OWP_ORDER * 4 + int(rank)] = as_type<float>(uint(lane));
+    planF[OWP_RANK * 4 + int(lane)] = as_type<float>(rank);
     planF[OWP_TILES * 4 + int(lane)] = as_type<float>(tileLo);
     planF[OWP_TILES * 4 + 32 + int(lane)] = as_type<float>(tileHi);
 
@@ -1687,10 +1728,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float3 right = normalize(cross(fwd, float3(0.0, 1.0, 0.0)));
     float3 rd = normalize(uv.x * right + uv.y * cross(right, fwd) + focal * fwd);
     W.pxA = 2.0 / (focal * min(u.resolution.x, u.resolution.y));
-    // The game's fog at a render distance of 8 chunks (128 blocks), one of its
-    // own settings: the village and its shores sit well inside it, and the
-    // long views cost a third less than at the default 12.
-    const float fogEnd = 128.0;
+    // The game's fog at a render distance of 6 chunks (96 blocks), one of its
+    // own settings: the village and its shores sit inside it, and the frame
+    // stays inside the app's 60 fps budget (the default 12 costs a third more).
+    const float fogEnd = 96.0;
 
     McWorldHit h = mcWorldTrace(W, ro, rd, fogEnd);
     // A door someone is passing stands open.
@@ -1723,11 +1764,16 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     }
     float3 groundP = h.p;
     // Sun shadows by day; by moonlight they would barely show, so the night saves them.
-    // Past 56 blocks a block's sun shadow is a few pixels: not traced there.
-    // A low sun's shadow rays run long and cost twice as much: 24 cells of
-    // the march then, 48 otherwise.
+    // Sun shadows: past 32 blocks a block's shadow is a few pixels, so none
+    // there. A slanting sun's shadow rays cross many cells of a crowded
+    // village (at the afternoon gathering 48 cells cost 5 ms a frame), so the
+    // march is cut to what a shadow in view needs (the kit's skip march
+    // crosses open air in a few cells; renders at 6 and at 48 cells match):
+    // 4 cells with the sun under 0.3 (dawn, dusk), 6 under 0.7, 24 above.
     bool shadows = sun.y > -0.08;
-    float3 col = owShade(W, h, ro, rd, sun, moon, shadows && h.t < 56.0, abs(sun.y) < 0.3 ? 24 : 48,
+    bool lowSun = abs(sun.y) < 0.3;
+    int shadowSteps = lowSun ? 4 : sun.y < 0.7 ? 6 : 24;
+    float3 col = owShade(W, h, ro, rd, sun, moon, shadows && h.t < 32.0, shadowSteps,
                          fogEnd, wx.x, wx.y);
     if (h.t >= fogEnd) {
         float4 cl = mcWorldClouds(W, ro, rd, 700.0, sun, wx.x, 700.0);
@@ -1754,8 +1800,9 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     float dark = 0.0;
     float3 aura = float3(0.0);
     while (mobs != 0u) {
-        int i = int(ctz(mobs));
+        int rk = int(ctz(mobs));
         mobs &= mobs - 1u;
+        int i = int(as_type<uint>(plan[OWP_ORDER + rk / 4][rk % 4]));
         float4 sc4 = plan[OWP_MOBS + 4 * i + 3];
         if (distance(uv, sc4.xy) > sc4.z) continue;
         float4 qa = plan[OWP_MOBS + 4 * i], qb = plan[OWP_MOBS + 4 * i + 1], qc = plan[OWP_MOBS + 4 * i + 2];
@@ -1799,7 +1846,10 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
     // The llamas' leads to the trader, where a llama or he may be in this tile.
     float leadT = INFINITY; float3 leadC = float3(0.0);
     uint tileMobs = as_type<uint>(plan[OWP_TILES + ti / 4][ti % 4]);
-    if ((tileMobs & ((3u << uint(OW_LLAMA0)) | (1u << uint(OW_TRADER)))) != 0u) {
+    uint rT = as_type<uint>(plan[OWP_RANK + OW_TRADER / 4][OW_TRADER % 4]);
+    uint rL0 = as_type<uint>(plan[OWP_RANK + OW_LLAMA0 / 4][OW_LLAMA0 % 4]);
+    uint rL1 = as_type<uint>(plan[OWP_RANK + (OW_LLAMA0 + 1) / 4][(OW_LLAMA0 + 1) % 4]);
+    if ((tileMobs & ((1u << rT) | (1u << rL0) | (1u << rL1))) != 0u) {
         float4 ta = plan[OWP_MOBS + 4 * OW_TRADER];
         if ((int(plan[OWP_MOBS + 4 * OW_TRADER + 2].z) & 64) != 0) {
             for (int k = 0; k < 2; ++k) {
@@ -1824,7 +1874,7 @@ fragment half4 lerpMain(float4 pos [[position]], constant LerpUniforms& u [[buff
         int type = int(plan[OWP_MOBS + 4 * hitMob + 2].z) & 63;
         float4 c = mcMobColor(type, mh, sk, best * W.pxA * 16.0, mcSkins, mcMaps);
         float3 P = ro + rd * best;
-        float sh = wx.x > 0.98 || !shadows ? 1.0 : mix(mcWorldShadow(W, P + mN * 0.05, mN, L), 1.0, wx.x);
+        float sh = plan[OWP_MOBS + 4 * hitMob + 2].w;   // the sun on it, from the plan
         float3 lit = mcWorldLightAt(W, P + mN * 0.1, float3(0.0), day, sh);
         col = c.rgb * lit * mcFaceShade(mN) + c.rgb * c.a;
         col = mcWorldFog(col, rd, best, sun, fogEnd, wx.x, wx.y);

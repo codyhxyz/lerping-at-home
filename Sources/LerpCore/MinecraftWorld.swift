@@ -572,8 +572,11 @@ struct LerpWorldClock: Equatable {
 
     /// 2026-01-01T00:00:00Z.
     static let epoch: TimeInterval = 1_767_225_600
-    /// The instant a still is drawn at: the epoch itself.
-    static let fixed = LerpWorldClock(day: 0, second: 0)
+    /// The instant a still is drawn at: 2026-01-01T00:08:20Z, game tick 10000
+    /// of a 20-minute day running from the epoch, in the afternoon light of
+    /// the gathering at the bell (ticks 9000-11000), so a world look's gallery
+    /// card shows its village gathered rather than a dawn with nobody about.
+    static let fixed = LerpWorldClock(day: 0, second: 500)
 
     static func at(_ unix: TimeInterval) -> LerpWorldClock {
         let since = unix - epoch
